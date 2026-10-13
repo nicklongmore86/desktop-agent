@@ -1,0 +1,4 @@
+# Keep LF everywhere so Prettier checks agree on Windows and Linux CI.
+* text=auto eol=lf
+*.png binary
+*.ico binary
