@@ -1,12 +1,16 @@
-import { BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { isAppUrl, secureWebPreferences } from './security'
+import { isAppUrl, isLoopbackHttpUrl, secureWebPreferences } from './security'
 
-/** URL the main window loads: the Vite dev server in dev, the bundled index.html otherwise. */
+/**
+ * URL the main window loads: the Vite dev server in dev, the bundled index.html otherwise.
+ * ELECTRON_RENDERER_URL is ignored in packaged builds and must be a loopback http URL,
+ * so the environment can't point the window (and its preload API) at a remote page.
+ */
 export function appUrl(): string {
   const devServerUrl = process.env['ELECTRON_RENDERER_URL']
-  if (devServerUrl) return devServerUrl
+  if (!app.isPackaged && devServerUrl && isLoopbackHttpUrl(devServerUrl)) return devServerUrl
   return pathToFileURL(join(__dirname, '../renderer/index.html')).href
 }
 

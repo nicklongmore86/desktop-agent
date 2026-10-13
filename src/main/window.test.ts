@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const electron = vi.hoisted(() => {
   const webContents = {
@@ -11,12 +11,17 @@ const electron = vi.hoisted(() => {
     this['show'] = vi.fn()
     this['loadURL'] = vi.fn(() => Promise.resolve())
   })
-  return { BrowserWindow, webContents, shell: { openExternal: vi.fn() } }
+  return {
+    app: { isPackaged: false },
+    BrowserWindow,
+    webContents,
+    shell: { openExternal: vi.fn() },
+  }
 })
 
 vi.mock('electron', () => electron)
 
-const { createMainWindow } = await import('./window')
+const { appUrl, createMainWindow } = await import('./window')
 
 type OpenHandler = (details: { url: string }) => { action: string }
 type NavigationHandler = (event: { preventDefault: () => void }, url: string) => void
@@ -27,10 +32,52 @@ function navigationHandler(eventName: string): NavigationHandler {
   return call[1] as NavigationHandler
 }
 
+describe('appUrl', () => {
+  beforeEach(() => {
+    electron.app.isPackaged = false
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('uses a loopback dev server URL in unpackaged builds', () => {
+    vi.stubEnv('ELECTRON_RENDERER_URL', 'http://127.0.0.1:5173')
+    expect(appUrl()).toBe('http://127.0.0.1:5173')
+  })
+
+  it('ignores ELECTRON_RENDERER_URL in packaged builds', () => {
+    electron.app.isPackaged = true
+    vi.stubEnv('ELECTRON_RENDERER_URL', 'http://localhost:5173')
+    expect(appUrl()).toMatch(/^file:\/\/.*\/renderer\/index\.html$/)
+  })
+
+  it.each(['https://localhost:5173', 'http://example.com:5173', 'https://example.com/'])(
+    'rejects the non-loopback or https dev URL %s',
+    (devUrl) => {
+      vi.stubEnv('ELECTRON_RENDERER_URL', devUrl)
+      expect(appUrl()).toMatch(/^file:\/\/.*\/renderer\/index\.html$/)
+    },
+  )
+})
+
 describe('createMainWindow', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    electron.app.isPackaged = false
     vi.stubEnv('ELECTRON_RENDERER_URL', 'http://localhost:5173')
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('loads the bundled file, not the env URL, when packaged', () => {
+    electron.app.isPackaged = true
+    const window = createMainWindow() as unknown as { loadURL: ReturnType<typeof vi.fn> }
+    expect(window.loadURL).toHaveBeenCalledWith(
+      expect.stringMatching(/^file:\/\/.*\/renderer\/index\.html$/),
+    )
   })
 
   it('creates the BrowserWindow with secure webPreferences', () => {
