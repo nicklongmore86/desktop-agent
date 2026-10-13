@@ -33,7 +33,20 @@ export function isAppUrl(target: string, appUrl: string): boolean {
     return false
   }
   if (app.protocol === 'file:') {
-    return to.protocol === 'file:' && to.pathname === app.pathname
+    // Compare the host too: file://server/share/... is a UNC path on Windows.
+    return to.protocol === 'file:' && to.hostname === app.hostname && to.pathname === app.pathname
   }
   return to.origin === app.origin
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+/** True for plain-http URLs on a loopback host (any port): what the Vite dev server uses. */
+export function isLoopbackHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname)
+  } catch {
+    return false
+  }
 }

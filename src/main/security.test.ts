@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isAppUrl, secureWebPreferences } from './security'
+import { isAppUrl, isLoopbackHttpUrl, secureWebPreferences } from './security'
 
 describe('secureWebPreferences', () => {
   it('locks down the renderer', () => {
@@ -40,8 +40,33 @@ describe('isAppUrl', () => {
     expect(isAppUrl('https://example.com/', fileUrl)).toBe(false)
   })
 
+  it('rejects file URLs on another host, including UNC paths', () => {
+    const sameDiskPath = new URL(fileUrl).pathname
+    expect(isAppUrl(`file://attacker${sameDiskPath}`, fileUrl)).toBe(false)
+    expect(isAppUrl(`file://server/share${sameDiskPath}`, fileUrl)).toBe(false)
+    expect(isAppUrl('file://server/share/out/renderer/index.html', fileUrl)).toBe(false)
+  })
+
   it('rejects unparseable URLs', () => {
     expect(isAppUrl('not a url', devUrl)).toBe(false)
     expect(isAppUrl(devUrl, 'not a url')).toBe(false)
+  })
+})
+
+describe('isLoopbackHttpUrl', () => {
+  it('accepts http on loopback hosts with any port', () => {
+    expect(isLoopbackHttpUrl('http://localhost:5173/')).toBe(true)
+    expect(isLoopbackHttpUrl('http://127.0.0.1:5173')).toBe(true)
+    expect(isLoopbackHttpUrl('http://[::1]:5173/')).toBe(true)
+    expect(isLoopbackHttpUrl('http://localhost/')).toBe(true)
+  })
+
+  it('rejects https, non-loopback hosts and other schemes', () => {
+    expect(isLoopbackHttpUrl('https://localhost:5173/')).toBe(false)
+    expect(isLoopbackHttpUrl('http://example.com/')).toBe(false)
+    expect(isLoopbackHttpUrl('http://localhost.example.com/')).toBe(false)
+    expect(isLoopbackHttpUrl('http://192.168.1.10:5173/')).toBe(false)
+    expect(isLoopbackHttpUrl('file:///C:/index.html')).toBe(false)
+    expect(isLoopbackHttpUrl('not a url')).toBe(false)
   })
 })
