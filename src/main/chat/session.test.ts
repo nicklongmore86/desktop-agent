@@ -607,3 +607,50 @@ describe('ChatSession', () => {
     expect(session.pendingApprovals).toEqual([])
   })
 })
+
+describe('provider switching', () => {
+  it('cancels approvals, saves old history to the old store, and restores the selected history', async () => {
+    const runner = scriptedRunner(async (history, options) => {
+      await options.requestApproval({ tool: 'write_file', kind: 'write', summary: 'write' })
+      options.onEvent({ type: 'text_delta', turn: 1, text: 'stale' })
+      return [...history, reply('stopped')]
+    })
+    const { session, store, events } = setup(runner)
+    await session.init()
+    await session.send('old provider')
+    await until(() => session.pendingApprovals.length === 1)
+    const next = memoryStore([{ role: 'user', content: 'other provider' }])
+    const commit = vi.fn(() => Promise.resolve())
+    const switching = session.switchStore(next, commit)
+    expect(await session.send('racing send')).toMatchObject({ ok: false, code: 'busy' })
+    await switching
+    expect(session.pendingApprovals).toEqual([])
+    expect(session.state().items[0]).toMatchObject({ text: 'other provider' })
+    expect(store.saved()[0]?.content).toBe('old provider')
+    expect(next.saved()).toEqual([{ role: 'user', content: 'other provider' }])
+    expect(events.some((event) => event.type === 'text_delta' && event.text === 'stale')).toBe(
+      false,
+    )
+    expect(commit).toHaveBeenCalledOnce()
+  })
+  it('serializes rapid switches and keeps the previous provider on persistence failure', async () => {
+    const { session } = setup(scriptedRunner((history) => Promise.resolve(history)))
+    await session.init()
+    const order: string[] = []
+    const first = session.switchStore(memoryStore([{ role: 'user', content: 'one' }]), () => {
+      order.push('one')
+      return Promise.resolve()
+    })
+    const second = session.switchStore(memoryStore([{ role: 'user', content: 'two' }]), () => {
+      order.push('two')
+      return Promise.resolve()
+    })
+    await Promise.all([first, second])
+    expect(order).toEqual(['one', 'two'])
+    expect(session.state().items[0]).toMatchObject({ text: 'two' })
+    await expect(
+      session.switchStore(memoryStore(), () => Promise.reject(new Error('disk full'))),
+    ).rejects.toThrow('disk full')
+    expect(session.state().items[0]).toMatchObject({ text: 'two' })
+  })
+})

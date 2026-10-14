@@ -10,6 +10,10 @@ export const IpcChannels = {
   grantsAdd: 'grants:add',
   grantsRemove: 'grants:remove',
 
+  providerGet: 'provider:get',
+  providerSet: 'provider:set',
+  providerLogin: 'provider:login',
+  providerCancelLogin: 'provider:cancel-login',
   modelGet: 'model:get',
   modelSet: 'model:set',
 
@@ -26,6 +30,14 @@ export const IpcChannels = {
   approvalRequest: 'approval:request',
   auditStatusChanged: 'audit:status-changed',
 } as const
+
+export const PROVIDERS = ['anthropic-api', 'claude-subscription', 'codex-subscription'] as const
+export type ProviderId = (typeof PROVIDERS)[number]
+export interface ProviderStatus {
+  provider: ProviderId
+  state: 'ready' | 'missing-runtime' | 'signed-out' | 'unsupported' | 'error'
+  message: string
+}
 
 export interface AppInfo {
   name: string
@@ -121,7 +133,7 @@ export type ChatEvent =
   | { type: 'error'; runId: string; code: ChatErrorCode; message: string }
   | { type: 'run_finished'; runId: string; stopReason: string }
   /** New chat: the conversation is now empty. */
-  | { type: 'conversation_reset' }
+  | { type: 'conversation_reset'; state?: ChatState }
   /** Saving or deleting the conversation on disk failed. */
   | { type: 'storage_warning'; message: string }
 
@@ -152,6 +164,12 @@ type Unsubscribe = () => void
 
 /** The API the preload script exposes to the renderer as `window.desktopApi`. */
 export interface DesktopApi {
+  provider: {
+    get: () => Promise<ProviderStatus>
+    set: (provider: ProviderId) => Promise<ProviderStatus>
+    login: () => Promise<ProviderStatus>
+    cancelLogin: () => Promise<void>
+  }
   getAppInfo: () => Promise<AppInfo>
   apiKey: {
     status: () => Promise<ApiKeyStatus>

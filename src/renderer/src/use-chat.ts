@@ -19,7 +19,9 @@ export function useChat(): ChatControls {
 
   useEffect(() => {
     let active = true
+    let resetReceived = false
     const offEvent = api.onChatEvent((event) => {
+      if (event.type === 'conversation_reset') resetReceived = true
       dispatch({ type: 'event', event })
     })
     const offApproval = api.onApprovalRequest((prompt) => {
@@ -27,7 +29,7 @@ export function useChat(): ChatControls {
     })
     api.chat.load().then(
       (loaded) => {
-        if (active) dispatch({ type: 'loaded', state: loaded })
+        if (active && !resetReceived) dispatch({ type: 'loaded', state: loaded })
       },
       () => {
         if (active)

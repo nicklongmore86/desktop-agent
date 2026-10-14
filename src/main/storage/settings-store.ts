@@ -1,4 +1,4 @@
-import type { ModelOption, ModelSettings } from '../../shared/ipc'
+import { PROVIDERS, type ProviderId, type ModelOption, type ModelSettings } from '../../shared/ipc'
 import { DEFAULT_MODEL } from '../agent'
 import { readJsonFile, writeJsonFile } from './json-file'
 
@@ -11,11 +11,14 @@ export const MODEL_OPTIONS: readonly ModelOption[] = [
 ]
 
 interface SettingsFile {
-  version: 1
+  version: 2
   model: string
+  provider: ProviderId
 }
 
 export interface SettingsStore {
+  readonly provider: ProviderId
+  setProvider: (provider: ProviderId) => Promise<void>
   readonly model: string
   view: () => ModelSettings
   /** Throws for a model that is not offered. */
@@ -28,11 +31,20 @@ const isOffered = (model: unknown): model is string =>
 /** Settings JSON in userData. A missing, unreadable or unknown value falls back to the default. */
 export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let model = DEFAULT_MODEL
+  let provider: ProviderId = 'anthropic-api'
   try {
     const parsed = (await readJsonFile(file)) as Partial<SettingsFile> | undefined
+    if (parsed?.version === 2 && PROVIDERS.includes(parsed.provider as ProviderId))
+      provider = parsed.provider as ProviderId
     if (isOffered(parsed?.model)) model = parsed.model
   } catch {
     // Keep the default.
+  }
+  let writes: Promise<unknown> = Promise.resolve()
+  const serial = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = writes.then(operation)
+    writes = result.catch(() => {})
+    return result
   }
   const view = (): ModelSettings => ({
     model,
@@ -40,15 +52,27 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     options: MODEL_OPTIONS.map((option) => ({ ...option })),
   })
   return {
+    get provider() {
+      return provider
+    },
+    async setProvider(next) {
+      if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
+      await serial(async () => {
+        await writeJsonFile(file, { version: 2, model, provider: next } satisfies SettingsFile)
+        provider = next
+      })
+    },
     get model() {
       return model
     },
     view,
     async setModel(next) {
       if (!isOffered(next)) throw new Error('Unknown model.')
-      await writeJsonFile(file, { version: 1, model: next } satisfies SettingsFile)
-      model = next
-      return view()
+      return serial(async () => {
+        await writeJsonFile(file, { version: 2, model: next, provider } satisfies SettingsFile)
+        model = next
+        return view()
+      })
     },
   }
 }

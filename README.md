@@ -1,16 +1,16 @@
 # desktop-agent
 
-A Windows-first desktop chat agent, powered by Claude, with permissioned access to your local files and shell.
+A Windows-first desktop chat agent with Anthropic API, Claude subscription, and Codex subscription access to permissioned local file and shell tools.
 
 ## Goals (v1)
 
 - **Platform:** Windows 10/11 first (Electron + TypeScript); macOS/Linux later.
-- **Model:** Claude via the Anthropic API (user-supplied key stored with OS-level encryption). Provider layer kept pluggable so a local model (Ollama) can be added later.
+- **Providers:** Anthropic API (encrypted API key), Claude subscription (official Claude Agent SDK), or Codex subscription (official app-server with ChatGPT-managed authentication).
 - **Capabilities:** full file access (list, read, search, write, move, delete) within user-granted folders, plus shell commands (PowerShell/cmd).
 - **Safety model:**
   - Access limited to explicitly granted root folders; a hard denylist always blocks secrets (`~/.ssh`, `.env*`, credential/key stores, browser profiles, etc.).
   - Every write/move/delete shows a preview (diff) and requires user approval.
-  - Every shell command requires user approval (with "always allow this exact command" option).
+  - Every shell command requires user approval.
   - Append-only audit log of every tool call.
 - **UI:** desktop chat window with streaming responses and inline approval prompts.
 
@@ -22,9 +22,45 @@ A Windows-first desktop chat agent, powered by Claude, with permissioned access 
 4. Chat UI: streaming chat, approval dialogs, settings (folders, key).
 5. Packaging: signed-ish Windows installer, auto-update later.
 
+## Windows: test subscriptions without an API key
+
+1. Download the **desktop-agent-windows-x64** artifact from this PR's successful **CI → Windows installer** job. Extract the ZIP and run the NSIS `.exe`. The installer is unsigned. Alternatively, use the development commands below on Windows.
+2. Install the official runtime for the provider you want to test. These exact versions are intentional protocol/security pins; other versions fail readiness instead of silently changing permissions.
+
+   ```powershell
+   # Claude: official native installer, then select the tested version.
+   irm https://claude.ai/install.ps1 | iex
+   # Open a new PowerShell window if claude is not yet on PATH.
+   claude install 2.1.299
+   claude --version
+
+   # Codex: install Node.js first if npm is unavailable.
+   npm install -g @openai/codex@0.162.1
+   codex --version
+   ```
+
+   See [Claude's installation guide](https://code.claude.com/docs/en/setup) and [Codex CLI](https://learn.chatgpt.com/docs/cli). Desktop Agent discovers native executables on PATH, Claude's `~/.local/bin`, and Codex's Windows npm installation under `%APPDATA%/npm`. Paths with spaces are passed as executable/argument arrays, never through a command shell. Windows `.cmd` shims are not executed. Restart the app after installing. A later CLI auto-update may require reinstalling the pinned version; the app disables Claude auto-update in its own subprocesses.
+
+3. Open **Settings → Access provider**, select **Claude subscription** or **Codex subscription (ChatGPT)**, then **Sign in with subscription**. Complete the provider's browser flow using a plan that includes runtime access. Do not choose Anthropic Console/API billing. Use **Check readiness** afterwards. Do not enter an API key or use `setup-token`.
+4. Sign-in is separate from your normal CLI profile. The official runtime stores and refreshes its own credentials under the app's `providers/claude` or `providers/codex` directory. Desktop Agent does not extract, copy, return, or substitute tokens. **Cancel sign-in**, window close/reload, and provider switching cancel login. Login expires after two minutes. If Claude's browser does not open, use a terminal with `CLAUDE_CONFIG_DIR` pointing to the app's `providers/claude` directory and run `claude auth login`; the parent app directory is shown by the audit-log path in Settings. Then check readiness again.
+5. Grant a disposable folder containing `hello.txt`. Ask the agent to read it, then change it. Verify a diff approval appears; deny it and confirm the file is unchanged. Approve a second change and inspect the audit log. Ask for an ungranted file and a `.codex/auth.json` file: both must be refused. Stop a streamed reply, switch providers, and restart the app: each provider's previous conversation should return separately.
+
+Missing runtime, unsupported version/configuration, and signed-out states are shown in Settings. Expired authentication and usage-limit errors appear in chat; reauthenticate or wait for the plan allowance to reset. Subscription failures never fall back to API billing. Switching back to **Anthropic API** restores the original API conversation and model setting.
+
+**Verification limits:** automated tests run the pinned native runtimes without credentials on Linux and Windows CI, including paths with spaces and hostile configuration fixtures. They verify startup/protocol isolation, not a paid subscription response. Browser sign-in, actual plan eligibility/limits, a live tool round trip, and interactive installer use still require the manual steps above. The app's approved shell tool remains an unsandboxed user-authorized command, as in API mode; approval is not an OS sandbox.
+
+## Subscription implementation and distribution notes
+
+- Claude uses `@anthropic-ai/claude-agent-sdk` **0.3.299** with Claude Code **2.1.299**, an in-process custom MCP bridge to `createTools`, `tools: []`, strict MCP configuration, empty settings sources, bare mode, disabled hooks, and no project/skill/plugin discovery. Input is withheld until account metadata indicates a subscription and no API-key source. Unexpected built-in tools fail closed. [SDK overview](https://code.claude.com/docs/en/agent-sdk/overview), [CLI isolation flags](https://code.claude.com/docs/en/cli-reference), [authentication](https://code.claude.com/docs/en/authentication).
+- Codex uses **0.162.1** stdio app-server, experimental dynamic tools and `environments: []`, explicit feature controls, an isolated `CODEX_HOME`, and ChatGPT-managed login only. It rejects nonempty inherited config/managed requirements, unexpected environments, workspace roots, and instruction sources. All server requests except the current thread's registered dynamic tools are denied. [App-server protocol](https://learn.chatgpt.com/docs/app-server), [authentication](https://learn.chatgpt.com/docs/auth), [pinned thread protocol](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server-protocol/src/protocol/v2/thread.rs), [pinned tool registration](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/spec_plan.rs).
+- Both bridges execute the existing validated, guarded, audited tools and approval broker in Electron main. Credential locations are protected from file tools; provider credentials, API keys, endpoint overrides and Node preload options are removed from runtime/shell environments as appropriate. The renderer receives status and chat events only. No runtime filesystem/shell tools are granted.
+- Settings v1 migrates in memory to API mode; subsequent writes use v2. The existing `conversation.json` remains the API history. Subscriptions have separate conversation files. Each request starts an isolated runtime session and replays only that provider's app transcript; CLI session IDs/project histories are deliberately not resumed. This also prevents old runtime configuration from reappearing after a restart. The shared persisted message envelope retains tool-call/result pairing for all providers.
+- **Claude distribution ambiguity remains unresolved:** the [Claude support article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) describes using a Claude plan with the SDK, while the [SDK overview](https://code.claude.com/docs/en/agent-sdk/overview) says third-party products offering claude.ai login require prior approval. Local implementation and tests do not establish such approval. Obtain clarification before distributing this as an authorized subscription integration; this PR makes no authorization claim.
+- OpenAI's app-server documentation permits existing local/open-source integrations while distinguishing commercial/hosted services and recommending Sign in with ChatGPT for those use cases. This local implementation is not a claim of commercial/hosted authorization.
+
 ## Development
 
-The app is usable end to end: enter an Anthropic API key and grant folders in **Settings**, then chat with Claude in the main window. Replies stream in, each tool call shows as a collapsible card, every write, move, delete and shell command waits for your approval, and **Stop** cancels a run. Until a key is saved and a folder granted, the chat view shows a short guide pointing to Settings.
+Choose an access provider and grant folders in **Settings**. API mode requires an Anthropic API key; subscription modes require the separately installed official runtime and subscription sign-in, with no API key. Replies stream in, each tool call shows as a collapsible card, every write, move, delete and shell command waits for your approval, and **Stop** cancels a run. API mode shows setup guidance until a key is saved and a folder is granted; subscription mode shows runtime/sign-in guidance and does not require a key.
 
 ### Prerequisites
 
@@ -167,7 +203,7 @@ Tests use a fake streaming client and fake encryption without network or Electro
 
 ### Chat window, IPC and approvals
 
-`src/main/services.ts` builds everything from userData at startup: the key store, `GrantStore`, `PathGuard`, `AuditLog`, `createTools` (with `shell.trashItem`), the settings store and the chat session. A new agent (`createAgent` + `createClaudeClient`) is built for each run, with the current key and model, so a key or model change applies to the next message.
+`src/main/services.ts` builds everything from userData at startup: the key store, `GrantStore`, `PathGuard`, `AuditLog`, `createTools` (with `shell.trashItem`), the settings store and the chat session. API mode builds `createAgent` + `createClaudeClient` for each run with the current key and model. Subscription mode selects the corresponding main-process adapter without reading the key store. Provider switches stop the current run and serialize history/settings changes.
 
 **IPC.** The contract is `src/shared/ipc.ts`; the preload exposes it as `window.desktopApi`. Every renderer → main handler (`src/main/ipc-handlers.ts`) first checks that the call comes from the app window's current main frame (the same `WebFrameMain` object as `webContents.mainFrame`), that it is top-level and on an app URL, and throws otherwise.
 

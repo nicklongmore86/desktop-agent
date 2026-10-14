@@ -5,6 +5,9 @@
 /** Folder names that hold credentials. Anything named like this, or inside it, is blocked. */
 const BLOCKED_NAMES = new Map<string, string>([
   ['.ssh', 'SSH keys'],
+  ['.claude', 'Claude credentials and settings'],
+  ['.claude.json', 'Claude account settings'],
+  ['.codex', 'Codex credentials and settings'],
   ['.gnupg', 'GnuPG keys'],
   ['.aws', 'AWS credentials'],
   ['.azure', 'Azure credentials'],

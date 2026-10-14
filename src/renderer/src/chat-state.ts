@@ -66,7 +66,7 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
       }
     case 'conversation_reset':
       // Keep a storage warning: a failed delete is reported just before the reset.
-      return { ...initialChatState, storageWarning: state.storageWarning }
+      return { ...initialChatState, ...(event.state ?? {}), storageWarning: state.storageWarning }
     case 'storage_warning':
       return { ...state, storageWarning: event.message }
     case 'approval_closed':

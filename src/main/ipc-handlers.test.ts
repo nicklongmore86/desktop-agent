@@ -34,7 +34,14 @@ function fakeIpc() {
 
 function fakeServices(overrides: Partial<IpcServices> = {}) {
   let roots: string[] = ['/granted']
+  const status = { provider: 'anthropic-api' as const, state: 'ready' as const, message: 'API' }
   const services: IpcServices = {
+    provider: {
+      get: vi.fn(() => Promise.resolve(status)),
+      set: vi.fn(() => Promise.resolve(status)),
+      login: vi.fn(() => Promise.resolve(status)),
+      cancelLogin: vi.fn(() => Promise.resolve()),
+    },
     appInfo: () => ({ name: 'desktop-agent', version: '0.1.0', platform: 'win32' }),
     apiKey: {
       hasKey: vi.fn(() => Promise.resolve(false)),
@@ -343,4 +350,22 @@ describe('approvals over IPC with a real session', () => {
       expect(chat.pendingApprovals).toEqual([])
     },
   )
+})
+
+describe('provider IPC', () => {
+  it.each([null, {}, 3, 'api-key-as-subscription', '__proto__'])(
+    'rejects invalid provider %j',
+    async (value) => {
+      const { invoke, services } = setup()
+      await expect(invoke(IpcChannels.providerSet, appFrame, value)).rejects.toThrow(
+        'Unknown provider',
+      )
+      expect(services.provider.set).not.toHaveBeenCalled()
+    },
+  )
+  it('accepts explicit provider selection only through trusted IPC', async () => {
+    const { invoke, services } = setup()
+    await invoke(IpcChannels.providerSet, appFrame, 'codex-subscription')
+    expect(services.provider.set).toHaveBeenCalledWith('codex-subscription')
+  })
 })

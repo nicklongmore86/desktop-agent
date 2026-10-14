@@ -1,3 +1,6 @@
+import { homedir } from 'node:os'
+import { SubscriptionProviders } from './providers/service'
+import { PROVIDERS, type ProviderId } from '../shared/ipc'
 import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent } from '../shared/ipc'
 import { createAgent, createClaudeClient } from './agent'
@@ -9,6 +12,7 @@ import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
 
 export interface AppServiceDeps {
+  openUrl?: (url: string) => Promise<void>
   userData: string
   safeStorage: SafeStorage
   /** Moves a path to the Recycle Bin: Electron's shell.trashItem. */
@@ -22,10 +26,18 @@ export interface AppServiceDeps {
 export async function createAppServices(deps: AppServiceDeps) {
   const { userData } = deps
   const apiKey = createApiKeyStore({ userDataPath: userData, safeStorage: deps.safeStorage })
+  const protectedPaths = [
+    userData,
+    join(homedir(), '.claude'),
+    join(homedir(), '.claude.json'),
+    join(homedir(), '.codex'),
+    process.env['CLAUDE_CONFIG_DIR'],
+    process.env['CODEX_HOME'],
+  ].filter((path): path is string => Boolean(path))
   const grants = await GrantStore.open(join(userData, 'grants.json'), {
-    protectedPaths: [userData],
+    protectedPaths,
   })
-  const guard = new PathGuard({ roots: () => grants.list(), protectedPaths: [userData] })
+  const guard = new PathGuard({ roots: () => grants.list(), protectedPaths })
 
   let audit: AuditLog | null = null
   const auditStatus = (): AuditStatus => ({
@@ -50,9 +62,31 @@ export async function createAppServices(deps: AppServiceDeps) {
 
   const settings = await openSettingsStore(join(userData, 'settings.json'))
 
+  const subscriptions = new SubscriptionProviders(
+    userData,
+    deps.openUrl ?? (() => Promise.reject(new Error('Browser sign-in is unavailable.'))),
+  )
+  const storeFor = (provider: ProviderId) =>
+    createConversationStore(
+      join(
+        userData,
+        provider === 'anthropic-api' ? 'conversation.json' : `conversation-${provider}.json`,
+      ),
+    )
   const chat = new ChatSession({
-    store: createConversationStore(join(userData, 'conversation.json')),
-    async createRunner() {
+    store: storeFor(settings.provider),
+    async createRunner(signal) {
+      if (settings.provider !== 'anthropic-api') {
+        try {
+          return { ok: true, runner: await subscriptions.runner(settings.provider, tools, signal) }
+        } catch (error) {
+          return {
+            ok: false,
+            code: 'authentication',
+            message: error instanceof Error ? error.message : 'Subscription unavailable.',
+          }
+        }
+      }
       let key: string | null
       try {
         key = await apiKey.get()
@@ -82,5 +116,19 @@ export async function createAppServices(deps: AppServiceDeps) {
   })
   await chat.init()
 
-  return { apiKey, grants, settings, chat, auditStatus }
+  const provider = {
+    get: () => subscriptions.status(settings.provider),
+    async set(next: ProviderId) {
+      if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
+      subscriptions.cancelLogin()
+      await chat.switchStore(storeFor(next), () => settings.setProvider(next))
+      return subscriptions.status(settings.provider)
+    },
+    login: () => subscriptions.login(settings.provider),
+    cancelLogin: () => {
+      subscriptions.cancelLogin()
+      return Promise.resolve()
+    },
+  }
+  return { apiKey, grants, settings, chat, auditStatus, provider }
 }

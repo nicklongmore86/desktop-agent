@@ -1,5 +1,8 @@
 import {
   IpcChannels,
+  PROVIDERS,
+  type ProviderId,
+  type DesktopApi,
   type ApiKeyStatus,
   type AppInfo,
   type AuditStatus,
@@ -46,6 +49,7 @@ export interface ChatService {
 }
 
 export interface IpcServices {
+  provider: DesktopApi['provider']
   appInfo: () => AppInfo
   apiKey: ApiKeyService
   grants: GrantService
@@ -134,6 +138,14 @@ export function registerIpcHandlers(
     }
     return grantsState()
   })
+
+  handle(IpcChannels.providerGet, () => services.provider.get())
+  handle(IpcChannels.providerSet, (provider) => {
+    if (!PROVIDERS.includes(provider as ProviderId)) throw new Error('Unknown provider.')
+    return services.provider.set(provider as ProviderId)
+  })
+  handle(IpcChannels.providerLogin, () => services.provider.login())
+  handle(IpcChannels.providerCancelLogin, () => services.provider.cancelLogin())
 
   handle(IpcChannels.modelGet, () => services.settings.view())
   handle(IpcChannels.modelSet, async (model) => {
