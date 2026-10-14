@@ -4,3 +4,5 @@ dist
 release
 pnpm-lock.yaml
 .polly
+
+build/

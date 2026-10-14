@@ -1,5 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile, copyFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
+import { mkdtemp, mkdir, readFile, rm, writeFile, cp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -7,9 +6,15 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import { claudeOptions } from './claude'
 import { codexAccount, connectCodex } from './codex'
 import { object } from './rpc'
-import { capture, CLAUDE_VERSION, CODEX_VERSION, runtimeEnv } from './runtime'
+import {
+  capture,
+  CLAUDE_VERSION,
+  CODEX_VERSION,
+  runtimeEnv,
+  discoverRuntime,
+  bundledRuntimeCandidates,
+} from './runtime'
 
-const require = createRequire(import.meta.url)
 const dirs: string[] = []
 afterEach(async () => {
   await Promise.all(
@@ -37,25 +42,27 @@ async function fixture() {
 
 it('pinned native Codex accepts isolated dynamic tools without API keys or sign-in', async () => {
   const f = await fixture()
-  const cpu = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
-  const target =
-    process.platform === 'win32'
-      ? `${cpu}-pc-windows-msvc`
-      : process.platform === 'darwin'
-        ? `${cpu}-apple-darwin`
-        : `${cpu}-unknown-linux-musl`
-  const pkg = dirname(
-    require.resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`),
+  const resourcesPath = process.env['DESKTOP_TEST_RESOURCES']
+  const original = await discoverRuntime(
+    'codex',
+    {},
+    resourcesPath
+      ? { resourcesPath, home: f.home, cwd: f.cwd, env: f.env }
+      : { home: f.home, cwd: f.cwd, env: f.env },
   )
-  const original = join(
-    pkg,
-    'vendor',
-    target,
-    'bin',
-    process.platform === 'win32' ? 'codex.exe' : 'codex',
-  )
-  const file = join(f.root, process.platform === 'win32' ? 'codex runtime.exe' : 'codex runtime')
-  await copyFile(original, file)
+  expect(original).not.toBeNull()
+  if (!original) throw new Error('Missing native Codex')
+  let file = original
+  if (resourcesPath) {
+    expect(file).toBe(
+      bundledRuntimeCandidates('codex', resourcesPath, process.platform, process.arch)[0],
+    )
+  } else {
+    // Preserve the full native distribution when testing paths with spaces.
+    const target = join(f.root, 'Codex package')
+    await cp(dirname(dirname(file)), target, { recursive: true })
+    file = join(target, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex')
+  }
   await mkdir(join(f.home, '.codex'))
   await writeFile(
     join(f.home, '.codex', 'config.toml'),
@@ -94,14 +101,30 @@ it('pinned native Codex accepts isolated dynamic tools without API keys or sign-
 
 it('pinned native Claude ignores hostile project hooks, MCP and instructions with built-ins disabled', async () => {
   const f = await fixture()
-  const pkg = dirname(
-    require.resolve(
-      `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`,
-    ),
+  const resourcesPath = process.env['DESKTOP_TEST_RESOURCES'] ?? join(f.root, 'resources')
+  if (!process.env['DESKTOP_TEST_RESOURCES']) {
+    const original = await discoverRuntime('claude', {}, { home: f.home, cwd: f.cwd, env: f.env })
+    expect(original).not.toBeNull()
+    const packaged = bundledRuntimeCandidates(
+      'claude',
+      resourcesPath,
+      process.platform,
+      process.arch,
+    )[0]
+    if (!packaged) throw new Error('Unsupported test platform')
+    await mkdir(dirname(packaged), { recursive: true })
+    if (!original) throw new Error('Missing native Claude')
+    await cp(original, packaged)
+  }
+  const file = await discoverRuntime(
+    'claude',
+    {},
+    { resourcesPath, home: f.home, cwd: f.cwd, env: f.env },
   )
-  const original = join(pkg, process.platform === 'win32' ? 'claude.exe' : 'claude')
-  const file = join(f.root, process.platform === 'win32' ? 'claude runtime.exe' : 'claude runtime')
-  await copyFile(original, file)
+  expect(file).toBe(
+    bundledRuntimeCandidates('claude', resourcesPath, process.platform, process.arch)[0],
+  )
+  if (!file) throw new Error('Missing packaged Claude')
   await mkdir(join(f.cwd, '.claude'))
   await writeFile(
     join(f.cwd, '.claude', 'settings.json'),

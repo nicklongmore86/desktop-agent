@@ -30,11 +30,6 @@ export class SubscriptionProviders {
 
   async context(provider: ProviderId, signal?: AbortSignal): Promise<RuntimeContext> {
     const name = provider === 'claude-subscription' ? 'claude' : 'codex'
-    const file = await discoverRuntime(name)
-    if (!file)
-      throw new Error(
-        `Missing runtime: install ${name} ${name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION}, then restart Desktop Agent.`,
-      )
     const { home, cwd } = await providerDirectories(this.userData, name)
     // This directory is exclusively provider-owned auth storage. Never inherit user configuration.
     for (const name of [
@@ -75,10 +70,17 @@ export class SubscriptionProviders {
         ? { CLAUDE_CONFIG_DIR: home, DISABLE_AUTOUPDATER: '1' }
         : { CODEX_HOME: home }),
     }
+    const file = await discoverRuntime(name, process.env, { cwd, env, signal })
+    if (!file)
+      throw new Error(
+        `Missing runtime: ${name} ${name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION}. Repair or reinstall Desktop Agent to restore bundled Windows x64 runtimes. Development on other platforms requires the pinned native runtime.`,
+      )
     const version = await capture(file, ['--version'], cwd, env, signal)
     const expected = name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION
     if (!new RegExp(`(?:^|\\s)${expected.replaceAll('.', '\\.')}([\\s(]|$)`).test(version))
-      throw new Error(`Unsupported runtime version. Install ${name} ${expected}.`)
+      throw new Error(
+        `Unsupported runtime version at ${file}: ${version.trim().slice(0, 160)}. Expected ${name} ${expected}. Repair or reinstall Desktop Agent.`,
+      )
     return { file, cwd, env }
   }
 
