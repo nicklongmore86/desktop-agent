@@ -5,35 +5,16 @@ import type {
   StopReason,
   Usage,
 } from '@anthropic-ai/sdk/resources/messages'
+import type { ApprovalRequest, ToolContext, ToolResult } from '../tools/types'
 
-export type JsonSchema = {
-  type: 'object'
-  properties: Record<string, unknown>
-  required?: string[]
-  additionalProperties?: boolean
-}
-export interface ApprovalRequest {
-  tool: string
-  kind: 'write' | 'move' | 'delete' | 'shell'
-  summary: string
-  detail?: string
-}
-export interface ToolContext {
-  requestApproval(req: ApprovalRequest): Promise<boolean>
-  signal: AbortSignal
-}
-export interface ToolResult {
-  content: string
-  isError?: boolean
-}
-// Matches the independently implemented tool contract, including heterogeneous inputs.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export interface AgentTool<I = any> {
-  name: string
-  description: string
-  inputSchema: JsonSchema
-  execute(input: I, ctx: ToolContext): Promise<ToolResult>
-}
+// The tool contract has one definition, owned by the tools module.
+export type {
+  AgentTool,
+  ApprovalRequest,
+  JsonSchema,
+  ToolContext,
+  ToolResult,
+} from '../tools/types'
 
 export interface AgentStream {
   on(event: 'text', listener: (delta: string) => void): unknown
@@ -67,6 +48,8 @@ export type AgentEvent =
   | { type: 'approval_resolved'; turn: number; id: string; approved: boolean }
   | { type: 'turn_complete'; turn: number; stopReason: StopReason | null }
   | { type: 'usage'; turn: number; usage: Usage }
+  /** This turn's response was dropped (truncated tool calls): roll back its streamed text. */
+  | { type: 'response_discarded'; turn: number }
   | { type: 'error'; code: AgentErrorCode; message: string }
 export interface RunOptions extends ToolContext {
   onEvent(event: AgentEvent): void

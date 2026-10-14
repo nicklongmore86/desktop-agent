@@ -1,5 +1,5 @@
-// The tool contract shared with the agent loop. Keep this file structurally
-// identical to the agent loop's copy: change both or neither.
+// The tool contract shared with the agent loop. This is the only definition:
+// src/main/agent/types.ts re-exports it.
 
 export type JsonSchema = {
   type: 'object'

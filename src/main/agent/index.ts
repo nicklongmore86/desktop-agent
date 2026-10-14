@@ -1,4 +1,8 @@
-import type { MessageParam, ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages'
+import type {
+  ContentBlockParam,
+  MessageParam,
+  ToolResultBlockParam,
+} from '@anthropic-ai/sdk/resources/messages'
 import { apiErrorEvent, DEFAULT_MODEL } from './client'
 import type {
   AgentClient,
@@ -29,6 +33,28 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
       })
       .catch(() => {})
   })
+}
+
+/**
+ * The request's copy of the history, with an ephemeral cache breakpoint on the
+ * last message block. The system breakpoint already covers the tools; this one
+ * caches the conversation so far. The persisted history is never modified.
+ */
+export function withCacheBreakpoint(history: MessageParam[]): MessageParam[] {
+  const last = history.at(-1)
+  if (!last) return history
+  const content: ContentBlockParam[] =
+    typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : [...last.content]
+  const block = content.at(-1)
+  if (
+    !block ||
+    block.type === 'thinking' ||
+    block.type === 'redacted_thinking' ||
+    (block.type === 'text' && !block.text.trim())
+  )
+    return history
+  content[content.length - 1] = { ...block, cache_control: { type: 'ephemeral' } }
+  return [...history.slice(0, -1), { ...last, content }]
 }
 
 export function createAgent({
@@ -77,15 +103,12 @@ export function createAgent({
             {
               model,
               max_tokens: maxTokens,
-              messages: history,
+              messages: withCacheBreakpoint(history),
               system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-              tools: tools.map((tool, index) => ({
+              tools: tools.map((tool) => ({
                 name: tool.name,
                 description: tool.description,
                 input_schema: tool.inputSchema,
-                ...(index === tools.length - 1
-                  ? { cache_control: { type: 'ephemeral' as const } }
-                  : {}),
               })),
             },
             { signal },
@@ -108,14 +131,18 @@ export function createAgent({
           const calls = message.content.filter((block) => block.type === 'tool_use')
           // Never execute incomplete tool inputs from a truncated response.
           if (message.stop_reason !== 'tool_use' && calls.length > 0) {
+            onEvent({ type: 'response_discarded', turn })
             onEvent({ type: 'turn_complete', turn, stopReason: message.stop_reason })
             return fail(
               message.stop_reason === 'max_tokens' ? 'max_tokens' : 'protocol',
               'Claude returned incomplete tool calls. Retry with a larger token limit.',
             )
           }
-          if (message.content.length > 0)
-            history.push({ role: 'assistant', content: message.content })
+          // The API rejects empty text blocks, so never save them (or a message of only them).
+          const content = message.content.filter(
+            (block) => block.type !== 'text' || block.text.trim() !== '',
+          )
+          if (content.length > 0) history.push({ role: 'assistant', content })
           if (message.stop_reason === 'tool_use') {
             if (!calls.length)
               return fail('protocol', 'Claude requested tools without providing tool calls.')
