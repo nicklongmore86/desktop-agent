@@ -112,6 +112,9 @@ export async function discoverRuntime(
     ...dirs.filter(isAbsolute).flatMap((dir) => runtimeCandidates(name, dir, platform, arch)),
   ]
   const detected: string[] = []
+  // Canonical paths: realpath resolves npm symlinks and expands Windows 8.3 short
+  // names, so one executable reached through several spellings is probed once.
+  const seen = new Set<string>()
   for (const candidate of new Set(candidates)) {
     options.signal?.throwIfAborted()
     let file: string
@@ -121,6 +124,8 @@ export async function discoverRuntime(
     } catch {
       continue
     }
+    if (seen.has(file)) continue
+    seen.add(file)
     try {
       const version = await capture(
         file,

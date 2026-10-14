@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile, cp } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, cp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -55,9 +55,14 @@ it('pinned native Codex accepts isolated dynamic tools without API keys or sign-
   if (!original) throw new Error('Missing native Codex')
   let file = original
   if (resourcesPath) {
-    expect(file).toBe(
-      bundledRuntimeCandidates('codex', resourcesPath, process.platform, process.arch)[0],
-    )
+    const packaged = bundledRuntimeCandidates(
+      'codex',
+      resourcesPath,
+      process.platform,
+      process.arch,
+    )[0]
+    if (!packaged) throw new Error('Unsupported test platform')
+    expect(file).toBe(await realpath(packaged))
   } else {
     // Exercise the nested optional-package layout used by global npm installs,
     // preserving all companions and testing paths with spaces without a Node shim.
@@ -79,7 +84,8 @@ it('pinned native Codex accepts isolated dynamic tools without API keys or sign-
         env: f.env,
       },
     )
-    expect(discovered).toBe(candidate)
+    // Discovery returns canonical paths (tmpdir may be an 8.3 short name on Windows).
+    expect(discovered).toBe(await realpath(candidate))
     if (!discovered) throw new Error('Nested npm discovery failed')
     file = discovered
   }
@@ -141,9 +147,14 @@ it('pinned native Claude ignores hostile project hooks, MCP and instructions wit
     {},
     { resourcesPath, home: f.home, cwd: f.cwd, env: f.env },
   )
-  expect(file).toBe(
-    bundledRuntimeCandidates('claude', resourcesPath, process.platform, process.arch)[0],
-  )
+  const bundled = bundledRuntimeCandidates(
+    'claude',
+    resourcesPath,
+    process.platform,
+    process.arch,
+  )[0]
+  if (!bundled) throw new Error('Unsupported test platform')
+  expect(file).toBe(await realpath(bundled))
   if (!file) throw new Error('Missing packaged Claude')
   await mkdir(join(f.cwd, '.claude'))
   await writeFile(

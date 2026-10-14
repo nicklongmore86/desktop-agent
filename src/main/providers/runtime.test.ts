@@ -1,6 +1,6 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import {
   bundledRuntimeCandidates,
@@ -13,7 +13,8 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'Runtime discovery with spaces '))
+  // Canonical root: discovery returns realpaths (/var on macOS, 8.3 names on Windows).
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'Runtime discovery with spaces ')))
   roots.push(root)
   return root
 }
@@ -39,6 +40,22 @@ it.skipIf(process.platform === 'win32')(
     await expect(
       discoverRuntime('claude', { PATH: join(home, 'current') }, options),
     ).rejects.toThrow(current + ': 2.1.300')
+  },
+)
+it.skipIf(process.platform === 'win32')(
+  'production discovery probes one executable reached through several paths once',
+  async () => {
+    const home = await fixture()
+    const real = join(home, 'real/claude')
+    await executable(real, '2.1.1')
+    await mkdir(join(home, 'linked'))
+    await symlink(real, join(home, 'linked/claude'))
+    const PATH = [join(home, 'real'), join(home, 'linked')].join(delimiter)
+    const error = await discoverRuntime('claude', { PATH }, { home, development: false }).catch(
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message.split(real).length - 1).toBe(1)
   },
 )
 it.skipIf(process.platform === 'win32')(
