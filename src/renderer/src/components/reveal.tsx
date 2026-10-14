@@ -141,15 +141,21 @@ const END_MARKS: Record<RevealedLine['end'], string | null> = {
   cr: '⟨CR⟩',
 }
 
-/** One revealed line, isolated left-to-right, with a visible mark for CR and CRLF line ends. */
+/**
+ * One revealed line, isolated left-to-right, with a visible mark for CR and
+ * CRLF line ends. Inline fields (paths, summaries) also mark LF with ⏎, since
+ * a line break there is never expected and must not pass for a space.
+ */
 function Line({
   line,
   className,
+  inline = false,
 }: {
   line: RevealedLine
   className?: string | undefined
+  inline?: boolean
 }): React.JSX.Element {
-  const mark = END_MARKS[line.end]
+  const mark = inline && line.end === 'lf' ? '⏎' : END_MARKS[line.end]
   return (
     <span className={`untrusted-line${className ? ` ${className}` : ''}`} dir="ltr">
       <Segments segments={line.segments} />
@@ -163,13 +169,17 @@ function Line({
   )
 }
 
-/** Untrusted inline text (tool name, summary, path): isolated LTR, unsafe characters revealed. */
+/**
+ * Untrusted inline text (tool name, summary, path): isolated LTR, unsafe
+ * characters revealed, and whitespace preserved (`.untrusted` is pre-wrap),
+ * so two spaces, a tab and a line break never collapse into one space.
+ */
 export function SafeText({ text }: { text: string }): React.JSX.Element {
   const { lines } = revealUnsafe(text)
   return (
     <bdi dir="ltr" className="untrusted">
       {lines.map((line, index) => (
-        <Line key={index} line={line} />
+        <Line key={index} line={line} inline />
       ))}
     </bdi>
   )

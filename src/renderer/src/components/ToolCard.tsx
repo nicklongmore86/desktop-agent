@@ -1,4 +1,5 @@
 import type { ChatItem } from '../../../shared/ipc'
+import { SafeLines, SafeText } from './reveal'
 
 const MAX_SUMMARY = 80
 /** Tool output can be large; the card shows the start of it. */
@@ -20,7 +21,9 @@ export function summarizeInput(input: unknown): string {
     str('command') ??
     (source && destination ? `${source} → ${destination}` : undefined) ??
     [str('path'), str('namePattern'), str('contentPattern')].filter(Boolean).join(' ')
-  return truncate(summary.replace(/\s+/g, ' ').trim(), MAX_SUMMARY)
+  // One line only: the full, revealed input is in the card body.
+  const [first = '', ...more] = summary.trim().split(/\r\n|\r|\n/)
+  return truncate(more.length > 0 ? `${first} ⏎…` : first, MAX_SUMMARY)
 }
 
 function stringify(input: unknown): string {
@@ -50,18 +53,28 @@ export function ToolCard({
   return (
     <details className={`tool-card tool-${status.replace(' ', '-')}`}>
       <summary>
-        <span className="tool-name">{item.name}</span>
-        <span className="tool-input">{summarizeInput(item.input)}</span>
+        <span className="tool-name">
+          <SafeText text={item.name} />
+        </span>
+        <span className="tool-input">
+          <SafeText text={summarizeInput(item.input)} />
+        </span>
         <span className="tool-status">{status}</span>
       </summary>
       <div className="tool-body">
         <h4>Input</h4>
-        <pre className="scroll-box">{stringify(item.input)}</pre>
+        <pre className="scroll-box untrusted-block" dir="ltr" aria-label="Tool input">
+          <SafeLines text={stringify(item.input)} />
+        </pre>
         {item.result && (
           <>
             <h4>{item.result.isError ? 'Error' : 'Result'}</h4>
-            <pre className={`scroll-box${item.result.isError ? ' tool-error-text' : ''}`}>
-              {truncate(content, MAX_RESULT_CHARS)}
+            <pre
+              className={`scroll-box untrusted-block${item.result.isError ? ' tool-error-text' : ''}`}
+              dir="ltr"
+              aria-label={item.result.isError ? 'Tool error' : 'Tool result'}
+            >
+              <SafeLines text={truncate(content, MAX_RESULT_CHARS)} />
             </pre>
           </>
         )}

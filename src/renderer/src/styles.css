@@ -537,6 +537,17 @@ pre {
   direction: ltr;
 }
 
+/* Inline untrusted fields keep every space, tab and line break, and still wrap. */
+.untrusted {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The one-line tool summary keeps its whitespace but stays on one line. */
+.tool-input .untrusted {
+  white-space: pre;
+}
+
 .untrusted-block {
   unicode-bidi: isolate;
   direction: ltr;
