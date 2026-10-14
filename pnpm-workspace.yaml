@@ -1,0 +1,8 @@
+# electron-builder needs a flat node_modules to package the app.
+nodeLinker: hoisted
+
+# Dependencies allowed to run install scripts (pnpm blocks all others).
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true

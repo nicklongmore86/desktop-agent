@@ -1,0 +1,33 @@
+# electron-builder config: https://www.electron.build/configuration
+appId: com.nicklongmore86.desktopagent
+productName: Desktop Agent
+copyright: Copyright © 2026 nicklongmore86
+
+directories:
+  output: release/${version}
+  buildResources: build
+
+# Only the compiled app goes into app.asar; the renderer bundles its own deps.
+files:
+  - out/**/*
+  - package.json
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: Desktop-Agent-Setup-${version}-${arch}.${ext}
+  # No code signing yet (see README). Windows SmartScreen will warn on install.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Desktop Agent
+  uninstallDisplayName: Desktop Agent
+
+publish: null
