@@ -70,16 +70,11 @@ export class SubscriptionProviders {
         ? { CLAUDE_CONFIG_DIR: home, DISABLE_AUTOUPDATER: '1' }
         : { CODEX_HOME: home }),
     }
+    // Discovery has already checked the pinned version (and, when packaged, integrity).
     const file = await discoverRuntime(name, process.env, { cwd, env, signal })
     if (!file)
       throw new Error(
-        `Missing runtime: ${name} ${name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION}. Repair or reinstall Desktop Agent to restore bundled Windows x64 runtimes. Development on other platforms requires the pinned native runtime.`,
-      )
-    const version = await capture(file, ['--version'], cwd, env, signal)
-    const expected = name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION
-    if (!new RegExp(`(?:^|\\s)${expected.replaceAll('.', '\\.')}([\\s(]|$)`).test(version))
-      throw new Error(
-        `Unsupported runtime version at ${file}: ${version.trim().slice(0, 160)}. Expected ${name} ${expected}. Repair or reinstall Desktop Agent.`,
+        `Missing runtime: ${name} ${name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION}. Development builds require the pinned native runtime; installed builds include it.`,
       )
     return { file, cwd, env }
   }

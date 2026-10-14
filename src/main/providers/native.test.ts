@@ -14,6 +14,7 @@ import {
   discoverRuntime,
   bundledRuntimeCandidates,
   runtimeCandidates,
+  RUNTIME_PINS,
 } from './runtime'
 
 const dirs: string[] = []
@@ -127,34 +128,42 @@ it('pinned native Codex accepts isolated dynamic tools without API keys or sign-
 
 it('pinned native Claude ignores hostile project hooks, MCP and instructions with built-ins disabled', async () => {
   const f = await fixture()
-  const resourcesPath = process.env['DESKTOP_TEST_RESOURCES'] ?? join(f.root, 'resources')
-  if (!process.env['DESKTOP_TEST_RESOURCES']) {
-    const original = await discoverRuntime('claude', {}, { home: f.home, cwd: f.cwd, env: f.env })
-    expect(original).not.toBeNull()
-    const packaged = bundledRuntimeCandidates(
+  const original = await discoverRuntime('claude', {}, { home: f.home, cwd: f.cwd, env: f.env })
+  expect(original).not.toBeNull()
+  if (!original) throw new Error('Missing native Claude')
+  let file: string | null = original
+  const pin = RUNTIME_PINS[`${process.platform}-${process.arch}`]?.claude
+  const tested = process.env['DESKTOP_TEST_RESOURCES']
+  if (tested || pin) {
+    // Exercise packaged discovery (integrity verification, no PATH fallback) where a
+    // bundle is pinned, using the development binary in the packaged layout when needed.
+    const resourcesPath = tested ?? join(f.root, 'resources')
+    const bundled = bundledRuntimeCandidates(
       'claude',
       resourcesPath,
       process.platform,
       process.arch,
     )[0]
-    if (!packaged) throw new Error('Unsupported test platform')
-    await mkdir(dirname(packaged), { recursive: true })
-    if (!original) throw new Error('Missing native Claude')
-    await cp(original, packaged)
+    if (!bundled || !pin) throw new Error('Unsupported test platform')
+    if (!tested) {
+      await mkdir(dirname(bundled), { recursive: true })
+      await cp(original, bundled)
+      await mkdir(join(resourcesPath, 'runtimes'))
+      await writeFile(
+        join(resourcesPath, 'runtimes', 'integrity.json'),
+        JSON.stringify({
+          claude: { path: pin.executable, sha256: pin.files[pin.executable] },
+          files: {},
+        }),
+      )
+    }
+    file = await discoverRuntime(
+      'claude',
+      {},
+      { resourcesPath, home: f.home, cwd: f.cwd, env: f.env },
+    )
+    expect(file).toBe(await realpath(bundled))
   }
-  const file = await discoverRuntime(
-    'claude',
-    {},
-    { resourcesPath, home: f.home, cwd: f.cwd, env: f.env },
-  )
-  const bundled = bundledRuntimeCandidates(
-    'claude',
-    resourcesPath,
-    process.platform,
-    process.arch,
-  )[0]
-  if (!bundled) throw new Error('Unsupported test platform')
-  expect(file).toBe(await realpath(bundled))
   if (!file) throw new Error('Missing packaged Claude')
   await mkdir(join(f.cwd, '.claude'))
   await writeFile(

@@ -3,12 +3,15 @@ import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
+// The single source of truth for pinned digests, also compiled into the app.
+const pins = JSON.parse(
+  await readFile(new URL('../src/main/providers/runtime-pins.json', import.meta.url), 'utf8'),
+)['win32-x64']
 const asset = 'codex-package-x86_64-pc-windows-msvc.tar.gz'
 const release = 'https://github.com/openai/codex/releases/download/rust-v0.162.1/'
-const archiveHash = '3e993a82ff393f4530558dcaadb36bb4f0fd1ea7243e621348e40b469f900f6a'
-const claudeHash = '295b49ec092f31a7de9c6ff286d9d8f120a4f029b9ad9a5ac0b12c35cbf4df2b'
-const claudePath =
-  'app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe'
+const archiveHash = pins.codex.archiveSha256
+const claudePath = pins.claude.executable
+const claudeHash = pins.claude.files[claudePath]
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
 async function download(url) {
   const response = await fetch(url)
@@ -18,6 +21,8 @@ async function download(url) {
 function check(bytes, hash, label) {
   if (sha(bytes) !== hash) throw new Error(`Integrity mismatch: ${label}`)
 }
+const sorted = (record) =>
+  Object.fromEntries(Object.entries(record).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
 async function inventory(root, prefix = '') {
   const result = {}
   for (const entry of await readdir(join(root, prefix), { withFileTypes: true })) {
@@ -66,7 +71,14 @@ export async function prepare() {
   )
   await cp('THIRD-PARTY-NOTICES.md', join(notices, 'THIRD-PARTY-NOTICES.md'))
   await writeFile(join(notices, 'Claude-release-manifest.json'), manifest)
-  const files = await inventory(stage)
+  const files = sorted(await inventory(stage))
+  const codex = Object.fromEntries(
+    Object.entries(files)
+      .filter(([path]) => path.startsWith('codex/'))
+      .map(([path, hash]) => [`runtimes/${path}`, hash]),
+  )
+  if (JSON.stringify(codex) !== JSON.stringify(sorted(pins.codex.files)))
+    throw new Error('Codex release contents disagree with runtime-pins.json')
   await writeFile(
     join(stage, 'integrity.json'),
     JSON.stringify(
@@ -88,7 +100,10 @@ export async function verify(resources) {
     throw new Error('Unexpected packaged runtime pins')
   for (const [path, hash] of Object.entries(manifest.files))
     check(await readFile(join(root, path)), hash, path)
-  check(await readFile(join(resources, claudePath)), claudeHash, 'packaged Claude')
+  // The app refuses to run anything that differs from these compiled-in digests.
+  for (const pin of [pins.claude, pins.codex])
+    for (const [path, hash] of Object.entries(pin.files))
+      check(await readFile(join(resources, path)), hash, path)
   for (const path of [
     'codex/bin/codex.exe',
     'codex/bin/codex-code-mode-host.exe',

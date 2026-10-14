@@ -47,8 +47,18 @@ it.each(['api_key', 'oauth_token', 'third_party', 'none'])(
 )
 it('reports official subscription authentication ready and rejects unsupported versions', async () => {
   expect(await provider.status('claude-subscription')).toMatchObject({ state: 'ready' })
-  vi.mocked(capture).mockResolvedValue('2.1.300')
+  // Discovery owns the version and integrity checks; status reports its errors.
+  vi.mocked(discoverRuntime).mockRejectedValue(
+    new Error('Unsupported claude runtime. Expected 2.1.299. Detected /x/claude: 2.1.300.'),
+  )
   expect(await provider.status('claude-subscription')).toMatchObject({ state: 'unsupported' })
+  expect(capture).not.toHaveBeenCalledWith(
+    expect.anything(),
+    ['--version'],
+    expect.anything(),
+    expect.anything(),
+    expect.anything(),
+  )
 })
 it('refuses injected configuration before launching a runtime', async () => {
   const home = join(dir, 'providers', 'claude')

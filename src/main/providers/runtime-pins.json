@@ -1,0 +1,65 @@
+{
+  "win32-x64": {
+    "claude": {
+      "version": "2.1.299",
+      "source": "https://downloads.claude.ai/claude-code-releases/2.1.299/manifest.json",
+      "executable": "app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
+      "files": {
+        "app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe": "295b49ec092f31a7de9c6ff286d9d8f120a4f029b9ad9a5ac0b12c35cbf4df2b"
+      }
+    },
+    "codex": {
+      "version": "0.162.1",
+      "source": "https://github.com/openai/codex/releases/download/rust-v0.162.1/codex-package-x86_64-pc-windows-msvc.tar.gz",
+      "archiveSha256": "3e993a82ff393f4530558dcaadb36bb4f0fd1ea7243e621348e40b469f900f6a",
+      "executable": "runtimes/codex/bin/codex.exe",
+      "files": {
+        "runtimes/codex/bin/codex-code-mode-host.exe": "9f865a748c984492ca9b69aac75680e4954f31311c43ec33ddbdae0ed77bd4bd",
+        "runtimes/codex/bin/codex.exe": "dd13bdb162a184fa04039488b234a8258ef9b76f84e926c505d5742b19249a6a",
+        "runtimes/codex/codex-package.json": "f8df8842ae00a725bccd4cb8e9ca10739603de850fd5a8c1e4c4c73e93661588",
+        "runtimes/codex/codex-path/rg.exe": "14231169855ec5205cf5a1b6f1db358ff4aed4247c86b69ce8aae647c77f6680",
+        "runtimes/codex/codex-resources/codex-command-runner.exe": "4b1f3369cf4f9a1fd6ecebb8c7caef0d6a33a4a3af77650c277525d3b4e34c76",
+        "runtimes/codex/codex-resources/codex-windows-sandbox-setup.exe": "b30ec190ac0b43c6e4a7c26fbc533f5321674b57fe85bb7306872641bc0bd40b",
+        "runtimes/codex/codex-resources/voice/NOTICE.md": "473fcf8ccb68ce726111d016d133f0555adba730d057591512f3f71fb46aeb6e",
+        "runtimes/codex/codex-resources/voice/bin/codex-voice-host.exe": "94fecc491c7fcb9eabdaaabecd79aa0ddbc275d98f13dc387c326e59f41edf74",
+        "runtimes/codex/codex-resources/voice/bin/gio-2.0-0.dll": "d08c5f4e3200ed433761de9fcc252179b3521392cc62c4da3a8fc09bf91080ad",
+        "runtimes/codex/codex-resources/voice/bin/glib-2.0-0.dll": "80e57b36e43f9133926b9b2461f5663cb568de31920de661e7a3805812d06615",
+        "runtimes/codex/codex-resources/voice/bin/gmodule-2.0-0.dll": "92f4c2c78461be1420fd7da1bb70f68ce7982fe93911a582ea3659506e3c3b55",
+        "runtimes/codex/codex-resources/voice/bin/gobject-2.0-0.dll": "e787a92dade8aed135cafdc7dbe0480dbf7e5c382e627d1e70047ec13586e91b",
+        "runtimes/codex/codex-resources/voice/bin/gstapp-1.0-0.dll": "67233945bdaf4579b71fd395a939526ff7fa2a5d8a4ca5af82cf0462c1828db2",
+        "runtimes/codex/codex-resources/voice/bin/gstapp.dll": "9d06989d1aa1955f8503859b052c1ff429780b8bbc61bae4a6b275ec9335f15b",
+        "runtimes/codex/codex-resources/voice/bin/gstaudio-1.0-0.dll": "be798ecf1d354ed264e8b6d90eecb33e71b698c459d55151c96079b94132340b",
+        "runtimes/codex/codex-resources/voice/bin/gstaudioconvert.dll": "eac4be6b59781bd6253c16316c87625639ebe34adc26c74ac9107b697a5416fd",
+        "runtimes/codex/codex-resources/voice/bin/gstaudioresample.dll": "9968683969758b00e7f83c14e28f606703f3b4c8de1f83ab70cdfd17b02811d7",
+        "runtimes/codex/codex-resources/voice/bin/gstbase-1.0-0.dll": "058f78365cea8f0ed5c8656aaac45e634d78b98858f4a6cab28bc9b595f381c6",
+        "runtimes/codex/codex-resources/voice/bin/gstcoreelements.dll": "3d487e7024b57f3a4de2cbad6cb1a335884f97c84407c74e29f30bb2f772bdbf",
+        "runtimes/codex/codex-resources/voice/bin/gstnet-1.0-0.dll": "4a712725217b5aa32e553cc41bbd167633a449c7c2bd826df41859665a6e7628",
+        "runtimes/codex/codex-resources/voice/bin/gstopus.dll": "f975bbe5f839002bb8c55a56b5e08d71f73372cb56aab3d0624c9c75a4155510",
+        "runtimes/codex/codex-resources/voice/bin/gstpbutils-1.0-0.dll": "4a7b5a89f0cb9efaa1f31be3bf86c33f9b9b8e471d9fcd6e59662ead9a4cc10e",
+        "runtimes/codex/codex-resources/voice/bin/gstreamer-1.0-0.dll": "756b9159318894d7c28752189b66bcce8e064c4d405b9ad8186c84af138823e4",
+        "runtimes/codex/codex-resources/voice/bin/gstrtp-1.0-0.dll": "7fe63f8224cdcb2551b89b47f800362808af5bafe253c7c8600cb2d6b59541ff",
+        "runtimes/codex/codex-resources/voice/bin/gstrtp.dll": "9b554294b2871d9a4f4d216c73736e0f890ef5b0fcd0f332fc1d02277026a6a6",
+        "runtimes/codex/codex-resources/voice/bin/gstrtpmanager.dll": "d884752cc28c291cdb70b852c868427e76fcbcd76ef115eff1737ef6e2c35155",
+        "runtimes/codex/codex-resources/voice/bin/gsttag-1.0-0.dll": "96e5b2b1f1c426185c5b0b8690939c610ec2fe87bedaf5b071eaf3ce1036c580",
+        "runtimes/codex/codex-resources/voice/bin/gstvideo-1.0-0.dll": "ad19c01a3976e8d0b61c1d21f495e7bfc4428a10aaa387ce125e0f032dfcdae8",
+        "runtimes/codex/codex-resources/voice/bin/intl-8.dll": "fd0caf46ad5a6ccd0d2ad3bd75a61ac31f8f431e696a9ead4b112be04722a0e3",
+        "runtimes/codex/codex-resources/voice/bin/libffi-8.dll": "1d180136a52a0fb627aa925d3fee6c116e5ccf2029a79bd01cded7e3584c7fa5",
+        "runtimes/codex/codex-resources/voice/bin/opus.dll": "5d28334c26507d873a6cee52ee88fb6a17eb3290e93b3229bafb1f9cd39d1f75",
+        "runtimes/codex/codex-resources/voice/bin/pcre2-8.dll": "721f36160cfb9e4cd2bf3d48cb825dcc74bf96b0581d8b87349e73cc97c711d1",
+        "runtimes/codex/codex-resources/voice/bin/vcruntime140.dll": "184146852727a9db4eea06178716bec3cdbb1015c911f6b0f915b184ad7775b2",
+        "runtimes/codex/codex-resources/voice/bin/z.dll": "79c47c1bacba952f038dca0eead64f0729d4b5a04f98569f18d91fb519b11a47",
+        "runtimes/codex/codex-resources/voice/licenses/LGPL-2.1.txt": "c7ce1276717604c29c5469179a2f368eac42846557be671bb52f4e16e884b2ad",
+        "runtimes/codex/codex-resources/voice/licenses/Opus.txt": "cbd8bd07329a234413710c02b19d22c0cf78fc451882593e817130779b5455e3",
+        "runtimes/codex/codex-resources/voice/licenses/PCRE2.md": "4195c519dcfe4a4ffedc4b8ccc5d49e4dd02efd5ece6b69a4fba5d20080902a9",
+        "runtimes/codex/codex-resources/voice/licenses/libffi.txt": "e2a9b884b1c5d718efd6121457a1fbe7ece431352ca75c901260cef2e7d040e5",
+        "runtimes/codex/codex-resources/voice/licenses/proxy-libintl.txt": "aa092600e3f475f0a55821fb9c529583d8e23e41bf0461254f02fcf94d3a32c2",
+        "runtimes/codex/codex-resources/voice/licenses/sljit.txt": "37c7a090fc61388430d63fc97bf8a22ffce92d3ca2249aac572cfaf411d3070f",
+        "runtimes/codex/codex-resources/voice/licenses/zlib.txt": "439c75ab12b340c5362b9d4b08ff05ec3a4d0eb7667a6fff49a9b16d8795c78e",
+        "runtimes/codex/codex-resources/voice/manifest.json": "cba70cdcdd9e917e03e0cf730bd049cac952e0be6132996424af5a1c5964f412",
+        "runtimes/codex/codex-resources/voice/runtime.json": "d0627bc953e3faccf178239f8afd7dc4500c796030ecfced1a3f895e15845ecd",
+        "runtimes/codex/codex-resources/voice/sources.json": "e2f6b124f6277e7c3c4f5c7cc8830c66190f671ad65e972bb2cc9507dbfcb937",
+        "runtimes/codex/codex-resources/voice/windows-crt.json": "d16939bc85da395ded5411724fed84ffd36810b78d47c756cf094b0956bc3892"
+      }
+    }
+  }
+}
