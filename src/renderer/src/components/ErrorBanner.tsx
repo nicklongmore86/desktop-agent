@@ -1,0 +1,69 @@
+import type { ChatErrorCode } from '../../../shared/ipc'
+import type { Banner } from '../chat-state'
+
+const TITLES: Record<ChatErrorCode, string> = {
+  authentication: 'API key rejected',
+  permission: 'Access denied by the API',
+  invalid_request: 'Request rejected',
+  rate_limit: 'Rate limit reached',
+  overloaded: 'Claude is overloaded',
+  network: 'Connection problem',
+  api: 'Request failed',
+  aborted: 'Stopped',
+  max_turns: 'Turn limit reached',
+  max_tokens: 'Reply too long',
+  refusal: 'Request declined',
+  context_limit: 'Conversation too long',
+  protocol: 'Unexpected response',
+  no_api_key: 'No API key',
+  key_unreadable: 'API key cannot be read',
+  busy: 'Still working',
+  internal: 'Something went wrong',
+}
+
+const SETTINGS_CODES = new Set<ChatErrorCode>([
+  'authentication',
+  'permission',
+  'no_api_key',
+  'key_unreadable',
+])
+
+export function ErrorBanner({
+  banner,
+  onDismiss,
+  onOpenSettings,
+  onNewChat,
+}: {
+  banner: Banner
+  onDismiss: () => void
+  onOpenSettings: () => void
+  onNewChat: () => void
+}): React.JSX.Element {
+  const info = banner.code === 'aborted'
+  return (
+    <div
+      className={`banner ${info ? 'banner-info' : 'banner-error'}`}
+      role={info ? 'status' : 'alert'}
+      data-code={banner.code}
+    >
+      <div className="banner-text">
+        <strong>{TITLES[banner.code]}.</strong> {banner.message}
+      </div>
+      <div className="banner-actions">
+        {SETTINGS_CODES.has(banner.code) && (
+          <button type="button" onClick={onOpenSettings}>
+            Open Settings
+          </button>
+        )}
+        {banner.code === 'context_limit' && (
+          <button type="button" onClick={onNewChat}>
+            New chat
+          </button>
+        )}
+        <button type="button" aria-label="Dismiss" onClick={onDismiss}>
+          ×
+        </button>
+      </div>
+    </div>
+  )
+}
