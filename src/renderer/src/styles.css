@@ -528,3 +528,44 @@ pre {
 .audit-path {
   overflow-wrap: anywhere;
 }
+
+/* Untrusted text in approvals: isolated left-to-right, hidden characters revealed. */
+
+.untrusted,
+.untrusted-line {
+  unicode-bidi: isolate;
+  direction: ltr;
+}
+
+.untrusted-block {
+  unicode-bidi: isolate;
+  direction: ltr;
+  text-align: left;
+}
+
+/* Commands wrap so nothing hides past the edge; diffs keep columns and scroll horizontally. */
+.command {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.unsafe-char {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--danger);
+  color: #ffffff;
+  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+}
+
+.line-end-mark {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.approval-warning {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-bg);
+}

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { ApprovalKind, ApprovalPrompt } from '../../../shared/ipc'
 import { DiffView } from './DiffView'
+import { isSuspicious, SafeLines, SafeText } from './reveal'
 
 const KIND_LABELS: Record<ApprovalKind, string> = {
   write: 'Write a file',
@@ -29,24 +30,33 @@ function Detail({ prompt }: { prompt: ApprovalPrompt }): React.JSX.Element | nul
       <dl className="shell-detail">
         <dt>Shell</dt>
         <dd>
-          <code>{shell.shell}</code>
+          <code aria-label="Shell">
+            <SafeText text={shell.shell} />
+          </code>
         </dd>
         <dt>Working folder</dt>
         <dd>
-          <code>{shell.cwd}</code>
+          <code aria-label="Working folder">
+            <SafeText text={shell.cwd} />
+          </code>
         </dd>
         <dt>Command (exactly as it will run)</dt>
         <dd>
-          <pre className="command scroll-box" tabIndex={0} aria-label="Command">
-            {shell.command}
+          <pre
+            className="command scroll-box untrusted-block"
+            tabIndex={0}
+            aria-label="Command"
+            dir="ltr"
+          >
+            <SafeLines text={shell.command} />
           </pre>
         </dd>
       </dl>
     )
   }
   return (
-    <pre className="scroll-box" tabIndex={0} aria-label="Details">
-      {detail}
+    <pre className="scroll-box untrusted-block" tabIndex={0} aria-label="Details" dir="ltr">
+      <SafeLines text={detail} />
     </pre>
   )
 }
@@ -68,6 +78,7 @@ export function ApprovalCard({ prompt, queued, onRespond }: ApprovalCardProps): 
   const dialog = useRef<HTMLDivElement>(null)
   const deny = useRef<HTMLButtonElement>(null)
   const [answering, setAnswering] = useState(false)
+  const suspicious = [prompt.tool, prompt.summary, prompt.detail].some(isSuspicious)
 
   // The app keys this card by prompt id, so each prompt mounts afresh with Deny focused.
   useEffect(() => {
@@ -117,10 +128,19 @@ export function ApprovalCard({ prompt, queued, onRespond }: ApprovalCardProps): 
       >
         <header className="approval-header">
           <h2 id={titleId}>Approve: {KIND_LABELS[prompt.kind]}?</h2>
-          <span className="approval-tool">{prompt.tool}</span>
+          <span className="approval-tool">
+            <SafeText text={prompt.tool} />
+          </span>
         </header>
+        {suspicious && (
+          <p className="approval-warning" role="alert">
+            <strong>Warning:</strong> this request contains hidden or control characters (shown as
+            ⟨…⟩ tokens). They can make a path, command or change look different from what will
+            actually run. Deny unless you are sure.
+          </p>
+        )}
         <p id={summaryId} className="approval-summary">
-          {prompt.summary}
+          <SafeText text={prompt.summary} />
         </p>
         <Detail prompt={prompt} />
         {queued > 0 && (

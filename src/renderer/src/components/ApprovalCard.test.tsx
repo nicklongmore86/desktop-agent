@@ -91,7 +91,7 @@ describe('ApprovalCard', () => {
         'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -Command',
       ),
     ).toBeTruthy()
-    expect(screen.getByText('C:\\work', { selector: 'code' })).toBeTruthy()
+    expect(screen.getByLabelText('Working folder').textContent).toBe('C:\\work')
     expect(screen.getByLabelText('Command').textContent).toBe(shellCommand)
   })
 
