@@ -89,4 +89,16 @@ describe('createTools', () => {
     }
     expect(failures).toHaveLength(2)
   })
+
+  it('still returns the result when onAuditFailure itself throws', async () => {
+    const h = toolHarness(sb, {
+      audit: { record: () => Promise.reject(new Error('disk full')) },
+      onAuditFailure: () => {
+        throw new Error('reporter broke')
+      },
+    })
+    await expect(
+      h.tool('list_dir').execute({ path: sb.root }, fakeContext().ctx),
+    ).resolves.toMatchObject({ content: expect.stringContaining('(empty)') as unknown })
+  })
 })

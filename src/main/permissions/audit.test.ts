@@ -75,6 +75,37 @@ describe('AuditLog', () => {
   })
 })
 
+describe('AuditLog error handling', () => {
+  let sb2: Sandbox
+
+  beforeEach(async () => {
+    sb2 = await makeSandbox()
+  })
+
+  afterEach(async () => {
+    await sb2.cleanup()
+  })
+
+  it('keeps processing entries when its onError handler throws', async () => {
+    await put(path.join(sb2.userData, 'blocker'), '')
+    const onError = vi.fn(() => {
+      throw new Error('handler broke')
+    })
+    const log = new AuditLog(path.join(sb2.userData, 'blocker', 'audit.jsonl'), { onError })
+    const entry = {
+      tool: 't',
+      args: {},
+      paths: [],
+      approval: 'auto' as const,
+      outcome: 'ok' as const,
+      durationMs: 0,
+    }
+    await expect(log.record(entry)).resolves.toBeUndefined()
+    await expect(log.record(entry)).resolves.toBeUndefined()
+    expect(onError).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('redactSecrets', () => {
   it('masks common token shapes and key=value secrets', () => {
     expect(redactSecrets('curl -H "x-api-key: sk-ant-api03-abcdefghijklmnop"')).not.toContain(

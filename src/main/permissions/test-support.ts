@@ -82,6 +82,32 @@ export function windowsShortPath(p: string): string | null {
   return out !== '' && short.toLowerCase() !== path.win32.basename(p).toLowerCase() ? out : null
 }
 
+/**
+ * Like windowsShortPath, but makes sure an alias exists: if the volume did not
+ * generate one, assigns `shortName` with `fsutil file setshortname` (needs
+ * admin, which CI runners have). On CI (process.env.CI set) it throws rather
+ * than return null, so the Windows short-name tests can never silently skip.
+ */
+export function ensureWindowsShortPath(p: string, shortName: string): string | null {
+  if (process.platform !== 'win32') return null
+  const existing = windowsShortPath(p)
+  if (existing) return existing
+  const root = process.env['SystemRoot'] ?? 'C:\\Windows'
+  const set = spawnSync(`${root}\\System32\\fsutil.exe`, ['file', 'setshortname', p, shortName], {
+    encoding: 'utf8',
+  })
+  const assigned = windowsShortPath(p)
+  if (assigned) return assigned
+  if (process.env['CI']) {
+    throw new Error(
+      `No 8.3 short name for ${p}, and fsutil could not assign one ` +
+        `(exit ${String(set.status)}: ${(set.stdout + set.stderr).trim()}). ` +
+        'Short-name tests must run on Windows CI.',
+    )
+  }
+  return null
+}
+
 export class MemoryAudit implements AuditSink {
   readonly entries: Omit<AuditEntry, 'ts'>[] = []
 

@@ -84,6 +84,29 @@ export async function openVerified(
   }
 }
 
+/**
+ * Opens a file found by a walk without following links, and checks through
+ * the handle that it is the entry that was listed and has a single link.
+ * Lighter than openVerified (no guard round trip): the walk has already
+ * re-verified the folder it is in.
+ */
+export async function assertSingleLinkHandle(path: string, expected: Identity): Promise<void> {
+  let handle: FileHandle
+  try {
+    handle = await fs.open(path, MODES.read)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP') throw changed(path)
+    throw error
+  }
+  try {
+    const stats = await handle.stat({ bigint: true })
+    if (!stats.isFile() || !sameIdentity(stats, expected)) throw changed(path)
+    assertSingleLink(path, stats)
+  } finally {
+    await handle.close()
+  }
+}
+
 function changed(path: string): ToolFailure {
   return new ToolFailure(`${path} changed while it was being checked; nothing was done.`, 'changed')
 }

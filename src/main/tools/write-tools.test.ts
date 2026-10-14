@@ -7,7 +7,7 @@ import {
   makeSandbox,
   put,
   trySymlink,
-  windowsShortPath,
+  ensureWindowsShortPath,
   type Sandbox,
 } from '../permissions/test-support'
 import { toolHarness, type ToolHarness } from './test-support'
@@ -411,6 +411,63 @@ describe('move_file', () => {
     expect(requests).toEqual([])
   })
 
+  it('refuses to move a folder containing a hard-linked file', async () => {
+    await put(path.join(sb.outside, 'secret.txt'), 'outside secret')
+    await put(path.join(sb.root, 'proj', 'a.txt'), 'a')
+    await fs.mkdir(path.join(sb.root, 'proj', 'sub'))
+    await fs.link(path.join(sb.outside, 'secret.txt'), path.join(sb.root, 'proj', 'sub', 'x.txt'))
+    const { ctx, requests } = fakeContext(true)
+    const r = await h
+      .tool('move_file')
+      .execute(
+        { source: path.join(sb.root, 'proj'), destination: path.join(sb.root, 'moved') },
+        ctx,
+      )
+    expect(r).toMatchObject({ isError: true, content: /hard links/ })
+    expect(requests).toEqual([])
+    expect(await exists(path.join(sb.root, 'moved'))).toBe(false)
+  })
+
+  it('cross-volume fallback: rechecks after approval and never copies a hard-linked file', async () => {
+    await put(path.join(sb.outside, 'secret.txt'), 'outside secret')
+    await put(path.join(sb.root, 'proj', 'a.txt'), 'a')
+    vi.spyOn(fs, 'rename').mockRejectedValue(
+      Object.assign(new Error('cross-device link'), { code: 'EXDEV' }),
+    )
+    // The link appears only after the first scan, while the user is reviewing.
+    const { ctx, requests } = fakeContext(async () => {
+      await fs.link(path.join(sb.outside, 'secret.txt'), path.join(sb.root, 'proj', 'late.txt'))
+      return true
+    })
+    const r = await h
+      .tool('move_file')
+      .execute(
+        { source: path.join(sb.root, 'proj'), destination: path.join(sb.root, 'moved') },
+        ctx,
+      )
+    vi.restoreAllMocks()
+    expect(requests).toHaveLength(1)
+    expect(r).toMatchObject({ isError: true, content: /hard links/ })
+    expect(await exists(path.join(sb.root, 'moved'))).toBe(false)
+  })
+
+  it('cross-volume fallback copies a clean folder and removes the original', async () => {
+    await put(path.join(sb.root, 'proj', 'sub', 'a.txt'), 'a')
+    vi.spyOn(fs, 'rename').mockRejectedValue(
+      Object.assign(new Error('cross-device link'), { code: 'EXDEV' }),
+    )
+    const r = await h
+      .tool('move_file')
+      .execute(
+        { source: path.join(sb.root, 'proj'), destination: path.join(sb.root, 'moved') },
+        fakeContext(true).ctx,
+      )
+    vi.restoreAllMocks()
+    expect(r.isError).toBeUndefined()
+    expect(await fs.readFile(path.join(sb.root, 'moved', 'sub', 'a.txt'), 'utf8')).toBe('a')
+    expect(await exists(path.join(sb.root, 'proj'))).toBe(false)
+  })
+
   it('fails closed if the folder cannot be fully checked after approval', async () => {
     await put(path.join(sb.root, 'proj', 'sub', 'a.txt'), 'a')
     const realReaddir = fs.readdir.bind(fs)
@@ -435,12 +492,12 @@ describe('move_file', () => {
   })
 
   it.skipIf(process.platform !== 'win32')(
-    'refuses an 8.3 short-name alias of a protected file (Windows only: needs NTFS short names)',
+    'refuses an 8.3 short-name alias of a protected file (Windows only: needs NTFS short names; required on CI)',
     async (ctx) => {
       const secret = path.join(sb.root, '.env.production')
       await put(secret, 'SECRET=1')
       await put(path.join(sb.root, 'plain.txt'), 'p')
-      const alias = windowsShortPath(secret)
+      const alias = ensureWindowsShortPath(secret, 'ENVPRO~1.ENV')
       if (alias === null) {
         ctx.skip()
         return
@@ -531,6 +588,29 @@ describe('delete_path', () => {
       await h.tool('delete_path').execute({ path: path.join(sb.root, 'alias.txt') }, ctx),
     ).toMatchObject({ isError: true, content: /hard links/ })
     expect(requests).toEqual([])
+    expect(h.trashed).toEqual([])
+  })
+
+  it('refuses to delete a folder with a hard-linked file inside, before or after approval', async () => {
+    await put(path.join(sb.outside, 'secret.txt'), 's')
+    await put(path.join(sb.root, 'proj', 'a.txt'), 'a')
+    await fs.mkdir(path.join(sb.root, 'proj', 'sub'))
+    await fs.link(path.join(sb.outside, 'secret.txt'), path.join(sb.root, 'proj', 'sub', 'x.txt'))
+    const before = fakeContext(true)
+    expect(
+      await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, before.ctx),
+    ).toMatchObject({ isError: true, content: /hard links/ })
+    expect(before.requests).toEqual([])
+
+    await put(path.join(sb.root, 'clean', 'a.txt'), 'a')
+    const after = fakeContext(async () => {
+      await fs.link(path.join(sb.outside, 'secret.txt'), path.join(sb.root, 'clean', 'late.txt'))
+      return true
+    })
+    expect(
+      await h.tool('delete_path').execute({ path: path.join(sb.root, 'clean') }, after.ctx),
+    ).toMatchObject({ isError: true, content: /hard links/ })
+    expect(after.requests).toHaveLength(1)
     expect(h.trashed).toEqual([])
   })
 

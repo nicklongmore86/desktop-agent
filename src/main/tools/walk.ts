@@ -2,7 +2,7 @@ import { promises as fs, type BigIntStats } from 'node:fs'
 import type { PathGuard } from '../permissions/guard'
 import { samePath } from '../permissions/paths'
 import { ToolFailure } from './define'
-import { sameIdentity, type Identity } from './safe-fs'
+import { assertSingleLinkHandle, sameIdentity, type Identity } from './safe-fs'
 
 export type EntryKind = 'file' | 'dir' | 'symlink' | 'other'
 
@@ -49,9 +49,9 @@ function reasonOf(error: unknown): string {
 }
 
 /**
- * Checks a folder immediately before listing it: still a real folder (not a
- * link), still the same inode as when its parent listed it, and its real
- * path is still itself (no parent was swapped for a link).
+ * Checks a folder immediately before listing it: still allowed by the guard
+ * (so a revoked grant stops the walk) and resolving to itself, still a real
+ * folder (not a link), and still the same inode as when its parent listed it.
  */
 async function reverify(
   dir: string,
@@ -62,7 +62,9 @@ async function reverify(
     const stats = await fs.lstat(dir, { bigint: true })
     if (stats.isSymbolicLink() || !stats.isDirectory()) return 'no longer a folder'
     if (expected && !sameIdentity(stats, expected)) return 'replaced while listing'
-    if (!samePath(await fs.realpath(dir), dir, guard.platform)) return 'moved behind a link'
+    const guarded = await guard.resolve(dir)
+    if (!guarded.ok) return `no longer allowed: ${guarded.reason}`
+    if (!samePath(guarded.path, dir, guard.platform)) return 'moved behind a link'
     return null
   } catch (error) {
     return reasonOf(error)
@@ -102,6 +104,10 @@ export async function* walk(
     for (const name of names) {
       if (options.signal.aborted) return
       const path = P.join(dir, name)
+      if (!guard.isWithinGrants(path)) {
+        options.onError?.(path, 'no longer inside a granted folder')
+        return
+      }
       if (guard.blockedReason(path)) {
         options.onBlocked?.(path)
         continue
@@ -150,13 +156,26 @@ export async function assertNoBlockedInside(
   const blocked: string[] = []
   const errors: string[] = []
   let count = 0
-  for await (const _entry of walk(dir, guard, {
+  const hardLinked: string[] = []
+  for await (const entry of walk(dir, guard, {
     maxDepth: Number.POSITIVE_INFINITY,
     signal,
     onBlocked: (p) => blocked.push(p),
     onError: (p, reason) => errors.push(`${p} (${reason})`),
   })) {
     if (blocked.length > 0 || errors.length > 0) break
+    // Moving a hard link (especially copying it across volumes) or trashing it would
+    // turn a second name of some file outside the grants into a plain, readable file.
+    if (entry.kind === 'file') {
+      try {
+        await assertSingleLinkHandle(entry.path, entry.id)
+      } catch (error) {
+        if (error instanceof ToolFailure && error.code === 'hard-link') hardLinked.push(entry.path)
+        else
+          errors.push(`${entry.path} (${error instanceof Error ? error.message : String(error)})`)
+        break
+      }
+    }
     if (++count > limit) {
       throw new ToolFailure(
         `${dir} has too many entries to check for protected files.`,
@@ -168,6 +187,12 @@ export async function assertNoBlockedInside(
   if (signal.aborted) throw new ToolFailure('Cancelled.', 'cancelled')
   if (blocked.length > 0) {
     throw new ToolFailure(`${dir} contains a protected item: ${blocked[0] ?? ''}`, 'protected')
+  }
+  if (hardLinked.length > 0) {
+    throw new ToolFailure(
+      `${dir} contains a file with other hard links (${hardLinked[0] ?? ''}); refusing.`,
+      'hard-link',
+    )
   }
   if (errors.length > 0) {
     throw new ToolFailure(

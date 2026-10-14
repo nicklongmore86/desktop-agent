@@ -7,7 +7,7 @@ import {
   makeSandbox,
   put,
   trySymlink,
-  windowsShortPath,
+  ensureWindowsShortPath,
   type Sandbox,
 } from './test-support'
 
@@ -163,11 +163,11 @@ describe('PathGuard on the real file system', () => {
   })
 
   it.skipIf(process.platform !== 'win32')(
-    'expands a real 8.3 short name before the blocklist (Windows only: needs NTFS short names)',
+    'expands a real 8.3 short name before the blocklist (Windows only: needs NTFS short names; required on CI)',
     async (ctx) => {
       const secret = path.join(sb.root, '.env.production')
       await put(secret, 'SECRET=1')
-      const alias = windowsShortPath(secret)
+      const alias = ensureWindowsShortPath(secret, 'ENVPRO~1.ENV')
       if (alias === null) {
         ctx.skip()
         return

@@ -94,7 +94,11 @@ export class AuditLog implements AuditSink {
         this.failure = null
       } catch (error) {
         this.failure = error
-        this.onError(error)
+        try {
+          this.onError(error)
+        } catch {
+          // A broken error handler must not break the queue for later entries.
+        }
       }
     })
     return this.queue

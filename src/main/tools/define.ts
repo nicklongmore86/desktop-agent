@@ -79,8 +79,11 @@ export interface ToolSpec<I> {
   /** Whether the tool asks for approval (for the audit log's approval field). */
   needsApproval: boolean
   parse(input: InputReader): I
-  /** What goes into the audit log for these arguments. Never file contents. */
-  summarize(input: I): Record<string, unknown>
+  /**
+   * What goes into the audit log for these arguments. Never file contents.
+   * `approval` lets a tool log more for calls the user actually approved.
+   */
+  summarize(input: I, approval: AuditApproval): Record<string, unknown>
   run(input: I, call: ToolCall): Promise<RunResult>
 }
 
@@ -164,7 +167,7 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
       try {
         await deps.audit.record({
           tool: spec.name,
-          args: input === undefined ? { invalidInput: true } : spec.summarize(input),
+          args: input === undefined ? { invalidInput: true } : spec.summarize(input, approval),
           paths,
           approval,
           outcome: result.isError ? 'error' : 'ok',
@@ -172,7 +175,11 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
           durationMs: Math.max(0, Math.round(deps.now() - started)),
         })
       } catch (error) {
-        deps.onAuditFailure(error)
+        try {
+          deps.onAuditFailure(error)
+        } catch {
+          // Reporting the failure failed too; the call's result still stands.
+        }
       }
       return result.isError
         ? { content: result.content, isError: true }

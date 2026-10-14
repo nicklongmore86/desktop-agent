@@ -58,6 +58,49 @@ describe('walk', () => {
   })
 })
 
+describe('walk and grants', () => {
+  it('stops yielding as soon as the grant is revoked mid-walk', async () => {
+    await put(path.join(sb.root, 'a', 'inside.txt'))
+    await put(path.join(sb.root, 'b.txt'))
+    await put(path.join(sb.root, 'c', 'deep', 'd.txt'))
+    let roots = [sb.root]
+    const revocable = new PathGuard({ roots: () => roots })
+    const seen: string[] = []
+    const errors: string[] = []
+    for await (const entry of walk(sb.root, revocable, {
+      maxDepth: 5,
+      signal: new AbortController().signal,
+      onError: (_p, reason) => errors.push(reason),
+    })) {
+      seen.push(entry.rel)
+      if (seen.length === 1) roots = []
+    }
+    expect(seen).toEqual(['a'])
+    expect(errors[0]).toMatch(/no longer allowed|no longer inside a granted folder/)
+  })
+
+  it('re-checks the guard for each folder before listing it', async () => {
+    await put(path.join(sb.root, 'a', 'inside.txt'))
+    let roots = [sb.root]
+    const revocable = new PathGuard({ roots: () => roots })
+    const errors: string[] = []
+    const seen: string[] = []
+    const entries = walk(sb.root, revocable, {
+      maxDepth: 5,
+      signal: new AbortController().signal,
+      onError: (_p, reason) => errors.push(reason),
+    })
+    for await (const entry of entries) {
+      seen.push(entry.rel)
+      // Revoke just before the walk descends into `a`, keeping `a` itself in the
+      // lexical list so only the full guard check can catch it.
+      if (entry.rel === 'a') roots = [path.join(sb.root, 'a', 'nonexistent-subgrant')]
+    }
+    expect(seen).toEqual(['a'])
+    expect(errors).toEqual([expect.stringMatching(/^no longer allowed/)])
+  })
+})
+
 describe('assertNoBlockedInside', () => {
   const signal = new AbortController().signal
 
@@ -94,6 +137,18 @@ describe('assertNoBlockedInside', () => {
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'dir'), guard, 100, signal),
     ).rejects.toMatchObject({ message: /EBUSY/ })
+  })
+
+  it('refuses a folder with a hard-linked file anywhere inside', async () => {
+    await put(path.join(sb.outside, 'secret.txt'), 's')
+    await put(path.join(sb.root, 'proj', 'src', 'a.ts'), 'a')
+    await fs.link(
+      path.join(sb.outside, 'secret.txt'),
+      path.join(sb.root, 'proj', 'src', 'deep.txt'),
+    )
+    await expect(
+      assertNoBlockedInside(path.join(sb.root, 'proj'), guard, 100, signal),
+    ).rejects.toMatchObject({ code: 'hard-link', message: /deep\.txt/ })
   })
 
   it('refuses folders over the entry limit, and cancelled scans', async () => {

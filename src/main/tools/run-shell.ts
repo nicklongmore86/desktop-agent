@@ -229,11 +229,13 @@ export function runShellTool(deps: ResolvedDeps): ToolSpec<Input> {
           limits.defaultShellTimeoutMs,
       }
     },
-    summarize: (input) => ({
-      command: redactSecrets(input.command),
-      cwd: input.cwd,
-      timeoutMs: input.timeoutMs,
-    }),
+    // The exact command is logged only once the user approved running it: it is then the
+    // user's own action and the core of the audit trail. Unapproved commands are model
+    // output that never ran, so only their shape is kept.
+    summarize: (input, approval) =>
+      approval === 'approved'
+        ? { command: redactSecrets(input.command), cwd: input.cwd, timeoutMs: input.timeoutMs }
+        : { commandLength: input.command.length, cwd: input.cwd, timeoutMs: input.timeoutMs },
     async run(input, call) {
       const { path: cwd, exists } = await call.resolve(input.cwd)
       const before = exists ? await folderIdentity(cwd) : null

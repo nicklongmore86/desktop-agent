@@ -206,6 +206,15 @@ export class PathGuard {
     return this.roots().some((root) => samePath(root, resolved, this.platform))
   }
 
+  /**
+   * Cheap synchronous check that `resolved` (already a real path) is still
+   * inside one of the currently granted roots. Walks call it for every entry
+   * so a grant revoked mid-walk stops the walk; the full check is resolve().
+   */
+  isWithinGrants(resolved: string): boolean {
+    return this.roots().some((root) => isInside(resolved, root, this.platform))
+  }
+
   /** True when `resolved` is a granted root or has one inside it (nested grants). */
   containsRoot(resolved: string): boolean {
     return this.roots().some((root) => isInside(root, resolved, this.platform))

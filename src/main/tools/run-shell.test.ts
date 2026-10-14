@@ -113,7 +113,13 @@ describe('run_shell', () => {
       .execute({ command: 'rm -rf /', cwd: sb.root }, fakeContext(false).ctx)
     expect(r).toMatchObject({ isError: true, content: /declined/ })
     expect(calls).toEqual([])
-    expect(h.audit.entries[0]).toMatchObject({ approval: 'denied', outcome: 'error' })
+    // A command that never ran is not logged verbatim, only its shape.
+    expect(h.audit.entries[0]).toMatchObject({
+      approval: 'denied',
+      outcome: 'error',
+      args: { commandLength: 8, cwd: sb.root, timeoutMs: 60_000 },
+    })
+    expect(JSON.stringify(h.audit.entries)).not.toContain('rm -rf')
   })
 
   it('never spawns when cancelled during approval', async () => {
