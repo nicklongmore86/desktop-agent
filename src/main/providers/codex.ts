@@ -96,7 +96,11 @@ export async function codexAccount(peer: RpcPeer): Promise<boolean> {
 export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): AgentRunner {
   return {
     async run(conversation, options): Promise<RunResult> {
-      const bridge = new ToolBridge(conversation, tools, options)
+      const runController = new AbortController()
+      const bridge = new ToolBridge(conversation, tools, {
+        ...options,
+        signal: AbortSignal.any([options.signal, runController.signal]),
+      })
       let peer: RpcPeer | undefined
       let timer: NodeJS.Timeout | undefined
       const abort = () => peer?.close(new Error('Cancelled.'))
@@ -145,6 +149,7 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
             else resolve()
           }
           activePeer.onClose = (error) => {
+            runController.abort()
             finish(error)
           }
           timer = setTimeout(() => {
@@ -195,7 +200,7 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
         activeTurn.id = id
         await done
         bridge.flush()
-        return { conversation: bridge.history, stopReason: 'end_turn' }
+        return { conversation: structuredClone(bridge.history), stopReason: 'end_turn' }
       } catch (error) {
         const code = options.signal.aborted ? 'aborted' : 'api'
         options.onEvent({
@@ -208,8 +213,9 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
               : 'Subscription runtime failed.',
         })
         bridge.flush()
-        return { conversation: bridge.history, stopReason: code }
+        return { conversation: structuredClone(bridge.history), stopReason: code }
       } finally {
+        runController.abort()
         clearTimeout(timer)
         options.signal.removeEventListener('abort', abort)
         peer?.close()

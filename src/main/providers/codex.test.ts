@@ -200,3 +200,24 @@ describe('Codex app-server adapter', () => {
     )
   })
 })
+
+it('does not mutate returned history when a cancelled tool settles late', async () => {
+  const { run, execute, controller } = setup()
+  let release: (result: { content: string }) => void = () => {}
+  execute.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve
+      }),
+  )
+  const done = run()
+  await vi.waitFor(() => {
+    expect(execute).toHaveBeenCalledOnce()
+  })
+  controller.abort()
+  const result = await done
+  const snapshot = structuredClone(result.conversation)
+  release({ content: 'late result' })
+  await new Promise((resolve) => setImmediate(resolve))
+  expect(result.conversation).toEqual(snapshot)
+})

@@ -47,9 +47,12 @@ export function createClaudeSubscriptionRunner(
 ): AgentRunner {
   return {
     async run(conversation, options): Promise<RunResult> {
-      const bridge = new ToolBridge(conversation, tools, options)
       let child: ChildProcessWithoutNullStreams | undefined
       const abortController = new AbortController()
+      const bridge = new ToolBridge(conversation, tools, {
+        ...options,
+        signal: abortController.signal,
+      })
       const abort = () => {
         abortController.abort()
         if (child) void killRuntime(child)
@@ -154,7 +157,7 @@ export function createClaudeSubscriptionRunner(
         }
         if (!completed) throw new Error('Claude ended without a completed response.')
         bridge.flush()
-        return { conversation: bridge.history, stopReason: 'end_turn' }
+        return { conversation: structuredClone(bridge.history), stopReason: 'end_turn' }
       } catch (error) {
         const code = options.signal.aborted ? 'aborted' : 'api'
         options.onEvent({
@@ -167,7 +170,7 @@ export function createClaudeSubscriptionRunner(
               : 'Claude subscription failed.',
         })
         bridge.flush()
-        return { conversation: bridge.history, stopReason: code }
+        return { conversation: structuredClone(bridge.history), stopReason: code }
       } finally {
         clearTimeout(timer)
         options.signal.removeEventListener('abort', abort)
