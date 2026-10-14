@@ -30,19 +30,27 @@ const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF]/
 // and the Unicode line/paragraph separators, which some renderers break on.
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u2028\u2029]/
-// ESC sequences: CSI (ESC [ … final), OSC (ESC ] … BEL or ESC \), or ESC + one char.
-// eslint-disable-next-line no-control-regex
-const ESCAPE = /^\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|[^\n\r]?)/
+// ESC sequences: CSI (ESC [ params final), OSC (ESC ] text, ended by BEL or ESC \), or ESC + one
+// char. Bounded, and never across CR or LF, so a sequence cannot swallow a line break or hide a
+// long stretch of text; whatever is left over is scanned as ordinary text.
+const ESCAPE =
+  // eslint-disable-next-line no-control-regex
+  /^\u001B(?:\[[0-?]{0,32}[ -/]{0,8}[@-~]|\][^\u0007\u001B\r\n]{0,256}(?:\u0007|\u001B\\)?|[^\r\n]?)/
 
 const hex = (char: string): string =>
   `U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`
 
-function printable(text: string): string {
+/**
+ * A token label for an escape sequence's body. Only printable ASCII is kept
+ * as is; every other character (controls, bidi, zero-width, C1, separators,
+ * and any non-ASCII) becomes `{U+XXXX}`, so a label can never carry a
+ * prohibited character itself.
+ */
+export function escapeLabel(text: string): string {
   let out = ''
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i)
-    out +=
-      code < 0x20 || code === 0x7f ? `\\x${code.toString(16).padStart(2, '0')}` : text.charAt(i)
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    out += code >= 0x20 && code <= 0x7e ? char : `{${hex(char)}}`
   }
   return out
 }
@@ -85,7 +93,7 @@ export function revealUnsafe(text: string): Revealed {
       }
     } else if (char === '\u001B') {
       const sequence = ESCAPE.exec(text.slice(i))?.[0] ?? char
-      token(`ESC${printable(sequence.slice(1))}`)
+      token(`ESC${escapeLabel(sequence.slice(1))}`)
       i += sequence.length
     } else if (BIDI.test(char) || ZERO_WIDTH.test(char) || CONTROL.test(char)) {
       token(hex(char))
