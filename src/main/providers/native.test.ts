@@ -13,6 +13,7 @@ import {
   runtimeEnv,
   discoverRuntime,
   bundledRuntimeCandidates,
+  runtimeCandidates,
 } from './runtime'
 
 const dirs: string[] = []
@@ -58,10 +59,29 @@ it('pinned native Codex accepts isolated dynamic tools without API keys or sign-
       bundledRuntimeCandidates('codex', resourcesPath, process.platform, process.arch)[0],
     )
   } else {
-    // Preserve the full native distribution when testing paths with spaces.
-    const target = join(f.root, 'Codex package')
-    await cp(dirname(dirname(file)), target, { recursive: true })
-    file = join(target, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex')
+    // Exercise the nested optional-package layout used by global npm installs,
+    // preserving all companions and testing paths with spaces without a Node shim.
+    const npm = join(f.root, 'npm with spaces')
+    const candidate = runtimeCandidates('codex', npm, process.platform, process.arch).find(
+      (path) =>
+        path.replaceAll('\\', '/').includes('codex/node_modules/@openai/') &&
+        path.replaceAll('\\', '/').includes('/bin/'),
+    )
+    if (!candidate) throw new Error('Missing nested npm candidate')
+    await cp(dirname(dirname(file)), dirname(dirname(candidate)), { recursive: true })
+    const discovered = await discoverRuntime(
+      'codex',
+      { PATH: npm },
+      {
+        development: false,
+        home: f.home,
+        cwd: f.cwd,
+        env: f.env,
+      },
+    )
+    expect(discovered).toBe(candidate)
+    if (!discovered) throw new Error('Nested npm discovery failed')
+    file = discovered
   }
   await mkdir(join(f.home, '.codex'))
   await writeFile(
