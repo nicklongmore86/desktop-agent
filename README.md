@@ -66,6 +66,8 @@ This writes `release/<version>/Desktop-Agent-Setup-<version>-x64.exe`, an x64 NS
 
 ```
 src/main       Electron main process: window creation, security hardening, IPC handlers
+src/main/agent        Agent loop and Claude API client (createAgent)
+src/main/secrets      Encrypted API key store (safeStorage)
 src/main/permissions  Granted folders, path guard, blocklist, audit log
 src/main/tools        The agent's file and shell tools (createTools)
 src/preload    contextBridge API exposed to the renderer as window.desktopApi
