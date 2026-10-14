@@ -140,6 +140,12 @@ describe('conversation validation', () => {
       [user('x'), assistant([toolUse('t1')]), user([toolResult('t1'), toolResult('t1')])],
     ],
     ['an orphan tool result', [user('x'), assistant('y'), user([toolResult()])]],
+    ...['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf', 'isPrototypeOf'].map(
+      (type): [string, unknown[]] => [`a block of type "${type}"`, [user([{ type, text: 42 }])]],
+    ),
+    ...['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf'].map(
+      (role): [string, unknown[]] => [`a message with role "${role}"`, [{ role, content: 'x' }]],
+    ),
   ])('starts fresh for %s', async (_name, messages) => {
     const loaded = await load(messages)
     expect(loaded.messages).toEqual([])

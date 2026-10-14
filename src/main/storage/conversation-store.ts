@@ -47,22 +47,39 @@ function isToolResult(block: Obj): boolean {
   )
 }
 
-/** The blocks each role may hold, checked by discriminant. Anything else is rejected. */
-const BLOCK_CHECKS: Record<'user' | 'assistant', Record<string, (block: Obj) => boolean>> = {
-  user: { text: isTextBlock, tool_result: isToolResult },
-  assistant: { text: isTextBlock, tool_use: isToolUse },
-}
+/**
+ * The blocks each role may hold, checked by discriminant. Maps, not object
+ * literals: an untrusted `type` like "toString" or "__proto__" must never
+ * reach an inherited property. Anything not listed is rejected.
+ */
+const BLOCK_CHECKS = new Map<string, ReadonlyMap<string, (block: Obj) => boolean>>([
+  [
+    'user',
+    new Map([
+      ['text', isTextBlock],
+      ['tool_result', isToolResult],
+    ]),
+  ],
+  [
+    'assistant',
+    new Map([
+      ['text', isTextBlock],
+      ['tool_use', isToolUse],
+    ]),
+  ],
+])
 
 function isMessage(value: unknown): value is MessageParam {
   if (!isObject(value)) return false
   const { role, content } = value
-  if (role !== 'user' && role !== 'assistant') return false
+  const checks = typeof role === 'string' ? BLOCK_CHECKS.get(role) : undefined
+  if (!checks) return false
   if (typeof content === 'string') return content.trim() !== ''
   if (!Array.isArray(content) || content.length === 0) return false
-  const checks = BLOCK_CHECKS[role]
   return content.every((block) => {
-    if (!isObject(block) || typeof block['type'] !== 'string') return false
-    const check = checks[block['type']]
+    if (!isObject(block)) return false
+    const type = block['type']
+    const check = typeof type === 'string' ? checks.get(type) : undefined
     return check !== undefined && check(block)
   })
 }
