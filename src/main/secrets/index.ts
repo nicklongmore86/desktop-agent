@@ -57,6 +57,13 @@ export function createApiKeyStore({
       )
     }
   }
+  async function removeTemporary(path: string): Promise<void> {
+    try {
+      await fs.rm(path, { force: true })
+    } catch {
+      throw new Error('Could not clean up the temporary encrypted API key file.')
+    }
+  }
   return {
     get: () => serial(read),
     hasKey: () => serial(async () => (await read()) !== null),
@@ -78,12 +85,16 @@ export function createApiKeyStore({
         } catch {
           throw new Error('Could not save the encrypted API key.')
         } finally {
-          await fs.rm(temporary, { force: true })
+          await removeTemporary(temporary)
         }
       }),
     clear: () =>
       serial(async () => {
-        await fs.rm(path, { force: true })
+        try {
+          await fs.rm(path, { force: true })
+        } catch {
+          throw new Error('Could not clear the encrypted API key.')
+        }
       }),
   }
 }

@@ -47,6 +47,8 @@ export interface AgentClient {
 }
 export type AgentErrorCode =
   | 'authentication'
+  | 'invalid_request'
+  | 'permission'
   | 'rate_limit'
   | 'overloaded'
   | 'network'

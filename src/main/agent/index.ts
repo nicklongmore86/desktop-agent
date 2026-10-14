@@ -59,7 +59,11 @@ export function createAgent({
     async run(conversation: MessageParam[], options: RunOptions): Promise<RunResult> {
       const { signal } = options
       const onEvent = (event: import('./types').AgentEvent): void => {
-        options.onEvent(event)
+        try {
+          options.onEvent(event)
+        } catch {
+          // Observers must not interrupt tool execution or history pairing.
+        }
       }
       const history = structuredClone(conversation)
       const fail = (code: AgentErrorCode, message: string): RunResult => {
@@ -110,7 +114,8 @@ export function createAgent({
               'Claude returned incomplete tool calls. Retry with a larger token limit.',
             )
           }
-          history.push({ role: 'assistant', content: message.content })
+          if (message.content.length > 0)
+            history.push({ role: 'assistant', content: message.content })
           if (message.stop_reason === 'tool_use') {
             if (!calls.length)
               return fail('protocol', 'Claude requested tools without providing tool calls.')

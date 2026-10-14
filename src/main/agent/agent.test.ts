@@ -50,7 +50,7 @@ function fixture(responses: (Message | Error)[], tools: AgentTool[] = [], maxTur
       requestApproval: () => Promise.resolve(false),
       onEvent: (event) => events.push(event),
     })
-  return { run, requests, events, controller, abort }
+  return { run, agent, requests, events, controller, abort }
 }
 const call = (id = 'one', name = 'read'): Message['content'][number] => ({
   type: 'tool_use',
@@ -262,5 +262,75 @@ describe('agent', () => {
   })
   it('maps connection failures', async () => {
     expect((await fixture([new Anthropic.APIConnectionError({})]).run()).stopReason).toBe('network')
+  })
+  it.each(['end_turn', 'stop_sequence'] as const)(
+    'omits empty %s replies after tool results',
+    async (stop) => {
+      const f = fixture([reply('tool_use', [call()]), reply(stop, [])], [tool()])
+      const result = await f.run()
+      expect(result.stopReason).toBe(stop)
+      expect(result.conversation).toHaveLength(3)
+      expect(result.conversation.at(-1)).toMatchObject({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'one' }],
+      })
+      expect(
+        result.conversation.some(
+          (message) =>
+            message.role === 'assistant' &&
+            Array.isArray(message.content) &&
+            message.content.length === 0,
+        ),
+      ).toBe(false)
+    },
+  )
+  it('preserves tool/result pairing when every observer callback throws', async () => {
+    const f = fixture(
+      [reply('tool_use', [call()]), reply()],
+      [
+        tool(async (_input, ctx) => {
+          await ctx.requestApproval({ tool: 'read', kind: 'write', summary: 'Write' })
+          return { content: 'denied', isError: true }
+        }),
+      ],
+    )
+    const onEvent = vi.fn(() => {
+      throw new Error('Observer failure')
+    })
+    const result = await f.agent.run([{ role: 'user', content: 'Help' }], {
+      signal: f.controller.signal,
+      requestApproval: () => Promise.resolve(false),
+      onEvent,
+    })
+    expect(result.stopReason).toBe('end_turn')
+    expect(result.conversation[2]).toMatchObject({
+      role: 'user',
+      content: [{ tool_use_id: 'one', content: 'denied' }],
+    })
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'approval_resolved' }))
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_result' }))
+  })
+  it.each([
+    ['overloaded_error', 'overloaded'],
+    ['rate_limit_error', 'rate_limit'],
+  ] as const)('maps statusless stream %s', async (type, code) => {
+    const f = fixture([
+      new Anthropic.APIError(undefined, { type, message: 'secret' }, 'secret', undefined),
+    ])
+    expect((await f.run()).stopReason).toBe(code)
+    expect(JSON.stringify(f.events)).not.toContain('secret')
+  })
+  it.each([
+    [400, 'invalid_request'],
+    [404, 'invalid_request'],
+    [413, 'invalid_request'],
+    [403, 'permission'],
+  ] as const)('maps non-retryable HTTP %i', async (status, code) => {
+    const f = fixture([
+      Anthropic.APIError.generate(status, { message: 'secret' }, 'secret', new Headers()),
+    ])
+    expect((await f.run()).stopReason).toBe(code)
+    const event = f.events.find((event) => event.type === 'error')
+    expect(event?.message).not.toMatch(/try again|secret/i)
   })
 })
