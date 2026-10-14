@@ -66,6 +66,8 @@ This writes `release/<version>/Desktop-Agent-Setup-<version>-x64.exe`, an x64 NS
 
 ```
 src/main       Electron main process: window creation, security hardening, IPC handlers
+src/main/permissions  Granted folders, path guard, blocklist, audit log
+src/main/tools        The agent's file and shell tools (createTools)
 src/preload    contextBridge API exposed to the renderer as window.desktopApi
 src/renderer   React UI (Vite)
 src/shared     Code and types used by more than one process (IPC contract, CSP)
@@ -78,3 +80,43 @@ src/shared     Code and types used by more than one process (IPC contract, CSP)
 - A strict Content-Security-Policy (`default-src 'none'; script-src 'self'; …`) is injected into `index.html` at build time, so no remote scripts load. In dev mode it is relaxed only as far as Vite's dev server needs (inline scripts and styles, plus the HMR websocket).
 - `window.open` is always denied (http(s) links open in the default browser). Navigation and redirects away from the app are blocked, and permission requests (camera, notifications, …) are denied.
 - The app loads no remote content: only the bundled renderer, or the local Vite dev server during `pnpm dev`. `ELECTRON_RENDERER_URL` is ignored in packaged builds and must be a loopback `http://` URL otherwise. The `file://` allow-list also checks the host, so UNC paths (`file://server/share/...`) are rejected.
+
+### Permissions and tools
+
+The agent touches the machine only through the tools in `src/main/tools`, and every tool goes through the permission layer in `src/main/permissions`. Wiring, for the agent loop:
+
+```ts
+const userData = app.getPath('userData')
+const grants = await GrantStore.open(join(userData, 'grants.json'), { protectedPaths: [userData] })
+const guard = new PathGuard({ roots: () => grants.list(), protectedPaths: [userData] })
+const tools = createTools({
+  guard,
+  audit: new AuditLog(join(userData, 'audit.jsonl')),
+  trash: (path) => shell.trashItem(path),
+})
+```
+
+| Tool           | Does                                                                              | Approval                    |
+| -------------- | --------------------------------------------------------------------------------- | --------------------------- |
+| `list_dir`     | Entries with type, size, mtime; optional depth (max 5), at most 1000 entries      | no                          |
+| `read_file`    | Text up to 1 MB (or a line range of a bigger file); refuses binary files          | no                          |
+| `search_files` | Name glob and/or content substring/regex; result, depth, entry and 10 s time caps | no                          |
+| `write_file`   | Create or replace a file                                                          | always, with a unified diff |
+| `move_file`    | Move or rename within the grants                                                  | always                      |
+| `delete_path`  | Send to the Recycle Bin (never a permanent delete)                                | always                      |
+| `run_shell`    | PowerShell (`-NoProfile -NonInteractive -Command`) on Windows, `/bin/sh -c` else  | always, exact command + cwd |
+
+Tools never throw: a refused path, a declined approval or bad input comes back as `{ isError: true, content }`, and a declined approval has no side effect.
+
+**Granted folders.** The user grants folders (stored as real paths in `grants.json`); a drive root, a blocklisted folder or the app's own data cannot be granted. A path is allowed only when its real location is inside a granted folder: symlinks and junctions are resolved, and for a path that does not exist yet, the nearest existing parent is resolved. Windows comparisons ignore case. Rejected outright: relative paths, network (UNC) paths, `\\?\` and `\\.\` device paths, NTFS alternate data streams (`file:stream`), reserved device names (`CON`, `NUL`, `COM1`, `nul.txt`...), names ending in a dot or space (Windows strips them), and links whose target is missing (a write would create the target wherever it points). A grant whose folder is later replaced by a link stops working.
+
+**Blocklist.** Always applied, even inside a granted folder, case-insensitively, to every segment of the path, and not configurable: `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker/config.json`, `.env` and `.env.*`, `*.pem`, `*.key`, `*.pfx`, `*.p12`, `*.kdbx`, `id_rsa*` / `id_dsa*` / `id_ecdsa*` / `id_ed25519*`, `.npmrc`, `.netrc` / `_netrc`, `.git-credentials`, Chrome / Edge / Brave / Chromium `User Data` and Firefox profiles, Windows Credential Manager, DPAPI (`Protect`), `Crypto` and `Vault` folders under `AppData`, and the app's own userData (grants, audit log, key store). Directory listings and searches hide blocked entries; moving or deleting a folder that contains one is refused.
+
+**Audit log.** `audit.jsonl` gets one line per tool call: timestamp, tool, an argument summary, the resolved paths, approval (`auto`, `approved`, `denied`, `not-requested`), outcome and duration. It never contains file contents (writes log only the byte count), and token-like strings in shell commands and search patterns are redacted.
+
+**Threat model.** The model is treated as untrusted: it may be steered by prompt injection in files it reads. The guard is what stops it reading secrets or touching anything outside the grants without asking; approvals are what stop it changing anything without the user seeing the change first. Known limits:
+
+- `run_shell` is not sandboxed. Its cwd must be inside a grant, but the command itself can do anything the user can; the approval prompt showing the exact command is the only control. The child gets the app's environment minus `ANTHROPIC_*` and `ELECTRON_*` variables.
+- Checks happen just before each operation (and again after approval), so a process outside the app that swaps a folder for a link in between could redirect it (time-of-check/time-of-use). The model cannot create links except via an approved shell command.
+- Hard links are not detected: a hard link inside a grant to a file elsewhere is treated as a file inside the grant.
+- Regex search runs on the main process. Nested quantifiers like `(a+)+` are rejected and lines are capped at 4000 characters, but a pathological pattern could still be slow.
