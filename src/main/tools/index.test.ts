@@ -70,4 +70,23 @@ describe('createTools', () => {
       )
     }
   })
+
+  it('still returns the result when the audit sink throws or rejects', async () => {
+    const failures: unknown[] = []
+    for (const record of [
+      () => {
+        throw new Error('disk full')
+      },
+      () => Promise.reject(new Error('disk full')),
+    ]) {
+      const h = toolHarness(sb, {
+        audit: { record },
+        onAuditFailure: (error) => failures.push(error),
+      })
+      await expect(
+        h.tool('list_dir').execute({ path: sb.root }, fakeContext().ctx),
+      ).resolves.toMatchObject({ content: expect.stringContaining('(empty)') as unknown })
+    }
+    expect(failures).toHaveLength(2)
+  })
 })

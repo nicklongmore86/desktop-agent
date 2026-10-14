@@ -5,11 +5,52 @@ import type { AgentTool, ApprovalRequest, JsonSchema, ToolContext, ToolResult } 
 /** Thrown by input parsers; becomes an `Invalid input: ...` error result. */
 export class ToolInputError extends Error {}
 
-/** Thrown by tool bodies for expected failures; becomes an error result with this message. */
-export class ToolFailure extends Error {}
+/**
+ * Short, content-free categories for failed calls. The audit log records
+ * these, never the error message (which can quote paths or patterns).
+ * Unexpected errors are logged by their Node error code (EACCES, ...).
+ */
+export type ErrorCode =
+  | 'invalid-input'
+  | 'access-denied'
+  | 'declined'
+  | 'cancelled'
+  | 'not-found'
+  | 'not-a-file'
+  | 'not-a-folder'
+  | 'exists'
+  | 'too-large'
+  | 'binary'
+  | 'hard-link'
+  | 'changed'
+  | 'protected'
+  | 'timeout'
+  | 'kill-failed'
+  | 'spawn-failed'
+  | 'failed'
 
-export function errorResult(message: string): ToolResult {
-  return { content: message, isError: true }
+/** Thrown by tool bodies for expected failures; becomes an error result with this message. */
+export class ToolFailure extends Error {
+  constructor(
+    message: string,
+    readonly code: ErrorCode = 'failed',
+  ) {
+    super(message)
+  }
+}
+
+/** A tool body's result: a ToolResult plus, for errors, the category to audit. */
+export interface RunResult extends ToolResult {
+  code?: ErrorCode
+}
+
+export function errorResult(message: string, code: ErrorCode): RunResult {
+  return { content: message, isError: true, code }
+}
+
+function errnoCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' && /^E[A-Z]+$/.test(code) ? code : 'internal'
 }
 
 /** The per-call handle a tool body works with. */
@@ -40,13 +81,15 @@ export interface ToolSpec<I> {
   parse(input: InputReader): I
   /** What goes into the audit log for these arguments. Never file contents. */
   summarize(input: I): Record<string, unknown>
-  run(input: I, call: ToolCall): Promise<ToolResult>
+  run(input: I, call: ToolCall): Promise<RunResult>
 }
 
 export interface WrapDeps {
   guard: PathGuard
   audit: AuditSink
   now: () => number
+  /** Called when the audit sink throws or rejects; the call still returns its result. */
+  onAuditFailure: (error: unknown) => void
 }
 
 function messageOf(error: unknown): string {
@@ -74,7 +117,7 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
           const resolution = await deps.guard.resolve(path, options)
           if (!resolution.ok) {
             paths.push(path)
-            throw new ToolFailure(`Access denied: ${resolution.reason}`)
+            throw new ToolFailure(`Access denied: ${resolution.reason}`, 'access-denied')
           }
           paths.push(resolution.path)
           return { path: resolution.path, exists: resolution.exists }
@@ -94,32 +137,46 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
           return approved && !ctx.signal.aborted
         },
         throwIfAborted() {
-          if (ctx.signal.aborted) throw new ToolFailure('Cancelled.')
+          if (ctx.signal.aborted) throw new ToolFailure('Cancelled.', 'cancelled')
         },
       }
 
-      let result: ToolResult
+      let result: RunResult
+      let errorCode: string | undefined
       try {
         input = spec.parse(new InputReader(raw, spec.inputSchema))
         call.throwIfAborted()
         result = await spec.run(input, call)
+        errorCode = result.isError ? (result.code ?? 'failed') : undefined
       } catch (error) {
-        if (error instanceof ToolInputError) result = errorResult(`Invalid input: ${error.message}`)
-        else if (error instanceof ToolFailure) result = errorResult(error.message)
-        else result = errorResult(`${spec.name} failed: ${messageOf(error)}`)
+        if (error instanceof ToolInputError) {
+          result = errorResult(`Invalid input: ${error.message}`, 'invalid-input')
+          errorCode = 'invalid-input'
+        } else if (error instanceof ToolFailure) {
+          result = errorResult(error.message, error.code)
+          errorCode = error.code
+        } else {
+          result = errorResult(`${spec.name} failed: ${messageOf(error)}`, 'failed')
+          errorCode = errnoCode(error)
+        }
       }
 
-      const firstLine = result.content.split('\n', 1)[0] ?? ''
-      await deps.audit.record({
-        tool: spec.name,
-        args: input === undefined ? { invalidInput: true } : spec.summarize(input),
-        paths,
-        approval,
-        outcome: result.isError ? 'error' : 'ok',
-        ...(result.isError ? { error: firstLine.slice(0, 300) } : {}),
-        durationMs: Math.max(0, Math.round(deps.now() - started)),
-      })
-      return result
+      try {
+        await deps.audit.record({
+          tool: spec.name,
+          args: input === undefined ? { invalidInput: true } : spec.summarize(input),
+          paths,
+          approval,
+          outcome: result.isError ? 'error' : 'ok',
+          ...(errorCode === undefined ? {} : { error: errorCode }),
+          durationMs: Math.max(0, Math.round(deps.now() - started)),
+        })
+      } catch (error) {
+        deps.onAuditFailure(error)
+      }
+      return result.isError
+        ? { content: result.content, isError: true }
+        : { content: result.content }
     },
   }
 }

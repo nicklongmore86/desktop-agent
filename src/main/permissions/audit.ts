@@ -14,7 +14,10 @@ export interface AuditEntry {
   paths: string[]
   approval: AuditApproval
   outcome: 'ok' | 'error'
-  /** First line of the error message, for failed calls. */
+  /**
+   * For failed calls, a short category (`access-denied`, `declined`,
+   * `timeout`, a Node code like `EACCES`...), never the message itself.
+   */
   error?: string
   durationMs: number
 }
@@ -59,6 +62,17 @@ export interface AuditLogOptions {
 export class AuditLog implements AuditSink {
   private queue: Promise<void> = Promise.resolve()
   private readonly onError: (error: unknown) => void
+  private failure: unknown = null
+
+  /** False once a write has failed, until a later write succeeds. Show it in the UI. */
+  get healthy(): boolean {
+    return this.failure === null
+  }
+
+  /** The error from the most recent failed write, or null. */
+  get lastError(): unknown {
+    return this.failure
+  }
 
   constructor(
     readonly file: string,
@@ -77,7 +91,9 @@ export class AuditLog implements AuditSink {
       try {
         await fs.mkdir(path.dirname(this.file), { recursive: true })
         await fs.appendFile(this.file, line, { encoding: 'utf8', flag: 'a' })
+        this.failure = null
       } catch (error) {
+        this.failure = error
         this.onError(error)
       }
     })

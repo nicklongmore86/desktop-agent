@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { ToolFailure, errorResult, type ToolCall, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
+import { assertSingleLink, openVerified } from './safe-fs'
 import { assertNoBlockedInside } from './walk'
 
 interface Input {
@@ -29,12 +30,16 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
       const plan = await planDelete(input, call)
       const summary = `Move ${plan.kind} ${plan.path} to the Recycle Bin`
       if (!(await call.approve({ kind: 'delete', summary, detail: plan.path }))) {
-        return errorResult(`The user declined deleting ${plan.path}. Nothing was changed.`)
+        return errorResult(
+          `The user declined deleting ${plan.path}. Nothing was changed.`,
+          'declined',
+        )
       }
       const again = await planDelete(input, call)
       if (again.path !== plan.path || again.kind !== plan.kind) {
         throw new ToolFailure(
           `${plan.path} changed while waiting for approval; nothing was deleted.`,
+          'changed',
         )
       }
       try {
@@ -42,6 +47,7 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
       } catch (error) {
         throw new ToolFailure(
           `Could not move ${plan.path} to the Recycle Bin: ${(error as Error).message}. Nothing was deleted.`,
+          'failed',
         )
       }
       return { content: `Moved ${plan.path} to the Recycle Bin.` }
@@ -50,9 +56,12 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
 
   async function planDelete(input: Input, call: ToolCall): Promise<{ path: string; kind: string }> {
     const target = await call.resolve(input.path, { followFinalSymlink: false })
-    if (!target.exists) throw new ToolFailure(`Not found: ${target.path}`)
+    if (!target.exists) throw new ToolFailure(`Not found: ${target.path}`, 'not-found')
     if (guard.containsRoot(target.path)) {
-      throw new ToolFailure(`${target.path} is or contains a granted folder and cannot be deleted.`)
+      throw new ToolFailure(
+        `${target.path} is or contains a granted folder and cannot be deleted.`,
+        'protected',
+      )
     }
     const stats = await fs.lstat(target.path)
     if (stats.isDirectory()) {
@@ -60,6 +69,12 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
       call.throwIfAborted()
       return { path: target.path, kind: 'folder' }
     }
+    if (stats.isFile()) {
+      const { handle } = await openVerified(guard, target.path, 'read')
+      await handle.close()
+      return { path: target.path, kind: 'file' }
+    }
+    assertSingleLink(target.path, await fs.lstat(target.path, { bigint: true }))
     return { path: target.path, kind: stats.isSymbolicLink() ? 'link' : 'file' }
   }
 }

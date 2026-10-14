@@ -41,7 +41,7 @@ export function listDirTool(deps: ResolvedDeps): ToolSpec<Input> {
     async run(input, call) {
       const { path: dir, exists } = await call.resolve(input.path)
       if (!exists || !(await fs.stat(dir)).isDirectory()) {
-        throw new ToolFailure(`Not a folder: ${dir}`)
+        throw new ToolFailure(`Not a folder: ${dir}`, 'not-a-folder')
       }
 
       const lines: string[] = []
@@ -52,7 +52,7 @@ export function listDirTool(deps: ResolvedDeps): ToolSpec<Input> {
         maxDepth: input.depth,
         signal: call.ctx.signal,
         onBlocked: () => hidden++,
-        onUnreadable: () => unreadable++,
+        onError: () => unreadable++,
       })) {
         if (lines.length >= limits.maxListEntries) {
           truncated = true
@@ -71,7 +71,7 @@ export function listDirTool(deps: ResolvedDeps): ToolSpec<Input> {
           `Stopped at ${String(limits.maxListEntries)} entries; list a subfolder or use a smaller depth.`,
         )
       if (hidden > 0) notes.push(`${String(hidden)} protected entries hidden.`)
-      if (unreadable > 0) notes.push(`${String(unreadable)} folders could not be read.`)
+      if (unreadable > 0) notes.push(`${String(unreadable)} entries could not be read.`)
       const header = `${dir} (${String(lines.length)} entries)`
       return {
         content: [header, ...(lines.length > 0 ? lines : ['(empty)']), ...notes].join('\n'),

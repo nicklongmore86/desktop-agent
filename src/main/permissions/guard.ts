@@ -1,13 +1,24 @@
 import { promises as nodeFs } from 'node:fs'
 import { blocklistReason } from './blocklist'
-import { checkPathSyntax, isInside, pathApi, samePath, type PathApi } from './paths'
+import { checkPathSyntax, foldCase, isInside, pathApi, samePath, type PathApi } from './paths'
 
 /** The file-system calls the guard needs; injectable so tests can fake Windows on Linux. */
 export interface GuardFs {
-  /** Like fs.promises.realpath: resolves symlinks and junctions, rejects with `code` set. */
+  /**
+   * Like fs.promises.realpath: resolves symlinks and junctions and returns
+   * long names (never 8.3 short names); rejects with `code` set.
+   */
   realpath(p: string): Promise<string>
-  /** Like fs.promises.lstat: resolves when the entry itself exists. */
-  lstat(p: string): Promise<unknown>
+  /** Like fs.promises.lstat: describes the entry itself, without following a link. */
+  lstat(p: string): Promise<{ isSymbolicLink(): boolean }>
+  /** Like fs.promises.readdir: the long names of a folder's entries. */
+  readdir(p: string): Promise<string[]>
+}
+
+const nodeGuardFs: GuardFs = {
+  realpath: (p) => nodeFs.realpath(p),
+  lstat: (p) => nodeFs.lstat(p),
+  readdir: (p) => nodeFs.readdir(p),
 }
 
 export interface PathGuardOptions {
@@ -60,7 +71,7 @@ export class PathGuard {
     this.path = pathApi(this.platform)
     this.roots = options.roots
     this.protectedPaths = (options.protectedPaths ?? []).map((p) => this.path.resolve(p))
-    this.fs = options.fs ?? nodeFs
+    this.fs = options.fs ?? nodeGuardFs
   }
 
   async resolve(input: string, options: ResolveOptions = {}): Promise<Resolution> {
@@ -104,7 +115,18 @@ export class PathGuard {
         existing = parent
       }
     }
-    const resolved = tail.length > 0 ? P.join(real, ...tail) : real
+    let resolved = tail.length > 0 ? P.join(real, ...tail) : real
+    let exists = tail.length === 0
+
+    if (options.followFinalSymlink === false && tail.length === 1) {
+      // The final entry is not followed, so realpath has not seen it. On
+      // Windows its name may be an 8.3 alias (ENV~1.PRO for .env.production)
+      // that slips past the blocklist: replace it with the entry's long name.
+      const canonical = await this.canonicalFinalEntry(resolved)
+      if (!canonical.ok) return canonical
+      resolved = canonical.path
+      exists = canonical.exists
+    }
 
     // realpath can turn a mapped network drive into a UNC path.
     const realSyntax = checkPathSyntax(resolved, this.platform)
@@ -116,11 +138,51 @@ export class PathGuard {
     const blocked = this.blockedReason(resolved)
     if (blocked) return { ok: false, reason: blocked }
 
-    let exists = tail.length === 0
-    if (!exists && options.followFinalSymlink === false && tail.length === 1) {
-      exists = await this.entryExists(resolved)
-    }
     return { ok: true, path: resolved, root, exists }
+  }
+
+  /**
+   * The long-name path of a final entry that must not be followed. A plain
+   * file or folder is realpath'd (which expands short names); a link is
+   * matched by name against its parent's listing, and refused when the
+   * given name is not one of the listed (long) names, i.e. it is an alias.
+   */
+  private async canonicalFinalEntry(
+    entry: string,
+  ): Promise<{ ok: true; path: string; exists: boolean } | { ok: false; reason: string }> {
+    const P = this.path
+    let stats: { isSymbolicLink(): boolean }
+    try {
+      stats = await this.fs.lstat(entry)
+    } catch (error) {
+      const code = errorCode(error)
+      if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: true, path: entry, exists: false }
+      return { ok: false, reason: `Cannot access ${entry} (${code ?? 'unknown error'}).` }
+    }
+    const parent = P.dirname(entry)
+    try {
+      if (!stats.isSymbolicLink()) {
+        const real = await this.fs.realpath(entry)
+        if (!samePath(P.dirname(real), parent, this.platform)) {
+          return { ok: false, reason: `${entry} changed while it was being checked.` }
+        }
+        return { ok: true, path: real, exists: true }
+      }
+      const name = foldCase(P.basename(entry), this.platform)
+      const match = (await this.fs.readdir(parent)).find((n) => foldCase(n, this.platform) === name)
+      if (match === undefined) {
+        return {
+          ok: false,
+          reason: `${entry} is a short (8.3) or alias name for a link; use its full name.`,
+        }
+      }
+      return { ok: true, path: P.join(parent, match), exists: true }
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `Cannot access ${entry} (${errorCode(error) ?? 'unknown error'}).`,
+      }
+    }
   }
 
   /**

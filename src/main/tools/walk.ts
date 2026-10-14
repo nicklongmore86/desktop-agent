@@ -1,6 +1,8 @@
-import { promises as fs } from 'node:fs'
+import { promises as fs, type BigIntStats } from 'node:fs'
 import type { PathGuard } from '../permissions/guard'
+import { samePath } from '../permissions/paths'
 import { ToolFailure } from './define'
+import { sameIdentity, type Identity } from './safe-fs'
 
 export type EntryKind = 'file' | 'dir' | 'symlink' | 'other'
 
@@ -14,6 +16,9 @@ export interface WalkEntry {
   kind: EntryKind
   size: number
   mtimeMs: number
+  nlink: number
+  /** Device and inode at listing time; reads check the opened file against it. */
+  id: Identity
 }
 
 export interface WalkOptions {
@@ -24,25 +29,51 @@ export interface WalkOptions {
   skipDirs?: ReadonlySet<string>
   /** Called for every entry hidden by the blocklist (not yielded, never descended). */
   onBlocked?: (path: string) => void
-  /** Called for folders that could not be read. */
-  onUnreadable?: (path: string) => void
+  /**
+   * Called for every folder that could not be listed or re-verified and every
+   * entry that could not be stat'ed. The walk skips them and carries on;
+   * callers that need a complete picture must treat any call as a failure.
+   */
+  onError?: (path: string, reason: string) => void
 }
 
-function kindOf(stats: {
-  isFile(): boolean
-  isDirectory(): boolean
-  isSymbolicLink(): boolean
-}): EntryKind {
+function kindOf(stats: BigIntStats): EntryKind {
   if (stats.isSymbolicLink()) return 'symlink'
   if (stats.isDirectory()) return 'dir'
   if (stats.isFile()) return 'file'
   return 'other'
 }
 
+function reasonOf(error: unknown): string {
+  return (error as NodeJS.ErrnoException).code ?? 'unknown error'
+}
+
+/**
+ * Checks a folder immediately before listing it: still a real folder (not a
+ * link), still the same inode as when its parent listed it, and its real
+ * path is still itself (no parent was swapped for a link).
+ */
+async function reverify(
+  dir: string,
+  guard: PathGuard,
+  expected?: Identity,
+): Promise<string | null> {
+  try {
+    const stats = await fs.lstat(dir, { bigint: true })
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return 'no longer a folder'
+    if (expected && !sameIdentity(stats, expected)) return 'replaced while listing'
+    if (!samePath(await fs.realpath(dir), dir, guard.platform)) return 'moved behind a link'
+    return null
+  } catch (error) {
+    return reasonOf(error)
+  }
+}
+
 /**
  * Depth-first walk of a resolved folder, in name order. Never follows
- * symlinks or junctions, so every yielded path is a real path below `start`,
- * and skips anything on the blocklist. Stops early when the signal aborts.
+ * symlinks or junctions, re-verifies each folder just before listing it, and
+ * skips anything on the blocklist, so every yielded path is a real path
+ * below `start`. Stops early when the signal aborts.
  */
 export async function* walk(
   start: string,
@@ -50,12 +81,22 @@ export async function* walk(
   options: WalkOptions,
 ): AsyncGenerator<WalkEntry> {
   const P = guard.path
-  async function* visit(dir: string, relDir: string, depth: number): AsyncGenerator<WalkEntry> {
+  async function* visit(
+    dir: string,
+    relDir: string,
+    depth: number,
+    expected?: Identity,
+  ): AsyncGenerator<WalkEntry> {
+    const problem = await reverify(dir, guard, expected)
+    if (problem) {
+      options.onError?.(dir, problem)
+      return
+    }
     let names: string[]
     try {
       names = (await fs.readdir(dir)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    } catch {
-      options.onUnreadable?.(dir)
+    } catch (error) {
+      options.onError?.(dir, reasonOf(error))
       return
     }
     for (const name of names) {
@@ -65,10 +106,11 @@ export async function* walk(
         options.onBlocked?.(path)
         continue
       }
-      let stats: Awaited<ReturnType<typeof fs.lstat>>
+      let stats: BigIntStats
       try {
-        stats = await fs.lstat(path)
-      } catch {
+        stats = await fs.lstat(path, { bigint: true })
+      } catch (error) {
+        options.onError?.(path, reasonOf(error))
         continue
       }
       const rel = relDir === '' ? name : `${relDir}/${name}`
@@ -79,11 +121,13 @@ export async function* walk(
         name,
         depth,
         kind,
-        size: stats.size,
-        mtimeMs: stats.mtimeMs,
+        size: Number(stats.size),
+        mtimeMs: Number(stats.mtimeMs),
+        nlink: Number(stats.nlink),
+        id: { dev: stats.dev, ino: stats.ino },
       }
       if (kind === 'dir' && depth < options.maxDepth && !options.skipDirs?.has(name)) {
-        yield* visit(path, rel, depth + 1)
+        yield* visit(path, rel, depth + 1, stats)
       }
     }
   }
@@ -92,9 +136,10 @@ export async function* walk(
 
 /**
  * Checks a folder for blocklisted entries before it is moved or deleted: a
- * move or delete must never carry protected files along. Throws ToolFailure
- * when one is found, when the folder has more than `limit` entries (too big
- * to check), or when the walk is cancelled.
+ * move or delete must never carry protected files along. Fails closed:
+ * throws ToolFailure when a protected entry is found, when anything inside
+ * cannot be listed or stat'ed, when the folder has more than `limit` entries
+ * (too big to check), or when the walk is cancelled.
  */
 export async function assertNoBlockedInside(
   dir: string,
@@ -102,19 +147,32 @@ export async function assertNoBlockedInside(
   limit: number,
   signal: AbortSignal,
 ): Promise<void> {
-  const found: string[] = []
+  const blocked: string[] = []
+  const errors: string[] = []
   let count = 0
   for await (const _entry of walk(dir, guard, {
     maxDepth: Number.POSITIVE_INFINITY,
     signal,
-    onBlocked: (p) => found.push(p),
+    onBlocked: (p) => blocked.push(p),
+    onError: (p, reason) => errors.push(`${p} (${reason})`),
   })) {
-    if (found.length > 0) break
+    if (blocked.length > 0 || errors.length > 0) break
     if (++count > limit) {
-      throw new ToolFailure(`${dir} has too many entries to check for protected files.`)
+      throw new ToolFailure(
+        `${dir} has too many entries to check for protected files.`,
+        'too-large',
+      )
     }
   }
   // An aborted walk proves nothing.
-  if (signal.aborted) throw new ToolFailure('Cancelled.')
-  if (found.length > 0) throw new ToolFailure(`${dir} contains a protected item: ${found[0] ?? ''}`)
+  if (signal.aborted) throw new ToolFailure('Cancelled.', 'cancelled')
+  if (blocked.length > 0) {
+    throw new ToolFailure(`${dir} contains a protected item: ${blocked[0] ?? ''}`, 'protected')
+  }
+  if (errors.length > 0) {
+    throw new ToolFailure(
+      `Could not check everything inside ${dir} for protected files: ${errors[0] ?? ''}. Nothing was done.`,
+      'protected',
+    )
+  }
 }

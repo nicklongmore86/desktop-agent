@@ -1,12 +1,13 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   exists,
   fakeContext,
   makeSandbox,
   put,
   trySymlink,
+  windowsShortPath,
   type Sandbox,
 } from '../permissions/test-support'
 import { toolHarness, type ToolHarness } from './test-support'
@@ -172,18 +173,99 @@ describe('write_file', () => {
     expect(requests[0]?.summary).toMatch(/existing file is binary/)
   })
 
-  it('caps the content size and the preview size', async () => {
-    h = toolHarness(sb, { limits: { maxWriteBytes: 10, maxDiffBytes: 40 } })
-    const { ctx, requests } = fakeContext(false)
+  it('caps the content size', async () => {
+    h = toolHarness(sb, { limits: { maxWriteBytes: 10 } })
+    const { ctx, requests } = fakeContext(true)
     expect(
       await h
         .tool('write_file')
         .execute({ path: path.join(sb.root, 'big'), content: 'x'.repeat(11) }, ctx),
     ).toMatchObject({ isError: true, content: /write limit/ })
-    await h
+    expect(requests).toEqual([])
+  })
+
+  it('always shows the complete diff, and refuses writes whose diff is too big to review', async () => {
+    const big = Array.from({ length: 30_000 }, (_, i) => `line ${String(i)}`).join('\n')
+    const { ctx, requests } = fakeContext(true)
+    const file = path.join(sb.root, 'big.txt')
+    const r = await h.tool('write_file').execute({ path: file, content: big }, ctx)
+    expect(r).toMatchObject({
+      isError: true,
+      content: /over the 256\.0 KB the user can review.*smaller edits/s,
+    })
+    expect(requests).toEqual([])
+    expect(await exists(file)).toBe(false)
+    expect(h.audit.entries[0]).toMatchObject({ error: 'too-large' })
+
+    // Under the cap, every line of the payload is in the preview.
+    const medium = Array.from({ length: 5000 }, (_, i) => `row ${String(i)}`).join('\n')
+    await h.tool('write_file').execute({ path: file, content: medium }, ctx)
+    const detail = requests[0]?.detail ?? ''
+    expect(detail).not.toMatch(/truncated/)
+    expect(detail).toContain('+row 0\n')
+    expect(detail).toContain('+row 4999')
+    expect(await fs.readFile(file, 'utf8')).toBe(medium)
+  })
+
+  it('refuses the write if the file was modified while the user was reviewing', async () => {
+    const file = path.join(sb.root, 'a.txt')
+    await put(file, 'original\n')
+    const { ctx } = fakeContext(async () => {
+      await fs.writeFile(file, 'edited by someone else\n')
+      return true
+    })
+    const r = await h.tool('write_file').execute({ path: file, content: 'mine\n' }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /changed after the diff was shown/ })
+    expect(await fs.readFile(file, 'utf8')).toBe('edited by someone else\n')
+    expect(h.audit.entries[0]).toMatchObject({ approval: 'approved', error: 'changed' })
+  })
+
+  it('refuses the write if the file was replaced with identical bytes while reviewing', async () => {
+    const file = path.join(sb.root, 'a.txt')
+    await put(file, 'same\n')
+    const { ctx } = fakeContext(async () => {
+      await fs.rename(file, path.join(sb.root, 'a.old'))
+      await put(file, 'same\n')
+      return true
+    })
+    const r = await h.tool('write_file').execute({ path: file, content: 'new\n' }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /changed/ })
+    expect(await fs.readFile(file, 'utf8')).toBe('same\n')
+  })
+
+  it('refuses to create a file that appeared while the user was reviewing', async () => {
+    const file = path.join(sb.root, 'new.txt')
+    const { ctx } = fakeContext(async () => {
+      await put(file, 'someone else\n')
+      return true
+    })
+    const r = await h.tool('write_file').execute({ path: file, content: 'mine\n' }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /changed after the diff was shown/ })
+    expect(await fs.readFile(file, 'utf8')).toBe('someone else\n')
+  })
+
+  it('refuses the write if the file was deleted while the user was reviewing', async () => {
+    const file = path.join(sb.root, 'a.txt')
+    await put(file, 'original\n')
+    const { ctx } = fakeContext(async () => {
+      await fs.rm(file)
+      return true
+    })
+    const r = await h.tool('write_file').execute({ path: file, content: 'mine\n' }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /changed/ })
+    expect(await exists(file)).toBe(false)
+  })
+
+  it('refuses to overwrite (or even preview) a hard-linked file', async () => {
+    await put(path.join(sb.outside, 'target.txt'), 'outside content')
+    await fs.link(path.join(sb.outside, 'target.txt'), path.join(sb.root, 'alias.txt'))
+    const { ctx, requests } = fakeContext(true)
+    const r = await h
       .tool('write_file')
-      .execute({ path: path.join(sb.root, 'ok'), content: 'a\nb\nc\nd\ne\n' }, ctx)
-    expect(requests[0]?.detail).toMatch(/diff truncated/)
+      .execute({ path: path.join(sb.root, 'alias.txt'), content: 'pwned' }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /other hard links/ })
+    expect(requests).toEqual([])
+    expect(await fs.readFile(path.join(sb.outside, 'target.txt'), 'utf8')).toBe('outside content')
   })
 
   it('refuses to replace a folder', async () => {
@@ -304,6 +386,87 @@ describe('move_file', () => {
     expect(requests).toEqual([])
   })
 
+  it('refuses to move a hard-linked file, or overwrite one', async () => {
+    await put(path.join(sb.outside, 'target.txt'), 't')
+    await fs.link(path.join(sb.outside, 'target.txt'), path.join(sb.root, 'alias.txt'))
+    await put(path.join(sb.root, 'plain.txt'), 'p')
+    const { ctx, requests } = fakeContext(true)
+    const move = (source: string, destination: string) =>
+      h.tool('move_file').execute(
+        {
+          source: path.join(sb.root, source),
+          destination: path.join(sb.root, destination),
+          overwrite: true,
+        },
+        ctx,
+      )
+    expect(await move('alias.txt', 'moved.txt')).toMatchObject({
+      isError: true,
+      content: /hard links/,
+    })
+    expect(await move('plain.txt', 'alias.txt')).toMatchObject({
+      isError: true,
+      content: /hard links/,
+    })
+    expect(requests).toEqual([])
+  })
+
+  it('fails closed if the folder cannot be fully checked after approval', async () => {
+    await put(path.join(sb.root, 'proj', 'sub', 'a.txt'), 'a')
+    const realReaddir = fs.readdir.bind(fs)
+    const { ctx, requests } = fakeContext(() => {
+      vi.spyOn(fs, 'readdir').mockImplementation(((p: string) =>
+        p.endsWith('sub')
+          ? Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' }))
+          : realReaddir(p)) as typeof fs.readdir)
+      return true
+    })
+    const r = await h
+      .tool('move_file')
+      .execute(
+        { source: path.join(sb.root, 'proj'), destination: path.join(sb.root, 'moved') },
+        ctx,
+      )
+    vi.restoreAllMocks()
+    expect(requests).toHaveLength(1)
+    expect(r).toMatchObject({ isError: true, content: /Could not check everything/ })
+    expect(await exists(path.join(sb.root, 'proj', 'sub', 'a.txt'))).toBe(true)
+    expect(await exists(path.join(sb.root, 'moved'))).toBe(false)
+  })
+
+  it.skipIf(process.platform !== 'win32')(
+    'refuses an 8.3 short-name alias of a protected file (Windows only: needs NTFS short names)',
+    async (ctx) => {
+      const secret = path.join(sb.root, '.env.production')
+      await put(secret, 'SECRET=1')
+      await put(path.join(sb.root, 'plain.txt'), 'p')
+      const alias = windowsShortPath(secret)
+      if (alias === null) {
+        ctx.skip()
+        return
+      }
+      const { ctx: call, requests } = fakeContext(true)
+      for (const input of [
+        { source: alias, destination: path.join(sb.root, 'visible.txt') },
+        { source: path.join(sb.root, 'plain.txt'), destination: alias, overwrite: true },
+      ]) {
+        expect(await h.tool('move_file').execute(input, call), JSON.stringify(input)).toMatchObject(
+          {
+            isError: true,
+            content: /blocked/,
+          },
+        )
+      }
+      expect(await h.tool('delete_path').execute({ path: alias }, call)).toMatchObject({
+        isError: true,
+        content: /blocked/,
+      })
+      expect(requests).toEqual([])
+      expect(h.trashed).toEqual([])
+      expect(await fs.readFile(secret, 'utf8')).toBe('SECRET=1')
+    },
+  )
+
   it('moves a link itself, not its target', async () => {
     const link = path.join(sb.root, 'out')
     expect(await trySymlink(sb.outside, link, 'dir')).toBe(true)
@@ -356,6 +519,32 @@ describe('delete_path', () => {
         isError: true,
       })
     }
+    expect(requests).toEqual([])
+    expect(h.trashed).toEqual([])
+  })
+
+  it('refuses to delete a hard-linked file', async () => {
+    await put(path.join(sb.outside, 'target.txt'), 't')
+    await fs.link(path.join(sb.outside, 'target.txt'), path.join(sb.root, 'alias.txt'))
+    const { ctx, requests } = fakeContext(true)
+    expect(
+      await h.tool('delete_path').execute({ path: path.join(sb.root, 'alias.txt') }, ctx),
+    ).toMatchObject({ isError: true, content: /hard links/ })
+    expect(requests).toEqual([])
+    expect(h.trashed).toEqual([])
+  })
+
+  it('fails closed if the folder cannot be fully checked, before approval', async () => {
+    await put(path.join(sb.root, 'proj', 'sub', 'a.txt'), 'a')
+    const realReaddir = fs.readdir.bind(fs)
+    vi.spyOn(fs, 'readdir').mockImplementation(((p: string) =>
+      p.endsWith('sub')
+        ? Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' }))
+        : realReaddir(p)) as typeof fs.readdir)
+    const { ctx, requests } = fakeContext(true)
+    const r = await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, ctx)
+    vi.restoreAllMocks()
+    expect(r).toMatchObject({ isError: true, content: /Could not check everything/ })
     expect(requests).toEqual([])
     expect(h.trashed).toEqual([])
   })

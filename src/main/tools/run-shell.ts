@@ -2,8 +2,9 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import type { Readable } from 'node:stream'
 import { redactSecrets } from '../permissions/audit'
-import { ToolFailure, ToolInputError, errorResult, type ToolSpec } from './define'
+import { ToolFailure, ToolInputError, errorResult, type RunResult, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
+import { sameIdentity, type Identity } from './safe-fs'
 import { formatBytes } from './text'
 
 /** The parts of a ChildProcess the shell tool uses. */
@@ -34,48 +35,95 @@ export type ShellSpawner = (
   options: ShellSpawnOptions,
 ) => ShellProcess
 
-export type KillTree = (process: ShellProcess) => void
+/** The outcome of killing a process tree: whether the killer reports success. */
+export type KillResult = { ok: true } | { ok: false; reason: string }
+
+export type KillTree = (process: ShellProcess) => Promise<KillResult>
 
 export const defaultSpawner: ShellSpawner = (file, args, options) => nodeSpawn(file, args, options)
 
-/** The exact program and arguments a command runs with on `platform`. */
+const WINDOWS_ROOT_PATTERN = /^[A-Za-z]:\\[^<>:"/\\|?*\0]+(\\[^<>:"/\\|?*\0]+)*$/
+
+/**
+ * The Windows directory, from %SystemRoot% when it is a plain absolute local
+ * path, else C:\Windows. Programs are started from here by absolute path so
+ * that a powershell.exe or taskkill.exe planted in the working folder or on
+ * PATH is never picked up.
+ */
+export function windowsRoot(env: NodeJS.ProcessEnv): string {
+  const candidate = env['SystemRoot'] ?? env['SYSTEMROOT'] ?? env['windir'] ?? ''
+  return WINDOWS_ROOT_PATTERN.test(candidate) ? candidate.replace(/\\+$/, '') : 'C:\\Windows'
+}
+
+/** The exact program (an absolute path) and arguments a command runs with on `platform`. */
 export function shellInvocation(
   command: string,
   platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
 ): { file: string; args: string[] } {
   return platform === 'win32'
-    ? { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', command] }
+    ? {
+        file: `${windowsRoot(env)}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+        args: ['-NoProfile', '-NonInteractive', '-Command', command],
+      }
     : { file: '/bin/sh', args: ['-c', command] }
 }
 
 /**
- * Kills a shell and everything it started: `taskkill /T /F` on Windows, a
+ * Kills a shell and everything it started: `taskkill /T /F` on Windows (by
+ * absolute path, with a minimal environment, and checking its exit code), a
  * SIGKILL to the process group elsewhere (the shell is its group leader).
+ * Without a Job Object, a Windows grandchild whose parent already exited can
+ * escape taskkill /T; the result says so rather than claiming success.
  */
 export function defaultKillTree(
   platform: NodeJS.Platform,
   spawn: ShellSpawner,
-  cwd: () => string,
+  env: NodeJS.ProcessEnv,
 ): KillTree {
   return (child) => {
     const pid = child.pid
-    if (pid === undefined) return
-    if (platform === 'win32') {
-      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
-        cwd: cwd(),
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-        detached: false,
+    if (pid === undefined) return Promise.resolve({ ok: false, reason: 'the process has no id' })
+    if (platform !== 'win32') {
+      try {
+        process.kill(-pid, 'SIGKILL')
+        return Promise.resolve({ ok: true })
+      } catch (groupError) {
+        return Promise.resolve(
+          child.kill('SIGKILL')
+            ? { ok: true }
+            : { ok: false, reason: `could not signal the process group (${String(groupError)})` },
+        )
+      }
+    }
+    const root = windowsRoot(env)
+    return new Promise<KillResult>((resolve) => {
+      let killer: ShellProcess
+      try {
+        killer = spawn(`${root}\\System32\\taskkill.exe`, ['/PID', String(pid), '/T', '/F'], {
+          cwd: `${root}\\System32`,
+          env: { SystemRoot: root, windir: root },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+          detached: false,
+        })
+      } catch (error) {
+        resolve({ ok: false, reason: `taskkill could not start: ${(error as Error).message}` })
+        return
+      }
+      killer.stdout?.resume()
+      killer.stderr?.resume()
+      killer.once('error', (error) => {
+        resolve({ ok: false, reason: `taskkill could not start: ${error.message}` })
       })
-      killer.once('error', () => child.kill('SIGKILL'))
-      return
-    }
-    try {
-      process.kill(-pid, 'SIGKILL')
-    } catch {
-      child.kill('SIGKILL')
-    }
+      killer.once('close', (code) => {
+        resolve(
+          code === 0
+            ? { ok: true }
+            : { ok: false, reason: `taskkill exited with code ${String(code)}` },
+        )
+      })
+    })
   }
 }
 
@@ -188,10 +236,10 @@ export function runShellTool(deps: ResolvedDeps): ToolSpec<Input> {
     }),
     async run(input, call) {
       const { path: cwd, exists } = await call.resolve(input.cwd)
-      if (!exists || !(await fs.stat(cwd)).isDirectory())
-        throw new ToolFailure(`Not a folder: ${cwd}`)
+      const before = exists ? await folderIdentity(cwd) : null
+      if (!before) throw new ToolFailure(`Not a folder: ${cwd}`, 'not-a-folder')
 
-      const { file, args } = shellInvocation(input.command, platform)
+      const { file, args } = shellInvocation(input.command, platform, deps.env)
       const detail = `cwd: ${cwd}\nshell: ${[file, ...args.slice(0, -1)].join(' ')}\n\n${input.command}`
       const approved = await call.approve({
         kind: 'shell',
@@ -199,15 +247,37 @@ export function runShellTool(deps: ResolvedDeps): ToolSpec<Input> {
         detail,
       })
       if (!approved) {
-        return errorResult('The user declined to run the command. Nothing was run.')
+        return errorResult('The user declined to run the command. Nothing was run.', 'declined')
       }
+
+      // Immediately before spawning: the folder must still be granted, resolve to the same
+      // path and be the same folder (not swapped for another) as the one the user approved.
+      const again = await call.resolve(input.cwd)
+      const after = again.exists ? await folderIdentity(again.path) : null
+      if (again.path !== cwd || !after || !sameIdentity(after, before)) {
+        throw new ToolFailure(
+          `${cwd} changed after the command was approved; nothing was run.`,
+          'changed',
+        )
+      }
+      call.throwIfAborted()
 
       return runProcess(file, args, cwd, input.timeoutMs, call.ctx.signal, deps)
     },
   }
 }
 
-const KILL_GRACE_MS = 5000
+/** Device and inode of a real (non-link) folder, or null. */
+async function folderIdentity(path: string): Promise<Identity | null> {
+  try {
+    const stats = await fs.lstat(path, { bigint: true })
+    return stats.isDirectory() && !stats.isSymbolicLink()
+      ? { dev: stats.dev, ino: stats.ino }
+      : null
+  } catch {
+    return null
+  }
+}
 
 async function runProcess(
   file: string,
@@ -216,7 +286,7 @@ async function runProcess(
   timeoutMs: number,
   signal: AbortSignal,
   deps: ResolvedDeps,
-): Promise<{ content: string; isError?: boolean }> {
+): Promise<RunResult> {
   const stdout = new OutputCollector(deps.limits.maxShellOutputBytes)
   const stderr = new OutputCollector(deps.limits.maxShellOutputBytes)
   let child: ShellProcess
@@ -229,7 +299,7 @@ async function runProcess(
       detached: deps.platform !== 'win32',
     })
   } catch (error) {
-    return errorResult(`Could not start ${file}: ${(error as Error).message}`)
+    return errorResult(`Could not start ${file}: ${(error as Error).message}`, 'spawn-failed')
   }
   child.stdout?.on('data', (chunk: Buffer) => {
     stdout.push(chunk)
@@ -238,7 +308,11 @@ async function runProcess(
     stderr.push(chunk)
   })
 
-  const state: { stoppedBy: 'timeout' | 'cancel' | null } = { stoppedBy: null }
+  const graceMs = deps.limits.killGraceMs
+  const state: { stoppedBy: 'timeout' | 'cancel' | null; kill: Promise<KillResult> | null } = {
+    stoppedBy: null,
+    kill: null,
+  }
   const outcome = await new Promise<
     | { kind: 'exit'; code: number | null; signal: NodeJS.Signals | null }
     | { kind: 'error'; error: Error }
@@ -248,10 +322,13 @@ async function runProcess(
     const stop = (reason: 'timeout' | 'cancel'): void => {
       if (state.stoppedBy) return
       state.stoppedBy = reason
-      deps.killTree(child)
+      state.kill = deps.killTree(child).catch((error: unknown) => ({
+        ok: false as const,
+        reason: error instanceof Error ? error.message : String(error),
+      }))
       graceTimer = setTimeout(() => {
         resolve({ kind: 'unresponsive' })
-      }, KILL_GRACE_MS)
+      }, graceMs)
     }
     const timer = setTimeout(() => {
       stop('timeout')
@@ -277,20 +354,40 @@ async function runProcess(
   })
 
   const streams = `--- stdout ---\n${stdout.text()}\n--- stderr ---\n${stderr.text()}`
-  if (outcome.kind === 'error') {
-    return errorResult(`Could not run ${file}: ${outcome.error.message}`)
+  if (outcome.kind === 'error' && !state.stoppedBy) {
+    return errorResult(`Could not run ${file}: ${outcome.error.message}`, 'spawn-failed')
   }
-  if (state.stoppedBy === 'timeout') {
+  if (!state.stoppedBy || !state.kill) {
+    const status =
+      outcome.kind === 'exit' && outcome.code !== null
+        ? `exit code: ${String(outcome.code)}`
+        : `killed by signal ${outcome.kind === 'exit' ? (outcome.signal ?? 'unknown') : 'unknown'}`
+    return { content: `${status}\ncwd: ${cwd}\n${streams}` }
+  }
+
+  // Report the kill honestly: only claim the tree is gone if the killer said so and the
+  // shell actually exited.
+  const killed = await Promise.race([
+    state.kill,
+    new Promise<KillResult>((resolve) =>
+      setTimeout(() => {
+        resolve({ ok: false, reason: 'the kill command did not finish' })
+      }, graceMs),
+    ),
+  ])
+  const what =
+    state.stoppedBy === 'timeout' ? `Timed out after ${String(timeoutMs / 1000)} s` : 'Cancelled'
+  if (killed.ok && outcome.kind !== 'unresponsive') {
     return errorResult(
-      `Timed out after ${String(timeoutMs / 1000)} s; the process was killed.\n${streams}`,
+      `${what}; the process tree was killed.\n${streams}`,
+      state.stoppedBy === 'timeout' ? 'timeout' : 'cancelled',
     )
   }
-  if (state.stoppedBy === 'cancel')
-    return errorResult(`Cancelled; the process was killed.\n${streams}`)
-  if (outcome.kind === 'unresponsive') return errorResult(`The process did not exit.\n${streams}`)
-  const status =
-    outcome.code !== null
-      ? `exit code: ${String(outcome.code)}`
-      : `killed by signal ${outcome.signal ?? 'unknown'}`
-  return { content: `${status}\ncwd: ${cwd}\n${streams}` }
+  const reason = !killed.ok
+    ? killed.reason
+    : `the shell did not exit within ${String(graceMs / 1000)} s of being killed`
+  return errorResult(
+    `${what}. The process tree may still be running: ${reason}.\n${streams}`,
+    'kill-failed',
+  )
 }

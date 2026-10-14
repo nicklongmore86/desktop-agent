@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import { isInside, samePath } from '../permissions/paths'
 import { ToolFailure, errorResult, type ToolCall, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
+import { assertSingleLink, openVerified } from './safe-fs'
 import { assertNoBlockedInside } from './walk'
 
 interface Input {
@@ -48,7 +49,10 @@ export function moveFileTool(deps: ResolvedDeps): ToolSpec<Input> {
           detail: `${plan.source}\n→ ${plan.destination}`,
         }))
       ) {
-        return errorResult(`The user declined moving ${plan.source}. Nothing was changed.`)
+        return errorResult(
+          `The user declined moving ${plan.source}. Nothing was changed.`,
+          'declined',
+        )
       }
       const again = await planMove(input, call)
       if (
@@ -56,7 +60,10 @@ export function moveFileTool(deps: ResolvedDeps): ToolSpec<Input> {
         again.destination !== plan.destination ||
         again.replaces !== plan.replaces
       ) {
-        throw new ToolFailure('The paths changed while waiting for approval; nothing was moved.')
+        throw new ToolFailure(
+          'The paths changed while waiting for approval; nothing was moved.',
+          'changed',
+        )
       }
 
       await fs.mkdir(guard.path.dirname(plan.destination), { recursive: true })
@@ -82,31 +89,49 @@ export function moveFileTool(deps: ResolvedDeps): ToolSpec<Input> {
     call: ToolCall,
   ): Promise<{ source: string; destination: string; replaces: boolean }> {
     const source = await call.resolve(input.source, { followFinalSymlink: false })
-    if (!source.exists) throw new ToolFailure(`Not found: ${source.path}`)
+    if (!source.exists) throw new ToolFailure(`Not found: ${source.path}`, 'not-found')
     if (guard.containsRoot(source.path)) {
-      throw new ToolFailure(`${source.path} is or contains a granted folder and cannot be moved.`)
+      throw new ToolFailure(
+        `${source.path} is or contains a granted folder and cannot be moved.`,
+        'protected',
+      )
     }
     const destination = await call.resolve(input.destination, { followFinalSymlink: false })
     if (destination.path === source.path)
-      throw new ToolFailure('Source and destination are the same.')
+      throw new ToolFailure('Source and destination are the same.', 'invalid-input')
     // A case-only rename on Windows/macOS resolves to the same entry: not an overwrite.
     const sameEntry = samePath(destination.path, source.path, platform)
     if (!sameEntry && isInside(destination.path, source.path, platform)) {
-      throw new ToolFailure('Cannot move a folder into itself.')
+      throw new ToolFailure('Cannot move a folder into itself.', 'invalid-input')
     }
     const sourceStats = await fs.lstat(source.path)
     if (sourceStats.isDirectory()) {
       await assertNoBlockedInside(source.path, guard, limits.maxScanEntries, call.ctx.signal)
+    } else {
+      await assertMovableEntry(source.path, sourceStats.isFile())
     }
     let replaces = false
     if (destination.exists && !sameEntry) {
-      if (!input.overwrite) throw new ToolFailure(`${destination.path} already exists.`)
+      if (!input.overwrite) {
+        throw new ToolFailure(`${destination.path} already exists.`, 'exists')
+      }
       const destStats = await fs.lstat(destination.path)
       if (destStats.isDirectory() || sourceStats.isDirectory()) {
-        throw new ToolFailure('overwrite only replaces a file with a file.')
+        throw new ToolFailure('overwrite only replaces a file with a file.', 'invalid-input')
       }
+      await assertMovableEntry(destination.path, destStats.isFile())
       replaces = true
     }
     return { source: source.path, destination: destination.path, replaces }
+  }
+
+  /** A regular file must open as itself and have no other hard links; links are checked by lstat. */
+  async function assertMovableEntry(path: string, isFile: boolean): Promise<void> {
+    if (!isFile) {
+      assertSingleLink(path, await fs.lstat(path, { bigint: true }))
+      return
+    }
+    const { handle } = await openVerified(guard, path, 'read')
+    await handle.close()
   }
 }

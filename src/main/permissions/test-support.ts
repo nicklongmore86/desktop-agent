@@ -1,4 +1,5 @@
 // Helpers for the permissions and tools tests. Not imported by app code.
+import { spawnSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -65,6 +66,22 @@ export async function trySymlink(
   }
 }
 
+/**
+ * The 8.3 short-name form of an existing path on Windows (e.g. ...\\ENV~1.PRO for
+ * .env.production), or null when not on Windows or the volume has short names disabled.
+ */
+export function windowsShortPath(p: string): string | null {
+  if (process.platform !== 'win32') return null
+  const root = process.env['SystemRoot'] ?? 'C:\\Windows'
+  const out = spawnSync(
+    `${root}\\System32\\cmd.exe`,
+    ['/d', '/c', `for %I in ("${p}") do @echo %~sI`],
+    { encoding: 'utf8', windowsVerbatimArguments: true },
+  ).stdout.trim()
+  const short = path.win32.basename(out)
+  return out !== '' && short.toLowerCase() !== path.win32.basename(p).toLowerCase() ? out : null
+}
+
 export class MemoryAudit implements AuditSink {
   readonly entries: Omit<AuditEntry, 'ts'>[] = []
 
@@ -100,16 +117,20 @@ function enoent(p: string): NodeJS.ErrnoException {
 
 /**
  * An in-memory Windows file system for the guard. `entries` are real paths
- * that exist (folders and files); `links` map a link's path to its target.
- * Lookups ignore case and return the stored case, like NTFS. A link target
- * starting with `\\` stands for a network share and is not checked further.
+ * that exist (folders and files); `links` map a link's path to its target;
+ * `shortNames` map an 8.3 alias path to the long path it names. Lookups
+ * ignore case and return the stored case, like NTFS. A link target starting
+ * with `\\` stands for a network share and is not checked further.
  */
 export function fakeWindowsFs(
   entries: readonly string[],
   links: Record<string, string> = {},
+  shortNames: Record<string, string> = {},
 ): GuardFs {
-  const real = new Map(entries.map((p) => [p.toLowerCase(), p]))
-  const linkMap = new Map(Object.entries(links).map(([k, v]) => [k.toLowerCase(), v]))
+  const lower = (p: string) => path.win32.normalize(p).toLowerCase()
+  const real = new Map(entries.map((p) => [lower(p), p]))
+  const linkMap = new Map(Object.entries(links).map(([k, v]) => [lower(k), { path: k, target: v }]))
+  const aliasMap = new Map(Object.entries(shortNames).map(([k, v]) => [lower(k), v]))
   const resolve = (p: string): string => {
     const parts = path.win32
       .normalize(p)
@@ -122,12 +143,13 @@ export function fakeWindowsFs(
         current = `${current}\\${part}`
         continue
       }
-      const candidate = `${current}\\${part}`
-      const key = candidate.toLowerCase()
-      const target = linkMap.get(key)
-      if (target !== undefined) {
-        network = target.startsWith('\\\\')
-        current = network ? target : resolve(target)
+      const asGiven = lower(`${current}\\${part}`)
+      const alias = aliasMap.get(asGiven)
+      const key = alias === undefined ? asGiven : lower(alias)
+      const link = linkMap.get(key)
+      if (link !== undefined) {
+        network = link.target.startsWith('\\\\')
+        current = network ? link.target : resolve(link.target)
         continue
       }
       const stored = real.get(key)
@@ -139,8 +161,18 @@ export function fakeWindowsFs(
   return {
     realpath: async (p) => Promise.resolve().then(() => resolve(p)),
     lstat: (p) => {
-      const key = path.win32.normalize(p).toLowerCase()
-      return real.has(key) || linkMap.has(key) ? Promise.resolve({}) : Promise.reject(enoent(p))
+      const alias = aliasMap.get(lower(p))
+      const key = alias === undefined ? lower(p) : lower(alias)
+      if (linkMap.has(key)) return Promise.resolve({ isSymbolicLink: () => true })
+      if (real.has(key)) return Promise.resolve({ isSymbolicLink: () => false })
+      return Promise.reject(enoent(p))
+    },
+    readdir: async (p) => {
+      const dir = lower(await Promise.resolve().then(() => resolve(p)))
+      const children = [...real.values(), ...[...linkMap.values()].map((l) => l.path)]
+      return children
+        .filter((c) => lower(path.win32.dirname(c)) === dir)
+        .map((c) => path.win32.basename(c))
     },
   }
 }

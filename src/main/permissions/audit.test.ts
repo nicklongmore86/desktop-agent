@@ -34,6 +34,7 @@ describe('AuditLog', () => {
     expect(typeof first['ts']).toBe('string')
     expect(Number.isNaN(Date.parse(String(first['ts'])))).toBe(false)
     expect((JSON.parse(lines[1] ?? '') as { tool: string }).tool).toBe('list_dir')
+    expect(log.healthy).toBe(true)
   })
 
   it('appends to an existing log without rewriting it', async () => {
@@ -69,6 +70,8 @@ describe('AuditLog', () => {
       }),
     ).resolves.toBeUndefined()
     expect(onError).toHaveBeenCalledOnce()
+    expect(log.healthy).toBe(false)
+    expect(log.lastError).toBeInstanceOf(Error)
   })
 })
 

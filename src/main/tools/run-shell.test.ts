@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events'
+import { readFileSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeContext, makeSandbox, type Sandbox } from '../permissions/test-support'
+import { PathGuard } from '../permissions/guard'
 import {
   defaultKillTree,
   shellEnv,
@@ -10,6 +12,7 @@ import {
   type ShellProcess,
   type ShellSpawnOptions,
   type ShellSpawner,
+  windowsRoot,
 } from './run-shell'
 import { toolHarness } from './test-support'
 
@@ -51,6 +54,8 @@ function fakeSpawner(script: (child: FakeProcess, call: SpawnCall) => void): {
   return { spawn, calls }
 }
 
+const okKill = () => Promise.resolve({ ok: true as const })
+
 let sb: Sandbox
 
 beforeEach(async () => {
@@ -69,11 +74,13 @@ describe('run_shell', () => {
       child.stderr.write('warn\n')
       child.exit(3)
     })
-    const h = toolHarness(sb, { spawn, killTree: vi.fn() })
+    const h = toolHarness(sb, { spawn, killTree: vi.fn(okKill) })
     const { ctx, requests } = fakeContext(true)
     const r = await h.tool('run_shell').execute({ command: 'echo hello', cwd: sb.root }, ctx)
 
-    const { file, args } = shellInvocation('echo hello', process.platform)
+    const { file, args } = shellInvocation('echo hello', process.platform, process.env)
+    // Always an absolute path: never looked up in the cwd or on PATH.
+    expect(path.isAbsolute(file)).toBe(true)
     expect(requests).toEqual([
       {
         tool: 'run_shell',
@@ -89,6 +96,8 @@ describe('run_shell', () => {
     })
     expect(h.audit.entries[0]).toMatchObject({
       tool: 'run_shell',
+      // The approved action itself is the core of the audit: exact command and cwd.
+      args: { command: 'echo hello', cwd: sb.root },
       approval: 'approved',
       outcome: 'ok',
     })
@@ -160,6 +169,7 @@ describe('run_shell', () => {
   it('kills the process tree on timeout', async () => {
     const killTree = vi.fn((child: ShellProcess) => {
       ;(child as FakeProcess).exit(null, 'SIGKILL')
+      return okKill()
     })
     const { spawn } = fakeSpawner((child) => {
       child.stdout.write('started\n')
@@ -169,13 +179,17 @@ describe('run_shell', () => {
       .tool('run_shell')
       .execute({ command: 'sleep 100', cwd: sb.root, timeoutMs: 1000 }, fakeContext().ctx)
     expect(killTree).toHaveBeenCalledOnce()
-    expect(r).toMatchObject({ isError: true, content: /Timed out after 1 s/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: /^Timed out after 1 s; the process tree was killed/,
+    })
     expect(r.content).toContain('started')
   })
 
   it('kills the process tree when the call is aborted', async () => {
     const killTree = vi.fn((child: ShellProcess) => {
       ;(child as FakeProcess).exit(null, 'SIGKILL')
+      return okKill()
     })
     const { ctx, controller } = fakeContext(true)
     const { spawn } = fakeSpawner(() => {
@@ -184,7 +198,74 @@ describe('run_shell', () => {
     const h = toolHarness(sb, { spawn, killTree })
     const r = await h.tool('run_shell').execute({ command: 'sleep 100', cwd: sb.root }, ctx)
     expect(killTree).toHaveBeenCalledOnce()
-    expect(r).toMatchObject({ isError: true, content: /Cancelled; the process was killed/ })
+    expect(r).toMatchObject({ isError: true, content: /Cancelled; the process tree was killed/ })
+    expect(h.audit.entries[0]).toMatchObject({ outcome: 'error', error: 'cancelled' })
+  })
+
+  it('says the tree may still be running when the kill fails', async () => {
+    const killTree = vi.fn((child: ShellProcess) => {
+      ;(child as FakeProcess).exit(1)
+      return Promise.resolve({ ok: false as const, reason: 'taskkill exited with code 128' })
+    })
+    const { ctx, controller } = fakeContext(true)
+    const { spawn } = fakeSpawner(() => {
+      controller.abort()
+    })
+    const h = toolHarness(sb, { spawn, killTree })
+    const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
+    expect(r).toMatchObject({
+      isError: true,
+      content:
+        /^Cancelled\. The process tree may still be running: taskkill exited with code 128\./,
+    })
+    expect(r.content).not.toMatch(/was killed/)
+    expect(h.audit.entries[0]).toMatchObject({ error: 'kill-failed' })
+  })
+
+  it('says the tree may still be running when the shell does not exit after the kill', async () => {
+    const { ctx, controller } = fakeContext(true)
+    const { spawn } = fakeSpawner(() => {
+      controller.abort()
+    })
+    const h = toolHarness(sb, { spawn, killTree: vi.fn(okKill), limits: { killGraceMs: 50 } })
+    const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
+    expect(r).toMatchObject({
+      isError: true,
+      content: /may still be running: the shell did not exit within 0\.05 s/,
+    })
+  })
+
+  it('refuses to spawn if the cwd was swapped for another folder during approval', async () => {
+    const { spawn, calls } = fakeSpawner((child) => {
+      child.exit(0)
+    })
+    const cwd = path.join(sb.root, 'work')
+    await fs.mkdir(cwd)
+    const h = toolHarness(sb, { spawn })
+    const { ctx } = fakeContext(async () => {
+      await fs.rename(cwd, path.join(sb.root, 'work-old'))
+      await fs.mkdir(cwd)
+      return true
+    })
+    const r = await h.tool('run_shell').execute({ command: 'ls', cwd }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /changed after the command was approved/ })
+    expect(calls).toEqual([])
+  })
+
+  it('refuses to spawn if the grant was revoked during approval', async () => {
+    const { spawn, calls } = fakeSpawner((child) => {
+      child.exit(0)
+    })
+    let roots = [sb.root]
+    const guard = new PathGuard({ roots: () => roots })
+    const h = toolHarness(sb, { spawn, guard })
+    const { ctx } = fakeContext(() => {
+      roots = []
+      return true
+    })
+    const r = await h.tool('run_shell').execute({ command: 'ls', cwd: sb.root }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /Access denied/ })
+    expect(calls).toEqual([])
   })
 
   it('caps output, keeping the start and the end', async () => {
@@ -231,28 +312,75 @@ describe('run_shell', () => {
 })
 
 describe('shellInvocation', () => {
-  it('uses non-interactive PowerShell on Windows and /bin/sh elsewhere', () => {
-    expect(shellInvocation('Get-Date', 'win32')).toEqual({
-      file: 'powershell.exe',
+  it('runs PowerShell by absolute path under %SystemRoot%, and /bin/sh elsewhere', () => {
+    expect(shellInvocation('Get-Date', 'win32', { SystemRoot: 'D:\\WINNT' })).toEqual({
+      file: 'D:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
       args: ['-NoProfile', '-NonInteractive', '-Command', 'Get-Date'],
     })
-    expect(shellInvocation('date', 'linux')).toEqual({ file: '/bin/sh', args: ['-c', 'date'] })
+    expect(shellInvocation('date', 'linux', {})).toEqual({ file: '/bin/sh', args: ['-c', 'date'] })
+  })
+
+  it('falls back to C:\\Windows when %SystemRoot% is missing or not a plain local path', () => {
+    for (const SystemRoot of [
+      undefined,
+      '',
+      'Windows',
+      '.\\evil',
+      '\\\\server\\share',
+      'C:\\a;b|c',
+      'C:',
+    ]) {
+      expect(windowsRoot(SystemRoot === undefined ? {} : { SystemRoot }), String(SystemRoot)).toBe(
+        'C:\\Windows',
+      )
+    }
+    expect(windowsRoot({ windir: 'E:\\Windows' })).toBe('E:\\Windows')
   })
 })
 
 describe('defaultKillTree', () => {
-  it('uses taskkill /T /F on Windows', () => {
-    const { spawn, calls } = fakeSpawner(() => undefined)
-    defaultKillTree('win32', spawn, () => 'C:\\')(new FakeProcess())
-    expect(calls.map((c) => [c.file, c.args])).toEqual([['taskkill', ['/pid', '4242', '/T', '/F']]])
+  it('runs taskkill /T /F by absolute path with a minimal environment', async () => {
+    const { spawn, calls } = fakeSpawner((child) => {
+      child.exit(0)
+    })
+    const result = await defaultKillTree('win32', spawn, {
+      SystemRoot: 'C:\\Windows',
+      PATH: 'C:\\evil',
+    })(new FakeProcess())
+    expect(result).toEqual({ ok: true })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      file: 'C:\\Windows\\System32\\taskkill.exe',
+      args: ['/PID', '4242', '/T', '/F'],
+      options: { env: { SystemRoot: 'C:\\Windows', windir: 'C:\\Windows' } },
+    })
   })
 
-  it('kills the process group elsewhere, falling back to the child', () => {
+  it("reports taskkill's failure instead of assuming success", async () => {
+    const failing = fakeSpawner((child) => {
+      child.exit(128)
+    })
+    expect(await defaultKillTree('win32', failing.spawn, {})(new FakeProcess())).toEqual({
+      ok: false,
+      reason: 'taskkill exited with code 128',
+    })
+    const missing = fakeSpawner((child) => {
+      child.emit('error', new Error('ENOENT'))
+    })
+    expect(await defaultKillTree('win32', missing.spawn, {})(new FakeProcess())).toMatchObject({
+      ok: false,
+      reason: /taskkill could not start/,
+    })
+  })
+
+  it('kills the process group elsewhere, falling back to the child', async () => {
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
       throw new Error('ESRCH')
     })
     const child = new FakeProcess()
-    defaultKillTree('linux', fakeSpawner(() => undefined).spawn, () => '/')(child)
+    expect(await defaultKillTree('linux', fakeSpawner(() => undefined).spawn, {})(child)).toEqual({
+      ok: true,
+    })
     expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL')
     expect(child.kill).toHaveBeenCalledWith('SIGKILL')
     killSpy.mockRestore()
@@ -292,4 +420,79 @@ describe('run_shell with a real shell', () => {
     expect(r).toMatchObject({ isError: true, content: /Cancelled/ })
     expect(Date.now() - started).toBeLessThan(20_000)
   })
+
+  it('kills grandchildren too when aborted', { timeout: 60_000 }, async () => {
+    const h = toolHarness(sb)
+    const { ctx, controller } = fakeContext(true)
+    const pidFile = path.join(sb.root, 'grandchild.pid')
+    const command =
+      process.platform === 'win32'
+        ? '$p = Start-Process -FilePath "$env:SystemRoot\\System32\\PING.EXE" ' +
+          "-ArgumentList '-n','300','127.0.0.1' -PassThru -NoNewWindow; " +
+          'Set-Content -Path grandchild.pid -Value $p.Id; Start-Sleep 300'
+        : 'sleep 300 & echo $! > grandchild.pid; wait'
+    const running = h.tool('run_shell').execute({ command, cwd: sb.root }, ctx)
+    const grandchild = await waitForPid(pidFile, 30_000)
+    expect(isAlive(grandchild)).toBe(true)
+    controller.abort()
+    const r = await running
+    expect(r).toMatchObject({ isError: true, content: /^Cancelled; the process tree was killed/ })
+    expect(await waitUntil(() => !isAlive(grandchild), 10_000)).toBe(true)
+  })
+
+  it.runIf(process.platform === 'win32')(
+    'ignores a powershell.exe planted in the working folder',
+    { timeout: 30_000 },
+    async () => {
+      const root = windowsRoot(process.env)
+      await fs.copyFile(`${root}\\System32\\whoami.exe`, path.join(sb.root, 'powershell.exe'))
+      const h = toolHarness(sb)
+      const r = await h
+        .tool('run_shell')
+        .execute({ command: 'Write-Output shell-ok', cwd: sb.root }, fakeContext(true).ctx)
+      expect(r.content).toMatch(/^exit code: 0/)
+      expect(r.content).toContain('shell-ok')
+    },
+  )
 })
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+  } catch {
+    return false
+  }
+  // In a container whose init does not reap, a killed child lingers as a zombie.
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8')
+      return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z'
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
+async function waitUntil(check: () => boolean, ms: number): Promise<boolean> {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (check()) return true
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return check()
+}
+
+async function waitForPid(file: string, ms: number): Promise<number> {
+  let pid = NaN
+  await waitUntil(() => {
+    try {
+      pid = Number.parseInt(readFileSync(file, 'utf8').trim(), 10)
+    } catch {
+      return false
+    }
+    return Number.isInteger(pid) && pid > 0
+  }, ms)
+  if (!Number.isInteger(pid)) throw new Error('the grandchild never started')
+  return pid
+}

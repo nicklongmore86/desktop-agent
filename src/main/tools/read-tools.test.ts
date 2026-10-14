@@ -154,6 +154,23 @@ describe('read_file', () => {
     expect(Buffer.byteLength(capped.content)).toBeLessThan(300)
   })
 
+  it('cuts a single huge line at the byte cap instead of buffering it', async () => {
+    h = toolHarness(sb, { limits: { maxReadBytes: 100 } })
+    await put(path.join(sb.root, 'oneline.log'), 'x'.repeat(5 * 1024 * 1024))
+    const r = await run('read_file', { path: path.join(sb.root, 'oneline.log'), startLine: 1 })
+    expect(r.isError).toBeUndefined()
+    expect(r.content).toMatch(/lines 1-1\]\nx{100}\n\[line 1 is cut at the 100 B limit\]$/)
+  })
+
+  it('refuses a file with other hard links, which may alias a file outside the grant', async () => {
+    await put(path.join(sb.outside, 'secret.txt'), 'top secret')
+    await fs.link(path.join(sb.outside, 'secret.txt'), path.join(sb.root, 'innocent.txt'))
+    const r = await run('read_file', { path: path.join(sb.root, 'innocent.txt') })
+    expect(r).toMatchObject({ isError: true, content: /other hard links/ })
+    expect(r.content).not.toContain('top secret')
+    expect(h.audit.entries[0]).toMatchObject({ outcome: 'error', error: 'hard-link' })
+  })
+
   it('refuses blocked files, folders and paths outside the grants', async () => {
     await put(path.join(sb.root, '.env'), 'SECRET=hunter2')
     await put(path.join(sb.outside, 'x.txt'), 'x')
@@ -198,6 +215,18 @@ describe('read_file', () => {
     ])
     expect(JSON.stringify(h.audit.entries)).not.toContain('PRIVATE CONTENT')
   })
+
+  it('audits failures by category, not by message', async () => {
+    await put(path.join(sb.root, '.env'), 'X=1')
+    await run('read_file', { path: path.join(sb.root, '.env') })
+    await run('read_file', { path: path.join(sb.root, 'missing.txt') })
+    await run('read_file', { nope: true })
+    expect(h.audit.entries.map((e) => e.error)).toEqual([
+      'access-denied',
+      'not-found',
+      'invalid-input',
+    ])
+  })
 })
 
 describe('search_files', () => {
@@ -241,7 +270,7 @@ describe('search_files', () => {
     expect(exact.content).not.toContain('util.ts')
   })
 
-  it('supports regexes, and rejects invalid or catastrophic ones', async () => {
+  it('supports regexes and rejects invalid ones', async () => {
     const r = await run('search_files', {
       path: sb.root,
       contentPattern: 'answer\\s*=\\s*\\d+',
@@ -254,12 +283,62 @@ describe('search_files', () => {
       isError: true,
       content: /invalid regex/,
     })
-    expect(
-      await run('search_files', { path: sb.root, contentPattern: '(a+)+$', regex: true }),
-    ).toMatchObject({
-      isError: true,
-      content: /nested quantifier/,
-    })
+  })
+
+  it(
+    'stops a catastrophically backtracking regex at the time cap',
+    { timeout: 20_000 },
+    async () => {
+      h = toolHarness(sb, { limits: { searchTimeMs: 1500 } })
+      await put(path.join(sb.root, 'evil.txt'), `${'a'.repeat(100)}!\n`)
+      const started = Date.now()
+      const r = await run('search_files', {
+        path: sb.root,
+        contentPattern: '(a|aa)+$',
+        regex: true,
+      })
+      const elapsed = Date.now() - started
+      expect(r.isError).toBeUndefined()
+      expect(r.content).toMatch(/Search stopped early: reached the 1\.5 s time limit/)
+      expect(elapsed).toBeLessThan(1500 + 2500)
+    },
+  )
+
+  it('stops a catastrophic name glob at the time cap', { timeout: 20_000 }, async () => {
+    h = toolHarness(sb, { limits: { searchTimeMs: 1500 } })
+    await put(path.join(sb.root, 'a'.repeat(120)))
+    const started = Date.now()
+    const r = await run('search_files', { path: sb.root, namePattern: `${'*a'.repeat(12)}*b` })
+    expect(r.content).toMatch(/time limit/)
+    expect(Date.now() - started).toBeLessThan(1500 + 2500)
+  })
+
+  it('interrupts a slow regex when the call is cancelled', { timeout: 20_000 }, async () => {
+    await put(path.join(sb.root, 'evil.txt'), `${'a'.repeat(100)}!\n`)
+    const { ctx, controller } = fakeContext()
+    setTimeout(() => {
+      controller.abort()
+    }, 300)
+    const started = Date.now()
+    const r = await h
+      .tool('search_files')
+      .execute({ path: sb.root, contentPattern: '(a|aa)+$', regex: true }, ctx)
+    expect(r).toMatchObject({ isError: true, content: /Cancelled/ })
+    expect(Date.now() - started).toBeLessThan(3000)
+  })
+
+  it('lists binary files by name but never searches their content', async () => {
+    const byName = await run('search_files', { path: sb.root, namePattern: '*.dat' })
+    expect(byName.content).toContain('bin.dat')
+    const byContent = await run('search_files', { path: sb.root, contentPattern: 'TODO' })
+    expect(byContent.content).not.toContain('bin.dat')
+  })
+
+  it('skips the content of hard-linked files', async () => {
+    await fs.link(path.join(sb.root, 'docs', 'guide.md'), path.join(sb.outside, 'alias.md'))
+    const r = await run('search_files', { path: sb.root, contentPattern: 'see the todo' })
+    expect(r.content).toMatch(/^0 results/)
+    expect(r.content).toContain('1 files skipped (too large, hard-linked or unreadable)')
   })
 
   it('combines name and content filters', async () => {
@@ -310,9 +389,24 @@ describe('search_files', () => {
     expect(r).toMatchObject({ isError: true, content: /Cancelled/ })
   })
 
-  it('redacts secrets in logged patterns', async () => {
-    await run('search_files', { path: sb.root, contentPattern: 'password=hunter2' })
-    expect(JSON.stringify(h.audit.entries)).not.toContain('hunter2')
+  it('logs only the kind and length of patterns, never the patterns', async () => {
+    await run('search_files', { path: sb.root, namePattern: '*secret*', contentPattern: 'hunter2' })
+    await run('search_files', { path: sb.root, contentPattern: 'hun+ter', regex: true })
+    expect(h.audit.entries.map((e) => e.args)).toEqual([
+      {
+        path: sb.root,
+        namePattern: { kind: 'glob', length: 8 },
+        contentPattern: { kind: 'substring', length: 7 },
+        caseSensitive: false,
+        maxResults: 100,
+        maxDepth: 20,
+      },
+      expect.objectContaining({ contentPattern: { kind: 'regex', length: 7 } }),
+    ])
+    const logged = JSON.stringify(h.audit.entries)
+    expect(logged).not.toContain('hunter2')
+    expect(logged).not.toContain('secret')
+    expect(logged).not.toContain('hun+ter')
   })
 })
 

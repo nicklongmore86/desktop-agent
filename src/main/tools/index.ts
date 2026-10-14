@@ -11,7 +11,13 @@ import { writeFileTool } from './write-file'
 
 export type { ToolDeps, ToolLimits } from './deps'
 export { DEFAULT_LIMITS } from './deps'
-export type { KillTree, ShellProcess, ShellSpawner, ShellSpawnOptions } from './run-shell'
+export type {
+  KillResult,
+  KillTree,
+  ShellProcess,
+  ShellSpawner,
+  ShellSpawnOptions,
+} from './run-shell'
 export type * from './types'
 
 /**
@@ -29,11 +35,20 @@ export function createTools(deps: ToolDeps): AgentTool[] {
     limits: { ...DEFAULT_LIMITS, ...deps.limits },
     trash: deps.trash,
     spawn,
-    killTree: deps.killTree ?? defaultKillTree(platform, spawn, () => process.cwd()),
+    killTree: deps.killTree ?? defaultKillTree(platform, spawn, deps.env ?? process.env),
     env: shellEnv(deps.env ?? process.env),
     now: deps.now ?? (() => performance.now()),
   }
-  const wrap = { guard: deps.guard, audit: deps.audit, now: resolved.now }
+  const wrap = {
+    guard: deps.guard,
+    audit: deps.audit,
+    now: resolved.now,
+    onAuditFailure:
+      deps.onAuditFailure ??
+      ((error: unknown) => {
+        console.error('audit sink failed', error)
+      }),
+  }
   return [
     defineTool(listDirTool(resolved), wrap),
     defineTool(readFileTool(resolved), wrap),

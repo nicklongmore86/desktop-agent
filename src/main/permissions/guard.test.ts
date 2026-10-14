@@ -2,7 +2,14 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { PathGuard, type Resolution } from './guard'
-import { fakeWindowsFs, makeSandbox, put, trySymlink, type Sandbox } from './test-support'
+import {
+  fakeWindowsFs,
+  makeSandbox,
+  put,
+  trySymlink,
+  windowsShortPath,
+  type Sandbox,
+} from './test-support'
 
 function expectAllowed(r: Resolution): { path: string; root: string; exists: boolean } {
   if (!r.ok) throw new Error(`expected allowed, got: ${r.reason}`)
@@ -155,6 +162,21 @@ describe('PathGuard on the real file system', () => {
     expectDenied(await swapped.resolve(path.join(granted, 'x.txt')), /outside the granted/)
   })
 
+  it.skipIf(process.platform !== 'win32')(
+    'expands a real 8.3 short name before the blocklist (Windows only: needs NTFS short names)',
+    async (ctx) => {
+      const secret = path.join(sb.root, '.env.production')
+      await put(secret, 'SECRET=1')
+      const alias = windowsShortPath(secret)
+      if (alias === null) {
+        ctx.skip()
+        return
+      }
+      expectDenied(await guard.resolve(alias), /blocked/)
+      expectDenied(await guard.resolve(alias, { followFinalSymlink: false }), /blocked/)
+    },
+  )
+
   it('denies everything when nothing is granted', async () => {
     const none = new PathGuard({ roots: () => [] })
     expectDenied(await none.resolve(path.join(sb.root, 'x')), /no folders have been granted/)
@@ -178,6 +200,8 @@ describe('PathGuard with Windows semantics', () => {
       'C:\\Users\\Me\\Projects',
       'C:\\Users\\Me\\Projects\\notes.txt',
       'C:\\Users\\Me\\Projects\\.env',
+      'C:\\Users\\Me\\Projects\\.env.production',
+      'C:\\Users\\Me\\Projects\\report-final.docx',
       'C:\\Users\\Me\\.ssh',
       'C:\\Users\\Me\\.ssh\\id_rsa',
       'C:\\Users\\Me\\AppData',
@@ -193,6 +217,12 @@ describe('PathGuard with Windows semantics', () => {
       'C:\\Users\\Me\\Projects\\ssh-link': 'C:\\Users\\Me\\.ssh',
       'C:\\Users\\Me\\Projects\\share': '\\\\server\\share',
       'C:\\Users\\Me\\Projects\\broken': 'D:\\Missing\\x',
+      'C:\\Users\\Me\\Projects\\Shortcut Link': 'D:\\Elsewhere',
+    },
+    {
+      'C:\\Users\\Me\\Projects\\ENVPRO~1': 'C:\\Users\\Me\\Projects\\.env.production',
+      'C:\\Users\\Me\\Projects\\REPORT~1.DOC': 'C:\\Users\\Me\\Projects\\report-final.docx',
+      'C:\\Users\\Me\\Projects\\SHORTC~1': 'C:\\Users\\Me\\Projects\\Shortcut Link',
     },
   )
   const guard = new PathGuard({
@@ -272,6 +302,27 @@ describe('PathGuard with Windows semantics', () => {
     expectDenied(
       await homeGuard.resolve('c:\\users\\me\\appdata\\roaming\\desktop agent\\grants.json'),
       /app's own data/,
+    )
+  })
+
+  it('expands 8.3 short names before the blocklist, including for unfollowed entries', async () => {
+    const alias = 'C:\\Users\\Me\\Projects\\ENVPRO~1'
+    expectDenied(await guard.resolve(alias), /blocked/)
+    expectDenied(await guard.resolve(alias, { followFinalSymlink: false }), /blocked/)
+    const doc = expectAllowed(
+      await guard.resolve('c:\\users\\me\\projects\\report~1.doc', { followFinalSymlink: false }),
+    )
+    expect(doc).toMatchObject({ path: 'C:\\Users\\Me\\Projects\\report-final.docx', exists: true })
+  })
+
+  it('canonicalizes an unfollowed link by name and refuses short aliases of links', async () => {
+    const link = expectAllowed(
+      await guard.resolve('C:\\Users\\Me\\Projects\\shortcut link', { followFinalSymlink: false }),
+    )
+    expect(link).toMatchObject({ path: 'C:\\Users\\Me\\Projects\\Shortcut Link', exists: true })
+    expectDenied(
+      await guard.resolve('C:\\Users\\Me\\Projects\\SHORTC~1', { followFinalSymlink: false }),
+      /short \(8\.3\) or alias name/,
     )
   })
 

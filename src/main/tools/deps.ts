@@ -18,12 +18,14 @@ export interface ToolLimits {
   searchTimeMs: number
   /** move/delete of a folder scans it for blocked entries; bigger folders are refused. */
   maxScanEntries: number
-  /** Approval previews are cut to this size. */
+  /** write_file refuses changes whose diff is bigger: the user must see the whole preview. */
   maxDiffBytes: number
   defaultShellTimeoutMs: number
   maxShellTimeoutMs: number
   /** Per stream (stdout, stderr); the middle of longer output is dropped. */
   maxShellOutputBytes: number
+  /** After killing a shell, how long to wait for it to exit before reporting it may still run. */
+  killGraceMs: number
 }
 
 export const DEFAULT_LIMITS: ToolLimits = {
@@ -37,10 +39,11 @@ export const DEFAULT_LIMITS: ToolLimits = {
   maxSearchEntries: 50_000,
   searchTimeMs: 10_000,
   maxScanEntries: 100_000,
-  maxDiffBytes: 200_000,
+  maxDiffBytes: 256 * 1024,
   defaultShellTimeoutMs: 60_000,
   maxShellTimeoutMs: 10 * 60_000,
   maxShellOutputBytes: 100_000,
+  killGraceMs: 5000,
 }
 
 export interface ToolDeps {
@@ -59,6 +62,11 @@ export interface ToolDeps {
   limits?: Partial<ToolLimits>
   /** Monotonic clock in ms, for time caps and audit durations. */
   now?: () => number
+  /**
+   * Called when the audit sink throws or rejects. The tool call still returns
+   * normally; surface this (and AuditLog.healthy) so the user knows logging broke.
+   */
+  onAuditFailure?: (error: unknown) => void
 }
 
 export interface ResolvedDeps {
