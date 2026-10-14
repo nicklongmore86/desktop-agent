@@ -25,27 +25,13 @@ A Windows-first desktop chat agent with Anthropic API, Claude subscription, and 
 ## Windows: test subscriptions without an API key
 
 1. Download the **desktop-agent-windows-x64** artifact from this PR's successful **CI → Windows installer** job. Extract the ZIP and run the NSIS `.exe`. The installer is unsigned. Alternatively, use the development commands below on Windows.
-2. Install the official runtime for the provider you want to test. These exact versions are intentional protocol/security pins; other versions fail readiness instead of silently changing permissions.
-
-   ```powershell
-   # Claude: official native installer, then select the tested version.
-   irm https://claude.ai/install.ps1 | iex
-   # Open a new PowerShell window if claude is not yet on PATH.
-   claude install 2.1.299
-   claude --version
-
-   # Codex: install Node.js first if npm is unavailable.
-   npm install -g @openai/codex@0.162.1
-   codex --version
-   ```
-
-   See [Claude's installation guide](https://code.claude.com/docs/en/setup) and [Codex CLI](https://learn.chatgpt.com/docs/cli). Desktop Agent discovers native executables on PATH, Claude's `~/.local/bin`, and Codex's Windows npm installation under `%APPDATA%/npm`. Paths with spaces are passed as executable/argument arrays, never through a command shell. Windows `.cmd` shims are not executed. Restart the app after installing. A later CLI auto-update may require reinstalling the pinned version; the app disables Claude auto-update in its own subprocesses.
+2. Both pinned native runtimes are included: Claude Code **2.1.299** and Codex **0.162.1**. No Node.js, npm, API key, or separate CLI installation is required on the user's machine. The installed app runs only its own bundled executables, after checking every runtime file against SHA-256 digests compiled into the app; it never falls back to a CLI on PATH, so an older or modified copy cannot replace the bundled version. These are intentional protocol/security pins.
 
 3. Open **Settings → Access provider**, select **Claude subscription** or **Codex subscription (ChatGPT)**, then **Sign in with subscription**. Complete the provider's browser flow using a plan that includes runtime access. Do not choose Anthropic Console/API billing. Use **Check readiness** afterwards. Do not enter an API key or use `setup-token`.
-4. Sign-in is separate from your normal CLI profile. The official runtime stores and refreshes its own credentials under the app's `providers/claude` or `providers/codex` directory. Desktop Agent does not extract, copy, return, or substitute tokens. **Cancel sign-in**, window close/reload, and provider switching cancel login. Login expires after two minutes. If Claude's browser does not open, use a terminal with `CLAUDE_CONFIG_DIR` pointing to the app's `providers/claude` directory and run `claude auth login`; the parent app directory is shown by the audit-log path in Settings. Then check readiness again.
+4. Sign-in is separate from your normal CLI profile. The official runtime stores and refreshes its own credentials under the app's `providers/claude` or `providers/codex` directory. Desktop Agent does not extract, copy, return, or substitute tokens. **Cancel sign-in**, window close/reload, and provider switching cancel login. Login expires after two minutes. If Claude's browser does not open, use a terminal with `CLAUDE_CONFIG_DIR` pointing to the app's `providers/claude` directory and invoke `resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe` under your app installation directory with arguments `auth login`; the parent app directory is shown by the audit-log path in Settings. Then check readiness again.
 5. Grant a disposable folder containing `hello.txt`. Ask the agent to read it, then change it. Verify a diff approval appears; deny it and confirm the file is unchanged. Approve a second change and inspect the audit log. Ask for an ungranted file and a `.codex/auth.json` file: both must be refused. Stop a streamed reply, switch providers, and restart the app: each provider's previous conversation should return separately.
 
-Missing runtime, unsupported version/configuration, and signed-out states are shown in Settings. Expired authentication and usage-limit errors appear in chat; reauthenticate or wait for the plan allowance to reset. Subscription failures never fall back to API billing. Switching back to **Anthropic API** restores the original API conversation and model setting.
+Damaged/missing bundled runtime (repair or reinstall the app), unsupported version/configuration, and signed-out states are shown in Settings. Expired authentication and usage-limit errors appear in chat; reauthenticate or wait for the plan allowance to reset. Subscription failures never fall back to API billing. Switching back to **Anthropic API** restores the original API conversation and model setting.
 
 **Verification limits:** automated tests run the pinned native runtimes without credentials on Linux and Windows CI, including paths with spaces and hostile configuration fixtures. They verify startup/protocol isolation, not a paid subscription response. Browser sign-in, actual plan eligibility/limits, a live tool round trip, and interactive installer use still require the manual steps above. The app's approved shell tool remains an unsandboxed user-authorized command, as in API mode; approval is not an OS sandbox.
 
@@ -60,7 +46,7 @@ Missing runtime, unsupported version/configuration, and signed-out states are sh
 
 ## Development
 
-Choose an access provider and grant folders in **Settings**. API mode requires an Anthropic API key; subscription modes require the separately installed official runtime and subscription sign-in, with no API key. Replies stream in, each tool call shows as a collapsible card, every write, move, delete and shell command waits for your approval, and **Stop** cancels a run. API mode shows setup guidance until a key is saved and a folder is granted; subscription mode shows runtime/sign-in guidance and does not require a key.
+Choose an access provider and grant folders in **Settings**. API mode requires an Anthropic API key; subscription modes use bundled runtimes in the Windows x64 installer and require subscription sign-in, with no API key. Replies stream in, each tool call shows as a collapsible card, every write, move, delete and shell command waits for your approval, and **Stop** cancels a run. API mode shows setup guidance until a key is saved and a folder is granted; subscription mode shows runtime/sign-in guidance and does not require a key.
 
 ### Prerequisites
 
@@ -93,6 +79,10 @@ Other scripts:
 ```sh
 pnpm dist:win
 ```
+
+The build downloads the complete official Codex Windows x64 release archive and checks its pinned SHA-256 from the official release asset. It checks the SDK's Claude executable against the pinned official Claude release manifest. Packaging fails on integrity errors. All Codex companions/resources and license files are preserved under `resources/runtimes`; Claude remains under `resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64`. An after-pack check verifies all staged files against `src/main/providers/runtime-pins.json`, the digests the app also compiles in. Before starting a bundled runtime, the app streams a SHA-256 of the executable and every companion file (cached per file by size and modification time for the process lifetime) and refuses to run anything that is missing or differs, reporting repair guidance instead. Notices are in `resources/runtimes/notices`.
+
+The app installer owns these runtime files: app upgrades replace them and uninstall removes them with the app. Credentials remain in userData, and independent CLI installations are untouched. Runtime subprocesses do not auto-update the bundled Claude binary. Development (unpackaged) builds resolve the matching native SDK/npm dependency or a compatible external runtime on PATH; packaged builds never do; architecture matching is explicit. Unsupported external versions are skipped, and failures report detected paths and versions. No global installations are modified.
 
 This writes `release/<version>/Desktop-Agent-Setup-<version>-x64.exe`, an x64 NSIS installer that installs per user and lets you choose the install directory. CI builds the same installer on `windows-latest` and uploads it as the `desktop-agent-windows-x64` workflow artifact.
 

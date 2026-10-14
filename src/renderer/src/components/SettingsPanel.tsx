@@ -312,15 +312,15 @@ function ProviderSection({
       {provider && provider.provider !== 'anthropic-api' && (
         <>
           <p>
-            No API key required. Install the supported official runtime, then sign in here. Each
-            provider has separate chat history. Switching stops the current reply.
+            No API key required. The Windows x64 installer includes both runtimes. Sign in here.
+            Each provider has separate chat history. Switching stops the current reply.
           </p>
           <p>
             Required runtime:{' '}
             {provider.provider === 'claude-subscription'
               ? 'Claude Code 2.1.299'
               : 'Codex CLI 0.162.1'}
-            . See the README for Windows installation steps.
+            . If a bundled runtime is missing, repair or reinstall Desktop Agent. See the README.
           </p>
           <button
             disabled={busy}

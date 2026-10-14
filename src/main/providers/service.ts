@@ -30,11 +30,6 @@ export class SubscriptionProviders {
 
   async context(provider: ProviderId, signal?: AbortSignal): Promise<RuntimeContext> {
     const name = provider === 'claude-subscription' ? 'claude' : 'codex'
-    const file = await discoverRuntime(name)
-    if (!file)
-      throw new Error(
-        `Missing runtime: install ${name} ${name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION}, then restart Desktop Agent.`,
-      )
     const { home, cwd } = await providerDirectories(this.userData, name)
     // This directory is exclusively provider-owned auth storage. Never inherit user configuration.
     for (const name of [
@@ -75,10 +70,12 @@ export class SubscriptionProviders {
         ? { CLAUDE_CONFIG_DIR: home, DISABLE_AUTOUPDATER: '1' }
         : { CODEX_HOME: home }),
     }
-    const version = await capture(file, ['--version'], cwd, env, signal)
-    const expected = name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION
-    if (!new RegExp(`(?:^|\\s)${expected.replaceAll('.', '\\.')}([\\s(]|$)`).test(version))
-      throw new Error(`Unsupported runtime version. Install ${name} ${expected}.`)
+    // Discovery has already checked the pinned version (and, when packaged, integrity).
+    const file = await discoverRuntime(name, process.env, { cwd, env, signal })
+    if (!file)
+      throw new Error(
+        `Missing runtime: ${name} ${name === 'claude' ? CLAUDE_VERSION : CODEX_VERSION}. Development builds require the pinned native runtime; installed builds include it.`,
+      )
     return { file, cwd, env }
   }
 

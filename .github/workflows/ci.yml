@@ -55,9 +55,16 @@ jobs:
         env:
           # Unsigned for now: stop electron-builder looking for a signing certificate.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Test packaged runtime discovery and isolation
+        shell: pwsh
+        run: |
+          $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
+          pnpm exec vitest run src/main/providers/native.test.ts
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-windows-x64
-          path: release/*/*.exe
+          path: |
+            release/*/*.exe
+            release/*/win-unpacked/resources/runtimes/integrity.json
           if-no-files-found: error
           retention-days: 14
