@@ -24,7 +24,7 @@ A Windows-first desktop chat agent, powered by Claude, with permissioned access 
 
 ## Development
 
-The app is a skeleton for now: one window with a placeholder chat UI and no agent logic yet.
+The app is usable end to end: enter an Anthropic API key and grant folders in **Settings**, then chat with Claude in the main window. Replies stream in, each tool call shows as a collapsible card, every write, move, delete and shell command waits for your approval, and **Stop** cancels a run. Until a key is saved and a folder granted, the chat view shows a short guide pointing to Settings.
 
 ### Prerequisites
 
@@ -66,12 +66,14 @@ This writes `release/<version>/Desktop-Agent-Setup-<version>-x64.exe`, an x64 NS
 
 ```
 src/main       Electron main process: window creation, security hardening, IPC handlers
+src/main/chat         Chat session: runs the agent, streams events, brokers approvals
+src/main/storage      Conversation and settings JSON in userData
 src/main/agent        Agent loop and Claude API client (createAgent)
 src/main/secrets      Encrypted API key store (safeStorage)
 src/main/permissions  Granted folders, path guard, blocklist, audit log
 src/main/tools        The agent's file and shell tools (createTools)
 src/preload    contextBridge API exposed to the renderer as window.desktopApi
-src/renderer   React UI (Vite)
+src/renderer   React UI (Vite): chat view, approval dialog, settings
 src/shared     Code and types used by more than one process (IPC contract, CSP)
 ```
 
@@ -133,14 +135,56 @@ Follow-ups (not done yet): run commands with an allowlisted environment instead 
 
 ### Agent loop and API key storage
 
-The main-process modules in `src/main/agent` and `src/main/secrets` are ready for integration; IPC/UI wiring is a later task. `createClaudeClient(apiKey)` uses the official Anthropic SDK with two retries and a two-minute request timeout. `createAgent({ client, tools, model?, systemPrompt?, maxTurns?, maxTokens? })` defaults to 10 API turns, 4096 output tokens and `claude-sonnet-5-5`, the current Sonnet model verified against the [model documentation](https://platform.claude.com/docs/en/models/overview) and SDK 0.133.0. Model selection remains configurable.
+`createClaudeClient(apiKey)` uses the official Anthropic SDK with two retries and a two-minute request timeout. `createAgent({ client, tools, model?, systemPrompt?, maxTurns?, maxTokens? })` defaults to 10 API turns, 4096 output tokens and `claude-sonnet-5-5`, the current Sonnet model verified against the [model documentation](https://platform.claude.com/docs/en/models/overview) and SDK 0.133.0. Model selection remains configurable.
 
 Call `agent.run(conversation, { signal, requestApproval, onEvent })`. It returns `{ conversation, stopReason }`; history is a copied array of Anthropic `MessageParam` objects, suitable for JSON persistence. The caller owns persistence and must avoid overlapping runs on the same conversation. The system prompt restricts access to granted folders, requires approval for mutations/shell, and treats file contents as untrusted data. Actual permissions and input validation remain the tools' responsibility.
 
-Typed events include `text_delta`, `tool_use` (complete input, immediately before execution), `tool_result`, `approval_requested`, `approval_resolved`, `usage`, `turn_complete`, and `error`. Tool and approval events carry the tool-use ID and turn number; usage includes the SDK's cache/token accounting. Event callbacks should be synchronous; callback exceptions are swallowed so observers cannot interrupt tool/result pairing. Parallel calls execute concurrently and their results are submitted together in original order. Unknown tools and execution failures become `is_error` results. Approval decisions pass through the tool context; a tool must honor denial before causing side effects.
+Typed events include `text_delta`, `tool_use` (complete input, immediately before execution), `tool_result`, `approval_requested`, `approval_resolved`, `usage`, `turn_complete`, `response_discarded` (the turn's response was dropped, so a UI must remove that turn's streamed text), and `error`. Tool and approval events carry the tool-use ID and turn number; usage includes the SDK's cache/token accounting. Event callbacks should be synchronous; callback exceptions are swallowed so observers cannot interrupt tool/result pairing. Parallel calls execute concurrently and their results are submitted together in original order. Unknown tools and execution failures become `is_error` results. Approval decisions pass through the tool context; a tool must honor denial before causing side effects.
 
-Cancellation aborts the SDK stream and passes the same signal to tools. Pending tools and approval waits release the run promptly; tools must cooperate with the signal to stop underlying I/O or child processes. Aborted tool batches retain paired error results; incomplete streamed messages are not persisted. A truncated response containing tool calls is discarded without executing those calls. `pause_turn` continues the assistant response within the turn budget; `end_turn` and `stop_sequence` finish normally. Truncation, refusal, context exhaustion and turn exhaustion return explicit errors without automatic continuation. These behaviors follow Anthropic's [stop-reason guidance](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons). API errors expose sanitized authentication, rate-limit, overload, connection or generic messages. The SDK handles transient retries; the loop never retries tool side effects. System text and the last tool definition have ephemeral cache breakpoints (cache hits depend on Anthropic's minimum prompt size).
+Cancellation aborts the SDK stream and passes the same signal to tools. Pending tools and approval waits release the run promptly; tools must cooperate with the signal to stop underlying I/O or child processes. Aborted tool batches retain paired error results; incomplete streamed messages are not persisted. A truncated response containing tool calls is discarded without executing those calls. `pause_turn` continues the assistant response within the turn budget; `end_turn` and `stop_sequence` finish normally. Truncation, refusal, context exhaustion and turn exhaustion return explicit errors without automatic continuation. These behaviors follow Anthropic's [stop-reason guidance](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons). API errors expose sanitized messages, never raw SDK errors. Error codes:
+
+| Code              | Meaning                                                               |
+| ----------------- | --------------------------------------------------------------------- |
+| `authentication`  | The API key was rejected (401)                                        |
+| `permission`      | The key lacks access, for example to the model (403)                  |
+| `invalid_request` | The request was rejected (400, 404, 413): model, format or size       |
+| `rate_limit`      | Rate limited (429, or a streamed `rate_limit_error`)                  |
+| `overloaded`      | The API is overloaded (529, or a streamed `overloaded_error`)         |
+| `network`         | Could not connect                                                     |
+| `api`             | Any other API failure                                                 |
+| `aborted`         | The run was cancelled                                                 |
+| `max_turns`       | The run reached its turn limit                                        |
+| `max_tokens`      | A response hit the output token limit                                 |
+| `refusal`         | Claude declined the request                                           |
+| `context_limit`   | The conversation exceeds the model's context window                   |
+| `protocol`        | An unexpected response (unknown stop reason, tool use without calls…) |
+
+The chat session adds its own codes for the UI: `no_api_key`, `key_unreadable`, `busy` (a run is already in flight) and `internal`. The SDK handles transient retries; the loop never retries tool side effects. Two ephemeral cache breakpoints are set: on the system text (which also covers the tool definitions before it) and on the last block of the last message, added to the request's copy only so persisted history never carries `cache_control`. Cache hits depend on Anthropic's minimum prompt size. Empty text blocks are dropped before an assistant message is saved, and a message with nothing else is not saved at all.
 
 After Electron is ready, construct `createApiKeyStore({ userDataPath: app.getPath('userData'), safeStorage, fs? })` using Electron's `safeStorage`; the optional filesystem dependency is injectable. Its async `get`, `set`, `clear` and `hasKey` methods store only encrypted bytes in `anthropic-api-key.enc`, using temporary-file replacement and serialized operations. Windows uses Electron's DPAPI-backed encryption. Unavailable encryption and Linux's `basic_text` fallback are rejected. Missing keys return `null`; corrupted or undecryptable files raise a clear error and can be cleared. Keys and raw API errors are never logged by these modules.
 
 Tests use a fake streaming client and fake encryption without network or Electron. Storage tests use isolated temporary directories and native path operations for Windows/Linux portability.
+
+### Chat window, IPC and approvals
+
+`src/main/services.ts` builds everything from userData at startup: the key store, `GrantStore`, `PathGuard`, `AuditLog`, `createTools` (with `shell.trashItem`), the settings store and the chat session. A new agent (`createAgent` + `createClaudeClient`) is built for each run, with the current key and model, so a key or model change applies to the next message.
+
+**IPC.** The contract is `src/shared/ipc.ts`; the preload exposes it as `window.desktopApi`. Every renderer → main handler (`src/main/ipc-handlers.ts`) first checks that the call comes from the app's own top-level frame and throws otherwise.
+
+| Area      | Calls                                               | Notes                                                                    |
+| --------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
+| API key   | `apiKey.status`, `set`, `clear`                     | Returns `{ saved, error }` only; the key never goes back to the renderer |
+| Grants    | `grants.list`, `add`, `remove`                      | `add` takes no argument: main opens the native folder picker             |
+| Model     | `model.get`, `set`                                  | `settings.json` in userData; only offered models; default from the agent |
+| Chat      | `chat.load`, `send`, `stop`, `newChat`              | One run at a time; `send` returns once the run has started               |
+| Approvals | `approvals.respond(id, approved)`                   | Only a pending id resolves anything; only `true` approves                |
+| Audit     | `audit.status`                                      | `{ healthy, path }`                                                      |
+| Pushes    | `onChatEvent`, `onApprovalRequest`, `onAuditStatus` | Main → renderer; each returns an unsubscribe function                    |
+
+**Approval flow.** When a tool asks for approval, the session gives the request a random id (`crypto.randomUUID`) and pushes it to the window with the tool, kind, summary and full detail: the whole diff for `write_file`, and the exact shell path, working folder and command for `run_shell`. The tool waits until the renderer answers that id. Answers from another frame, for an unknown or already settled id, or with anything but `approved === true` never approve anything. Every pending approval is denied when the user presses Stop, starts a new chat, reloads or closes the window, the renderer crashes, the app quits, or the run ends. The dialog focuses **Deny**, Escape denies, Tab stays inside the dialog, and further requests queue behind it.
+
+**Conversation.** The current conversation (Messages-API history) is saved as `conversation.json` in userData after the user's message and after each run; **New chat** stops any run and deletes it. An unreadable file starts a fresh conversation with a notice. If writing the audit log fails, a warning banner says so (from `onAuditFailure` and `AuditLog.healthy`); Settings shows the log's location.
+
+**Rendering.** Assistant text is rendered as Markdown with `react-markdown` without raw HTML (`skipHtml`), images are shown only as `[image: alt]` and never loaded, unsafe URLs are stripped by react-markdown's default URL transform, and links open in the default browser through the window-open handler. Nothing uses `dangerouslySetInnerHTML`; model output and file contents are treated as untrusted. When the agent discards a truncated response, the UI removes that turn's streamed text. A reply cut off by Stop stays on screen, marked as not saved.
+
+Renderer tests run in jsdom with Testing Library (`src/renderer/**/*.test.tsx`, the `renderer` Vitest project); main-process tests run in Node (the `main` project).
