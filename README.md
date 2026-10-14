@@ -60,7 +60,7 @@ Missing runtime, unsupported version/configuration, and signed-out states are sh
 
 ## Development
 
-Choose an access provider and grant folders in **Settings**. API mode requires an Anthropic API key; subscription modes require the separately installed official runtime and subscription sign-in, with no API key. Replies stream in, each tool call shows as a collapsible card, every write, move, delete and shell command waits for your approval, and **Stop** cancels a run. Until a key is saved and a folder granted, the chat view shows a short guide pointing to Settings.
+Choose an access provider and grant folders in **Settings**. API mode requires an Anthropic API key; subscription modes require the separately installed official runtime and subscription sign-in, with no API key. Replies stream in, each tool call shows as a collapsible card, every write, move, delete and shell command waits for your approval, and **Stop** cancels a run. API mode shows setup guidance until a key is saved and a folder is granted; subscription mode shows runtime/sign-in guidance and does not require a key.
 
 ### Prerequisites
 
@@ -203,7 +203,7 @@ Tests use a fake streaming client and fake encryption without network or Electro
 
 ### Chat window, IPC and approvals
 
-`src/main/services.ts` builds everything from userData at startup: the key store, `GrantStore`, `PathGuard`, `AuditLog`, `createTools` (with `shell.trashItem`), the settings store and the chat session. A new agent (`createAgent` + `createClaudeClient`) is built for each run, with the current key and model, so a key or model change applies to the next message.
+`src/main/services.ts` builds everything from userData at startup: the key store, `GrantStore`, `PathGuard`, `AuditLog`, `createTools` (with `shell.trashItem`), the settings store and the chat session. API mode builds `createAgent` + `createClaudeClient` for each run with the current key and model. Subscription mode selects the corresponding main-process adapter without reading the key store. Provider switches stop the current run and serialize history/settings changes.
 
 **IPC.** The contract is `src/shared/ipc.ts`; the preload exposes it as `window.desktopApi`. Every renderer → main handler (`src/main/ipc-handlers.ts`) first checks that the call comes from the app window's current main frame (the same `WebFrameMain` object as `webContents.mainFrame`), that it is top-level and on an app URL, and throws otherwise.
 
