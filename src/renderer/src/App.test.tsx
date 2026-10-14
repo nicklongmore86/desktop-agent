@@ -272,3 +272,40 @@ it('offers both subscriptions without an API-key setup gate and keeps API mode a
   await user.selectOptions(screen.getByLabelText('Access provider'), 'anthropic-api')
   expect(screen.getByRole('heading', { name: 'Anthropic API key' })).toBeTruthy()
 })
+
+it('does not let an old startup history response overwrite a provider switch', async () => {
+  const fake = fakeApi()
+  let release: (state: import('../../shared/ipc').ChatState) => void = () => {}
+  fake.api.chat.load.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve
+      }),
+  )
+  render(
+    <ApiContext value={fake.api}>
+      <App />
+    </ApiContext>,
+  )
+  await screen.findByText('v0.1.0')
+  act(() => {
+    fake.pushChat({
+      type: 'conversation_reset',
+      state: {
+        items: [{ kind: 'user', id: 'new', text: 'New provider history' }],
+        running: false,
+        loadError: null,
+      },
+    })
+  })
+  await act(async () => {
+    release({
+      items: [{ kind: 'user', id: 'old', text: 'Old provider history' }],
+      running: false,
+      loadError: null,
+    })
+    await Promise.resolve()
+  })
+  expect(screen.getByText('New provider history')).toBeTruthy()
+  expect(screen.queryByText('Old provider history')).toBeNull()
+})

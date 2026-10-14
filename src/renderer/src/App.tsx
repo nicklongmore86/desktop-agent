@@ -52,7 +52,9 @@ export function App(): React.JSX.Element {
     const report = (what: string) => (error: unknown) => {
       console.error(`${what} failed`, error)
     }
-    api.provider.get().then(setProvider, report('provider.get'))
+    api.provider.get().then((status) => {
+      setProvider((current) => current ?? status)
+    }, report('provider.get'))
     api.getAppInfo().then(setAppInfo, report('getAppInfo'))
     api.apiKey.status().then(setKeyStatus, report('apiKey.status'))
     api.grants.list().then(setGrants, report('grants.list'))
