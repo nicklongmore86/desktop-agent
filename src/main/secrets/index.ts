@@ -57,11 +57,12 @@ export function createApiKeyStore({
       )
     }
   }
+  /** Best effort: a leftover temp file holds only encrypted bytes, so it must not fail a save. */
   async function removeTemporary(path: string): Promise<void> {
     try {
       await fs.rm(path, { force: true })
     } catch {
-      throw new Error('Could not clean up the temporary encrypted API key file.')
+      // Ignored: rejecting here would turn a successful save into a failure or mask the real error.
     }
   }
   return {

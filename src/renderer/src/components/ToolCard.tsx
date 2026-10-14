@@ -1,0 +1,84 @@
+import type { ChatItem } from '../../../shared/ipc'
+import { SafeLines, SafeText } from './reveal'
+
+const MAX_SUMMARY = 80
+/** Tool output can be large; the card shows the start of it. */
+const MAX_RESULT_CHARS = 20_000
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
+/** A one-line description of a tool call's input: its path(s), command or pattern. */
+export function summarizeInput(input: unknown): string {
+  if (typeof input !== 'object' || input === null) return ''
+  const fields = input as Record<string, unknown>
+  const str = (key: string): string | undefined =>
+    typeof fields[key] === 'string' ? fields[key] : undefined
+  const source = str('source')
+  const destination = str('destination')
+  const summary =
+    str('command') ??
+    (source && destination ? `${source} → ${destination}` : undefined) ??
+    [str('path'), str('namePattern'), str('contentPattern')].filter(Boolean).join(' ')
+  // One line only: the full, revealed input is in the card body.
+  const [first = '', ...more] = summary.trim().split(/\r\n|\r|\n/)
+  return truncate(more.length > 0 ? `${first} ⏎…` : first, MAX_SUMMARY)
+}
+
+function stringify(input: unknown): string {
+  try {
+    return JSON.stringify(input, null, 2)
+  } catch {
+    return String(input)
+  }
+}
+
+/** A collapsible card for one tool call: name, input summary, status, and full input/result. */
+export function ToolCard({
+  item,
+  running,
+}: {
+  item: Extract<ChatItem, { kind: 'tool' }>
+  running: boolean
+}): React.JSX.Element {
+  const status = item.result
+    ? item.result.isError
+      ? 'error'
+      : 'done'
+    : running
+      ? 'running'
+      : 'no result'
+  const content = item.result?.content ?? ''
+  return (
+    <details className={`tool-card tool-${status.replace(' ', '-')}`}>
+      <summary>
+        <span className="tool-name">
+          <SafeText text={item.name} />
+        </span>
+        <span className="tool-input">
+          <SafeText text={summarizeInput(item.input)} />
+        </span>
+        <span className="tool-status">{status}</span>
+      </summary>
+      <div className="tool-body">
+        <h4>Input</h4>
+        <pre className="scroll-box untrusted-block" dir="ltr" aria-label="Tool input">
+          <SafeLines text={stringify(item.input)} />
+        </pre>
+        {item.result && (
+          <>
+            <h4>{item.result.isError ? 'Error' : 'Result'}</h4>
+            <pre
+              className={`scroll-box untrusted-block${item.result.isError ? ' tool-error-text' : ''}`}
+              dir="ltr"
+              aria-label={item.result.isError ? 'Tool error' : 'Tool result'}
+            >
+              <SafeLines text={truncate(content, MAX_RESULT_CHARS)} />
+            </pre>
+          </>
+        )}
+      </div>
+    </details>
+  )
+}

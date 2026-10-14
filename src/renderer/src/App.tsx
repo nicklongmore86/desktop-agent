@@ -1,78 +1,142 @@
-import { useEffect, useRef, useState, type SubmitEvent } from 'react'
-import type { AppInfo } from '../../shared/ipc'
+import { useEffect, useState } from 'react'
+import type {
+  ApiKeyStatus,
+  AppInfo,
+  AuditStatus,
+  GrantsState,
+  ModelSettings,
+} from '../../shared/ipc'
+import { useApi } from './api'
+import { ApprovalCard } from './components/ApprovalCard'
+import { ChatView } from './components/ChatView'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { SettingsPanel } from './components/SettingsPanel'
+import { useChat } from './use-chat'
 
-interface Message {
-  id: number
-  role: 'user' | 'assistant'
-  text: string
-}
-
-const WELCOME: Message = {
-  id: 0,
-  role: 'assistant',
-  text: 'Hi! The agent is not connected yet. This is a placeholder chat UI.',
+function SetupGuide({
+  keySaved,
+  hasGrants,
+  onOpenSettings,
+}: {
+  keySaved: boolean
+  hasGrants: boolean
+  onOpenSettings: () => void
+}): React.JSX.Element {
+  return (
+    <div className="setup-guide" role="note" aria-label="Finish setting up">
+      <strong>Finish setting up in Settings:</strong>
+      <ul>
+        {!keySaved && <li>Add your Anthropic API key, so Claude can answer.</li>}
+        {!hasGrants && <li>Grant at least one folder, so Claude can work with your files.</li>}
+      </ul>
+      <button type="button" className="button-primary" onClick={onOpenSettings}>
+        Open Settings
+      </button>
+    </div>
+  )
 }
 
 export function App(): React.JSX.Element {
-  const [messages, setMessages] = useState<Message[]>([WELCOME])
-  const [draft, setDraft] = useState('')
+  const api = useApi()
+  const chat = useChat()
+  const [view, setView] = useState<'chat' | 'settings'>('chat')
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
-  const listEnd = useRef<HTMLLIElement>(null)
+  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
+  const [grants, setGrants] = useState<GrantsState | null>(null)
+  const [model, setModel] = useState<ModelSettings | null>(null)
+  const [audit, setAudit] = useState<AuditStatus | null>(null)
 
   useEffect(() => {
-    window.desktopApi.getAppInfo().then(setAppInfo, (error: unknown) => {
-      console.error('getAppInfo failed', error)
-    })
-  }, [])
+    const report = (what: string) => (error: unknown) => {
+      console.error(`${what} failed`, error)
+    }
+    api.getAppInfo().then(setAppInfo, report('getAppInfo'))
+    api.apiKey.status().then(setKeyStatus, report('apiKey.status'))
+    api.grants.list().then(setGrants, report('grants.list'))
+    api.model.get().then(setModel, report('model.get'))
+    api.audit.status().then(setAudit, report('audit.status'))
+    return api.onAuditStatus(setAudit)
+  }, [api])
 
-  useEffect(() => {
-    listEnd.current?.scrollIntoView({ block: 'end' })
-  }, [messages])
-
-  function send(event: SubmitEvent<HTMLFormElement>): void {
-    event.preventDefault()
-    const text = draft.trim()
-    if (!text) return
-    setMessages((current) => [...current, { id: current.length, role: 'user', text }])
-    setDraft('')
+  const loaded = keyStatus !== null && grants !== null
+  const keySaved = keyStatus?.saved ?? false
+  const hasGrants = (grants?.roots.length ?? 0) > 0
+  const openSettings = (): void => {
+    setView('settings')
   }
+  const [approval, ...queued] = chat.state.approvals
 
   return (
     <div className="app">
       <header className="app-header">
         <h1>Desktop Agent</h1>
         <span className="app-version">{appInfo ? `v${appInfo.version}` : '…'}</span>
+        <nav className="app-nav">
+          {view === 'chat' ? (
+            <button type="button" onClick={openSettings}>
+              Settings
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setView('chat')
+              }}
+            >
+              Back to chat
+            </button>
+          )}
+        </nav>
       </header>
 
-      <ol className="messages" aria-label="Messages" aria-live="polite">
-        {messages.map((message) => (
-          <li key={message.id} className={`message message-${message.role}`}>
-            {message.text}
-          </li>
-        ))}
-        <li ref={listEnd} aria-hidden="true" />
-      </ol>
+      {audit && !audit.healthy && (
+        <div className="banner banner-warning" role="alert">
+          <strong>Audit logging is failing.</strong> Tool calls still run, but are not being
+          recorded in <code>{audit.path}</code>.
+        </div>
+      )}
 
-      <form className="composer" onSubmit={send}>
-        <textarea
-          aria-label="Message"
-          placeholder="Type a message…"
-          rows={2}
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.target.value)
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              event.currentTarget.form?.requestSubmit()
-            }
-          }}
+      {view === 'settings' ? (
+        <SettingsPanel
+          keyStatus={keyStatus}
+          onKeyStatus={setKeyStatus}
+          grants={grants}
+          onGrants={setGrants}
+          model={model}
+          onModel={setModel}
+          audit={audit}
         />
-        <button type="submit" disabled={!draft.trim()}>
-          Send
-        </button>
-      </form>
+      ) : (
+        <ErrorBoundary onReset={chat.newChat} resetLabel="Start a new chat">
+          <ChatView
+            state={chat.state}
+            onSend={chat.send}
+            onStop={chat.stop}
+            onNewChat={chat.newChat}
+            onDismissBanner={chat.dismissBanner}
+            onDismissStorageWarning={chat.dismissStorageWarning}
+            onOpenSettings={openSettings}
+            notice={
+              loaded && (!keySaved || !hasGrants) ? (
+                <SetupGuide
+                  keySaved={keySaved}
+                  hasGrants={hasGrants}
+                  onOpenSettings={openSettings}
+                />
+              ) : undefined
+            }
+          />
+        </ErrorBoundary>
+      )}
+
+      {approval && (
+        <ApprovalCard
+          key={approval.id}
+          prompt={approval}
+          queued={queued.length}
+          onRespond={chat.respond}
+        />
+      )}
     </div>
   )
 }

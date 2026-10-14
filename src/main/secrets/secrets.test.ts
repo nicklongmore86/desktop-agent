@@ -63,7 +63,7 @@ describe('encrypted API key store', () => {
     await Promise.all([store.set('secret-key'), store.clear()])
     expect(await store.hasKey()).toBe(false)
   })
-  it.each(['clear', 'cleanup'] as const)('sanitizes EPERM during %s', async (operation) => {
+  it('sanitizes EPERM during clear', async () => {
     const { path, safeStorage } = await fixture()
     const store = createApiKeyStore({
       userDataPath: path,
@@ -74,13 +74,32 @@ describe('encrypted API key store', () => {
           Promise.reject(Object.assign(new Error(`EPERM: ${path}/private-key`), { code: 'EPERM' })),
       },
     })
-    const result = operation === 'clear' ? store.clear() : store.set('secret-key')
-    await expect(result).rejects.toThrow(
-      operation === 'clear'
-        ? 'Could not clear the encrypted API key.'
-        : 'Could not clean up the temporary encrypted API key file.',
-    )
+    const result = store.clear()
+    await expect(result).rejects.toThrow('Could not clear the encrypted API key.')
     await expect(result).rejects.not.toThrow(path)
     await expect(result).rejects.not.toHaveProperty('cause')
+  })
+  it('treats temporary-file cleanup as best effort after a successful save', async () => {
+    const { path, safeStorage } = await fixture()
+    const rm = vi.fn(() => Promise.reject(Object.assign(new Error('EPERM'), { code: 'EPERM' })))
+    const store = createApiKeyStore({ userDataPath: path, safeStorage, fs: { ...fs, rm } })
+    await expect(store.set('secret-key')).resolves.toBeUndefined()
+    expect(rm).toHaveBeenCalledOnce()
+    expect(await store.get()).toBe('secret-key')
+  })
+  it('reports the real save error when cleanup also fails', async () => {
+    const { path, safeStorage } = await fixture()
+    const store = createApiKeyStore({
+      userDataPath: path,
+      safeStorage,
+      fs: {
+        ...fs,
+        rename: () => Promise.reject(Object.assign(new Error(`EPERM: ${path}`), { code: 'EPERM' })),
+        rm: () => Promise.reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })),
+      },
+    })
+    const result = store.set('secret-key')
+    await expect(result).rejects.toThrow('Could not save the encrypted API key.')
+    await expect(result).rejects.not.toThrow(path)
   })
 })

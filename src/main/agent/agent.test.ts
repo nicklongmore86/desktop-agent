@@ -78,7 +78,15 @@ describe('agent', () => {
     expect(f.requests[0]).toMatchObject({
       model: DEFAULT_MODEL,
       system: [{ cache_control: { type: 'ephemeral' } }],
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'Help', cache_control: { type: 'ephemeral' } }],
+        },
+      ],
     })
+    // The persisted history never carries request-only cache markers.
+    expect(JSON.stringify(result.conversation)).not.toContain('cache_control')
     expect(createClaudeClient('test')).toBeInstanceOf(Anthropic)
   })
   it.each([1, 2])(
@@ -106,7 +114,17 @@ describe('agent', () => {
           is_error: false,
         })),
       })
-      expect(f.requests[0]?.tools?.[0]).toMatchObject({ cache_control: { type: 'ephemeral' } })
+      // The system breakpoint covers the tools; the last message block gets the other one.
+      expect(f.requests[1]?.tools?.[0]).not.toHaveProperty('cache_control')
+      const last = f.requests[1]?.messages.at(-1)?.content
+      expect(Array.isArray(last) && last.at(-1)).toMatchObject({
+        cache_control: { type: 'ephemeral' },
+      })
+      expect(
+        f.requests[1]?.messages
+          .slice(0, -1)
+          .some((m) => JSON.stringify(m).includes('cache_control')),
+      ).toBe(false)
     },
   )
   it('starts parallel calls before either resolves', async () => {
@@ -189,28 +207,63 @@ describe('agent', () => {
   )
   it('continues pause_turn with unchanged assistant content', async () => {
     const f = fixture([reply('pause_turn'), reply()])
-    expect((await f.run()).stopReason).toBe('end_turn')
-    expect(f.requests[1]?.messages[1]?.content).toEqual(reply().content)
+    const result = await f.run()
+    expect(result.stopReason).toBe('end_turn')
+    expect(result.conversation[1]?.content).toEqual(reply().content)
+    expect(f.requests[1]?.messages[1]?.content).toEqual([
+      { ...reply().content[0], cache_control: { type: 'ephemeral' } },
+    ])
   })
-  it('never executes truncated tool calls', async () => {
+  it('never executes truncated tool calls and flags the discarded response', async () => {
     const execute = vi.fn()
     const f = fixture([reply('max_tokens', [call()])], [tool(execute)])
-    expect((await f.run()).stopReason).toBe('max_tokens')
+    const result = await f.run()
+    expect(result.stopReason).toBe('max_tokens')
+    expect(result.conversation).toHaveLength(1)
     expect(execute).not.toHaveBeenCalled()
+    expect(f.events.map((e) => e.type)).toEqual([
+      'text_delta',
+      'usage',
+      'response_discarded',
+      'turn_complete',
+      'error',
+    ])
+    expect(f.events).toContainEqual({ type: 'response_discarded', turn: 1 })
+  })
+  it('never saves empty text blocks or a message of only empty text', async () => {
+    const empty = { type: 'text', text: '', citations: null } as const
+    const f = fixture(
+      [reply('tool_use', [empty, call()]), reply('end_turn', [empty, { ...empty, text: ' \n' }])],
+      [tool()],
+    )
+    const result = await f.run()
+    expect(result.stopReason).toBe('end_turn')
+    expect(result.conversation).toHaveLength(3)
+    expect(result.conversation[1]).toMatchObject({
+      role: 'assistant',
+      content: [{ type: 'tool_use' }],
+    })
+    expect(JSON.stringify(result.conversation)).not.toContain('"text":""')
   })
   it('aborts a pending stream and does not persist partial output', async () => {
     const controller = new AbortController()
     const abort = vi.fn()
     const events: AgentEvent[] = []
+    let emitText: (delta: string) => void = () => {}
     const client: AgentClient = {
       messages: {
         stream: () => ({
           abort,
-          on: () => {},
+          on: (_event, listener) => {
+            emitText = listener
+          },
           finalMessage: () =>
             new Promise(() => {
               queueMicrotask(() => {
+                emitText('before')
                 controller.abort()
+                // A late delta from the SDK after the abort must not reach observers.
+                emitText('after')
               })
             }),
         }),
@@ -223,6 +276,9 @@ describe('agent', () => {
     })
     expect(result).toEqual({ stopReason: 'aborted', conversation: [] })
     expect(abort).toHaveBeenCalledOnce()
+    const deltas = events.filter((e) => e.type === 'text_delta')
+    expect(deltas).toEqual([{ type: 'text_delta', turn: 1, text: 'before' }])
+    expect(events.findIndex((e) => e.type === 'text_delta' && e.text === 'after')).toBe(-1)
     expect(events).toContainEqual({
       type: 'error',
       code: 'aborted',
@@ -314,8 +370,15 @@ describe('agent', () => {
     ['overloaded_error', 'overloaded'],
     ['rate_limit_error', 'rate_limit'],
   ] as const)('maps statusless stream %s', async (type, code) => {
+    // The shape the SDK throws for an SSE `error` event (core/streaming.js).
     const f = fixture([
-      new Anthropic.APIError(undefined, { type, message: 'secret' }, 'secret', undefined),
+      new Anthropic.APIError(
+        undefined,
+        { type: 'error', error: { type, message: 'secret' } },
+        undefined,
+        new Headers(),
+        type,
+      ),
     ])
     expect((await f.run()).stopReason).toBe(code)
     expect(JSON.stringify(f.events)).not.toContain('secret')
