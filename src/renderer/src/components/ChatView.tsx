@@ -10,6 +10,7 @@ export interface ChatViewProps {
   onStop: () => Promise<void>
   onNewChat: () => Promise<void>
   onDismissBanner: () => void
+  onDismissStorageWarning: () => void
   onOpenSettings: () => void
   /** Shown above the composer when setup is incomplete. */
   notice?: React.ReactNode
@@ -21,6 +22,7 @@ export function ChatView({
   onStop,
   onNewChat,
   onDismissBanner,
+  onDismissStorageWarning,
   onOpenSettings,
   notice,
 }: ChatViewProps): React.JSX.Element {
@@ -56,6 +58,21 @@ export function ChatView({
           New chat
         </button>
       </div>
+
+      {state.storageWarning && (
+        <div className="banner banner-warning" role="alert">
+          <div className="banner-text">
+            <strong>Storage problem.</strong> {state.storageWarning}
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss storage warning"
+            onClick={onDismissStorageWarning}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {state.loadError && (
         <div className="banner banner-info" role="status">

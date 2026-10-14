@@ -9,6 +9,7 @@ import type {
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { SettingsPanel } from './components/SettingsPanel'
 import { useChat } from './use-chat'
 
@@ -106,19 +107,26 @@ export function App(): React.JSX.Element {
           audit={audit}
         />
       ) : (
-        <ChatView
-          state={chat.state}
-          onSend={chat.send}
-          onStop={chat.stop}
-          onNewChat={chat.newChat}
-          onDismissBanner={chat.dismissBanner}
-          onOpenSettings={openSettings}
-          notice={
-            loaded && (!keySaved || !hasGrants) ? (
-              <SetupGuide keySaved={keySaved} hasGrants={hasGrants} onOpenSettings={openSettings} />
-            ) : undefined
-          }
-        />
+        <ErrorBoundary onReset={chat.newChat} resetLabel="Start a new chat">
+          <ChatView
+            state={chat.state}
+            onSend={chat.send}
+            onStop={chat.stop}
+            onNewChat={chat.newChat}
+            onDismissBanner={chat.dismissBanner}
+            onDismissStorageWarning={chat.dismissStorageWarning}
+            onOpenSettings={openSettings}
+            notice={
+              loaded && (!keySaved || !hasGrants) ? (
+                <SetupGuide
+                  keySaved={keySaved}
+                  hasGrants={hasGrants}
+                  onOpenSettings={openSettings}
+                />
+              ) : undefined
+            }
+          />
+        </ErrorBoundary>
       )}
 
       {approval && (

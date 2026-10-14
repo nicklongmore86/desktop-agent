@@ -9,6 +9,7 @@ export interface ChatControls {
   newChat: () => Promise<void>
   respond: (id: string, approved: boolean) => Promise<void>
   dismissBanner: () => void
+  dismissStorageWarning: () => void
 }
 
 /** Chat state for the whole app: subscribes to main's pushes, then loads the saved chat. */
@@ -74,5 +75,9 @@ export function useChat(): ChatControls {
     dispatch({ type: 'banner', banner: null })
   }, [])
 
-  return { state, send, stop, newChat, respond, dismissBanner }
+  const dismissStorageWarning = useCallback(() => {
+    dispatch({ type: 'dismiss_storage_warning' })
+  }, [])
+
+  return { state, send, stop, newChat, respond, dismissBanner, dismissStorageWarning }
 }

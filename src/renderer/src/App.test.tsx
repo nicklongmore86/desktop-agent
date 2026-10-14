@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ApiContext } from './api'
 import { App } from './App'
 import { fakeApi, type FakeApiOptions } from './test/fake-api'
@@ -181,6 +181,52 @@ describe('chat view', () => {
       pushAudit({ healthy: false, path: 'C:\\Data\\audit.jsonl' })
     })
     expect(screen.getByRole('alert').textContent).toContain('Audit logging is failing')
+  })
+
+  it('shows storage warnings, keeps them across New chat and lets the user dismiss them', async () => {
+    const { user, pushChat } = await renderApp()
+    act(() => {
+      pushChat({
+        type: 'storage_warning',
+        message: 'The previous conversation could not be deleted from disk.',
+      })
+      pushChat({ type: 'conversation_reset' })
+    })
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('Storage problem.')
+    expect(alert.textContent).toContain('could not be deleted from disk')
+    await user.click(screen.getByRole('button', { name: 'Dismiss storage warning' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('recovers from a crash in the chat view through the error boundary', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { api, user, pushChat } = await renderApp()
+    act(() => {
+      pushChat({ type: 'run_started', runId: 'r1', text: 'Hi' })
+      // A tool card whose input cannot be summarised or stringified crashes nothing...
+      pushChat({
+        type: 'tool_use',
+        runId: 'r1',
+        turn: 1,
+        id: 't1',
+        name: 'x',
+        input: { path: 'C:\\a' },
+      })
+    })
+    expect(screen.queryByText('The chat view hit an error.')).toBeNull()
+    // ...but a malformed item from main (text that is not a string) does.
+    act(() => {
+      pushChat({ type: 'text_delta', runId: 'r1', turn: 2, text: { bad: true } as never })
+    })
+    expect(screen.getByRole('alert').textContent).toContain('The chat view hit an error.')
+    // The rest of the app still works.
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Start a new chat' }))
+    expect(api.chat.newChat).toHaveBeenCalledOnce()
+    expect(screen.queryByText('The chat view hit an error.')).toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeTruthy()
+    error.mockRestore()
   })
 
   it('unsubscribes from main pushes on unmount', async () => {

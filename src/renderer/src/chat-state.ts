@@ -32,6 +32,8 @@ export interface ChatViewState {
   /** Approval prompts waiting for the user, oldest first. */
   approvals: ApprovalPrompt[]
   loadError: string | null
+  /** Saving or deleting the conversation on disk failed. */
+  storageWarning: string | null
 }
 
 export const initialChatState: ChatViewState = {
@@ -41,6 +43,7 @@ export const initialChatState: ChatViewState = {
   banner: null,
   approvals: [],
   loadError: null,
+  storageWarning: null,
 }
 
 export type ChatAction =
@@ -48,6 +51,7 @@ export type ChatAction =
   | { type: 'event'; event: ChatEvent }
   | { type: 'approval'; prompt: ApprovalPrompt }
   | { type: 'banner'; banner: Banner | null }
+  | { type: 'dismiss_storage_warning' }
 
 function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
   switch (event.type) {
@@ -61,7 +65,10 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
         items: [...state.items, { kind: 'user', id: `${event.runId}:user`, text: event.text }],
       }
     case 'conversation_reset':
-      return { ...initialChatState }
+      // Keep a storage warning: a failed delete is reported just before the reset.
+      return { ...initialChatState, storageWarning: state.storageWarning }
+    case 'storage_warning':
+      return { ...state, storageWarning: event.message }
     case 'approval_closed':
       return {
         ...state,
@@ -164,5 +171,7 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
       return { ...state, approvals: [...state.approvals, action.prompt] }
     case 'banner':
       return { ...state, banner: action.banner }
+    case 'dismiss_storage_warning':
+      return { ...state, storageWarning: null }
   }
 }
