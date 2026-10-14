@@ -40,6 +40,12 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   } catch {
     // Keep the default.
   }
+  let writes: Promise<unknown> = Promise.resolve()
+  const serial = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = writes.then(operation)
+    writes = result.catch(() => {})
+    return result
+  }
   const view = (): ModelSettings => ({
     model,
     defaultModel: DEFAULT_MODEL,
@@ -51,8 +57,10 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     },
     async setProvider(next) {
       if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
-      await writeJsonFile(file, { version: 2, model, provider: next } satisfies SettingsFile)
-      provider = next
+      await serial(async () => {
+        await writeJsonFile(file, { version: 2, model, provider: next } satisfies SettingsFile)
+        provider = next
+      })
     },
     get model() {
       return model
@@ -60,9 +68,11 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     view,
     async setModel(next) {
       if (!isOffered(next)) throw new Error('Unknown model.')
-      await writeJsonFile(file, { version: 2, model: next, provider } satisfies SettingsFile)
-      model = next
-      return view()
+      return serial(async () => {
+        await writeJsonFile(file, { version: 2, model: next, provider } satisfies SettingsFile)
+        model = next
+        return view()
+      })
     },
   }
 }

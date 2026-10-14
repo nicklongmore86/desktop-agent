@@ -176,3 +176,13 @@ describe('settings store', () => {
     expect((await openSettingsStore(file)).model).toBe(DEFAULT_MODEL)
   })
 })
+
+it('persists concurrent model and provider selections together across restart', async () => {
+  const file = join(await tempDir(), 'settings.json')
+  const store = await openSettingsStore(file)
+  const other = MODEL_OPTIONS.find((option) => option.id !== DEFAULT_MODEL)?.id ?? DEFAULT_MODEL
+  await Promise.all([store.setModel(other), store.setProvider('codex-subscription')])
+  const reopened = await openSettingsStore(file)
+  expect(reopened.model).toBe(other)
+  expect(reopened.provider).toBe('codex-subscription')
+})
