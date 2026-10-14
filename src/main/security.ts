@@ -50,3 +50,14 @@ export function isLoopbackHttpUrl(url: string): boolean {
     return false
   }
 }
+
+/**
+ * True when an IPC call comes from the app's own top-level frame. Subframes
+ * are refused even at an app URL: the app has none, so one is not ours.
+ */
+export function isTrustedSenderFrame(
+  frame: { url: string; parent: unknown } | null | undefined,
+  appUrl: string,
+): boolean {
+  return !!frame && frame.parent === null && isAppUrl(frame.url, appUrl)
+}
