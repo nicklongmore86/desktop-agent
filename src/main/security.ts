@@ -61,3 +61,16 @@ export function isTrustedSenderFrame(
 ): boolean {
   return !!frame && frame.parent === null && isAppUrl(frame.url, appUrl)
 }
+
+/**
+ * The full IPC check: the sender is exactly the app window's current main
+ * frame (object identity, so another window or webContents never passes),
+ * and that frame is top-level and on an app URL.
+ */
+export function isTrustedIpcSender(
+  frame: { url: string; parent: unknown } | null | undefined,
+  mainFrame: unknown,
+  appUrl: string,
+): boolean {
+  return !!frame && frame === mainFrame && isTrustedSenderFrame(frame, appUrl)
+}

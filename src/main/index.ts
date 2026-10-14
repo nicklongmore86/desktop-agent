@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from
 import { IpcChannels, type PushChannel, type PushPayloads } from '../shared/ipc'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { registerIpcHandlers } from './ipc-handlers'
-import { isTrustedSenderFrame } from './security'
+import { isTrustedIpcSender } from './security'
 import { createAppServices } from './services'
 import { appUrl, createMainWindow } from './window'
 
@@ -17,7 +17,9 @@ let mainWindow: BrowserWindow | null = null
 
 /** Sends a main -> renderer push to the app window, if it is still there. */
 function push<C extends PushChannel>(channel: C, payload: PushPayloads[C]): void {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+  const window = mainWindow
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
+  window.webContents.send(channel, payload)
 }
 
 function hardenSessions(): void {
@@ -62,7 +64,13 @@ void app.whenReady().then(async () => {
   })
   const { chat } = services
 
-  registerIpcHandlers(ipcMain, (event) => isTrustedSenderFrame(event.senderFrame, appUrl()), {
+  // Only the app window's current main frame may call in, and only on an app URL.
+  const isTrustedSender = (event: { senderFrame: { url: string; parent: unknown } | null }) => {
+    const window = mainWindow
+    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false
+    return isTrustedIpcSender(event.senderFrame, window.webContents.mainFrame, appUrl())
+  }
+  registerIpcHandlers(ipcMain, isTrustedSender, {
     appInfo: () => ({ name: app.getName(), version: app.getVersion(), platform: process.platform }),
     apiKey: services.apiKey,
     grants: services.grants,

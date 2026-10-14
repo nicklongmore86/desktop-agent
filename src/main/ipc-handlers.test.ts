@@ -10,7 +10,7 @@ import {
   type IpcSenderEvent,
   type IpcServices,
 } from './ipc-handlers'
-import { isTrustedSenderFrame } from './security'
+import { isTrustedIpcSender, isTrustedSenderFrame } from './security'
 
 const APP_URL = 'file:///C:/Program%20Files/Desktop%20Agent/resources/app/out/renderer/index.html'
 const appFrame: IpcSenderEvent = { senderFrame: { url: APP_URL, parent: null } }
@@ -91,6 +91,20 @@ describe('isTrustedSenderFrame', () => {
     expect(isTrustedSenderFrame({ url: APP_URL, parent: {} }, APP_URL)).toBe(false)
     expect(isTrustedSenderFrame(null, APP_URL)).toBe(false)
     expect(isTrustedSenderFrame(undefined, APP_URL)).toBe(false)
+  })
+})
+
+describe('isTrustedIpcSender', () => {
+  it("accepts only the app window's current main frame object", () => {
+    const mainFrame = { url: APP_URL, parent: null }
+    expect(isTrustedIpcSender(mainFrame, mainFrame, APP_URL)).toBe(true)
+    // Same URL and top-level, but another window's (or a stale) frame.
+    expect(isTrustedIpcSender({ url: APP_URL, parent: null }, mainFrame, APP_URL)).toBe(false)
+    expect(isTrustedIpcSender(null, mainFrame, APP_URL)).toBe(false)
+    expect(isTrustedIpcSender(mainFrame, undefined, APP_URL)).toBe(false)
+    // The right frame object, but it has navigated away from the app.
+    const navigated = { url: 'https://evil.example/', parent: null }
+    expect(isTrustedIpcSender(navigated, navigated, APP_URL)).toBe(false)
   })
 })
 

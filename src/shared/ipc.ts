@@ -122,6 +122,8 @@ export type ChatEvent =
   | { type: 'run_finished'; runId: string; stopReason: string }
   /** New chat: the conversation is now empty. */
   | { type: 'conversation_reset' }
+  /** Saving or deleting the conversation on disk failed. */
+  | { type: 'storage_warning'; message: string }
 
 export type ApprovalKind = 'write' | 'move' | 'delete' | 'shell'
 

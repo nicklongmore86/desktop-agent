@@ -37,10 +37,14 @@ function scriptedRunner(
   }
 }
 
-function setup(runner: AgentRunner | RunnerResult, initial: MessageParam[] = []) {
+function setup(
+  runner: AgentRunner | RunnerResult,
+  initial: MessageParam[] = [],
+  store = memoryStore(initial),
+  emit?: (event: ChatEvent) => void,
+) {
   const events: ChatEvent[] = []
   const prompts: ApprovalPrompt[] = []
-  const store = memoryStore(initial)
   let n = 0
   const createRunner = vi.fn(() =>
     Promise.resolve<RunnerResult>('ok' in runner ? runner : { ok: true, runner }),
@@ -48,7 +52,10 @@ function setup(runner: AgentRunner | RunnerResult, initial: MessageParam[] = [])
   const session = new ChatSession({
     store,
     createRunner,
-    emit: (event) => events.push(event),
+    emit: (event) => {
+      events.push(event)
+      emit?.(event)
+    },
     promptApproval: (prompt) => prompts.push(prompt),
     newId: () => `id-${String(++n)}`,
   })
@@ -394,5 +401,209 @@ describe('ChatSession', () => {
       },
       { kind: 'assistant', text: 'Declined, so nothing ran.' },
     ])
+  })
+
+  describe('new chat', () => {
+    /** A store whose clear() waits until `finishClear()` is called. */
+    function slowClearStore(initial: MessageParam[] = []) {
+      const store = memoryStore(initial)
+      const finishes: (() => void)[] = []
+      let clearing = 0
+      let maxConcurrent = 0
+      const clearNow = store.clear
+      store.clear = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            clearing += 1
+            maxConcurrent = Math.max(maxConcurrent, clearing)
+            finishes.push(() => {
+              clearing -= 1
+              void clearNow().then(resolve)
+            })
+          }),
+      )
+      return {
+        store,
+        finishClear: () => finishes.shift()?.(),
+        pendingClears: () => finishes.length,
+        maxConcurrent: () => maxConcurrent,
+      }
+    }
+
+    it('refuses send while a reset is in progress and resets only after the clear', async () => {
+      const slow = slowClearStore([{ role: 'user', content: 'old' }])
+      const { session, events, createRunner } = setup(
+        scriptedRunner((h) => Promise.resolve([...h, reply('ok')])),
+        [],
+        slow.store,
+      )
+      await session.init()
+      const reset = session.newChat()
+      // Reserved synchronously: a send in the same tick is already refused.
+      expect(await session.send('racing')).toEqual({
+        ok: false,
+        code: 'busy',
+        message: 'A new chat is being started. Try again.',
+      })
+      await until(() => slow.pendingClears() === 1)
+      expect(await session.send('still racing')).toMatchObject({ ok: false, code: 'busy' })
+      expect(events).not.toContainEqual({ type: 'conversation_reset' })
+      expect(createRunner).not.toHaveBeenCalled()
+
+      slow.finishClear()
+      expect(await reset).toEqual({ items: [], running: false, loadError: null })
+      expect(events.at(-1)).toEqual({ type: 'conversation_reset' })
+      expect(slow.store.saved()).toEqual([])
+      expect(await session.send('after')).toEqual({ ok: true })
+    })
+
+    it('runs repeated New chat calls one after another', async () => {
+      const slow = slowClearStore()
+      const { session, events } = setup(
+        scriptedRunner((h) => Promise.resolve(h)),
+        [],
+        slow.store,
+      )
+      const first = session.newChat()
+      const second = session.newChat()
+      await until(() => slow.pendingClears() === 1)
+      // The second clear has not started: the first has not finished.
+      expect(slow.store.clear).toHaveBeenCalledOnce()
+      slow.finishClear()
+      await first
+      await until(() => slow.pendingClears() === 1)
+      expect(await session.send('too early')).toMatchObject({ ok: false, code: 'busy' })
+      slow.finishClear()
+      await second
+      expect(slow.maxConcurrent()).toBe(1)
+      expect(events.filter((e) => e.type === 'conversation_reset')).toHaveLength(2)
+      expect(await session.send('now')).toEqual({ ok: true })
+    })
+
+    it('never lets a run save history after a reset, even if it ignores the abort', async () => {
+      let finish: () => void = () => {}
+      const runner = scriptedRunner(
+        (history) =>
+          new Promise((resolve) => {
+            // Ignores the signal and returns a longer history later.
+            finish = () => {
+              resolve([...history, reply('late answer')])
+            }
+          }),
+      )
+      const { session, store } = setup(runner)
+      await session.send('Hi')
+      const reset = session.newChat()
+      finish()
+      await reset
+      await session.idle()
+      expect(store.saved()).toEqual([])
+      expect(session.state().items).toEqual([])
+    })
+
+    it('stops a send that is still saving the user message when a reset starts', async () => {
+      const store = memoryStore()
+      let finishSave: () => void = () => {}
+      store.save = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishSave = resolve
+          }),
+      )
+      const run = vi.fn()
+      const { session, events } = setup({ run }, [], store)
+      const sending = session.send('Hi')
+      await until(() => vi.mocked(store.save).mock.calls.length === 1)
+      const reset = session.newChat()
+      finishSave()
+      expect(await sending).toMatchObject({ ok: false, code: 'aborted' })
+      await reset
+      expect(run).not.toHaveBeenCalled()
+      expect(events.some((e) => e.type === 'run_started')).toBe(false)
+      expect(store.clear).toHaveBeenCalledOnce()
+    })
+
+    it('warns when the saved conversation cannot be deleted', async () => {
+      const store = memoryStore()
+      store.clear = vi.fn(() => Promise.reject(new Error('EPERM')))
+      const { session, events } = setup(
+        scriptedRunner((h) => Promise.resolve(h)),
+        [],
+        store,
+      )
+      await session.newChat()
+      expect(events).toEqual([
+        {
+          type: 'storage_warning',
+          message:
+            'The previous conversation could not be deleted from disk. It may come back after a restart.',
+        },
+        { type: 'conversation_reset' },
+      ])
+    })
+  })
+
+  it('warns when the conversation cannot be saved', async () => {
+    const store = memoryStore()
+    store.save = vi.fn(() => Promise.reject(new Error('ENOSPC')))
+    const { session, events } = setup(
+      scriptedRunner((h) => Promise.resolve([...h, reply('ok')])),
+      [],
+      store,
+    )
+    await session.send('Hi')
+    await session.idle()
+    expect(events).toContainEqual({
+      type: 'storage_warning',
+      message: 'The conversation could not be saved to disk. It will be lost when the app closes.',
+    })
+    // The conversation still works in memory.
+    expect(session.state().items).toHaveLength(2)
+  })
+
+  it('aborts first and still settles every approval when notifications throw', async () => {
+    const decisions: boolean[] = []
+    const signals: AbortSignal[] = []
+    const runner = scriptedRunner(async (history, options) => {
+      signals.push(options.signal)
+      const ask = () =>
+        options.requestApproval({ tool: 'delete_path', kind: 'delete', summary: 'Delete' })
+      decisions.push(...(await Promise.all([ask(), ask()])))
+      return history
+    })
+    let broken = false
+    const abortedWhenNotified: boolean[] = []
+    const { session, prompts } = setup(runner, [], memoryStore(), (event) => {
+      if (broken && event.type === 'approval_closed') {
+        // The window is gone. Record whether the run was already aborted.
+        abortedWhenNotified.push(signals[0]?.aborted === true)
+        throw new Error('window destroyed')
+      }
+    })
+    await session.send('Delete both')
+    await until(() => prompts.length === 2)
+    broken = true
+    await session.stop()
+    expect(abortedWhenNotified).toEqual([true, true])
+    expect(decisions).toEqual([false, false])
+    expect(session.pendingApprovals).toEqual([])
+    expect(session.running).toBe(false)
+  })
+
+  it('denies an approval whose prompt could not be shown', async () => {
+    const { runner, decisions } = approvalRunner()
+    const store = memoryStore()
+    const session = new ChatSession({
+      store,
+      createRunner: () => Promise.resolve({ ok: true, runner }),
+      emit: () => {},
+      promptApproval: () => {
+        throw new Error('window destroyed')
+      },
+    })
+    await session.send('Write it')
+    await session.idle()
+    expect(decisions).toEqual([false])
+    expect(session.pendingApprovals).toEqual([])
   })
 })

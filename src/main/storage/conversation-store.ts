@@ -13,21 +13,103 @@ export interface ConversationStore {
   clear: () => Promise<void>
 }
 
-function isMessage(value: unknown): value is MessageParam {
-  if (typeof value !== 'object' || value === null) return false
-  const { role, content } = value as { role?: unknown; content?: unknown }
+type Obj = Record<string, unknown>
+
+const isObject = (value: unknown): value is Obj =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+const nonEmpty = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim() !== ''
+
+function isTextBlock(block: Obj): boolean {
   return (
-    (role === 'user' || role === 'assistant') &&
-    (typeof content === 'string' ||
-      (Array.isArray(content) &&
-        content.every((block) => typeof block === 'object' && block !== null)))
+    nonEmpty(block['text']) &&
+    (block['citations'] === undefined ||
+      block['citations'] === null ||
+      Array.isArray(block['citations']))
   )
 }
 
+function isToolUse(block: Obj): boolean {
+  return nonEmpty(block['id']) && nonEmpty(block['name']) && isObject(block['input'])
+}
+
+function isToolResult(block: Obj): boolean {
+  const { content, is_error: isError } = block
+  return (
+    nonEmpty(block['tool_use_id']) &&
+    (content === undefined ||
+      typeof content === 'string' ||
+      (Array.isArray(content) &&
+        content.every(
+          (part) => isObject(part) && part['type'] === 'text' && typeof part['text'] === 'string',
+        ))) &&
+    (isError === undefined || typeof isError === 'boolean')
+  )
+}
+
+/** The blocks each role may hold, checked by discriminant. Anything else is rejected. */
+const BLOCK_CHECKS: Record<'user' | 'assistant', Record<string, (block: Obj) => boolean>> = {
+  user: { text: isTextBlock, tool_result: isToolResult },
+  assistant: { text: isTextBlock, tool_use: isToolUse },
+}
+
+function isMessage(value: unknown): value is MessageParam {
+  if (!isObject(value)) return false
+  const { role, content } = value
+  if (role !== 'user' && role !== 'assistant') return false
+  if (typeof content === 'string') return content.trim() !== ''
+  if (!Array.isArray(content) || content.length === 0) return false
+  const checks = BLOCK_CHECKS[role]
+  return content.every((block) => {
+    if (!isObject(block) || typeof block['type'] !== 'string') return false
+    const check = checks[block['type']]
+    return check !== undefined && check(block)
+  })
+}
+
+function blockIds(message: MessageParam, type: 'tool_use' | 'tool_result'): string[] {
+  if (typeof message.content === 'string') return []
+  return message.content.flatMap((block) =>
+    block.type === 'tool_use' && type === 'tool_use'
+      ? [block.id]
+      : block.type === 'tool_result' && type === 'tool_result'
+        ? [block.tool_use_id]
+        : [],
+  )
+}
+
+const sameSet = (a: string[], b: string[]): boolean =>
+  a.length === b.length && new Set(a).size === a.length && a.every((id) => b.includes(id))
+
+/**
+ * Basic structure the API requires: the history starts with the user, and
+ * every assistant tool call is answered, exactly, by the next user message.
+ * Consecutive user (a failed run) or assistant (pause_turn) messages are allowed.
+ */
+function isWellFormed(messages: MessageParam[]): boolean {
+  if (messages.length > 0 && messages[0]?.role !== 'user') return false
+  return messages.every((message, index) => {
+    const previous = messages[index - 1]
+    const next = messages[index + 1]
+    const calls = blockIds(message, 'tool_use')
+    const results = blockIds(message, 'tool_result')
+    if (results.length > 0) {
+      if (previous?.role !== 'assistant' || !sameSet(results, blockIds(previous, 'tool_use')))
+        return false
+    }
+    if (calls.length > 0) {
+      if (next?.role !== 'user' || !sameSet(calls, blockIds(next, 'tool_result'))) return false
+    }
+    return true
+  })
+}
+
 function isConversationFile(value: unknown): value is ConversationFile {
-  if (typeof value !== 'object' || value === null) return false
-  const { version, messages } = value as { version?: unknown; messages?: unknown }
-  return version === 1 && Array.isArray(messages) && messages.every(isMessage)
+  if (!isObject(value)) return false
+  const { version, messages } = value
+  return (
+    version === 1 && Array.isArray(messages) && messages.every(isMessage) && isWellFormed(messages)
+  )
 }
 
 /** The current conversation (Messages-API history) as JSON in userData. */
