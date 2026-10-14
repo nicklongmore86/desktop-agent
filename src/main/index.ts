@@ -50,6 +50,7 @@ void app.whenReady().then(async () => {
   hardenSessions()
   const services = await createAppServices({
     userData: app.getPath('userData'),
+    openUrl: (url) => shell.openExternal(url),
     safeStorage,
     trash: (path) => shell.trashItem(path),
     emit: (event) => {
@@ -87,6 +88,7 @@ void app.whenReady().then(async () => {
       return result.canceled ? null : (result.filePaths[0] ?? null)
     },
     settings: services.settings,
+    provider: services.provider,
     chat,
     audit: services.auditStatus,
   })
@@ -96,6 +98,7 @@ void app.whenReady().then(async () => {
     mainWindow = window
     // Reload, crash or close: deny pending approvals and stop the run.
     cancelOnPageEnd(window.webContents, () => {
+      void services.provider.cancelLogin()
       void chat.stop()
     })
     window.on('closed', () => {
@@ -108,6 +111,7 @@ void app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) openWindow()
   })
   app.on('before-quit', () => {
+    void services.provider.cancelLogin()
     void chat.stop()
   })
 })

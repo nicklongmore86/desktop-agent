@@ -8,6 +8,8 @@ import type {
   DesktopApi,
   GrantsState,
   ModelSettings,
+  ProviderStatus,
+  ProviderId,
 } from '../../../shared/ipc'
 
 export interface FakeApiOptions {
@@ -44,7 +46,24 @@ export function fakeApi(options: FakeApiOptions = {}) {
       }
     }
 
+  let provider: ProviderStatus = { provider: 'anthropic-api', state: 'ready', message: 'API mode' }
   const api = {
+    provider: {
+      get: vi.fn(() => Promise.resolve(provider)),
+      set: vi.fn((next: ProviderId) => {
+        provider = {
+          provider: next,
+          state: 'signed-out',
+          message: 'Sign in with your subscription.',
+        }
+        return Promise.resolve(provider)
+      }),
+      login: vi.fn(() => {
+        provider = { ...provider, state: 'ready', message: 'Signed in.' }
+        return Promise.resolve(provider)
+      }),
+      cancelLogin: vi.fn(async () => {}),
+    },
     getAppInfo: vi.fn(() =>
       Promise.resolve({ name: 'desktop-agent', version: '0.1.0', platform: 'win32' }),
     ),

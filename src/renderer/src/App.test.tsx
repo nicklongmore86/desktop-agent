@@ -255,3 +255,20 @@ describe('first run', () => {
     expect(screen.queryByRole('note', { name: 'Finish setting up' })).toBeNull()
   })
 })
+
+it('offers both subscriptions without an API-key setup gate and keeps API mode available', async () => {
+  const { api, user } = await renderApp({ key: { saved: false, error: null } })
+  await user.click(screen.getByRole('button', { name: 'Settings' }))
+  for (const provider of ['claude-subscription', 'codex-subscription']) {
+    await user.selectOptions(screen.getByLabelText('Access provider'), provider)
+    expect(api.provider.set).toHaveBeenLastCalledWith(provider)
+    expect(screen.queryByRole('heading', { name: 'Anthropic API key' })).toBeNull()
+    expect(screen.getByText(/No API key required/)).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Back to chat' }))
+    expect(screen.queryByText(/Add your Anthropic API key/)).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+  }
+  await user.selectOptions(screen.getByLabelText('Access provider'), 'anthropic-api')
+  expect(screen.getByRole('heading', { name: 'Anthropic API key' })).toBeTruthy()
+})

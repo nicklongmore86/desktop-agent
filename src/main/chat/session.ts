@@ -22,7 +22,7 @@ export type RunnerResult =
 export interface ChatSessionDeps {
   store: ConversationStore
   /** Builds an agent with the current API key, model and tools. */
-  createRunner: () => Promise<RunnerResult>
+  createRunner: (signal: AbortSignal) => Promise<RunnerResult>
   /** Streams an event to the renderer. */
   emit: (event: ChatEvent) => void
   /** Shows an approval prompt in the renderer. */
@@ -118,7 +118,7 @@ export class ChatSession {
 
     let built: RunnerResult
     try {
-      built = await this.deps.createRunner()
+      built = await this.deps.createRunner(controller.signal)
     } catch {
       built = { ok: false, code: 'internal', message: 'Could not start the agent.' }
     }
@@ -161,6 +161,7 @@ export class ChatSession {
       result = await runner.run(this.conversation, {
         signal: controller.signal,
         onEvent: (event) => {
+          if (generation !== this.generation || controller.signal.aborted) return
           if (event.type === 'approval_requested') approvalToolUseId = event.id
           this.forward(runId, event)
         },
@@ -337,6 +338,30 @@ export class ChatSession {
     })
     this.resetQueue = reset.catch(() => {})
     return reset
+  }
+
+  /** Switches stores while the send slot is reserved; history never crosses providers. */
+  switchStore(store: ConversationStore, commit: () => Promise<void>): Promise<ChatState> {
+    this.resets += 1
+    this.active?.controller.abort()
+    this.denyPending()
+    const switched = this.resetQueue.then(async () => {
+      try {
+        await this.stop()
+        const loaded = await store.load()
+        await commit()
+        this.generation += 1
+        this.deps.store = store
+        this.conversation = loaded.messages
+        this.loadError = loaded.error
+        this.notify({ type: 'conversation_reset', state: this.state() })
+        return this.state()
+      } finally {
+        this.resets -= 1
+      }
+    })
+    this.resetQueue = switched.catch(() => {})
+    return switched
   }
 
   /** Waits for the run in flight, if any. */

@@ -5,6 +5,7 @@ import type {
   AuditStatus,
   GrantsState,
   ModelSettings,
+  ProviderStatus,
 } from '../../shared/ipc'
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
@@ -44,12 +45,14 @@ export function App(): React.JSX.Element {
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
   const [grants, setGrants] = useState<GrantsState | null>(null)
   const [model, setModel] = useState<ModelSettings | null>(null)
+  const [provider, setProvider] = useState<ProviderStatus | null>(null)
   const [audit, setAudit] = useState<AuditStatus | null>(null)
 
   useEffect(() => {
     const report = (what: string) => (error: unknown) => {
       console.error(`${what} failed`, error)
     }
+    api.provider.get().then(setProvider, report('provider.get'))
     api.getAppInfo().then(setAppInfo, report('getAppInfo'))
     api.apiKey.status().then(setKeyStatus, report('apiKey.status'))
     api.grants.list().then(setGrants, report('grants.list'))
@@ -98,6 +101,8 @@ export function App(): React.JSX.Element {
 
       {view === 'settings' ? (
         <SettingsPanel
+          provider={provider}
+          onProvider={setProvider}
           keyStatus={keyStatus}
           onKeyStatus={setKeyStatus}
           grants={grants}
@@ -117,12 +122,18 @@ export function App(): React.JSX.Element {
             onDismissStorageWarning={chat.dismissStorageWarning}
             onOpenSettings={openSettings}
             notice={
-              loaded && (!keySaved || !hasGrants) ? (
+              loaded && provider?.provider === 'anthropic-api' && (!keySaved || !hasGrants) ? (
                 <SetupGuide
                   keySaved={keySaved}
                   hasGrants={hasGrants}
                   onOpenSettings={openSettings}
                 />
+              ) : provider &&
+                provider.provider !== 'anthropic-api' &&
+                provider.state !== 'ready' ? (
+                <div role="note" className="setup-guide">
+                  {provider.message} <button onClick={openSettings}>Open Settings</button>
+                </div>
               ) : undefined
             }
           />

@@ -20,6 +20,12 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> =>
 
 // Expose narrow, typed functions only — never ipcRenderer itself.
 const api: DesktopApi = {
+  provider: {
+    get: () => invoke(IpcChannels.providerGet),
+    set: (provider) => invoke(IpcChannels.providerSet, provider),
+    login: () => invoke(IpcChannels.providerLogin),
+    cancelLogin: () => invoke(IpcChannels.providerCancelLogin),
+  },
   getAppInfo: () => invoke(IpcChannels.getAppInfo),
   apiKey: {
     status: () => invoke(IpcChannels.apiKeyStatus),

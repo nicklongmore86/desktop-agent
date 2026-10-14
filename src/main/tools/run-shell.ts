@@ -130,7 +130,12 @@ export function defaultKillTree(
 /** process.env without the app's own variables, which commands have no business seeing. */
 export function shellEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(env).filter(([key]) => !/^(ANTHROPIC_|ELECTRON_)/i.test(key)),
+    Object.entries(env).filter(
+      ([key]) =>
+        !/^(ANTHROPIC_|OPENAI_|CLAUDE_|CODEX_|ELECTRON_|NODE_OPTIONS$|NODE_EXTRA_CA_CERTS$)/i.test(
+          key,
+        ),
+    ),
   )
 }
 

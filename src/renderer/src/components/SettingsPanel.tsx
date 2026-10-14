@@ -1,8 +1,17 @@
 import { useId, useState, type SubmitEvent } from 'react'
-import type { ApiKeyStatus, AuditStatus, GrantsState, ModelSettings } from '../../../shared/ipc'
+import type {
+  ApiKeyStatus,
+  AuditStatus,
+  GrantsState,
+  ModelSettings,
+  ProviderStatus,
+  ProviderId,
+} from '../../../shared/ipc'
 import { useApi } from '../api'
 
 export interface SettingsPanelProps {
+  provider?: ProviderStatus | null | undefined
+  onProvider?: ((status: ProviderStatus) => void) | undefined
   keyStatus: ApiKeyStatus | null
   onKeyStatus: (status: ApiKeyStatus) => void
   grants: GrantsState | null
@@ -240,9 +249,14 @@ export function SettingsPanel(props: SettingsPanelProps): React.JSX.Element {
   return (
     <div className="settings" aria-label="Settings">
       <h2>Settings</h2>
-      <ApiKeySection keyStatus={props.keyStatus} onKeyStatus={props.onKeyStatus} />
+      <ProviderSection provider={props.provider} onProvider={props.onProvider} />
+      {(!props.provider || props.provider.provider === 'anthropic-api') && (
+        <ApiKeySection keyStatus={props.keyStatus} onKeyStatus={props.onKeyStatus} />
+      )}
       <GrantsSection grants={props.grants} onGrants={props.onGrants} />
-      <ModelSection model={props.model} onModel={props.onModel} />
+      {(!props.provider || props.provider.provider === 'anthropic-api') && (
+        <ModelSection model={props.model} onModel={props.onModel} />
+      )}
       <section className="settings-section">
         <h3>Audit log</h3>
         <p className="settings-hint">Every tool call is recorded here:</p>
@@ -254,5 +268,87 @@ export function SettingsPanel(props: SettingsPanelProps): React.JSX.Element {
         )}
       </section>
     </div>
+  )
+}
+
+function ProviderSection({
+  provider,
+  onProvider,
+}: Pick<SettingsPanelProps, 'provider' | 'onProvider'>): React.JSX.Element {
+  const api = useApi()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const run = async (operation: () => Promise<ProviderStatus>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      onProvider?.(await operation())
+    } catch {
+      setError('Provider request failed. Try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="settings-section">
+      <h3>
+        <label htmlFor="provider-select">Access provider</label>
+      </h3>
+      <select
+        id="provider-select"
+        value={provider?.provider ?? 'anthropic-api'}
+        disabled={busy}
+        onChange={(event) => {
+          const next = event.target.value as ProviderId
+          void run(() => api.provider.set(next))
+        }}
+      >
+        <option value="anthropic-api">Anthropic API</option>
+        <option value="claude-subscription">Claude subscription</option>
+        <option value="codex-subscription">Codex subscription (ChatGPT)</option>
+      </select>
+      <p role="status">{provider?.message ?? 'Loading provider…'}</p>
+      {error && <p role="alert">{error}</p>}
+      {provider && provider.provider !== 'anthropic-api' && (
+        <>
+          <p>
+            No API key required. Install the supported official runtime, then sign in here. Each
+            provider has separate chat history. Switching stops the current reply.
+          </p>
+          <p>
+            Required runtime:{' '}
+            {provider.provider === 'claude-subscription'
+              ? 'Claude Code 2.1.299'
+              : 'Codex CLI 0.162.1'}
+            . See the README for Windows installation steps.
+          </p>
+          <button
+            disabled={busy}
+            onClick={() => {
+              void run(() => api.provider.get())
+            }}
+          >
+            Check readiness
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => {
+              void run(() => api.provider.login())
+            }}
+          >
+            Sign in with subscription
+          </button>
+          {busy && (
+            <button
+              onClick={() => {
+                void api.provider.cancelLogin()
+              }}
+            >
+              Cancel sign-in
+            </button>
+          )}
+        </>
+      )}
+    </section>
   )
 }
