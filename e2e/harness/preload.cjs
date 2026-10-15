@@ -50,9 +50,12 @@ contextBridge.exposeInMainWorld('desktopApi', {
   approvals: {
     respond: (id, approved) => {
       responses.push({ id, approved })
-      for (const listener of listeners.chat) {
-        listener({ type: 'approval_closed', approvalId: id, approved })
-      }
+      // Like real IPC, the closing event arrives in a later task, after the answer resolves.
+      setTimeout(() => {
+        for (const listener of listeners.chat) {
+          listener({ type: 'approval_closed', approvalId: id, approved })
+        }
+      }, 0)
       return Promise.resolve()
     },
   },
