@@ -5,7 +5,7 @@ import { redactSecrets } from '../permissions/audit'
 import { ToolFailure, ToolInputError, errorResult, type RunResult, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
 import { sameIdentity, type Identity } from './safe-fs'
-import { encodePowerShell, powerShellScript, treeKillScript } from './shell-windows'
+import { decodeCliXml, encodePowerShell, powerShellScript, treeKillScript } from './shell-windows'
 import { formatBytes } from './text'
 
 /** The parts of a ChildProcess the shell tool uses. */
@@ -56,18 +56,8 @@ export function windowsRoot(env: NodeJS.ProcessEnv): string {
   return WINDOWS_ROOT_PATTERN.test(candidate) ? candidate.replace(/\\+$/, '') : 'C:\\Windows'
 }
 
-/**
- * Flags before the encoded script. -OutputFormat Text is explicit because with an
- * encoded command Windows PowerShell otherwise writes stderr (errors, progress) as
- * CLIXML for a PowerShell caller.
- */
-const POWERSHELL_FLAGS = [
-  '-NoProfile',
-  '-NonInteractive',
-  '-OutputFormat',
-  'Text',
-  '-EncodedCommand',
-]
+/** Flags before the encoded script. Its stderr comes back as CLIXML; see decodeCliXml. */
+const POWERSHELL_FLAGS = ['-NoProfile', '-NonInteractive', '-EncodedCommand']
 
 function powerShellPath(root: string): string {
   return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
@@ -282,10 +272,11 @@ class OutputCollector {
     }
   }
 
-  text(): string {
+  /** The kept text; `decode` is applied to the start and the end separately. */
+  text(decode: (text: string) => string = (text) => text): string {
     const dropped = this.total - this.headBytes - this.tailBytes
-    const head = Buffer.concat(this.head).toString('utf8')
-    const tail = Buffer.concat(this.tail).toString('utf8')
+    const head = decode(Buffer.concat(this.head).toString('utf8'))
+    const tail = decode(Buffer.concat(this.tail).toString('utf8'))
     return dropped > 0 ? `${head}\n… [${formatBytes(dropped)} omitted] …\n${tail}` : head + tail
   }
 }
@@ -468,7 +459,9 @@ async function runProcess(
     if (signal.aborted) onAbort()
   })
 
-  const streams = `--- stdout ---\n${stdout.text()}\n--- stderr ---\n${stderr.text()}`
+  // Windows PowerShell writes stderr as CLIXML when given an encoded command.
+  const stderrText = stderr.text(deps.platform === 'win32' ? decodeCliXml : undefined)
+  const streams = `--- stdout ---\n${stdout.text()}\n--- stderr ---\n${stderrText}`
   if (outcome.kind === 'error' && !state.stoppedBy) {
     return errorResult(`Could not run ${file}: ${outcome.error.message}`, 'spawn-failed')
   }

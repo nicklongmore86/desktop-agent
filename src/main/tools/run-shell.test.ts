@@ -15,7 +15,13 @@ import {
   type ShellSpawner,
   windowsRoot,
 } from './run-shell'
-import { encodePowerShell, powerShellScript, treeKillScript, UTF8_PREAMBLE } from './shell-windows'
+import {
+  decodeCliXml,
+  encodePowerShell,
+  powerShellScript,
+  treeKillScript,
+  UTF8_PREAMBLE,
+} from './shell-windows'
 import { toolHarness } from './test-support'
 
 class FakeProcess extends EventEmitter implements ShellProcess {
@@ -325,14 +331,7 @@ describe('shellInvocation', () => {
   it('runs PowerShell by absolute path under %SystemRoot%, and /bin/sh elsewhere', () => {
     expect(shellInvocation('Get-Date', 'win32', { SystemRoot: 'D:\\WINNT' })).toEqual({
       file: 'D:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-      args: [
-        '-NoProfile',
-        '-NonInteractive',
-        '-OutputFormat',
-        'Text',
-        '-EncodedCommand',
-        expect.any(String),
-      ],
+      args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', expect.any(String)],
     })
     expect(shellInvocation('date', 'linux', {})).toEqual({ file: '/bin/sh', args: ['-c', 'date'] })
   })
@@ -409,8 +408,6 @@ describe('defaultKillTree', () => {
       expect(fallback?.args.slice(0, -1)).toEqual([
         '-NoProfile',
         '-NonInteractive',
-        '-OutputFormat',
-        'Text',
         '-EncodedCommand',
       ])
       expect(decode(fallback?.args.at(-1) ?? '')).toBe(treeKillScript(4242))
@@ -452,6 +449,31 @@ describe('defaultKillTree', () => {
     expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL')
     expect(child.kill).toHaveBeenCalledWith('SIGKILL')
     killSpy.mockRestore()
+  })
+})
+
+describe('decodeCliXml', () => {
+  // What Windows PowerShell 5.1 wrote to stderr on the CI runner.
+  const sample =
+    '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">' +
+    '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T>' +
+    '<T>System.Object</T></TN><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Preparing modules for first use.</AV>' +
+    '<AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj>' +
+    '<S S="Error">Write-Error \'bad café _xD83D__xDE00_\' : bad &lt;café&gt; &amp; _x005F_x_xD83D__xDE00__x000D__x000A_</S>' +
+    '<S S="Error">    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException_x000D__x000A_</S>' +
+    '<S S="warning">careful</S></Objs>'
+
+  it('turns PowerShell stream records back into console text and drops progress', () => {
+    expect(decodeCliXml(sample)).toBe(
+      "Write-Error 'bad café 😀' : bad <café> & _x😀\r\n" +
+        '    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException\r\n' +
+        'WARNING: careful\n',
+    )
+  })
+
+  it('leaves plain text alone, and decodes fragments of cut output', () => {
+    expect(decodeCliXml('plain _x0041_ <b> text')).toBe('plain _x0041_ <b> text')
+    expect(decodeCliXml('ion</S><S S="Error">tail_x000A_</S></Objs>')).toBe('ion</S>tail\n')
   })
 })
 
@@ -623,12 +645,13 @@ describe('run_shell with a real shell', () => {
     const h = toolHarness(sb)
     const command =
       process.platform === 'win32'
-        ? `Write-Progress -Activity busy -Status x; Write-Error 'bad ${nonAscii}'; exit 2`
-        : `echo 'bad ${nonAscii}' >&2; exit 2`
+        ? `Write-Progress -Activity busy -Status x\nWrite-Warning 'careful <&>'\nWrite-Error 'bad café 日本語 😀'\nexit 2`
+        : `echo 'WARNING: careful <&>' >&2; echo 'bad café 日本語 😀' >&2; exit 2`
     const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, fakeContext(true).ctx)
     expect(r.content).toMatch(/^exit code: 2/)
-    expect(r.content).toMatch(new RegExp(`--- stderr ---\\r?\\n(.*: )?bad ${nonAscii}`))
-    expect(r.content).not.toMatch(/CLIXML|<Objs/)
+    expect(r.content).toMatch(/--- stderr ---\r?\nWARNING: careful <&>\r?\n/)
+    expect(r.content).toContain('bad café 日本語 😀')
+    expect(r.content).not.toMatch(/CLIXML|<Objs|<S S=|_x[0-9A-F]{4}_|busy/)
   })
 
   it('runs the approved command exactly, quotes and all', { timeout: 30_000 }, async () => {

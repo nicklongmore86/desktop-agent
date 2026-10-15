@@ -64,3 +64,53 @@ foreach ($id in $tree) {
 exit [int]($alive -gt 0)
 `
 }
+
+const XML_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+}
+
+function decodeXmlText(text: string): string {
+  return text
+    .replace(/&(#x[0-9A-Fa-f]+|#[0-9]+|[a-z]+);/g, (entity, name: string) => {
+      if (name.startsWith('#x')) return String.fromCodePoint(Number.parseInt(name.slice(2), 16))
+      if (name.startsWith('#')) return String.fromCodePoint(Number.parseInt(name.slice(1), 10))
+      return XML_ENTITIES[name] ?? entity
+    })
+    .replace(/_x([0-9A-Fa-f]{4})_/g, (_, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    )
+}
+
+const STREAM_PREFIX: Record<string, string> = {
+  warning: 'WARNING: ',
+  verbose: 'VERBOSE: ',
+  debug: 'DEBUG: ',
+}
+
+/**
+ * Windows PowerShell 5.1 started with -EncodedCommand writes its error, warning and
+ * progress streams to a redirected stderr as CLIXML ("#< CLIXML" then <Objs>…</Objs>),
+ * whatever -OutputFormat says. This turns that back into the text a console would show:
+ * stream strings are decoded, progress records dropped, and anything else (such as a
+ * native program's own stderr) left as it is. Works on fragments too, since long output
+ * is cut in the middle.
+ */
+export function decodeCliXml(text: string): string {
+  if (!text.includes('#< CLIXML') && !text.includes('<Objs ') && !text.includes('<S S="')) {
+    return text
+  }
+  return text
+    .replace(/#< CLIXML\r?\n?/g, '')
+    .replace(/<Obj S="progress"[\s\S]*?<\/Obj>/g, '')
+    .replace(/<S S="([^"]*)">([\s\S]*?)<\/S>/g, (_, stream: string, body: string) => {
+      const decoded = decodeXmlText(body)
+      const prefix = STREAM_PREFIX[stream.toLowerCase()]
+      if (prefix === undefined) return decoded
+      return prefix + decoded + (decoded.endsWith('\n') ? '' : '\n')
+    })
+    .replace(/<Objs [^>]*>|<\/Objs>/g, '')
+}
