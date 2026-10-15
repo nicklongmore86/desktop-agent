@@ -41,6 +41,11 @@ jobs:
       - name: Approval dialog rendering (Electron)
         if: runner.os == 'Linux'
         run: xvfb-run -a pnpm test:e2e
+      # The runner's 1024x768 display would clamp the 1280px window.
+      - name: Raise the display resolution
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
       - name: Approval dialog rendering (Electron)
         if: runner.os != 'Linux'
         run: pnpm test:e2e

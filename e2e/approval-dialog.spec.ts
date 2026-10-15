@@ -383,6 +383,8 @@ for (const { width, height } of WIDTHS) {
     test.beforeAll(async () => {
       mkdirSync(SHOTS, { recursive: true })
       ;({ app, page } = await launch(width, height))
+      // A real window of exactly that width: the OS clamps windows to the screen, so CI
+      // raises the Windows runner's 1024x768 display first.
       expect(await page.evaluate(() => window.innerWidth)).toBe(width)
     })
 
@@ -393,6 +395,7 @@ for (const { width, height } of WIDTHS) {
     CASES.forEach((testCase, index) => {
       test(testCase.name, async () => {
         const id = `${testCase.name}-${String(width)}`
+        expect(await page.evaluate(() => window.innerWidth)).toBe(width)
         const prompt: ApprovalPrompt = { id, runId: 'run-1', toolUseId: null, ...testCase.prompt }
         await page.evaluate((p) => {
           ;(window as unknown as E2eWindow).e2e.pushApproval(p)
