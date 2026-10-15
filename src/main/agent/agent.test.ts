@@ -162,8 +162,20 @@ describe('agent', () => {
             ),
           ],
     )
-    await f.run()
-    expect(f.requests[1]?.messages[2]).toMatchObject({ content: [{ is_error: true }] })
+    // A failing tool never ends the run: the model gets an error result and continues.
+    expect((await f.run()).stopReason).toBe('end_turn')
+    expect(f.requests).toHaveLength(2)
+    expect(f.requests[1]?.messages[2]).toMatchObject({
+      content: [{ type: 'tool_result', tool_use_id: 'one', is_error: true }],
+    })
+    expect(f.events).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_result',
+        result: expect.objectContaining({ isError: true }) as unknown,
+      }),
+    )
+    // A thrown error's message never reaches the model or observers.
+    expect(JSON.stringify([f.requests, f.events])).not.toContain('private')
   })
   it('emits approval denial and lets the tool report it', async () => {
     const f = fixture(

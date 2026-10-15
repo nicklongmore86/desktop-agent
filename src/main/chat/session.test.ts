@@ -633,6 +633,35 @@ describe('provider switching', () => {
     )
     expect(commit).toHaveBeenCalledOnce()
   })
+  it('never lets a slow initial load overwrite a switch, and refuses sends until loaded', async () => {
+    const old = memoryStore()
+    let finishLoad: () => void = () => {}
+    old.load = vi.fn(
+      () =>
+        new Promise<Awaited<ReturnType<ConversationStore['load']>>>((resolve) => {
+          finishLoad = () => {
+            resolve({ messages: [{ role: 'user', content: 'old provider' }], error: null })
+          }
+        }),
+    )
+    const { session } = setup(
+      scriptedRunner((history) => Promise.resolve(history)),
+      [],
+      old,
+    )
+    const loading = session.init()
+    expect(await session.send('too early')).toMatchObject({ ok: false, code: 'busy' })
+    const switching = session.switchStore(
+      memoryStore([{ role: 'user', content: 'other provider' }]),
+      () => Promise.resolve(),
+    )
+    await until(() => vi.mocked(old.load).mock.calls.length === 1)
+    finishLoad()
+    await Promise.all([loading, switching])
+    expect(session.state().items).toEqual([
+      expect.objectContaining({ text: 'other provider' }) as unknown,
+    ])
+  })
   it('serializes rapid switches and keeps the previous provider on persistence failure', async () => {
     const { session } = setup(scriptedRunner((history) => Promise.resolve(history)))
     await session.init()

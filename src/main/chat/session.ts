@@ -70,10 +70,24 @@ export class ChatSession {
     this.newId = deps.newId ?? randomUUID
   }
 
-  async init(): Promise<void> {
-    const { messages, error } = await this.deps.store.load()
-    this.conversation = messages
-    this.loadError = error
+  /**
+   * Loads the saved conversation. Like New chat and switchStore, it reserves
+   * the send slot and runs in the reset queue, so a send cannot start on
+   * unloaded history and a late load can never overwrite a later switch.
+   */
+  init(): Promise<void> {
+    this.resets += 1
+    const loaded = this.resetQueue.then(async () => {
+      try {
+        const { messages, error } = await this.deps.store.load()
+        this.conversation = messages
+        this.loadError = error
+      } finally {
+        this.resets -= 1
+      }
+    })
+    this.resetQueue = loaded.catch(() => {})
+    return loaded
   }
 
   get running(): boolean {

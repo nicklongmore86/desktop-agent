@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { fakeContext, makeSandbox, type Sandbox } from '../permissions/test-support'
+import { fakeContext, makeSandbox, MemoryAudit, type Sandbox } from '../permissions/test-support'
+import { defineTool, ToolFailure } from './define'
 import { toolHarness } from './test-support'
 
 let sb: Sandbox
@@ -101,4 +102,35 @@ describe('createTools', () => {
       h.tool('list_dir').execute({ path: sb.root }, fakeContext().ctx),
     ).resolves.toMatchObject({ content: expect.stringContaining('(empty)') as unknown })
   })
+
+  it.each([
+    ['an unexpected error', new Error('boom'), 'run failed: boom', 'internal'],
+    [
+      'a Node error',
+      Object.assign(new Error('EACCES: denied'), { code: 'EACCES' }),
+      'run failed: EACCES: denied',
+      'EACCES',
+    ],
+    ['a ToolFailure', new ToolFailure('Too big.', 'too-large'), 'Too big.', 'too-large'],
+    ['a non-Error value', 'oops', 'run failed: oops', 'internal'],
+  ])(
+    'turns %s thrown by a tool body into an error result',
+    async (_label, thrown, content, code) => {
+      const audit = new MemoryAudit()
+      const tool = defineTool(
+        {
+          name: 'run',
+          description: 'Throws',
+          inputSchema: { type: 'object', properties: {} },
+          needsApproval: false,
+          parse: () => ({}),
+          summarize: () => ({}),
+          run: () => Promise.reject(thrown as Error),
+        },
+        { guard: toolHarness(sb).guard, audit, now: () => 0, onAuditFailure: () => {} },
+      )
+      await expect(tool.execute({}, fakeContext().ctx)).resolves.toEqual({ content, isError: true })
+      expect(audit.entries).toEqual([expect.objectContaining({ outcome: 'error', error: code })])
+    },
+  )
 })
