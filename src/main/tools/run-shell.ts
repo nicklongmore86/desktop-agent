@@ -5,6 +5,13 @@ import { redactSecrets } from '../permissions/audit'
 import { ToolFailure, ToolInputError, errorResult, type RunResult, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
 import { sameIdentity, type Identity } from './safe-fs'
+import {
+  type Cut,
+  decodeCliXml,
+  encodePowerShell,
+  powerShellScript,
+  treeKillScript,
+} from './shell-windows'
 import { formatBytes } from './text'
 
 /** The parts of a ChildProcess the shell tool uses. */
@@ -55,7 +62,18 @@ export function windowsRoot(env: NodeJS.ProcessEnv): string {
   return WINDOWS_ROOT_PATTERN.test(candidate) ? candidate.replace(/\\+$/, '') : 'C:\\Windows'
 }
 
-/** The exact program (an absolute path) and arguments a command runs with on `platform`. */
+/** Flags before the encoded script. Its stderr comes back as CLIXML; see decodeCliXml. */
+const POWERSHELL_FLAGS = ['-NoProfile', '-NonInteractive', '-EncodedCommand']
+
+function powerShellPath(root: string): string {
+  return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+}
+
+/**
+ * The exact program (an absolute path) and arguments a command runs with on `platform`.
+ * On Windows the command goes in as `-EncodedCommand` (see shell-windows.ts), after a
+ * fixed preamble that makes output UTF-8, so what runs is exactly what was approved.
+ */
 export function shellInvocation(
   command: string,
   platform: NodeJS.Platform,
@@ -63,84 +81,169 @@ export function shellInvocation(
 ): { file: string; args: string[] } {
   return platform === 'win32'
     ? {
-        file: `${windowsRoot(env)}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
-        args: ['-NoProfile', '-NonInteractive', '-Command', command],
+        file: powerShellPath(windowsRoot(env)),
+        args: [...POWERSHELL_FLAGS, encodePowerShell(powerShellScript(command))],
       }
     : { file: '/bin/sh', args: ['-c', command] }
 }
 
 /**
- * Kills a shell and everything it started: `taskkill /T /F` on Windows (by
- * absolute path, with a minimal environment, and checking its exit code), a
- * SIGKILL to the process group elsewhere (the shell is its group leader).
- * Without a Job Object, a Windows grandchild whose parent already exited can
- * escape taskkill /T; the result says so rather than claiming success.
+ * Kills a shell and everything it started: `taskkill /T /F` on Windows (by absolute
+ * path, with a minimal environment, and checking its exit code), falling back to a
+ * PowerShell walk of the process tree if taskkill cannot start or fails; a SIGKILL to
+ * the process group elsewhere (the shell is its group leader). Without a Job Object, a
+ * Windows grandchild whose parent already exited can escape both; the result says so
+ * rather than claiming success.
  */
 export function defaultKillTree(
   platform: NodeJS.Platform,
   spawn: ShellSpawner,
   env: NodeJS.ProcessEnv,
 ): KillTree {
-  return (child) => {
+  return async (child) => {
     const pid = child.pid
-    if (pid === undefined) return Promise.resolve({ ok: false, reason: 'the process has no id' })
+    if (pid === undefined) return { ok: false, reason: 'the process has no id' }
     if (platform !== 'win32') {
       try {
         process.kill(-pid, 'SIGKILL')
-        return Promise.resolve({ ok: true })
+        return { ok: true }
       } catch (groupError) {
-        return Promise.resolve(
-          child.kill('SIGKILL')
-            ? { ok: true }
-            : { ok: false, reason: `could not signal the process group (${String(groupError)})` },
-        )
+        return child.kill('SIGKILL')
+          ? { ok: true }
+          : { ok: false, reason: `could not signal the process group (${String(groupError)})` }
       }
     }
     const root = windowsRoot(env)
-    return new Promise<KillResult>((resolve) => {
-      let killer: ShellProcess
-      try {
-        killer = spawn(`${root}\\System32\\taskkill.exe`, ['/PID', String(pid), '/T', '/F'], {
-          cwd: `${root}\\System32`,
-          env: { SystemRoot: root, windir: root },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-          detached: false,
-        })
-      } catch (error) {
-        resolve({ ok: false, reason: `taskkill could not start: ${(error as Error).message}` })
-        return
-      }
-      killer.stdout?.resume()
-      killer.stderr?.resume()
-      killer.once('error', (error) => {
-        resolve({ ok: false, reason: `taskkill could not start: ${error.message}` })
-      })
-      killer.once('close', (code) => {
-        resolve(
-          code === 0
-            ? { ok: true }
-            : { ok: false, reason: `taskkill exited with code ${String(code)}` },
-        )
-      })
-    })
+    const taskkill = await runKiller(spawn, root, 'taskkill', `${root}\\System32\\taskkill.exe`, [
+      '/PID',
+      String(pid),
+      '/T',
+      '/F',
+    ])
+    if (taskkill.ok) return taskkill
+    const fallback = await runKiller(spawn, root, 'the PowerShell fallback', powerShellPath(root), [
+      ...POWERSHELL_FLAGS,
+      encodePowerShell(treeKillScript(pid)),
+    ])
+    // The shell itself, in case both killers failed to reach it.
+    child.kill('SIGKILL')
+    return fallback.ok ? fallback : { ok: false, reason: `${taskkill.reason}; ${fallback.reason}` }
   }
 }
 
-/** process.env without the app's own variables, which commands have no business seeing. */
-export function shellEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(env).filter(
-      ([key]) =>
-        !/^(ANTHROPIC_|OPENAI_|CLAUDE_|CODEX_|ELECTRON_|NODE_OPTIONS$|NODE_EXTRA_CA_CERTS$)/i.test(
-          key,
-        ),
-    ),
-  )
+/** Runs a Windows kill helper from System32 with a minimal environment; ok if it exits 0. */
+function runKiller(
+  spawn: ShellSpawner,
+  root: string,
+  name: string,
+  file: string,
+  args: readonly string[],
+): Promise<KillResult> {
+  return new Promise<KillResult>((resolve) => {
+    let killer: ShellProcess
+    try {
+      killer = spawn(file, args, {
+        cwd: `${root}\\System32`,
+        env: { SystemRoot: root, windir: root },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        detached: false,
+      })
+    } catch (error) {
+      resolve({ ok: false, reason: `${name} could not start: ${(error as Error).message}` })
+      return
+    }
+    killer.stdout?.resume()
+    killer.stderr?.resume()
+    killer.once('error', (error) => {
+      resolve({ ok: false, reason: `${name} could not start: ${error.message}` })
+    })
+    killer.once('close', (code) => {
+      resolve(
+        code === 0
+          ? { ok: true }
+          : { ok: false, reason: `${name} exited with code ${String(code)}` },
+      )
+    })
+  })
+}
+
+/** Variables a command may see; everything else in the app's environment is withheld. */
+const ENV_ALLOWLIST = new Set([
+  // Both platforms
+  'PATH',
+  'HOME',
+  'LANG',
+  'TZ',
+  // POSIX
+  'TMPDIR',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  // Windows
+  'SystemRoot',
+  'windir',
+  'SystemDrive',
+  'ComSpec',
+  'PATHEXT',
+  'TEMP',
+  'TMP',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'USERNAME',
+  'USERDOMAIN',
+  'COMPUTERNAME',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'ProgramData',
+  'ALLUSERSPROFILE',
+  'PUBLIC',
+  'ProgramFiles',
+  'ProgramFiles(x86)',
+  'ProgramW6432',
+  'CommonProgramFiles',
+  'CommonProgramFiles(x86)',
+  'CommonProgramW6432',
+  'PSModulePath',
+  'OS',
+  'PROCESSOR_ARCHITECTURE',
+  'NUMBER_OF_PROCESSORS',
+])
+const ENV_ALLOWLIST_UPPER = new Set([...ENV_ALLOWLIST].map((name) => name.toUpperCase()))
+
+/** Never passed on, even if allowlisted: credentials and the app's own variables. */
+const ENV_DENIED = /API_KEY|TOKEN|^ANTHROPIC_|^OPENAI_|^CODEX_|^CLAUDE_|^ELECTRON_/i
+
+/**
+ * The environment a command runs with: only allowlisted variables (plus LC_*), never
+ * anything that looks like a credential or belongs to the app. Names match
+ * case-insensitively on Windows, where the environment is case-insensitive, keeping
+ * the first of any names that differ only in case.
+ */
+export function shellEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const windows = platform === 'win32'
+  const result: NodeJS.ProcessEnv = {}
+  const seen = new Set<string>()
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined || ENV_DENIED.test(name)) continue
+    const allowed = windows
+      ? ENV_ALLOWLIST_UPPER.has(name.toUpperCase()) || /^LC_/i.test(name)
+      : ENV_ALLOWLIST.has(name) || name.startsWith('LC_')
+    if (!allowed) continue
+    const key = windows ? name.toUpperCase() : name
+    if (seen.has(key)) continue
+    seen.add(key)
+    result[name] = value
+  }
+  return result
 }
 
 /** Keeps the first and last `limit / 2` bytes of a stream and counts what it drops. */
-class OutputCollector {
+export class OutputCollector {
   private head: Buffer[] = []
   private headBytes = 0
   private tail: Buffer[] = []
@@ -175,12 +278,43 @@ class OutputCollector {
     }
   }
 
-  text(): string {
-    const dropped = this.total - this.headBytes - this.tailBytes
-    const head = Buffer.concat(this.head).toString('utf8')
-    const tail = Buffer.concat(this.tail).toString('utf8')
-    return dropped > 0 ? `${head}\n… [${formatBytes(dropped)} omitted] …\n${tail}` : head + tail
+  /**
+   * The kept text. With nothing dropped, `decode` sees the whole output at once. Otherwise
+   * each side of the cut is decoded on its own, told where it was cut, after dropping any
+   * UTF-8 sequence the cut split (counted in the omitted bytes).
+   */
+  text(decode: (text: string, cut: Cut) => string = (text) => text): string {
+    const head = Buffer.concat(this.head)
+    const tail = Buffer.concat(this.tail)
+    if (this.total === head.length + tail.length) {
+      return decode(Buffer.concat([head, tail]).toString('utf8'), {})
+    }
+    const keptHead = head.subarray(0, completeUtf8Length(head))
+    const keptTail = tail.subarray(continuationBytes(tail))
+    const dropped = this.total - keptHead.length - keptTail.length
+    return (
+      `${decode(keptHead.toString('utf8'), { end: true })}\n` +
+      `… [${formatBytes(dropped)} omitted] …\n` +
+      decode(keptTail.toString('utf8'), { start: true })
+    )
   }
+}
+
+/** The length of `bytes` without a UTF-8 sequence cut off at its end. */
+function completeUtf8Length(bytes: Buffer): number {
+  let start = bytes.length - 1
+  while (start >= 0 && bytes.length - start < 4 && ((bytes[start] ?? 0) & 0xc0) === 0x80) start--
+  if (start < 0) return bytes.length
+  const lead = bytes[start] ?? 0
+  const size = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1
+  return start + size > bytes.length ? start : bytes.length
+}
+
+/** How many UTF-8 continuation bytes (the rest of a cut-off sequence) start `bytes`. */
+function continuationBytes(bytes: Buffer): number {
+  let count = 0
+  while (count < 3 && count < bytes.length && ((bytes[count] ?? 0) & 0xc0) === 0x80) count++
+  return count
 }
 
 interface Input {
@@ -300,7 +434,8 @@ async function runProcess(
   try {
     child = deps.spawn(file, args, {
       cwd,
-      env: deps.env,
+      // Filtered again here so platform-specific matching applies whatever deps.env holds.
+      env: shellEnv(deps.env, deps.platform),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       detached: deps.platform !== 'win32',
@@ -360,7 +495,9 @@ async function runProcess(
     if (signal.aborted) onAbort()
   })
 
-  const streams = `--- stdout ---\n${stdout.text()}\n--- stderr ---\n${stderr.text()}`
+  // Windows PowerShell writes stderr as CLIXML when given an encoded command.
+  const stderrText = stderr.text(deps.platform === 'win32' ? decodeCliXml : undefined)
+  const streams = `--- stdout ---\n${stdout.text()}\n--- stderr ---\n${stderrText}`
   if (outcome.kind === 'error' && !state.stoppedBy) {
     return errorResult(`Could not run ${file}: ${outcome.error.message}`, 'spawn-failed')
   }
