@@ -104,12 +104,11 @@ export class ClaudeLogin {
         clearTimeout(timer)
         options.signal.removeEventListener('abort', abort)
         // Resolve only once the runtime is gone, so a cancelled sign-in leaves nothing running.
-        void killRuntime(child)
-          .catch(() => {})
-          .then(() => {
-            if (error) reject(error)
-            else resolve()
-          })
+        const exited = child.exitCode !== null || child.signalCode !== null
+        void (exited ? Promise.resolve() : killRuntime(child).catch(() => {})).then(() => {
+          if (error) reject(error)
+          else resolve()
+        })
       }
       const abort = () => {
         finish(new Error('Sign-in cancelled.'))

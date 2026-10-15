@@ -41,6 +41,9 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       set: vi.fn(() => Promise.resolve(status)),
       login: vi.fn(() => Promise.resolve(status)),
       cancelLogin: vi.fn(() => Promise.resolve()),
+      loginState: vi.fn(() =>
+        Promise.resolve({ provider: null, active: false, url: null, result: null }),
+      ),
       openLoginUrl: vi.fn(() => Promise.resolve()),
       copyLoginUrl: vi.fn(() => Promise.resolve()),
       submitLoginCode: vi.fn(() => Promise.resolve({ ok: true as const })),
@@ -131,7 +134,7 @@ describe('registerIpcHandlers', () => {
       IpcChannels.chatEvent,
       IpcChannels.approvalRequest,
       IpcChannels.auditStatusChanged,
-      IpcChannels.providerLoginUrl,
+      IpcChannels.providerLoginStateChanged,
     ])
     const expected = Object.values(IpcChannels).filter((channel) => !pushes.has(channel))
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())

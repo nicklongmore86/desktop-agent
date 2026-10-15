@@ -146,6 +146,7 @@ export function registerIpcHandlers(
   })
   handle(IpcChannels.providerLogin, () => services.provider.login())
   handle(IpcChannels.providerCancelLogin, () => services.provider.cancelLogin())
+  handle(IpcChannels.providerLoginState, () => services.provider.loginState())
   // No URL argument: main only ever opens or copies the link it validated itself.
   handle(IpcChannels.providerOpenLoginUrl, () => services.provider.openLoginUrl())
   handle(IpcChannels.providerCopyLoginUrl, () => services.provider.copyLoginUrl())

@@ -60,7 +60,10 @@ void app.whenReady().then(async () => {
   const services = await createAppServices({
     userData: app.getPath('userData'),
     openUrl: (url) => shell.openExternal(url),
-    copyText: (text) => clipboard.writeText(text),
+    // Electron 44's main-process clipboard.writeText resolves once the text is written.
+    copyText: async (text) => {
+      await clipboard.writeText(text)
+    },
     safeStorage,
     trash: (path) => shell.trashItem(path),
     emit: (event) => {
@@ -72,8 +75,8 @@ void app.whenReady().then(async () => {
     onAuditStatus: (status) => {
       push(IpcChannels.auditStatusChanged, status)
     },
-    onProviderLoginUrl: (login) => {
-      push(IpcChannels.providerLoginUrl, login)
+    onProviderLoginState: (state) => {
+      push(IpcChannels.providerLoginStateChanged, state)
     },
   })
   const { chat } = services

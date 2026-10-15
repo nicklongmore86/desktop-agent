@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { SubscriptionProviders } from './providers/service'
 import { PROVIDERS, type ProviderId } from '../shared/ipc'
 import { join } from 'node:path'
-import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginUrl } from '../shared/ipc'
+import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import { createAgent, createClaudeClient } from './agent'
 import { ChatSession } from './chat/session'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
@@ -20,7 +20,7 @@ export interface AppServiceDeps {
   emit: (event: ChatEvent) => void
   promptApproval: (prompt: ApprovalPrompt) => void
   onAuditStatus: (status: AuditStatus) => void
-  onProviderLoginUrl?: (login: ProviderLoginUrl) => void
+  onProviderLoginState?: (state: ProviderLoginState) => void
   copyText?: (text: string) => Promise<void>
 }
 
@@ -67,7 +67,7 @@ export async function createAppServices(deps: AppServiceDeps) {
   const subscriptions = new SubscriptionProviders(
     userData,
     deps.openUrl ?? (() => Promise.reject(new Error('Browser sign-in is unavailable.'))),
-    { onLoginUrl: (provider, url) => deps.onProviderLoginUrl?.({ provider, url }) },
+    { onLoginState: (state) => deps.onProviderLoginState?.(state) },
   )
   const storeFor = (provider: ProviderId) =>
     createConversationStore(
@@ -132,6 +132,7 @@ export async function createAppServices(deps: AppServiceDeps) {
       subscriptions.cancelLogin()
       return Promise.resolve()
     },
+    loginState: () => Promise.resolve(subscriptions.loginState()),
     openLoginUrl: () => subscriptions.openLoginUrl(),
     copyLoginUrl: () => {
       const url = subscriptions.loginUrl

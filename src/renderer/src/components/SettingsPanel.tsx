@@ -1,9 +1,18 @@
-import { useEffect, useId, useState, type SubmitEvent } from 'react'
+import {
+  useEffect,
+  useEffectEvent,
+  useId,
+  useRef,
+  useState,
+  type RefObject,
+  type SubmitEvent,
+} from 'react'
 import type {
   ApiKeyStatus,
   AuditStatus,
   GrantsState,
   ModelSettings,
+  ProviderLoginState,
   ProviderStatus,
   ProviderId,
 } from '../../../shared/ipc'
@@ -280,10 +289,23 @@ export function SettingsPanel(props: SettingsPanelProps): React.JSX.Element {
 /** Claude prints `<code>#<state>`; main checks it again before passing it on. */
 const LOGIN_CODE = /^[^#\s]+#[^#\s]+$/
 
+/** False once the component has unmounted, so late replies never set its state. */
+function useMounted(): RefObject<boolean> {
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  return mounted
+}
+
 function LoginLink({ url }: { url: string }): React.JSX.Element {
   const api = useApi()
   const linkId = useId()
   const codeId = useId()
+  const mounted = useMounted()
   const [code, setCode] = useState('')
   const [note, setNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -292,10 +314,10 @@ function LoginLink({ url }: { url: string }): React.JSX.Element {
     setNote(null)
     operation().then(
       () => {
-        setNote(done)
+        if (mounted.current) setNote(done)
       },
       () => {
-        setError(failed)
+        if (mounted.current) setError(failed)
       },
     )
   }
@@ -310,13 +332,14 @@ function LoginLink({ url }: { url: string }): React.JSX.Element {
     }
     api.provider.submitLoginCode(value).then(
       (result) => {
+        if (!mounted.current) return
         if (result.ok) {
           setCode('')
           setNote('Code sent. Finishing sign-in…')
         } else setError(result.error)
       },
       () => {
-        setError('Could not send the code. Try again.')
+        if (mounted.current) setError('Could not send the code. Try again.')
       },
     )
   }
@@ -395,38 +418,60 @@ function ProviderSection({
 }: Pick<SettingsPanelProps, 'provider' | 'onProvider' | 'onSwitchProvider'>): React.JSX.Element {
   const api = useApi()
   const switchProvider = onSwitchProvider ?? ((next: ProviderId) => api.provider.set(next))
+  const mounted = useMounted()
   const [busy, setBusy] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
-  const [loginUrl, setLoginUrl] = useState<string | null>(null)
+  /** Main's sign-in for this provider; survives Settings being closed and reopened. */
+  const [login, setLogin] = useState<{ active: boolean; url: string | null }>({
+    active: false,
+    url: null,
+  })
   const [error, setError] = useState<string | null>(null)
-  useEffect(
-    () =>
-      api.onProviderLoginUrl((login) => {
-        setLoginUrl(login.url)
-      }),
-    [api],
-  )
+  const current = provider?.provider
+  const reportResult = useEffectEvent((status: ProviderStatus) => {
+    onProvider?.(status)
+  })
+  useEffect(() => {
+    let live = true
+    const apply = (state: ProviderLoginState) => {
+      if (!live) return
+      // Another provider's sign-in is not this one's to show.
+      if (state.active && state.provider === current) {
+        setLogin({ active: true, url: state.url })
+        return
+      }
+      setLogin({ active: false, url: null })
+      if (state.result && state.result.provider === current) reportResult(state.result)
+    }
+    const unsubscribe = api.onProviderLoginState(apply)
+    api.provider.loginState().then(apply, () => {})
+    return () => {
+      live = false
+      unsubscribe()
+    }
+  }, [api, current])
   const run = async (operation: () => Promise<ProviderStatus>) => {
     setBusy(true)
     setError(null)
     try {
-      onProvider?.(await operation())
+      const status = await operation()
+      // The app keeps the status even if Settings was closed meanwhile.
+      onProvider?.(status)
     } catch {
-      setError('Provider request failed. Try again.')
+      if (mounted.current) setError('Provider request failed. Try again.')
     } finally {
-      setBusy(false)
+      if (mounted.current) setBusy(false)
     }
   }
   const signIn = async () => {
     setSigningIn(true)
-    setLoginUrl(null)
     try {
       await run(() => api.provider.login())
     } finally {
-      setSigningIn(false)
-      setLoginUrl(null)
+      if (mounted.current) setSigningIn(false)
     }
   }
+  const waiting = signingIn || login.active
   return (
     <section className="settings-section">
       <h3>
@@ -445,7 +490,7 @@ function ProviderSection({
         <option value="claude-subscription">Claude subscription</option>
         <option value="codex-subscription">Codex subscription (ChatGPT)</option>
       </select>
-      {signingIn ? (
+      {waiting ? (
         <p className="settings-status" role="status">
           Waiting for sign-in…
         </p>
@@ -483,14 +528,14 @@ function ProviderSection({
             Check readiness
           </button>
           <button
-            disabled={busy}
+            disabled={busy || login.active}
             onClick={() => {
               void signIn()
             }}
           >
             Sign in with subscription
           </button>
-          {busy && (
+          {(busy || login.active) && (
             <button
               onClick={() => {
                 void api.provider.cancelLogin()
@@ -499,7 +544,7 @@ function ProviderSection({
               Cancel sign-in
             </button>
           )}
-          {signingIn && loginUrl && <LoginLink url={loginUrl} />}
+          {waiting && login.url && <LoginLink url={login.url} />}
         </>
       )}
     </section>

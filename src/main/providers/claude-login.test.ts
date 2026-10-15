@@ -11,6 +11,7 @@ import {
   validateLoginUrl,
 } from './claude-login'
 import { capture, discoverRuntime, launch } from './runtime'
+import type { ProviderLoginState } from '../../shared/ipc'
 import { SubscriptionProviders } from './service'
 
 vi.mock('./runtime', async (original) => {
@@ -63,7 +64,10 @@ let script: string
 let log: string
 let children: ChildProcessWithoutNullStreams[]
 let openUrl: ReturnType<typeof vi.fn<(url: string) => Promise<void>>>
-let onLoginUrl: ReturnType<typeof vi.fn<(provider: string, url: string) => void>>
+let onLoginState: ReturnType<typeof vi.fn<(state: ProviderLoginState) => void>>
+/** The links Settings was told about. */
+const shownUrls = () =>
+  onLoginState.mock.calls.flatMap(([state]) => (state.url ? [[state.provider, state.url]] : []))
 
 function useFake(mode: string, url = URL) {
   vi.mocked(launch).mockImplementation((_file, args, cwd, env) => {
@@ -80,7 +84,7 @@ function useFake(mode: string, url = URL) {
 
 function providers(loginTimeout?: number) {
   return new SubscriptionProviders(dir, openUrl, {
-    onLoginUrl,
+    onLoginState,
     ...(loginTimeout ? { loginTimeout } : {}),
   })
 }
@@ -112,7 +116,7 @@ beforeEach(async () => {
   await writeFile(script, FAKE)
   children = []
   openUrl = vi.fn(() => Promise.resolve())
-  onLoginUrl = vi.fn()
+  onLoginState = vi.fn()
   vi.mocked(discoverRuntime).mockResolvedValue(process.execPath)
   vi.mocked(capture).mockResolvedValue(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }))
 })
@@ -128,7 +132,12 @@ describe('Claude subscription sign-in', { timeout: 30000 }, () => {
     const status = await providers().login('claude-subscription')
     expect(status).toMatchObject({ state: 'ready' })
     expect(openUrl).toHaveBeenCalledExactlyOnceWith(URL)
-    expect(onLoginUrl).toHaveBeenCalledExactlyOnceWith('claude-subscription', URL)
+    expect(shownUrls()).toEqual([['claude-subscription', URL]])
+    expect(onLoginState.mock.calls.map(([state]) => state)).toEqual([
+      { provider: 'claude-subscription', active: true, url: null, result: null },
+      { provider: 'claude-subscription', active: true, url: URL, result: null },
+      { provider: 'claude-subscription', active: false, url: null, result: status },
+    ])
     // Same verified runtime and restricted environment as every other runtime launch.
     const [file, args, , env] = vi.mocked(launch).mock.calls[0] ?? []
     expect(file).toBe(process.execPath)
@@ -199,7 +208,7 @@ describe('Claude subscription sign-in', { timeout: 30000 }, () => {
       message: expect.stringContaining('unexpected sign-in link') as unknown,
     })
     expect(openUrl).not.toHaveBeenCalled()
-    expect(onLoginUrl).not.toHaveBeenCalled()
+    expect(shownUrls()).toEqual([])
     expect(await exited(firstChild())).toBe(true)
   })
 
@@ -257,5 +266,69 @@ describe('sign-in link parsing', () => {
     expect(LOGIN_CODE_PATTERN.test('abc#def')).toBe(true)
     expect(LOGIN_CODE_PATTERN.test('abc#def#')).toBe(false)
     expect(sanitizeOutput('\x1b[31mbad\x1b[0m\r\n\x07thing\t ')).toBe('bad thing')
+  })
+})
+
+describe('one Claude sign-in at a time', { timeout: 30000 }, () => {
+  it('reports the running sign-in so reopened Settings can show it again', async () => {
+    useFake('paste')
+    const provider = providers()
+    expect(provider.loginState()).toEqual({
+      provider: null,
+      active: false,
+      url: null,
+      result: null,
+    })
+    const login = provider.login('claude-subscription')
+    expect(provider.loginState()).toMatchObject({ provider: 'claude-subscription', active: true })
+    await waitForUrl(provider)
+    expect(provider.loginState()).toEqual({
+      provider: 'claude-subscription',
+      active: true,
+      url: URL,
+      result: null,
+    })
+    provider.cancelLogin()
+    await login
+    expect(provider.loginState()).toMatchObject({ active: false, url: null })
+  })
+
+  it('refuses a second sign-in without launching another runtime or disturbing the first', async () => {
+    useFake('paste')
+    const provider = providers()
+    const first = provider.login('claude-subscription')
+    await waitForUrl(provider)
+    // The refused attempt ends (and runs its cleanup) while the first is still waiting.
+    expect(await provider.login('claude-subscription')).toEqual({
+      provider: 'claude-subscription',
+      state: 'error',
+      message: 'A sign-in is already in progress.',
+    })
+    expect(await provider.login('codex-subscription')).toMatchObject({
+      message: 'A sign-in is already in progress.',
+    })
+    expect(launch).toHaveBeenCalledOnce()
+    expect(provider.loginState()).toMatchObject({ active: true, url: URL })
+    expect(onLoginState.mock.calls.filter(([state]) => !state.active)).toEqual([])
+    // The first sign-in still owns the runtime and accepts the code.
+    expect(provider.submitLoginCode('abc#def')).toEqual({ ok: true })
+    expect(await first).toMatchObject({ state: 'ready' })
+    expect(await exited(firstChild())).toBe(true)
+    expect(provider.loginState()).toMatchObject({ active: false })
+  })
+
+  it('starts a fresh sign-in after the previous one ends, and its cleanup is its own', async () => {
+    useFake('paste')
+    const provider = providers()
+    const first = provider.login('claude-subscription')
+    await waitForUrl(provider)
+    provider.cancelLogin()
+    expect(await first).toMatchObject({ message: 'Sign-in cancelled.' })
+    const second = provider.login('claude-subscription')
+    await waitForUrl(provider)
+    expect(children).toHaveLength(2)
+    expect(await exited(firstChild())).toBe(true)
+    expect(provider.submitLoginCode('abc#def')).toEqual({ ok: true })
+    expect(await second).toMatchObject({ state: 'ready' })
   })
 })

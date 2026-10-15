@@ -2,7 +2,13 @@ import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ApiKeyStatus, GrantsState, ModelSettings, ProviderStatus } from '../../../shared/ipc'
+import type {
+  ApiKeyStatus,
+  GrantsState,
+  ModelSettings,
+  ProviderLoginState,
+  ProviderStatus,
+} from '../../../shared/ipc'
 import { ApiContext } from '../api'
 import { fakeApi } from '../test/fake-api'
 import { SettingsPanel } from './SettingsPanel'
@@ -119,35 +125,58 @@ describe('SettingsPanel', () => {
 
 describe('Claude subscription sign-in', () => {
   const LINK = 'https://claude.com/cai/oauth/authorize?code=true&state=xyz'
+  const IDLE: ProviderLoginState = { provider: null, active: false, url: null, result: null }
 
+  /** Like the app: provider status lives above Settings, which can be closed and reopened. */
   function ProviderHarness() {
+    const [open, setOpen] = useState(true)
     const [provider, setProvider] = useState<ProviderStatus>({
       provider: 'claude-subscription',
       state: 'signed-out',
       message: 'Sign in with your subscription.',
     })
     return (
-      <SettingsPanel
-        provider={provider}
-        onProvider={setProvider}
-        keyStatus={{ saved: false, error: null }}
-        onKeyStatus={() => {}}
-        grants={{ roots: [], loadError: null }}
-        onGrants={() => {}}
-        model={null}
-        onModel={() => {}}
-        audit={null}
-      />
+      <>
+        <button
+          onClick={() => {
+            setOpen(!open)
+          }}
+        >
+          {open ? 'Close settings' : 'Open settings'}
+        </button>
+        <p data-testid="app-status">{provider.message}</p>
+        {open && (
+          <SettingsPanel
+            provider={provider}
+            onProvider={setProvider}
+            keyStatus={{ saved: false, error: null }}
+            onKeyStatus={() => {}}
+            grants={{ roots: [], loadError: null }}
+            onGrants={() => {}}
+            model={null}
+            onModel={() => {}}
+            audit={null}
+          />
+        )}
+      </>
     )
   }
 
+  /** Plays main's part: login state, its pushes, and the pending login() reply. */
   function renderSignIn() {
     const fake = fakeApi()
-    let finish: (status: ProviderStatus) => void = () => {}
+    let state = IDLE
+    let reply: (status: ProviderStatus) => void = () => {}
+    const update = (next: ProviderLoginState) => {
+      state = next
+      fake.pushLoginState(next)
+    }
+    fake.api.provider.loginState.mockImplementation(() => Promise.resolve(state))
     fake.api.provider.login.mockImplementation(
       () =>
         new Promise((resolve) => {
-          finish = resolve
+          reply = resolve
+          update({ provider: 'claude-subscription', active: true, url: null, result: null })
         }),
     )
     const user = userEvent.setup()
@@ -159,23 +188,33 @@ describe('Claude subscription sign-in', () => {
     return {
       ...fake,
       user,
+      showLink: () => {
+        act(() => {
+          update({ provider: 'claude-subscription', active: true, url: LINK, result: null })
+        })
+      },
       finish: async (status: ProviderStatus) => {
         await act(async () => {
-          finish(status)
+          update({ ...IDLE, result: status })
+          reply(status)
           await Promise.resolve()
         })
       },
     }
   }
 
+  const reopen = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'Close settings' }))
+    expect(screen.queryByLabelText('Access provider')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Open settings' }))
+  }
+
   it('shows the waiting state, the link, and asks main to copy or re-open it', async () => {
-    const { api, user, pushLoginUrl, finish } = renderSignIn()
+    const { api, user, showLink, finish } = renderSignIn()
     await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
     expect(screen.getByRole('status').textContent).toBe('Waiting for sign-in…')
     expect(screen.getByRole('button', { name: 'Cancel sign-in' })).toBeTruthy()
-    act(() => {
-      pushLoginUrl({ provider: 'claude-subscription', url: LINK })
-    })
+    showLink()
     const link = screen.getByLabelText('Sign-in link')
     expect(link).toHaveProperty('value', LINK)
     expect(link).toHaveProperty('readOnly', true)
@@ -200,11 +239,9 @@ describe('Claude subscription sign-in', () => {
   })
 
   it('sends a valid pasted code and rejects a malformed one locally', async () => {
-    const { api, user, pushLoginUrl } = renderSignIn()
+    const { api, user, showLink } = renderSignIn()
     await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
-    act(() => {
-      pushLoginUrl({ provider: 'claude-subscription', url: LINK })
-    })
+    showLink()
     const code = screen.getByLabelText('Paste code')
     await user.type(code, 'not-a-code')
     await user.click(screen.getByRole('button', { name: 'Submit code' }))
@@ -234,5 +271,71 @@ describe('Claude subscription sign-in', () => {
     const alert = screen.getByRole('alert')
     expect(alert.textContent).toBe('Claude sign-in failed (exit code 1). OAuth error')
     expect(alert.className).toBe('settings-error')
+  })
+
+  it('restores the sign-in controls after Settings is closed and reopened mid-login', async () => {
+    const { api, user, showLink, finish } = renderSignIn()
+    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    showLink()
+    const errors = vi.spyOn(console, 'error')
+    await reopen(user)
+    expect(await screen.findByLabelText('Sign-in link')).toHaveProperty('value', LINK)
+    expect(screen.getByRole('status').textContent).toBe('Waiting for sign-in…')
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+    expect(screen.getByLabelText('Paste code')).toBeTruthy()
+    // A second click cannot start another sign-in while main is still waiting.
+    expect(screen.getByRole('button', { name: 'Sign in with subscription' })).toHaveProperty(
+      'disabled',
+      true,
+    )
+    await user.type(screen.getByLabelText('Paste code'), 'abc#def')
+    await user.click(screen.getByRole('button', { name: 'Submit code' }))
+    expect(api.provider.submitLoginCode).toHaveBeenCalledWith('abc#def')
+    // The reopened panel learns the outcome from main's push, not the old login() call.
+    await finish({ provider: 'claude-subscription', state: 'ready', message: 'Signed in.' })
+    expect(screen.getByRole('status').textContent).toBe('Signed in.')
+    expect(screen.queryByLabelText('Sign-in link')).toBeNull()
+    expect(api.provider.login).toHaveBeenCalledOnce()
+    expect(errors).not.toHaveBeenCalled()
+  })
+
+  it('cancels from a reopened Settings and ignores late replies to the closed one', async () => {
+    const { api, user, showLink, finish } = renderSignIn()
+    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    showLink()
+    await reopen(user)
+    await user.click(await screen.findByRole('button', { name: 'Cancel sign-in' }))
+    expect(api.provider.cancelLogin).toHaveBeenCalledOnce()
+    const errors = vi.spyOn(console, 'error')
+    // Close again so the original login() reply lands after both panels unmounted.
+    await user.click(screen.getByRole('button', { name: 'Close settings' }))
+    await finish({ provider: 'claude-subscription', state: 'error', message: 'Sign-in cancelled.' })
+    expect(screen.getByTestId('app-status').textContent).toBe('Sign-in cancelled.')
+    expect(errors).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Open settings' }))
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Sign-in cancelled.')
+    expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull()
+  })
+
+  it("ignores another provider's sign-in", async () => {
+    const { user, pushLoginState } = renderSignIn()
+    act(() => {
+      pushLoginState({ provider: 'codex-subscription', active: true, url: LINK, result: null })
+    })
+    expect(screen.queryByText('Waiting for sign-in…')).toBeNull()
+    expect(screen.queryByLabelText('Sign-in link')).toBeNull()
+    act(() => {
+      pushLoginState({
+        ...IDLE,
+        result: { provider: 'codex-subscription', state: 'ready', message: 'Codex ready.' },
+      })
+    })
+    expect(screen.getByTestId('app-status').textContent).toBe('Sign in with your subscription.')
+    expect(screen.getByRole('button', { name: 'Sign in with subscription' })).toHaveProperty(
+      'disabled',
+      false,
+    )
+    await user.click(screen.getByRole('button', { name: 'Close settings' }))
   })
 })
