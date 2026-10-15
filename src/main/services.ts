@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { SubscriptionProviders } from './providers/service'
 import { PROVIDERS, type ProviderId } from '../shared/ipc'
 import { join } from 'node:path'
-import type { ApprovalPrompt, AuditStatus, ChatEvent } from '../shared/ipc'
+import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import { createAgent, createClaudeClient } from './agent'
 import { ChatSession } from './chat/session'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
@@ -20,6 +20,8 @@ export interface AppServiceDeps {
   emit: (event: ChatEvent) => void
   promptApproval: (prompt: ApprovalPrompt) => void
   onAuditStatus: (status: AuditStatus) => void
+  onProviderLoginState?: (state: ProviderLoginState) => void
+  copyText?: (text: string) => Promise<void>
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings and chat session. */
@@ -65,6 +67,7 @@ export async function createAppServices(deps: AppServiceDeps) {
   const subscriptions = new SubscriptionProviders(
     userData,
     deps.openUrl ?? (() => Promise.reject(new Error('Browser sign-in is unavailable.'))),
+    { onLoginState: (state) => deps.onProviderLoginState?.(state) },
   )
   const storeFor = (provider: ProviderId) =>
     createConversationStore(
@@ -129,6 +132,15 @@ export async function createAppServices(deps: AppServiceDeps) {
       subscriptions.cancelLogin()
       return Promise.resolve()
     },
+    loginState: () => Promise.resolve(subscriptions.loginState()),
+    openLoginUrl: () => subscriptions.openLoginUrl(),
+    copyLoginUrl: () => {
+      const url = subscriptions.loginUrl
+      if (!url) return Promise.reject(new Error('No sign-in link is waiting.'))
+      if (!deps.copyText) return Promise.reject(new Error('Copying is unavailable.'))
+      return deps.copyText(url)
+    },
+    submitLoginCode: (code: string) => Promise.resolve(subscriptions.submitLoginCode(code)),
   }
   return { apiKey, grants, settings, chat, auditStatus, provider }
 }

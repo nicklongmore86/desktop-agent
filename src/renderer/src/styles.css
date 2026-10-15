@@ -547,6 +547,22 @@ pre {
   color: var(--danger);
 }
 
+.login-link {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.login-link .settings-row {
+  flex-wrap: wrap;
+}
+
+.login-link input[readonly] {
+  flex: 1;
+  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+}
+
 .grant-list {
   margin: 0 0 8px;
   padding: 0;

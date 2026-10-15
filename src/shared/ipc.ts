@@ -14,6 +14,10 @@ export const IpcChannels = {
   providerSet: 'provider:set',
   providerLogin: 'provider:login',
   providerCancelLogin: 'provider:cancel-login',
+  providerLoginState: 'provider:login-state',
+  providerOpenLoginUrl: 'provider:open-login-url',
+  providerCopyLoginUrl: 'provider:copy-login-url',
+  providerSubmitLoginCode: 'provider:submit-login-code',
   modelGet: 'model:get',
   modelSet: 'model:set',
 
@@ -29,6 +33,7 @@ export const IpcChannels = {
   chatEvent: 'chat:event',
   approvalRequest: 'approval:request',
   auditStatusChanged: 'audit:status-changed',
+  providerLoginStateChanged: 'provider:login-state-changed',
 } as const
 
 export const PROVIDERS = ['anthropic-api', 'claude-subscription', 'codex-subscription'] as const
@@ -38,6 +43,19 @@ export interface ProviderStatus {
   state: 'ready' | 'missing-runtime' | 'signed-out' | 'unsupported' | 'error'
   message: string
 }
+
+/** The sign-in main is running, so Settings can show it again after being reopened. */
+export interface ProviderLoginState {
+  /** The provider signing in, or null when no sign-in is running. */
+  provider: ProviderId | null
+  active: boolean
+  /** Claude's validated sign-in link, once the runtime has printed it. */
+  url: string | null
+  /** Set on the push that ends a sign-in: its outcome. */
+  result: ProviderStatus | null
+}
+
+export type LoginCodeResult = { ok: true } | { ok: false; error: string }
 
 export interface AppInfo {
   name: string
@@ -157,6 +175,7 @@ export interface PushPayloads {
   [IpcChannels.chatEvent]: ChatEvent
   [IpcChannels.approvalRequest]: ApprovalPrompt
   [IpcChannels.auditStatusChanged]: AuditStatus
+  [IpcChannels.providerLoginStateChanged]: ProviderLoginState
 }
 export type PushChannel = keyof PushPayloads
 
@@ -169,6 +188,13 @@ export interface DesktopApi {
     set: (provider: ProviderId) => Promise<ProviderStatus>
     login: () => Promise<ProviderStatus>
     cancelLogin: () => Promise<void>
+    loginState: () => Promise<ProviderLoginState>
+    /** Re-opens the sign-in link main validated; takes no URL. */
+    openLoginUrl: () => Promise<void>
+    /** Copies the sign-in link main validated to the clipboard; takes no URL. */
+    copyLoginUrl: () => Promise<void>
+    /** Main validates the code before passing it to the waiting runtime. */
+    submitLoginCode: (code: string) => Promise<LoginCodeResult>
   }
   getAppInfo: () => Promise<AppInfo>
   apiKey: {
@@ -201,4 +227,5 @@ export interface DesktopApi {
   onChatEvent: (listener: (event: ChatEvent) => void) => Unsubscribe
   onApprovalRequest: (listener: (prompt: ApprovalPrompt) => void) => Unsubscribe
   onAuditStatus: (listener: (status: AuditStatus) => void) => Unsubscribe
+  onProviderLoginState: (listener: (state: ProviderLoginState) => void) => Unsubscribe
 }

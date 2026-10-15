@@ -1,9 +1,18 @@
-import { useId, useState, type SubmitEvent } from 'react'
+import {
+  useEffect,
+  useEffectEvent,
+  useId,
+  useRef,
+  useState,
+  type RefObject,
+  type SubmitEvent,
+} from 'react'
 import type {
   ApiKeyStatus,
   AuditStatus,
   GrantsState,
   ModelSettings,
+  ProviderLoginState,
   ProviderStatus,
   ProviderId,
 } from '../../../shared/ipc'
@@ -277,6 +286,131 @@ export function SettingsPanel(props: SettingsPanelProps): React.JSX.Element {
   )
 }
 
+/** Claude prints `<code>#<state>`; main checks it again before passing it on. */
+const LOGIN_CODE = /^[^#\s]+#[^#\s]+$/
+
+/** False once the component has unmounted, so late replies never set its state. */
+function useMounted(): RefObject<boolean> {
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  return mounted
+}
+
+function LoginLink({ url }: { url: string }): React.JSX.Element {
+  const api = useApi()
+  const linkId = useId()
+  const codeId = useId()
+  const mounted = useMounted()
+  const [code, setCode] = useState('')
+  const [note, setNote] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const request = (operation: () => Promise<void>, done: string, failed: string) => {
+    setError(null)
+    setNote(null)
+    operation().then(
+      () => {
+        if (mounted.current) setNote(done)
+      },
+      () => {
+        if (mounted.current) setError(failed)
+      },
+    )
+  }
+  const submit = (event: SubmitEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    setError(null)
+    setNote(null)
+    const value = code.trim()
+    if (!LOGIN_CODE.test(value)) {
+      setError('That does not look like a sign-in code. Copy the whole code.')
+      return
+    }
+    api.provider.submitLoginCode(value).then(
+      (result) => {
+        if (!mounted.current) return
+        if (result.ok) {
+          setCode('')
+          setNote('Code sent. Finishing sign-in…')
+        } else setError(result.error)
+      },
+      () => {
+        if (mounted.current) setError('Could not send the code. Try again.')
+      },
+    )
+  }
+  return (
+    <div className="login-link">
+      <p className="settings-hint">
+        Your browser should open to sign in. If it did not, open or copy this link, then paste the
+        code shown after you authorize.
+      </p>
+      <label htmlFor={linkId}>Sign-in link</label>
+      <div className="settings-row">
+        <input
+          id={linkId}
+          type="text"
+          readOnly
+          value={url}
+          spellCheck={false}
+          onFocus={(event) => {
+            event.target.select()
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            request(() => api.provider.copyLoginUrl(), 'Link copied.', 'Could not copy the link.')
+          }}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            request(
+              () => api.provider.openLoginUrl(),
+              'Opened in your browser.',
+              'Could not open the browser. Copy the link instead.',
+            )
+          }}
+        >
+          Open in browser
+        </button>
+      </div>
+      <form className="settings-row" onSubmit={submit}>
+        <label htmlFor={codeId} className="visually-hidden">
+          Paste code
+        </label>
+        <input
+          id={codeId}
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Paste code"
+          value={code}
+          onChange={(event) => {
+            setCode(event.target.value)
+          }}
+        />
+        <button type="submit" disabled={!code.trim()}>
+          Submit code
+        </button>
+      </form>
+      {note && <p className="settings-hint">{note}</p>}
+      {error && (
+        <p className="settings-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ProviderSection({
   provider,
   onProvider,
@@ -284,19 +418,60 @@ function ProviderSection({
 }: Pick<SettingsPanelProps, 'provider' | 'onProvider' | 'onSwitchProvider'>): React.JSX.Element {
   const api = useApi()
   const switchProvider = onSwitchProvider ?? ((next: ProviderId) => api.provider.set(next))
+  const mounted = useMounted()
   const [busy, setBusy] = useState(false)
+  const [signingIn, setSigningIn] = useState(false)
+  /** Main's sign-in for this provider; survives Settings being closed and reopened. */
+  const [login, setLogin] = useState<{ active: boolean; url: string | null }>({
+    active: false,
+    url: null,
+  })
   const [error, setError] = useState<string | null>(null)
+  const current = provider?.provider
+  const reportResult = useEffectEvent((status: ProviderStatus) => {
+    onProvider?.(status)
+  })
+  useEffect(() => {
+    let live = true
+    const apply = (state: ProviderLoginState) => {
+      if (!live) return
+      // Another provider's sign-in is not this one's to show.
+      if (state.active && state.provider === current) {
+        setLogin({ active: true, url: state.url })
+        return
+      }
+      setLogin({ active: false, url: null })
+      if (state.result && state.result.provider === current) reportResult(state.result)
+    }
+    const unsubscribe = api.onProviderLoginState(apply)
+    api.provider.loginState().then(apply, () => {})
+    return () => {
+      live = false
+      unsubscribe()
+    }
+  }, [api, current])
   const run = async (operation: () => Promise<ProviderStatus>) => {
     setBusy(true)
     setError(null)
     try {
-      onProvider?.(await operation())
+      const status = await operation()
+      // The app keeps the status even if Settings was closed meanwhile.
+      onProvider?.(status)
     } catch {
-      setError('Provider request failed. Try again.')
+      if (mounted.current) setError('Provider request failed. Try again.')
     } finally {
-      setBusy(false)
+      if (mounted.current) setBusy(false)
     }
   }
+  const signIn = async () => {
+    setSigningIn(true)
+    try {
+      await run(() => api.provider.login())
+    } finally {
+      if (mounted.current) setSigningIn(false)
+    }
+  }
+  const waiting = signingIn || login.active
   return (
     <section className="settings-section">
       <h3>
@@ -315,8 +490,22 @@ function ProviderSection({
         <option value="claude-subscription">Claude subscription</option>
         <option value="codex-subscription">Codex subscription (ChatGPT)</option>
       </select>
-      <p role="status">{provider?.message ?? 'Loading provider…'}</p>
-      {error && <p role="alert">{error}</p>}
+      {waiting ? (
+        <p className="settings-status" role="status">
+          Waiting for sign-in…
+        </p>
+      ) : provider?.state === 'error' ? (
+        <p className="settings-error" role="alert">
+          {provider.message}
+        </p>
+      ) : (
+        <p role="status">{provider?.message ?? 'Loading provider…'}</p>
+      )}
+      {error && (
+        <p className="settings-error" role="alert">
+          {error}
+        </p>
+      )}
       {provider && provider.provider !== 'anthropic-api' && (
         <>
           <p>
@@ -339,14 +528,14 @@ function ProviderSection({
             Check readiness
           </button>
           <button
-            disabled={busy}
+            disabled={busy || login.active}
             onClick={() => {
-              void run(() => api.provider.login())
+              void signIn()
             }}
           >
             Sign in with subscription
           </button>
-          {busy && (
+          {(busy || login.active) && (
             <button
               onClick={() => {
                 void api.provider.cancelLogin()
@@ -355,6 +544,7 @@ function ProviderSection({
               Cancel sign-in
             </button>
           )}
+          {waiting && login.url && <LoginLink url={login.url} />}
         </>
       )}
     </section>
