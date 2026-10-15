@@ -1,6 +1,7 @@
 import type { AuditSink } from '../permissions/audit'
 import type { PathGuard } from '../permissions/guard'
 import type { KillTree, ShellSpawner } from './run-shell'
+import { MAX_TREE_ENTRIES } from './walk'
 
 export interface ToolLimits {
   /** read_file refuses bigger files unless a line range is given. Also the cap on returned text. */
@@ -38,7 +39,7 @@ export const DEFAULT_LIMITS: ToolLimits = {
   maxSearchDepth: 20,
   maxSearchEntries: 50_000,
   searchTimeMs: 10_000,
-  maxScanEntries: 100_000,
+  maxScanEntries: MAX_TREE_ENTRIES,
   maxDiffBytes: 256 * 1024,
   defaultShellTimeoutMs: 60_000,
   maxShellTimeoutMs: 10 * 60_000,

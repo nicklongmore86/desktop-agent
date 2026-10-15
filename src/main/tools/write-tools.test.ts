@@ -411,6 +411,55 @@ describe('move_file', () => {
     expect(requests).toEqual([])
   })
 
+  it('catches a file swapped for a hard link between the last check and the rename', async () => {
+    await put(path.join(sb.outside, 'secret.txt'), 'outside secret')
+    const source = path.join(sb.root, 'a.txt')
+    const destination = path.join(sb.root, 'b.txt')
+    await put(source, 'a')
+    const realRename = fs.rename.bind(fs)
+    const rename = vi.spyOn(fs, 'rename').mockImplementationOnce(async (from, to) => {
+      // A racing process replaces the checked file with a second name of an outside file.
+      await realRename(source, path.join(sb.root, 'aside.txt'))
+      await fs.link(path.join(sb.outside, 'secret.txt'), source)
+      await realRename(from, to)
+    })
+    const r = await h.tool('move_file').execute({ source, destination }, fakeContext(true).ctx)
+    expect(rename).toHaveBeenCalledTimes(2)
+    vi.restoreAllMocks()
+    expect(r).toMatchObject({
+      isError: true,
+      content: /changed while it was being moved; it was put back/,
+    })
+    // Put back where it was; nothing new appeared at the destination.
+    expect(await exists(destination)).toBe(false)
+    expect(await fs.readFile(source, 'utf8')).toBe('outside secret')
+  })
+
+  it('cross-volume file move copies from the checked handle and removes the original', async () => {
+    const source = path.join(sb.root, 'a.txt')
+    await put(source, 'from a')
+    await put(path.join(sb.root, 'old.txt'), 'to be replaced, and longer')
+    vi.spyOn(fs, 'rename').mockRejectedValue(
+      Object.assign(new Error('cross-device link'), { code: 'EXDEV' }),
+    )
+    const fresh = await h
+      .tool('move_file')
+      .execute({ source, destination: path.join(sb.root, 'sub', 'new.txt') }, fakeContext(true).ctx)
+    await put(source, 'again')
+    const replace = await h
+      .tool('move_file')
+      .execute(
+        { source, destination: path.join(sb.root, 'old.txt'), overwrite: true },
+        fakeContext(true).ctx,
+      )
+    vi.restoreAllMocks()
+    expect(fresh.isError).toBeUndefined()
+    expect(replace.isError).toBeUndefined()
+    expect(await fs.readFile(path.join(sb.root, 'sub', 'new.txt'), 'utf8')).toBe('from a')
+    expect(await fs.readFile(path.join(sb.root, 'old.txt'), 'utf8')).toBe('again')
+    expect(await exists(source)).toBe(false)
+  })
+
   it('refuses to move a folder containing a hard-linked file', async () => {
     await put(path.join(sb.outside, 'secret.txt'), 'outside secret')
     await put(path.join(sb.root, 'proj', 'a.txt'), 'a')
@@ -561,6 +610,31 @@ describe('delete_path', () => {
     expect(h.trashed).toEqual([])
   })
 
+  it('shows how many items a folder holds, and refuses if that changes before the delete', async () => {
+    await put(path.join(sb.root, 'proj', 'a.txt'), 'a')
+    await put(path.join(sb.root, 'proj', 'sub', 'b.txt'), 'b')
+    await fs.mkdir(path.join(sb.root, 'empty'))
+    const { ctx, requests } = fakeContext(true)
+    expect(await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, ctx)).toEqual({
+      content: `Moved ${path.join(sb.root, 'proj')} to the Recycle Bin.`,
+    })
+    await h.tool('delete_path').execute({ path: path.join(sb.root, 'empty') }, ctx)
+    expect(requests.map((r) => r.summary)).toEqual([
+      `Move folder ${path.join(sb.root, 'proj')} and the 3 items inside it to the Recycle Bin`,
+      `Move folder ${path.join(sb.root, 'empty')} (empty) to the Recycle Bin`,
+    ])
+
+    const growing = fakeContext(async () => {
+      await put(path.join(sb.root, 'proj', 'late.txt'), 'l')
+      return true
+    })
+    h.trashed.length = 0
+    expect(
+      await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, growing.ctx),
+    ).toMatchObject({ isError: true, content: /changed while waiting for approval/ })
+    expect(h.trashed).toEqual([])
+  })
+
   it('refuses grant roots, blocked paths, outside paths and folders with protected files', async () => {
     await put(path.join(sb.root, 'proj', 'secrets', 'api.key'), 'k')
     await put(path.join(sb.root, '.env'), 'S')
@@ -636,7 +710,7 @@ describe('delete_path', () => {
       await h
         .tool('delete_path')
         .execute({ path: path.join(sb.root, 'big') }, fakeContext(true).ctx),
-    ).toMatchObject({ isError: true, content: /too many entries/ })
+    ).toMatchObject({ isError: true, content: /more than 2 entries: too many entries/ })
     expect(h.trashed).toEqual([])
   })
 

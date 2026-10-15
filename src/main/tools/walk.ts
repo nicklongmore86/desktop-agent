@@ -37,6 +37,9 @@ export interface WalkOptions {
   onError?: (path: string, reason: string) => void
 }
 
+/** How many entries of a folder are lstat'ed at once. */
+const LSTAT_BATCH = 64
+
 function kindOf(stats: BigIntStats): EntryKind {
   if (stats.isSymbolicLink()) return 'symlink'
   if (stats.isDirectory()) return 'dir'
@@ -101,39 +104,49 @@ export async function* walk(
       options.onError?.(dir, reasonOf(error))
       return
     }
-    for (const name of names) {
-      if (options.signal.aborted) return
-      const path = P.join(dir, name)
-      if (!guard.isWithinGrants(path)) {
-        options.onError?.(path, 'no longer inside a granted folder')
-        return
-      }
-      if (guard.blockedReason(path)) {
-        options.onBlocked?.(path)
-        continue
-      }
-      let stats: BigIntStats
-      try {
-        stats = await fs.lstat(path, { bigint: true })
-      } catch (error) {
-        options.onError?.(path, reasonOf(error))
-        continue
-      }
-      const rel = relDir === '' ? name : `${relDir}/${name}`
-      const kind = kindOf(stats)
-      yield {
-        path,
-        rel,
-        name,
-        depth,
-        kind,
-        size: Number(stats.size),
-        mtimeMs: Number(stats.mtimeMs),
-        nlink: Number(stats.nlink),
-        id: { dev: stats.dev, ino: stats.ino },
-      }
-      if (kind === 'dir' && depth < options.maxDepth && !options.skipDirs?.has(name)) {
-        yield* visit(path, rel, depth + 1, stats)
+    // lstat runs ahead in batches so big folders are not one syscall round trip per
+    // entry; every other check still happens in order, just before an entry is yielded.
+    for (let start = 0; start < names.length; start += LSTAT_BATCH) {
+      const batch = names.slice(start, start + LSTAT_BATCH)
+      const lstats = batch.map((name) =>
+        fs.lstat(P.join(dir, name), { bigint: true }).then(
+          (stats) => ({ stats }),
+          (error: unknown) => ({ error }),
+        ),
+      )
+      for (const [i, name] of batch.entries()) {
+        if (options.signal.aborted) return
+        const path = P.join(dir, name)
+        if (!guard.isWithinGrants(path)) {
+          options.onError?.(path, 'no longer inside a granted folder')
+          return
+        }
+        if (guard.blockedReason(path)) {
+          options.onBlocked?.(path)
+          continue
+        }
+        const result = await (lstats[i] as (typeof lstats)[number])
+        if ('error' in result) {
+          options.onError?.(path, reasonOf(result.error))
+          continue
+        }
+        const stats = result.stats
+        const rel = relDir === '' ? name : `${relDir}/${name}`
+        const kind = kindOf(stats)
+        yield {
+          path,
+          rel,
+          name,
+          depth,
+          kind,
+          size: Number(stats.size),
+          mtimeMs: Number(stats.mtimeMs),
+          nlink: Number(stats.nlink),
+          id: { dev: stats.dev, ino: stats.ino },
+        }
+        if (kind === 'dir' && depth < options.maxDepth && !options.skipDirs?.has(name)) {
+          yield* visit(path, rel, depth + 1, stats)
+        }
       }
     }
   }
@@ -141,47 +154,71 @@ export async function* walk(
 }
 
 /**
+ * The most entries a folder may have for move_file / delete_path. Every entry
+ * is checked (twice: before and after approval), so this bounds how long the
+ * user waits; bigger folders must be handled a subfolder at a time.
+ */
+export const MAX_TREE_ENTRIES = 1_000_000
+
+/** How many files inside a folder are opened at once to check their link count. */
+const HANDLE_CHECKS = 32
+
+/**
  * Checks a folder for blocklisted entries before it is moved or deleted: a
- * move or delete must never carry protected files along. Fails closed:
- * throws ToolFailure when a protected entry is found, when anything inside
- * cannot be listed or stat'ed, when the folder has more than `limit` entries
- * (too big to check), or when the walk is cancelled.
+ * move or delete must never carry protected files along. Streams the walk
+ * (memory does not grow with the number of entries) and returns how many
+ * entries are inside, for the approval. Fails closed: throws ToolFailure when
+ * a protected entry or a file with other hard links is found, when anything
+ * inside cannot be listed or stat'ed, when the folder has more than `limit`
+ * entries (too big to check), or when the walk is cancelled.
  */
 export async function assertNoBlockedInside(
   dir: string,
   guard: PathGuard,
   limit: number,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<{ entries: number }> {
   const blocked: string[] = []
   const errors: string[] = []
-  let count = 0
   const hardLinked: string[] = []
-  for await (const entry of walk(dir, guard, {
-    maxDepth: Number.POSITIVE_INFINITY,
-    signal,
-    onBlocked: (p) => blocked.push(p),
-    onError: (p, reason) => errors.push(`${p} (${reason})`),
-  })) {
-    if (blocked.length > 0 || errors.length > 0) break
-    // Moving a hard link (especially copying it across volumes) or trashing it would
-    // turn a second name of some file outside the grants into a plain, readable file.
-    if (entry.kind === 'file') {
-      try {
-        await assertSingleLinkHandle(entry.path, entry.id)
-      } catch (error) {
-        if (error instanceof ToolFailure && error.code === 'hard-link') hardLinked.push(entry.path)
-        else
-          errors.push(`${entry.path} (${error instanceof Error ? error.message : String(error)})`)
+  const failed = () => blocked.length > 0 || errors.length > 0 || hardLinked.length > 0
+  let count = 0
+  let tooLarge = false
+  // Moving a hard link (especially copying it across volumes) or trashing it would
+  // turn a second name of some file outside the grants into a plain, readable file.
+  // The walk's lstat count catches most; opening each file proves it through the handle.
+  const checkFile = async (entry: WalkEntry) => {
+    try {
+      await assertSingleLinkHandle(entry.path, entry.id)
+    } catch (error) {
+      if (error instanceof ToolFailure && error.code === 'hard-link') hardLinked.push(entry.path)
+      else errors.push(`${entry.path} (${error instanceof Error ? error.message : String(error)})`)
+    }
+  }
+  const checks = new Set<Promise<void>>()
+  try {
+    for await (const entry of walk(dir, guard, {
+      maxDepth: Number.POSITIVE_INFINITY,
+      signal,
+      onBlocked: (p) => blocked.push(p),
+      onError: (p, reason) => errors.push(`${p} (${reason})`),
+    })) {
+      if (failed()) break
+      if (++count > limit) {
+        tooLarge = true
         break
       }
+      if (entry.kind !== 'file') continue
+      if (entry.nlink > 1) {
+        hardLinked.push(entry.path)
+        break
+      }
+      const check: Promise<void> = checkFile(entry).finally(() => checks.delete(check))
+      checks.add(check)
+      if (checks.size >= HANDLE_CHECKS) await Promise.race(checks)
     }
-    if (++count > limit) {
-      throw new ToolFailure(
-        `${dir} has too many entries to check for protected files.`,
-        'too-large',
-      )
-    }
+  } finally {
+    await Promise.all(checks)
   }
   // An aborted walk proves nothing.
   if (signal.aborted) throw new ToolFailure('Cancelled.', 'cancelled')
@@ -200,4 +237,12 @@ export async function assertNoBlockedInside(
       'protected',
     )
   }
+  if (tooLarge) {
+    throw new ToolFailure(
+      `${dir} has more than ${limit.toLocaleString('en-US')} entries: too many entries to check ` +
+        'for protected files. Nothing was done; move or delete its subfolders one at a time.',
+      'too-large',
+    )
+  }
+  return { entries: count }
 }

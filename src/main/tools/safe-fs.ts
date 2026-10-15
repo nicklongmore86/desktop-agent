@@ -147,3 +147,26 @@ export async function overwriteHandle(handle: FileHandle, data: Buffer): Promise
   }
   await handle.sync()
 }
+
+/** Replaces the content of `to` with all of `from`, in chunks, and syncs it. */
+export async function copyHandle(from: FileHandle, to: FileHandle): Promise<void> {
+  await to.truncate(0)
+  const chunk = Buffer.alloc(64 * 1024)
+  let position = 0
+  for (;;) {
+    const { bytesRead } = await from.read(chunk, 0, chunk.length, position)
+    if (bytesRead === 0) break
+    let written = 0
+    while (written < bytesRead) {
+      const { bytesWritten } = await to.write(
+        chunk,
+        written,
+        bytesRead - written,
+        position + written,
+      )
+      written += bytesWritten
+    }
+    position += bytesRead
+  }
+  await to.sync()
+}

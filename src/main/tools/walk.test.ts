@@ -3,7 +3,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PathGuard } from '../permissions/guard'
 import { makeSandbox, put, trySymlink, type Sandbox } from '../permissions/test-support'
-import { assertNoBlockedInside, walk } from './walk'
+import { MAX_TREE_ENTRIES, assertNoBlockedInside, walk } from './walk'
 
 let sb: Sandbox
 let guard: PathGuard
@@ -108,7 +108,7 @@ describe('assertNoBlockedInside', () => {
     await put(path.join(sb.root, 'clean', 'a.txt'))
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'clean'), guard, 100, signal),
-    ).resolves.toBeUndefined()
+    ).resolves.toEqual({ entries: 1 })
     await put(path.join(sb.root, 'dirty', 'deep', '.env'))
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'dirty'), guard, 100, signal),
@@ -155,11 +155,72 @@ describe('assertNoBlockedInside', () => {
     for (const n of ['a', 'b', 'c']) await put(path.join(sb.root, 'big', n))
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'big'), guard, 2, signal),
-    ).rejects.toMatchObject({ code: 'too-large' })
+    ).rejects.toMatchObject({ code: 'too-large', message: /more than 2 entries/ })
     const aborted = new AbortController()
     aborted.abort()
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'big'), guard, 100, aborted.signal),
     ).rejects.toMatchObject({ code: 'cancelled' })
   })
+
+  it('counts a real tree of thousands of entries exactly, in a streaming walk', async () => {
+    const big = path.join(sb.root, 'big')
+    for (let d = 0; d < 20; d++) {
+      const dir = path.join(big, `d${String(d)}`, 'nested')
+      await fs.mkdir(dir, { recursive: true })
+      await Promise.all(
+        Array.from({ length: 100 }, (_, i) => fs.writeFile(path.join(dir, `f${String(i)}`), '')),
+      )
+    }
+    // 20 top folders + 20 nested folders + 2000 files.
+    await expect(assertNoBlockedInside(big, guard, MAX_TREE_ENTRIES, signal)).resolves.toEqual({
+      entries: 2040,
+    })
+    await put(path.join(big, 'd19', 'nested', 'zz', '.env'))
+    await expect(assertNoBlockedInside(big, guard, MAX_TREE_ENTRIES, signal)).rejects.toMatchObject(
+      { code: 'protected' },
+    )
+  })
+
+  it('allows folders far beyond the old 100,000-entry cap', async () => {
+    // A synthetic folder: the listing, lstat and handle checks of its children are faked so
+    // the test stays fast; everything else (walk, guard, limits) is the real code.
+    const big = path.join(sb.root, 'big')
+    await fs.mkdir(big)
+    const size = 150_000
+    const names = Array.from({ length: size }, (_, i) => `f${String(i).padStart(6, '0')}`)
+    const fake = (ino: bigint) => ({
+      isSymbolicLink: () => false,
+      isDirectory: () => false,
+      isFile: () => true,
+      size: 0n,
+      mtimeMs: 0n,
+      nlink: 1n,
+      dev: 1n,
+      ino,
+    })
+    const inoOf = (p: string) => BigInt(path.basename(p).slice(1)) + 1_000_000n
+    const realReaddir = fs.readdir.bind(fs)
+    const realLstat = fs.lstat.bind(fs)
+    vi.spyOn(fs, 'readdir').mockImplementation(((p: string) =>
+      p === big ? Promise.resolve([...names]) : realReaddir(p)) as typeof fs.readdir)
+    vi.spyOn(fs, 'lstat').mockImplementation(((p: string, o?: object) =>
+      path.dirname(p) === big
+        ? Promise.resolve(fake(inoOf(p)))
+        : realLstat(p, o)) as typeof fs.lstat)
+    vi.spyOn(fs, 'open').mockImplementation(((p: string) =>
+      Promise.resolve({
+        stat: () => Promise.resolve(fake(inoOf(p))),
+        close: () => Promise.resolve(),
+      })) as unknown as typeof fs.open)
+
+    expect(MAX_TREE_ENTRIES).toBeGreaterThan(size)
+    await expect(assertNoBlockedInside(big, guard, MAX_TREE_ENTRIES, signal)).resolves.toEqual({
+      entries: size,
+    })
+    await expect(assertNoBlockedInside(big, guard, size - 1, signal)).rejects.toMatchObject({
+      code: 'too-large',
+      message: /more than 149,999 entries/,
+    })
+  }, 30_000)
 })
