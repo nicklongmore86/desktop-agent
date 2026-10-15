@@ -443,7 +443,7 @@ describe('ChatSession', () => {
       expect(await session.send('racing')).toEqual({
         ok: false,
         code: 'busy',
-        message: 'A new chat is being started. Try again.',
+        message: 'Chat is busy. Try again in a moment.',
       })
       await until(() => slow.pendingClears() === 1)
       expect(await session.send('still racing')).toMatchObject({ ok: false, code: 'busy' })
