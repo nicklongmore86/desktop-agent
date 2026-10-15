@@ -12,6 +12,8 @@ import { useApi } from '../api'
 export interface SettingsPanelProps {
   provider?: ProviderStatus | null | undefined
   onProvider?: ((status: ProviderStatus) => void) | undefined
+  /** Switches provider; the chat uses it to hide the old conversation meanwhile. */
+  onSwitchProvider?: ((provider: ProviderId) => Promise<ProviderStatus>) | undefined
   keyStatus: ApiKeyStatus | null
   onKeyStatus: (status: ApiKeyStatus) => void
   grants: GrantsState | null
@@ -249,7 +251,11 @@ export function SettingsPanel(props: SettingsPanelProps): React.JSX.Element {
   return (
     <div className="settings" aria-label="Settings">
       <h2>Settings</h2>
-      <ProviderSection provider={props.provider} onProvider={props.onProvider} />
+      <ProviderSection
+        provider={props.provider}
+        onProvider={props.onProvider}
+        onSwitchProvider={props.onSwitchProvider}
+      />
       {(!props.provider || props.provider.provider === 'anthropic-api') && (
         <ApiKeySection keyStatus={props.keyStatus} onKeyStatus={props.onKeyStatus} />
       )}
@@ -274,8 +280,10 @@ export function SettingsPanel(props: SettingsPanelProps): React.JSX.Element {
 function ProviderSection({
   provider,
   onProvider,
-}: Pick<SettingsPanelProps, 'provider' | 'onProvider'>): React.JSX.Element {
+  onSwitchProvider,
+}: Pick<SettingsPanelProps, 'provider' | 'onProvider' | 'onSwitchProvider'>): React.JSX.Element {
   const api = useApi()
+  const switchProvider = onSwitchProvider ?? ((next: ProviderId) => api.provider.set(next))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const run = async (operation: () => Promise<ProviderStatus>) => {
@@ -300,7 +308,7 @@ function ProviderSection({
         disabled={busy}
         onChange={(event) => {
           const next = event.target.value as ProviderId
-          void run(() => api.provider.set(next))
+          void run(() => switchProvider(next))
         }}
       >
         <option value="anthropic-api">Anthropic API</option>

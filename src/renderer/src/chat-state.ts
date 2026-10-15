@@ -34,6 +34,11 @@ export interface ChatViewState {
   loadError: string | null
   /** Saving or deleting the conversation on disk failed. */
   storageWarning: string | null
+  /**
+   * A provider switch is in progress: the old conversation is cleared and
+   * everything from it is ignored until main sends the new provider's history.
+   */
+  switching: boolean
 }
 
 export const initialChatState: ChatViewState = {
@@ -44,6 +49,7 @@ export const initialChatState: ChatViewState = {
   approvals: [],
   loadError: null,
   storageWarning: null,
+  switching: false,
 }
 
 export type ChatAction =
@@ -52,8 +58,16 @@ export type ChatAction =
   | { type: 'approval'; prompt: ApprovalPrompt }
   | { type: 'banner'; banner: Banner | null }
   | { type: 'dismiss_storage_warning' }
+  /** The user picked another provider; main has not switched yet. */
+  | { type: 'switch_started' }
+  /** provider.set settled. `state` is main's conversation, if it could be read. */
+  | { type: 'switch_finished'; state: ChatState | null }
 
 function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
+  // While a provider switch is in progress, everything from the old provider is ignored:
+  // only its reset, storage warnings and approval closings still apply.
+  const switchSafe = ['conversation_reset', 'storage_warning', 'approval_closed']
+  if (state.switching && !switchSafe.includes(event.type)) return state
   switch (event.type) {
     case 'run_started':
       return {
@@ -65,6 +79,9 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
         items: [...state.items, { kind: 'user', id: `${event.runId}:user`, text: event.text }],
       }
     case 'conversation_reset':
+      // Only a switch's reset carries the new provider's history; a New chat queued
+      // before the switch resets to empty, and the switch is still under way.
+      if (state.switching && !event.state) return state
       // Keep a storage warning: a failed delete is reported just before the reset.
       return { ...initialChatState, ...(event.state ?? {}), storageWarning: state.storageWarning }
     case 'storage_warning':
@@ -158,6 +175,8 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
 export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewState {
   switch (action.type) {
     case 'loaded':
+      // A load or New chat answered from before the switch: that history is the old provider's.
+      if (state.switching) return state
       return {
         ...state,
         items: action.state.items,
@@ -167,11 +186,33 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
     case 'event':
       return applyEvent(state, action.event)
     case 'approval':
+      // Main denies the old run's prompts when the switch starts; never show one meanwhile.
+      if (state.switching) return state
       if (state.approvals.some((prompt) => prompt.id === action.prompt.id)) return state
       return { ...state, approvals: [...state.approvals, action.prompt] }
     case 'banner':
       return { ...state, banner: action.banner }
     case 'dismiss_storage_warning':
       return { ...state, storageWarning: null }
+    case 'switch_started':
+      return { ...initialChatState, storageWarning: state.storageWarning, switching: true }
+    case 'switch_finished':
+      // Normally the switch's conversation_reset has already ended it. If not (the switch
+      // failed, or the reset was lost), show whatever conversation main now has.
+      if (!state.switching) return state
+      if (!action.state) {
+        return {
+          ...state,
+          switching: false,
+          banner: { code: 'internal', message: 'Could not load the conversation.' },
+        }
+      }
+      return {
+        ...state,
+        switching: false,
+        items: action.state.items,
+        running: action.state.running,
+        loadError: action.state.loadError,
+      }
   }
 }

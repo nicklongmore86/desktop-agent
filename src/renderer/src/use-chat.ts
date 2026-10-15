@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer } from 'react'
+import type { ChatState, ProviderId, ProviderStatus } from '../../shared/ipc'
 import { useApi } from './api'
 import { chatReducer, initialChatState, type ChatViewState } from './chat-state'
 
@@ -8,6 +9,8 @@ export interface ChatControls {
   stop: () => Promise<void>
   newChat: () => Promise<void>
   respond: (id: string, approved: boolean) => Promise<void>
+  /** Switches provider, hiding the old conversation until the new one arrives. */
+  switchProvider: (provider: ProviderId) => Promise<ProviderStatus>
   dismissBanner: () => void
   dismissStorageWarning: () => void
 }
@@ -73,6 +76,23 @@ export function useChat(): ChatControls {
     (id: string, approved: boolean) => api.approvals.respond(id, approved),
     [api],
   )
+  const switchProvider = useCallback(
+    async (provider: ProviderId) => {
+      dispatch({ type: 'switch_started' })
+      try {
+        return await api.provider.set(provider)
+      } finally {
+        let loaded: ChatState | null = null
+        try {
+          loaded = await api.chat.load()
+        } catch {
+          // switch_finished reports it.
+        }
+        dispatch({ type: 'switch_finished', state: loaded })
+      }
+    },
+    [api],
+  )
   const dismissBanner = useCallback(() => {
     dispatch({ type: 'banner', banner: null })
   }, [])
@@ -81,5 +101,14 @@ export function useChat(): ChatControls {
     dispatch({ type: 'dismiss_storage_warning' })
   }, [])
 
-  return { state, send, stop, newChat, respond, dismissBanner, dismissStorageWarning }
+  return {
+    state,
+    send,
+    stop,
+    newChat,
+    respond,
+    switchProvider,
+    dismissBanner,
+    dismissStorageWarning,
+  }
 }

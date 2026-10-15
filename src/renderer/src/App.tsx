@@ -105,6 +105,7 @@ export function App(): React.JSX.Element {
         <SettingsPanel
           provider={provider}
           onProvider={setProvider}
+          onSwitchProvider={chat.switchProvider}
           keyStatus={keyStatus}
           onKeyStatus={setKeyStatus}
           grants={grants}

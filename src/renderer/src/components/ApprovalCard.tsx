@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { ApprovalKind, ApprovalPrompt } from '../../../shared/ipc'
 import { DiffView } from './DiffView'
-import { isSuspicious, SafeLines, SafeText } from './reveal'
+import { hasLatin, hasRtl, isSuspicious, SafeLines, SafeText } from './reveal'
 
 const KIND_LABELS: Record<ApprovalKind, string> = {
   write: 'Write a file',
@@ -20,10 +20,24 @@ export function parseShellDetail(
   return { cwd, shell, command }
 }
 
-function Detail({ prompt }: { prompt: ApprovalPrompt }): React.JSX.Element | null {
+/**
+ * Whether the prompt as a whole has Latin letters. Every part is revealed in
+ * that context, so a command made only of look-alikes (`.\рау`) is tokenised
+ * like the same word in a Latin path would be.
+ */
+const latinContextOf = (prompt: ApprovalPrompt): boolean =>
+  [prompt.tool, prompt.summary, prompt.detail ?? ''].some(hasLatin)
+
+function Detail({
+  prompt,
+  latinContext,
+}: {
+  prompt: ApprovalPrompt
+  latinContext: boolean
+}): React.JSX.Element | null {
   const { detail, kind } = prompt
   if (detail === null) return null
-  if (kind === 'write') return <DiffView diff={detail} />
+  if (kind === 'write') return <DiffView diff={detail} latinContext={latinContext} />
   const shell = kind === 'shell' ? parseShellDetail(detail) : null
   if (shell) {
     return (
@@ -31,13 +45,13 @@ function Detail({ prompt }: { prompt: ApprovalPrompt }): React.JSX.Element | nul
         <dt>Shell</dt>
         <dd>
           <code aria-label="Shell">
-            <SafeText text={shell.shell} />
+            <SafeText text={shell.shell} latinContext={latinContext} />
           </code>
         </dd>
         <dt>Working folder</dt>
         <dd>
           <code aria-label="Working folder">
-            <SafeText text={shell.cwd} />
+            <SafeText text={shell.cwd} latinContext={latinContext} />
           </code>
         </dd>
         <dt>Command (exactly as it will run)</dt>
@@ -48,7 +62,7 @@ function Detail({ prompt }: { prompt: ApprovalPrompt }): React.JSX.Element | nul
             aria-label="Command"
             dir="ltr"
           >
-            <SafeLines text={shell.command} />
+            <SafeLines text={shell.command} latinContext={latinContext} />
           </pre>
         </dd>
       </dl>
@@ -56,7 +70,7 @@ function Detail({ prompt }: { prompt: ApprovalPrompt }): React.JSX.Element | nul
   }
   return (
     <pre className="scroll-box untrusted-block" tabIndex={0} aria-label="Details" dir="ltr">
-      <SafeLines text={detail} />
+      <SafeLines text={detail} latinContext={latinContext} />
     </pre>
   )
 }
@@ -78,7 +92,10 @@ export function ApprovalCard({ prompt, queued, onRespond }: ApprovalCardProps): 
   const dialog = useRef<HTMLDivElement>(null)
   const deny = useRef<HTMLButtonElement>(null)
   const [answering, setAnswering] = useState(false)
-  const suspicious = [prompt.tool, prompt.summary, prompt.detail].some(isSuspicious)
+  const latinContext = latinContextOf(prompt)
+  const texts = [prompt.tool, prompt.summary, prompt.detail]
+  const suspicious = texts.some((text) => isSuspicious(text, { latinContext }))
+  const rtl = texts.some((text) => text !== null && hasRtl(text))
 
   // The app keys this card by prompt id, so each prompt mounts afresh with Deny focused.
   useEffect(() => {
@@ -129,20 +146,30 @@ export function ApprovalCard({ prompt, queued, onRespond }: ApprovalCardProps): 
         <header className="approval-header">
           <h2 id={titleId}>Approve: {KIND_LABELS[prompt.kind]}?</h2>
           <span className="approval-tool">
-            <SafeText text={prompt.tool} />
+            <SafeText text={prompt.tool} latinContext={latinContext} />
           </span>
         </header>
         {suspicious && (
           <p className="approval-warning" role="alert">
-            <strong>Warning:</strong> this request contains hidden or control characters (shown as
-            ⟨…⟩ tokens). They can make a path, command or change look different from what will
-            actually run. Deny unless you are sure.
+            <strong>Warning:</strong> this request contains hidden, control or look-alike characters
+            (shown as ⟨…⟩ tokens). They can make a path, command or change look different from what
+            will actually run. Deny unless you are sure.
           </p>
         )}
-        <p id={summaryId} className="approval-summary">
-          <SafeText text={prompt.summary} />
-        </p>
-        <Detail prompt={prompt} />
+        {rtl && (
+          <p className="approval-warning approval-rtl" role="alert">
+            <strong>Note:</strong> this request contains right-to-left characters (such as Hebrew or
+            Arabic). They are shown in stored order, left to right, exactly as they will run, not as
+            those words normally read.
+          </p>
+        )}
+        {/* Only the body scrolls, so the title, warning and buttons always stay on screen. */}
+        <div className="approval-body" tabIndex={0} aria-label="Request details">
+          <p id={summaryId} className="approval-summary">
+            <SafeText text={prompt.summary} latinContext={latinContext} />
+          </p>
+          <Detail prompt={prompt} latinContext={latinContext} />
+        </div>
         {queued > 0 && (
           <p className="approval-queue">
             {queued} more request{queued === 1 ? '' : 's'} waiting.

@@ -37,6 +37,28 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test
       - run: pnpm build
+      # Real Electron/Chromium rendering of adversarial approval prompts (e2e/), on the built renderer.
+      - name: Approval dialog rendering (Electron)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm test:e2e
+      # The runner's 1024x768 display would clamp the 1280px window.
+      - name: Raise the display resolution
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - name: Approval dialog rendering (Electron)
+        if: runner.os != 'Linux'
+        run: pnpm test:e2e
+      - name: Upload approval dialog screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: approval-dialog-screenshots-${{ matrix.os }}
+          path: |
+            e2e-artifacts/
+            test-results/e2e/
+          if-no-files-found: warn
+          retention-days: 14
 
   installer:
     name: Windows installer

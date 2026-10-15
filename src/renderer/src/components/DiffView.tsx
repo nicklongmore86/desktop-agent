@@ -13,10 +13,16 @@ function lineClass(line: RevealedLine): string {
  * A unified diff, monospace, one coloured line per diff line. The +/- prefixes
  * stay visible, and hidden or control characters are shown as tokens.
  */
-export function DiffView({ diff }: { diff: string }): React.JSX.Element {
+export function DiffView({
+  diff,
+  latinContext,
+}: {
+  diff: string
+  latinContext?: boolean | undefined
+}): React.JSX.Element {
   return (
     <pre className="diff scroll-box untrusted-block" tabIndex={0} aria-label="Full diff" dir="ltr">
-      <SafeLines text={diff} lineClass={lineClass} />
+      <SafeLines text={diff} lineClass={lineClass} latinContext={latinContext} />
     </pre>
   )
 }

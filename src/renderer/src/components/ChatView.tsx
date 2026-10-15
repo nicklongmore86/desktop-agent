@@ -37,7 +37,7 @@ export function ChatView({
   const send = async (event: SubmitEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
     const text = draft.trim()
-    if (!text || state.running || sending) return
+    if (!text || state.running || state.switching || sending) return
     setSending(true)
     try {
       if (await onSend(text)) setDraft('')
@@ -51,6 +51,7 @@ export function ChatView({
       <div className="chat-toolbar">
         <button
           type="button"
+          disabled={state.switching}
           onClick={() => {
             void onNewChat()
           }}
@@ -81,7 +82,12 @@ export function ChatView({
       )}
 
       <ol className="messages" aria-label="Messages">
-        {state.items.length === 0 && (
+        {state.switching && (
+          <li className="messages-empty" role="status">
+            Switching provider…
+          </li>
+        )}
+        {state.items.length === 0 && !state.switching && (
           <li className="messages-empty">Ask Claude to look at or change files in your folders.</li>
         )}
         {state.items.map((item) => {
@@ -158,7 +164,11 @@ export function ChatView({
             Stop
           </button>
         ) : (
-          <button type="submit" className="button-primary" disabled={!draft.trim() || sending}>
+          <button
+            type="submit"
+            className="button-primary"
+            disabled={!draft.trim() || sending || state.switching}
+          >
             Send
           </button>
         )}

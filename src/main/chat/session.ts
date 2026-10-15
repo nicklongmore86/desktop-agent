@@ -112,7 +112,7 @@ export class ChatSession {
     if (typeof text !== 'string' || !text.trim())
       return { ok: false, code: 'invalid_request', message: 'Type a message first.' }
     if (this.resets > 0)
-      return { ok: false, code: 'busy', message: 'A new chat is being started. Try again.' }
+      return { ok: false, code: 'busy', message: 'Chat is busy. Try again in a moment.' }
     if (this.active)
       return { ok: false, code: 'busy', message: 'Wait for the current reply, or stop it.' }
     const generation = this.generation
