@@ -5,7 +5,13 @@ import { redactSecrets } from '../permissions/audit'
 import { ToolFailure, ToolInputError, errorResult, type RunResult, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
 import { sameIdentity, type Identity } from './safe-fs'
-import { decodeCliXml, encodePowerShell, powerShellScript, treeKillScript } from './shell-windows'
+import {
+  type Cut,
+  decodeCliXml,
+  encodePowerShell,
+  powerShellScript,
+  treeKillScript,
+} from './shell-windows'
 import { formatBytes } from './text'
 
 /** The parts of a ChildProcess the shell tool uses. */
@@ -237,7 +243,7 @@ export function shellEnv(
 }
 
 /** Keeps the first and last `limit / 2` bytes of a stream and counts what it drops. */
-class OutputCollector {
+export class OutputCollector {
   private head: Buffer[] = []
   private headBytes = 0
   private tail: Buffer[] = []
@@ -272,13 +278,43 @@ class OutputCollector {
     }
   }
 
-  /** The kept text; `decode` is applied to the start and the end separately. */
-  text(decode: (text: string) => string = (text) => text): string {
-    const dropped = this.total - this.headBytes - this.tailBytes
-    const head = decode(Buffer.concat(this.head).toString('utf8'))
-    const tail = decode(Buffer.concat(this.tail).toString('utf8'))
-    return dropped > 0 ? `${head}\n… [${formatBytes(dropped)} omitted] …\n${tail}` : head + tail
+  /**
+   * The kept text. With nothing dropped, `decode` sees the whole output at once. Otherwise
+   * each side of the cut is decoded on its own, told where it was cut, after dropping any
+   * UTF-8 sequence the cut split (counted in the omitted bytes).
+   */
+  text(decode: (text: string, cut: Cut) => string = (text) => text): string {
+    const head = Buffer.concat(this.head)
+    const tail = Buffer.concat(this.tail)
+    if (this.total === head.length + tail.length) {
+      return decode(Buffer.concat([head, tail]).toString('utf8'), {})
+    }
+    const keptHead = head.subarray(0, completeUtf8Length(head))
+    const keptTail = tail.subarray(continuationBytes(tail))
+    const dropped = this.total - keptHead.length - keptTail.length
+    return (
+      `${decode(keptHead.toString('utf8'), { end: true })}\n` +
+      `… [${formatBytes(dropped)} omitted] …\n` +
+      decode(keptTail.toString('utf8'), { start: true })
+    )
   }
+}
+
+/** The length of `bytes` without a UTF-8 sequence cut off at its end. */
+function completeUtf8Length(bytes: Buffer): number {
+  let start = bytes.length - 1
+  while (start >= 0 && bytes.length - start < 4 && ((bytes[start] ?? 0) & 0xc0) === 0x80) start--
+  if (start < 0) return bytes.length
+  const lead = bytes[start] ?? 0
+  const size = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1
+  return start + size > bytes.length ? start : bytes.length
+}
+
+/** How many UTF-8 continuation bytes (the rest of a cut-off sequence) start `bytes`. */
+function continuationBytes(bytes: Buffer): number {
+  let count = 0
+  while (count < 3 && count < bytes.length && ((bytes[count] ?? 0) & 0xc0) === 0x80) count++
+  return count
 }
 
 interface Input {

@@ -8,6 +8,7 @@ import { fakeContext, makeSandbox, type Sandbox } from '../permissions/test-supp
 import { PathGuard } from '../permissions/guard'
 import {
   defaultKillTree,
+  OutputCollector,
   shellEnv,
   shellInvocation,
   type ShellProcess,
@@ -471,9 +472,92 @@ describe('decodeCliXml', () => {
     )
   })
 
+  it('leaves numeric entities that are not Unicode scalar values as they are', () => {
+    expect(
+      decodeCliXml('<S S="Error">a &#x110000; &#99999999; &#xD800; &#57343; &#65;&#x1F600; b</S>'),
+    ).toBe('a &#x110000; &#99999999; &#xD800; &#57343; A😀 b')
+  })
+
+  it('repairs markup broken where the output was cut', () => {
+    // Cut at the end: a partial tag, escape or progress record is dropped and an open string closed.
+    expect(decodeCliXml('<S S="Error">ok</S><S S="Err', { end: true })).toBe('ok')
+    expect(decodeCliXml('<S S="Error">done_x000D__x0', { end: true })).toBe('done\r')
+    expect(decodeCliXml('<S S="Error">a &am', { end: true })).toBe('a ')
+    expect(
+      decodeCliXml('<S S="Error">x</S><Obj S="progress" RefId="0"><AV>pp', { end: true }),
+    ).toBe('x')
+    // Cut at the start: a partial tag, escape or progress record is dropped and a string opened.
+    expect(decodeCliXml('="Error">mid</S>', { start: true })).toBe('mid')
+    expect(decodeCliXml('D__x000A_</S><S S="Error">next</S>', { start: true })).toBe('\nnext')
+    expect(decodeCliXml('p;b</S>', { start: true })).toBe('b')
+    expect(decodeCliXml('p</AV></Obj><S S="Error">x</S></Objs>', { start: true })).toBe('x')
+    // Without a cut, nothing is repaired.
+    expect(decodeCliXml('<S S="Error">ok</S><S S="Err')).toBe('ok<S S="Err')
+  })
+
   it('leaves plain text alone, and decodes fragments of cut output', () => {
     expect(decodeCliXml('plain _x0041_ <b> text')).toBe('plain _x0041_ <b> text')
     expect(decodeCliXml('ion</S><S S="Error">tail_x000A_</S></Objs>')).toBe('ion</S>tail\n')
+  })
+})
+
+describe('OutputCollector', () => {
+  const header =
+    '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+
+  function collect(limit: number, text: string, chunkSize = 3): OutputCollector {
+    const collector = new OutputCollector(limit)
+    const bytes = Buffer.from(text)
+    for (let i = 0; i < bytes.length; i += chunkSize)
+      collector.push(bytes.subarray(i, i + chunkSize))
+    return collector
+  }
+
+  it('decodes the whole output at once when nothing was dropped', () => {
+    // 8 bytes: the head/tail boundary (byte 4) falls inside 日 (bytes 3-5).
+    const decode = vi.fn((text: string) => text)
+    expect(collect(8, 'abc日de').text(decode)).toBe('abc日de')
+    expect(decode).toHaveBeenCalledExactlyOnceWith('abc日de', {})
+
+    const message = `bad café 日本語 ${'z'.repeat(150)}`
+    const xml = `${header}<S S="Error">${message}_x000D__x000A_</S></Objs>`
+    const boundary = Math.ceil(Buffer.byteLength(xml) / 2)
+    // The boundary is inside the <S S="Error"> element.
+    expect(Buffer.from(xml).subarray(0, boundary).toString()).toContain('<S S="Error">bad')
+    expect(Buffer.from(xml).subarray(boundary).toString()).toContain('</S>')
+    expect(collect(Buffer.byteLength(xml), xml).text(decodeCliXml)).toBe(`${message}\r\n`)
+  })
+
+  it('never shows half a UTF-8 character at the cut, and counts it as omitted', () => {
+    // Head keeps 4 bytes ("abc" + 1 of 日's 3), tail 4 (2 of 日's 3 + "de").
+    const text = `abc日${'x'.repeat(20)}日de`
+    const out = collect(8, text).text()
+    expect(out).toBe(`abc\n… [${String(Buffer.byteLength(text) - 5)} B omitted] …\nde`)
+    expect(out).not.toContain('\uFFFD')
+  })
+
+  it('decodes each side of the cut without raw markup when a stream string straddles it', () => {
+    const open = '<S S="Error">'
+    const k = Buffer.byteLength(header + open) + 20
+    const xml =
+      `${header}${open}${'A'.repeat(40)}_x000D__x000A_</S>` +
+      `<Obj S="progress" RefId="0"><AV>${'p'.repeat(200)}</AV></Obj>` +
+      `${open}${'B'.repeat(k)}_x000A_</S></Objs>`
+    const out = collect(2 * k, xml).text(decodeCliXml)
+    const dropped = Buffer.byteLength(xml) - 2 * k
+    expect(out).toBe(
+      `${'A'.repeat(20)}\n… [${String(dropped)} B omitted] …\n${'B'.repeat(k - 18)}\n`,
+    )
+  })
+
+  it('cuts a stream string between the bytes of a multibyte character', () => {
+    const open = '<S S="Error">'
+    const k = Buffer.byteLength(header + open) + 4
+    // Byte k falls inside the second 日 of the head; the tail's first k bytes start inside 本.
+    const xml = `${header}${open}日日日${'x'.repeat(100)}</S>${open}本${'y'.repeat(k - 13)}</S></Objs>`
+    const out = collect(2 * k, xml).text(decodeCliXml)
+    expect(out).toMatch(/^日\n… \[\d+ B omitted\] …\ny+$/)
+    expect(out).not.toMatch(/\uFFFD|<|>/)
   })
 })
 
