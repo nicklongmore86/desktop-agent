@@ -19,7 +19,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   },
   createSdkMcpServer: () => ({ type: 'sdk', name: 'desktop', instance: {} }),
 }))
-let mode: 'normal' | 'api' | 'builtin' | 'expired' | 'hang'
+let mode: 'normal' | 'api' | 'bare' | 'cloud' | 'builtin' | 'expired' | 'hang'
 let sentInput: boolean
 const close = vi.fn()
 beforeEach(() => {
@@ -32,12 +32,20 @@ beforeEach(() => {
       ({
         close,
         accountInfo: () =>
-          Promise.resolve({
-            apiProvider: 'firstParty',
-            apiKeySource: mode === 'api' ? '/login managed key' : 'none',
-            tokenSource: 'oauth',
-            subscriptionType: 'max',
-          }),
+          Promise.resolve(
+            // Shapes reported by the pinned CLI: subscription sign-in, and --bare (no sign-in read).
+            mode === 'bare'
+              ? { apiProvider: 'firstParty', tokenSource: 'none' }
+              : mode === 'api'
+                ? {
+                    apiProvider: 'firstParty',
+                    apiKeySource: 'ANTHROPIC_API_KEY',
+                    subscriptionType: 'Claude Max',
+                  }
+                : mode === 'cloud'
+                  ? { apiProvider: 'bedrock', subscriptionType: 'Claude Max' }
+                  : { apiProvider: 'firstParty', subscriptionType: 'Claude Max' },
+          ),
         async *[Symbol.asyncIterator]() {
           if (typeof request.prompt === 'string') throw new Error('Expected gated input.')
           for await (const _input of request.prompt) {
@@ -114,19 +122,31 @@ it('gates input on subscription auth and bridges only app tools', async () => {
     strictMcpConfig: true,
     skills: [],
     plugins: [],
-    extraArgs: { bare: null },
+    extraArgs: { 'disable-slash-commands': null },
+    env: {
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    },
     managedSettings: { disableAllHooks: true },
     allowedTools: ['mcp__desktop__read_file'],
     persistSession: false,
   })
+  // --bare makes the CLI skip the subscription sign-in entirely.
+  expect(options?.extraArgs).not.toHaveProperty('bare')
   expect(close).toHaveBeenCalledOnce()
 })
-it('refuses API authentication before sending any prompt', async () => {
-  mode = 'api'
-  const { run, execute } = setup()
+it.each([
+  ['api', 'Claude subscription sign-in required. API credentials are not accepted.'],
+  ['cloud', 'Claude subscription sign-in required. Cloud API providers are not accepted.'],
+  ['bare', "Claude isn't signed in with a subscription. Sign in again in Settings."],
+] as const)('refuses %s authentication before sending any prompt', async (state, message) => {
+  mode = state
+  const { run, execute, events } = setup()
   expect((await run()).stopReason).toBe('api')
   expect(sentInput).toBe(false)
   expect(execute).not.toHaveBeenCalled()
+  expect(events.at(-1)).toEqual({ type: 'error', code: 'api', message })
 })
 it.each(['builtin', 'expired'] as const)('fails closed on %s', async (state) => {
   mode = state

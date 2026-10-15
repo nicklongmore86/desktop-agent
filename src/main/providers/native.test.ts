@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, cp } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { query } from '@anthropic-ai/claude-agent-sdk'
+import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { claudeOptions } from './claude'
 import { codexAccount, connectCodex } from './codex'
 import { object } from './rpc'
@@ -126,8 +126,7 @@ it('pinned native Codex accepts isolated dynamic tools without API keys or sign-
   }
 }, 30000)
 
-it('pinned native Claude ignores hostile project hooks, MCP and instructions with built-ins disabled', async () => {
-  const f = await fixture()
+async function nativeClaude(f: Awaited<ReturnType<typeof fixture>>) {
   const original = await discoverRuntime('claude', {}, { home: f.home, cwd: f.cwd, env: f.env })
   expect(original).not.toBeNull()
   if (!original) throw new Error('Missing native Claude')
@@ -165,27 +164,39 @@ it('pinned native Claude ignores hostile project hooks, MCP and instructions wit
     expect(file).toBe(await realpath(bundled))
   }
   if (!file) throw new Error('Missing packaged Claude')
+  expect(await capture(file, ['--version'], f.cwd, f.env)).toContain(CLAUDE_VERSION)
+  return file
+}
+
+/** Project and user configuration that must never load, including an API key helper. */
+async function hostileClaudeConfig(f: Awaited<ReturnType<typeof fixture>>) {
+  const settings = JSON.stringify({
+    apiKeyHelper: 'echo sk-ant-api03-hostile-helper',
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: 'echo bypass > bypass-marker.txt' }] }],
+    },
+    mcpServers: { inherited: { command: 'nonexistent-inherited-mcp' } },
+  })
   await mkdir(join(f.cwd, '.claude'))
-  await writeFile(
-    join(f.cwd, '.claude', 'settings.json'),
-    JSON.stringify({
-      hooks: {
-        SessionStart: [
-          { hooks: [{ type: 'command', command: 'echo bypass > bypass-marker.txt' }] },
-        ],
-      },
-    }),
-  )
+  await writeFile(join(f.cwd, '.claude', 'settings.json'), settings)
+  await writeFile(join(f.auth, 'settings.json'), settings)
   await writeFile(
     join(f.cwd, '.mcp.json'),
     JSON.stringify({ mcpServers: { inherited: { command: 'nonexistent-inherited-mcp' } } }),
   )
-  await writeFile(join(f.cwd, 'CLAUDE.md'), 'HOSTILE_PROJECT_CONTEXT_MUST_NOT_LOAD')
-  expect(await capture(file, ['--version'], f.cwd, f.env)).toContain(CLAUDE_VERSION)
+  for (const dir of [f.cwd, f.auth])
+    await writeFile(join(dir, 'CLAUDE.md'), 'HOSTILE_PROJECT_CONTEXT_MUST_NOT_LOAD')
+}
+
+it('pinned native Claude ignores hostile project hooks, MCP and instructions with built-ins disabled', async () => {
+  const f = await fixture()
+  const file = await nativeClaude(f)
+  await hostileClaudeConfig(f)
   const controller = new AbortController()
   const timer = setTimeout(() => {
     controller.abort()
   }, 15000)
+  // Signed out: the prompt cannot reach inference, so the session stops after init.
   const stream = query({
     prompt: 'hello',
     options: { ...claudeOptions({ file, cwd: f.cwd, env: f.env }), abortController: controller },
@@ -204,6 +215,60 @@ it('pinned native Claude ignores hostile project hooks, MCP and instructions wit
       }
     }
     expect(initialized).toBe(true)
+    await expect(readFile(join(f.cwd, 'bypass-marker.txt'))).rejects.toThrow()
+  } finally {
+    clearTimeout(timer)
+    controller.abort()
+    stream.close()
+  }
+}, 30000)
+
+it('pinned native Claude reads the subscription sign-in from the isolated directory only', async () => {
+  const f = await fixture()
+  const file = await nativeClaude(f)
+  await hostileClaudeConfig(f)
+  // The shape written by `claude auth login`; the token is never sent because no prompt is.
+  await writeFile(
+    join(f.auth, '.credentials.json'),
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'sk-ant-oat01-desktop-agent-test',
+        refreshToken: 'sk-ant-ort01-desktop-agent-test',
+        expiresAt: Date.now() + 3600000,
+        scopes: ['user:inference', 'user:profile'],
+        subscriptionType: 'max',
+      },
+    }),
+  )
+  const controller = new AbortController()
+  const timer = setTimeout(() => {
+    controller.abort()
+  }, 15000)
+  // Gated like the chat runner, but never released: no message reaches inference.
+  async function* never(): AsyncGenerator<SDKUserMessage> {
+    await new Promise((resolve) => {
+      controller.signal.addEventListener('abort', resolve, { once: true })
+    })
+    if (!controller.signal.aborted)
+      yield {
+        type: 'user',
+        message: { role: 'user', content: 'unreachable' },
+        parent_tool_use_id: null,
+        session_id: '',
+      }
+  }
+  const stream = query({
+    prompt: never(),
+    options: { ...claudeOptions({ file, cwd: f.cwd, env: f.env }), abortController: controller },
+  })
+  try {
+    const account = await stream.accountInfo()
+    expect(account).toMatchObject({ apiProvider: 'firstParty', subscriptionType: 'Claude Max' })
+    expect(account.apiKeySource ?? 'none').toBe('none')
+    expect(account.tokenSource).not.toBe('none')
+    expect((await stream.getContextUsage()).memoryFiles).toEqual([])
+    expect(await stream.mcpServerStatus()).toEqual([])
+    expect((await stream.initializationResult()).commands).toEqual([])
     await expect(readFile(join(f.cwd, 'bypass-marker.txt'))).rejects.toThrow()
   } finally {
     clearTimeout(timer)

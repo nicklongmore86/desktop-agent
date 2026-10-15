@@ -18,14 +18,21 @@ export function claudeOptions(context: RuntimeContext): Options {
   return {
     pathToClaudeCodeExecutable: context.file,
     cwd: context.cwd,
-    env: context.env,
+    // Not --bare: bare mode (CLAUDE_CODE_SIMPLE) never reads the subscription sign-in.
+    // These cover the parts of bare mode that isolation does not already disable.
+    env: {
+      ...context.env,
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    },
     tools: [],
     settingSources: [],
     strictMcpConfig: true,
     plugins: [],
     skills: [],
     agents: {},
-    extraArgs: { bare: null, 'disable-slash-commands': null },
+    extraArgs: { 'disable-slash-commands': null },
     managedSettings: { disableAllHooks: true },
     settings: { disableAllHooks: true },
     persistSession: false,
@@ -112,13 +119,14 @@ export function createClaudeSubscriptionRunner(
           },
         })
         const account = await stream.accountInfo()
-        if (
-          account.apiProvider !== 'firstParty' ||
-          (account.apiKeySource && account.apiKeySource !== 'none') ||
-          !account.subscriptionType ||
-          account.tokenSource === 'none'
-        )
+        if (account.apiKeySource && account.apiKeySource !== 'none')
           throw new Error('Claude subscription sign-in required. API credentials are not accepted.')
+        if (account.apiProvider !== 'firstParty')
+          throw new Error(
+            'Claude subscription sign-in required. Cloud API providers are not accepted.',
+          )
+        if (!account.subscriptionType || account.tokenSource === 'none')
+          throw new Error("Claude isn't signed in with a subscription. Sign in again in Settings.")
         releaseInput()
         let completed = false
         for await (const message of stream) {
