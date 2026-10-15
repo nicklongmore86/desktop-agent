@@ -96,4 +96,71 @@ describe('chatReducer', () => {
     ])
     expect(state).toEqual(initialChatState)
   })
+
+  describe('provider switch', () => {
+    const old: ChatViewState = {
+      ...run([
+        { type: 'run_started', runId: 'r1', text: 'Old question' },
+        { type: 'text_delta', runId: 'r1', turn: 1, text: 'Old answer' },
+      ]),
+      approvals: [prompt('a1')],
+      storageWarning: 'disk full',
+    }
+    const switching = chatReducer(old, { type: 'switch_started' })
+    const fresh = {
+      items: [{ kind: 'user' as const, id: 'n', text: 'New' }],
+      running: false,
+      loadError: null,
+    }
+
+    it('clears the old conversation and approvals as soon as it starts', () => {
+      expect(switching).toEqual({
+        ...initialChatState,
+        storageWarning: 'disk full',
+        switching: true,
+      })
+    })
+
+    it('ignores the old provider’s events, prompts, loads and New chat resets meanwhile', () => {
+      let state = run(
+        [
+          { type: 'text_delta', runId: 'r1', turn: 1, text: 'more' },
+          { type: 'run_started', runId: 'r2', text: 'late' },
+          { type: 'text_delta', runId: 'r2', turn: 1, text: 'late reply' },
+          { type: 'tool_use', runId: 'r1', turn: 1, id: 't', name: 'x', input: {} },
+          { type: 'run_finished', runId: 'r1', stopReason: 'aborted' },
+          { type: 'conversation_reset' },
+        ],
+        switching,
+      )
+      state = chatReducer(state, { type: 'approval', prompt: prompt('a2') })
+      state = chatReducer(state, {
+        type: 'loaded',
+        state: { items: old.items, running: true, loadError: null },
+      })
+      expect(state).toEqual(switching)
+    })
+
+    it('ends with the new provider’s history from the reset', () => {
+      const state = run([{ type: 'conversation_reset', state: fresh }], switching)
+      expect(state.switching).toBe(false)
+      expect(state.items).toEqual(fresh.items)
+      // provider.set settles after the reset: its follow-up load is not applied again.
+      expect(chatReducer(state, { type: 'switch_finished', state: { ...fresh, items: [] } })).toBe(
+        state,
+      )
+    })
+
+    it('falls back to main’s current conversation when no reset came', () => {
+      expect(chatReducer(switching, { type: 'switch_finished', state: fresh })).toMatchObject({
+        switching: false,
+        items: fresh.items,
+      })
+      expect(chatReducer(switching, { type: 'switch_finished', state: null })).toMatchObject({
+        switching: false,
+        items: [],
+        banner: { code: 'internal' },
+      })
+    })
+  })
 })

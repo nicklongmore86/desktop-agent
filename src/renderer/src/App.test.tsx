@@ -309,3 +309,81 @@ it('does not let an old startup history response overwrite a provider switch', a
   expect(screen.getByText('New provider history')).toBeTruthy()
   expect(screen.queryByText('Old provider history')).toBeNull()
 })
+
+describe('provider switch', () => {
+  const oldChat = {
+    items: [{ kind: 'user' as const, id: 'old', text: 'Old provider history' }],
+    running: false,
+    loadError: null,
+  }
+  const newChat = {
+    items: [{ kind: 'user' as const, id: 'new', text: 'New provider history' }],
+    running: false,
+    loadError: null,
+  }
+
+  it('never shows the old conversation while the switch is in progress', async () => {
+    const { api, user, pushChat, pushApproval } = await renderApp({ chat: oldChat })
+    expect(await screen.findByText('Old provider history')).toBeTruthy()
+    let finish: () => void = () => {}
+    api.provider.set.mockImplementationOnce(
+      (next) =>
+        new Promise((resolve) => {
+          finish = () => {
+            resolve({ provider: next, state: 'ready', message: 'Ready.' })
+          }
+        }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await user.selectOptions(screen.getByLabelText('Access provider'), 'codex-subscription')
+    await user.click(screen.getByRole('button', { name: 'Back to chat' }))
+
+    expect(screen.queryByText('Old provider history')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('Switching provider…')
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello')
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveProperty('disabled', true)
+
+    // Stragglers from the old provider's run are dropped.
+    act(() => {
+      pushChat({ type: 'run_started', runId: 'old-run', text: 'Old question' })
+      pushChat({ type: 'text_delta', runId: 'old-run', turn: 1, text: 'Old reply' })
+      pushApproval({
+        id: 'old-approval',
+        runId: 'old-run',
+        toolUseId: null,
+        tool: 'write_file',
+        kind: 'write',
+        summary: 'Old write',
+        detail: null,
+      })
+    })
+    expect(screen.queryByText('Old question')).toBeNull()
+    expect(screen.queryByText('Old reply')).toBeNull()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+
+    act(() => {
+      pushChat({ type: 'conversation_reset', state: newChat })
+    })
+    expect(screen.getByText('New provider history')).toBeTruthy()
+    expect(screen.queryByText('Switching provider…')).toBeNull()
+    // provider.set settles afterwards; its follow-up load (the fake's old chat) is not applied.
+    await act(async () => {
+      finish()
+      await Promise.resolve()
+    })
+    expect(screen.getByText('New provider history')).toBeTruthy()
+    expect(screen.queryByText('Old provider history')).toBeNull()
+  })
+
+  it('shows main’s conversation again when the switch fails', async () => {
+    const { api, user } = await renderApp({ chat: oldChat })
+    api.provider.set.mockRejectedValueOnce(new Error('nope'))
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await user.selectOptions(screen.getByLabelText('Access provider'), 'codex-subscription')
+    expect(await screen.findByText('Provider request failed. Try again.')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Back to chat' }))
+    expect(screen.getByText('Old provider history')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New chat' })).toHaveProperty('disabled', false)
+  })
+})
