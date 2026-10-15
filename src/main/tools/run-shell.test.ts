@@ -325,7 +325,14 @@ describe('shellInvocation', () => {
   it('runs PowerShell by absolute path under %SystemRoot%, and /bin/sh elsewhere', () => {
     expect(shellInvocation('Get-Date', 'win32', { SystemRoot: 'D:\\WINNT' })).toEqual({
       file: 'D:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-      args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', expect.any(String)],
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-OutputFormat',
+        'Text',
+        '-EncodedCommand',
+        expect.any(String),
+      ],
     })
     expect(shellInvocation('date', 'linux', {})).toEqual({ file: '/bin/sh', args: ['-c', 'date'] })
   })
@@ -402,6 +409,8 @@ describe('defaultKillTree', () => {
       expect(fallback?.args.slice(0, -1)).toEqual([
         '-NoProfile',
         '-NonInteractive',
+        '-OutputFormat',
+        'Text',
         '-EncodedCommand',
       ])
       expect(decode(fallback?.args.at(-1) ?? '')).toBe(treeKillScript(4242))
@@ -603,10 +612,23 @@ describe('run_shell with a real shell', () => {
         ? `Write-Output '${nonAscii}'; [Console]::Error.WriteLine('err ${nonAscii}')`
         : `printf '%s\\n' '${nonAscii}'; printf '%s\\n' 'err ${nonAscii}' >&2`
     const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, fakeContext(true).ctx)
-    expect(r.content).toMatch(/^exit code: 0/)
-    expect(r.content).toContain(`--- stdout ---\n${nonAscii}`)
-    expect(r.content).toContain(`--- stderr ---\nerr ${nonAscii}`)
-    expect(r.content).not.toContain('\uFFFD')
+    const content = r.content.replaceAll('\r\n', '\n')
+    expect(content).toMatch(/^exit code: 0/)
+    expect(content).toContain(`--- stdout ---\n${nonAscii}\n`)
+    expect(content).toContain(`--- stderr ---\nerr ${nonAscii}\n`)
+    expect(content).not.toContain('\uFFFD')
+  })
+
+  it('writes errors to stderr as plain text', { timeout: 30_000 }, async () => {
+    const h = toolHarness(sb)
+    const command =
+      process.platform === 'win32'
+        ? `Write-Progress -Activity busy -Status x; Write-Error 'bad ${nonAscii}'; exit 2`
+        : `echo 'bad ${nonAscii}' >&2; exit 2`
+    const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, fakeContext(true).ctx)
+    expect(r.content).toMatch(/^exit code: 2/)
+    expect(r.content).toMatch(new RegExp(`--- stderr ---\\r?\\n(.*: )?bad ${nonAscii}`))
+    expect(r.content).not.toMatch(/CLIXML|<Objs/)
   })
 
   it('runs the approved command exactly, quotes and all', { timeout: 30_000 }, async () => {
@@ -627,7 +649,9 @@ describe('run_shell with a real shell', () => {
     expect(requests[0]?.detail?.endsWith(`\n\n${command}`)).toBe(true)
     const out = '[it\'s] "q" "r" $notvar a\\\nb"c\n%PATH%\n^&|<>'
     expect(r.content).toMatch(/^exit code: 7/)
-    expect(r.content).toContain(`--- stdout ---\n${out}\n`)
+    expect(r.content.replaceAll('\r\n', '\n')).toContain(
+      `--- stdout ---\n${out}\n\n--- stderr ---\n`,
+    )
   })
 
   it("does not leak the app's credentials into the shell", { timeout: 30_000 }, async () => {

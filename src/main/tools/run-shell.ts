@@ -56,6 +56,19 @@ export function windowsRoot(env: NodeJS.ProcessEnv): string {
   return WINDOWS_ROOT_PATTERN.test(candidate) ? candidate.replace(/\\+$/, '') : 'C:\\Windows'
 }
 
+/**
+ * Flags before the encoded script. -OutputFormat Text is explicit because with an
+ * encoded command Windows PowerShell otherwise writes stderr (errors, progress) as
+ * CLIXML for a PowerShell caller.
+ */
+const POWERSHELL_FLAGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  '-OutputFormat',
+  'Text',
+  '-EncodedCommand',
+]
+
 function powerShellPath(root: string): string {
   return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
 }
@@ -73,12 +86,7 @@ export function shellInvocation(
   return platform === 'win32'
     ? {
         file: powerShellPath(windowsRoot(env)),
-        args: [
-          '-NoProfile',
-          '-NonInteractive',
-          '-EncodedCommand',
-          encodePowerShell(powerShellScript(command)),
-        ],
+        args: [...POWERSHELL_FLAGS, encodePowerShell(powerShellScript(command))],
       }
     : { file: '/bin/sh', args: ['-c', command] }
 }
@@ -118,9 +126,7 @@ export function defaultKillTree(
     ])
     if (taskkill.ok) return taskkill
     const fallback = await runKiller(spawn, root, 'the PowerShell fallback', powerShellPath(root), [
-      '-NoProfile',
-      '-NonInteractive',
-      '-EncodedCommand',
+      ...POWERSHELL_FLAGS,
       encodePowerShell(treeKillScript(pid)),
     ])
     // The shell itself, in case both killers failed to reach it.
