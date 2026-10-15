@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { PathGuard } from '../permissions/guard'
 import { makeSandbox, put, trySymlink, type Sandbox } from '../permissions/test-support'
 import { ToolFailure } from './define'
-import { hashHandle, openVerified, overwriteHandle, readBounded } from './safe-fs'
+import { copyHandle, hashHandle, openVerified, overwriteHandle, readBounded } from './safe-fs'
 
 let sb: Sandbox
 let guard: PathGuard
@@ -64,6 +64,23 @@ describe('openVerified', () => {
     expect(error.code).toBe('hard-link')
   })
 
+  // Every hard-link refusal relies on the OS reporting the link count. Not skipped
+  // anywhere: on Windows CI this proves NTFS reports it through lstat, stat and fstat.
+  it('sees a real hard link through lstat, stat and the handle on this platform', async () => {
+    const original = path.join(sb.outside, 'secret.txt')
+    const alias = path.join(sb.root, 'alias.txt')
+    await put(original, 's')
+    await fs.link(original, alias)
+    expect((await fs.lstat(alias, { bigint: true })).nlink).toBe(2n)
+    expect((await fs.stat(alias, { bigint: true })).nlink).toBe(2n)
+    const handle = await fs.open(alias, 'r')
+    try {
+      expect((await handle.stat({ bigint: true })).nlink).toBe(2n)
+    } finally {
+      await handle.close()
+    }
+  })
+
   it('refuses to open through a link swapped in after the guard check', async (ctx) => {
     await put(path.join(sb.outside, 'secret.txt'), 's')
     const file = path.join(sb.root, 'a.txt')
@@ -83,5 +100,22 @@ describe('openVerified', () => {
     const { handle } = await openVerified(guard, file, 'create')
     await handle.close()
     expect((await failure(openVerified(guard, file, 'create'))).code).toBe('changed')
+  })
+})
+
+describe('copyHandle', () => {
+  it('replaces the target with the whole source, across several chunks', async () => {
+    const data = Buffer.alloc(200 * 1024, 'x')
+    await put(path.join(sb.root, 'from.bin'), data)
+    await put(path.join(sb.root, 'to.bin'), 'old content that is longer than nothing')
+    const from = await openVerified(guard, path.join(sb.root, 'from.bin'), 'read')
+    const to = await openVerified(guard, path.join(sb.root, 'to.bin'), 'update')
+    try {
+      await copyHandle(from.handle, to.handle)
+    } finally {
+      await from.handle.close()
+      await to.handle.close()
+    }
+    expect((await fs.readFile(path.join(sb.root, 'to.bin'))).equals(data)).toBe(true)
   })
 })

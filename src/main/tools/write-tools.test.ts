@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs'
+import { constants, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -411,6 +411,179 @@ describe('move_file', () => {
     expect(requests).toEqual([])
   })
 
+  describe('file move races', () => {
+    // Races are simulated by hooking fs calls the tool makes, at the point a racing
+    // process could act. `real*` are the unhooked functions.
+    const realRename = fs.rename.bind(fs)
+    const realOpen = fs.open.bind(fs)
+    let source: string
+    let destination: string
+    let secret: string
+
+    beforeEach(async () => {
+      source = path.join(sb.root, 'a.txt')
+      destination = path.join(sb.root, 'b.txt')
+      secret = path.join(sb.outside, 'secret.txt')
+      await put(source, 'a')
+      await put(secret, 'outside secret')
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    const move = (overwrite = false) =>
+      h.tool('move_file').execute({ source, destination, overwrite }, fakeContext(true).ctx)
+
+    /** Runs `race` once, inside the rename of `source`, before or after the real rename. */
+    function onRename(when: 'before' | 'after', race: () => Promise<void>) {
+      let fired = false
+      vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (fired || from !== source) return realRename(from, to)
+        fired = true
+        if (when === 'before') await race()
+        await realRename(from, to)
+        if (when === 'after') await race()
+      })
+    }
+
+    /** Makes the move cross-volume, running `race` right after the destination copy is opened. */
+    function crossVolume(race?: () => Promise<void>) {
+      vi.spyOn(fs, 'rename').mockImplementation((from, to) =>
+        from === source
+          ? Promise.reject(Object.assign(new Error('cross-device link'), { code: 'EXDEV' }))
+          : realRename(from, to),
+      )
+      vi.spyOn(fs, 'open').mockImplementation((async (p: string, ...rest: [number, number]) => {
+        const handle = await realOpen(p, ...rest)
+        // Only the exclusive create of the copy, not the checks that open it for reading.
+        if (p === destination && (rest[0] & constants.O_CREAT) !== 0 && race) await race()
+        return handle
+      }) as typeof fs.open)
+    }
+
+    /** Files left in the folder under a set-aside name. */
+    async function asides(): Promise<string[]> {
+      return (await fs.readdir(sb.root)).filter((n) => n.endsWith('.replaced'))
+    }
+
+    it('leaves a foreign file swapped in before the rename where it is, keeping the replaced one', async () => {
+      await put(destination, 'old')
+      onRename('before', async () => {
+        await realRename(source, path.join(sb.root, 'checked.txt'))
+        await fs.link(secret, source)
+      })
+      const r = await move(true)
+      expect(r).toMatchObject({
+        isError: true,
+        content: /replaced by something else.*left there.*could not be put back.*\.replaced/s,
+      })
+      // Nothing was moved on top of the foreign file, and the user's old destination survives.
+      expect(await fs.readFile(destination, 'utf8')).toBe('outside secret')
+      const [kept] = await asides()
+      expect(await fs.readFile(path.join(sb.root, kept ?? ''), 'utf8')).toBe('old')
+      expect(await fs.readFile(path.join(sb.root, 'checked.txt'), 'utf8')).toBe('a')
+    })
+
+    it('moves its own file back when it gains a hard link mid-move, and restores the destination', async () => {
+      await put(destination, 'old')
+      onRename('after', () => fs.link(destination, path.join(sb.outside, 'extra.txt')))
+      const r = await move(true)
+      expect(r).toMatchObject({ isError: true, content: /it was moved back/ })
+      expect(await fs.readFile(source, 'utf8')).toBe('a')
+      expect(await fs.readFile(destination, 'utf8')).toBe('old')
+      expect(await asides()).toEqual([])
+    })
+
+    it('never moves back onto a source path that was taken meanwhile', async () => {
+      await put(destination, 'old')
+      onRename('after', async () => {
+        await fs.link(destination, path.join(sb.outside, 'extra.txt'))
+        await put(source, 'new at source')
+      })
+      const r = await move(true)
+      expect(r).toMatchObject({
+        isError: true,
+        content: /could not be moved back.*is taken.*could not be put back.*\.replaced/s,
+      })
+      expect(await fs.readFile(source, 'utf8')).toBe('new at source')
+      expect(await fs.readFile(destination, 'utf8')).toBe('a')
+      const [kept] = await asides()
+      expect(await fs.readFile(path.join(sb.root, kept ?? ''), 'utf8')).toBe('old')
+    })
+
+    it('refuses before renaming when something appeared at the destination', async () => {
+      // After approval the source is opened twice: by the re-check, then for the move itself.
+      // The destination appears between that last open and the rename.
+      let opensAfterApproval = -1
+      vi.spyOn(fs, 'open').mockImplementation((async (p: string, ...rest: [number, number]) => {
+        const handle = await realOpen(p, ...rest)
+        if (p === source && opensAfterApproval >= 0 && ++opensAfterApproval === 2) {
+          await put(destination, 'raced in')
+        }
+        return handle
+      }) as typeof fs.open)
+      const { ctx } = fakeContext(() => {
+        opensAfterApproval = 0
+        return true
+      })
+      const r = await h.tool('move_file').execute({ source, destination }, ctx)
+      expect(r).toMatchObject({ isError: true, content: /nothing was moved/ })
+      expect(await fs.readFile(destination, 'utf8')).toBe('raced in')
+      expect(await fs.readFile(source, 'utf8')).toBe('a')
+    })
+
+    it('cross-volume: copies from the checked handle, replacing a destination only once proven', async () => {
+      await put(destination, 'old and longer')
+      crossVolume()
+      expect((await move(true)).isError).toBeUndefined()
+      expect(await fs.readFile(destination, 'utf8')).toBe('a')
+      expect(await exists(source)).toBe(false)
+      expect(await asides()).toEqual([])
+
+      await put(source, 'fresh')
+      destination = path.join(sb.root, 'sub', 'new.txt')
+      expect((await move()).isError).toBeUndefined()
+      expect(await fs.readFile(destination, 'utf8')).toBe('fresh')
+      expect(await exists(source)).toBe(false)
+    })
+
+    it.each([
+      ['gains a hard link', () => fs.link(source, path.join(sb.outside, 'extra.txt'))],
+      ['is appended to', () => fs.appendFile(source, ' and more')],
+      ['is truncated', () => fs.truncate(source, 0)],
+    ])(
+      'cross-volume: removes its copy and keeps everything when the source %s during the copy',
+      async (_, race) => {
+        await put(destination, 'old')
+        crossVolume(async () => {
+          await race()
+        })
+        const r = await move(true)
+        expect(r).toMatchObject({
+          isError: true,
+          content:
+            /changed while it was being copied.*original was left in place.*copy was removed/,
+        })
+        expect(await exists(source)).toBe(true)
+        expect(await fs.readFile(destination, 'utf8')).toBe('old')
+        expect(await asides()).toEqual([])
+      },
+    )
+
+    it('cross-volume: leaves the destination alone if it is no longer the copy it made', async () => {
+      crossVolume(async () => {
+        await fs.appendFile(source, ' changed')
+        await realRename(destination, path.join(sb.root, 'our-copy.txt'))
+        await put(destination, 'planted')
+      })
+      const r = await move()
+      expect(r).toMatchObject({ isError: true, content: /no longer the copy that was made/ })
+      expect(await fs.readFile(destination, 'utf8')).toBe('planted')
+      expect(await fs.readFile(source, 'utf8')).toBe('a changed')
+    })
+  })
+
   it('refuses to move a folder containing a hard-linked file', async () => {
     await put(path.join(sb.outside, 'secret.txt'), 'outside secret')
     await put(path.join(sb.root, 'proj', 'a.txt'), 'a')
@@ -561,6 +734,31 @@ describe('delete_path', () => {
     expect(h.trashed).toEqual([])
   })
 
+  it('shows how many items a folder holds, and refuses if that changes before the delete', async () => {
+    await put(path.join(sb.root, 'proj', 'a.txt'), 'a')
+    await put(path.join(sb.root, 'proj', 'sub', 'b.txt'), 'b')
+    await fs.mkdir(path.join(sb.root, 'empty'))
+    const { ctx, requests } = fakeContext(true)
+    expect(await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, ctx)).toEqual({
+      content: `Moved ${path.join(sb.root, 'proj')} to the Recycle Bin.`,
+    })
+    await h.tool('delete_path').execute({ path: path.join(sb.root, 'empty') }, ctx)
+    expect(requests.map((r) => r.summary)).toEqual([
+      `Move folder ${path.join(sb.root, 'proj')} and the 3 items inside it to the Recycle Bin`,
+      `Move folder ${path.join(sb.root, 'empty')} (empty) to the Recycle Bin`,
+    ])
+
+    const growing = fakeContext(async () => {
+      await put(path.join(sb.root, 'proj', 'late.txt'), 'l')
+      return true
+    })
+    h.trashed.length = 0
+    expect(
+      await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, growing.ctx),
+    ).toMatchObject({ isError: true, content: /changed while waiting for approval/ })
+    expect(h.trashed).toEqual([])
+  })
+
   it('refuses grant roots, blocked paths, outside paths and folders with protected files', async () => {
     await put(path.join(sb.root, 'proj', 'secrets', 'api.key'), 'k')
     await put(path.join(sb.root, '.env'), 'S')
@@ -636,7 +834,19 @@ describe('delete_path', () => {
       await h
         .tool('delete_path')
         .execute({ path: path.join(sb.root, 'big') }, fakeContext(true).ctx),
-    ).toMatchObject({ isError: true, content: /too many entries/ })
+    ).toMatchObject({ isError: true, content: /more than 2 entries: too many entries/ })
+    expect(h.trashed).toEqual([])
+  })
+
+  it('stops a folder check that runs past its time budget', async () => {
+    let t = 0
+    h = toolHarness(sb, { now: () => (t += 10_000) })
+    for (let i = 0; i < 20; i++) await put(path.join(sb.root, 'slow', `f${String(i)}`))
+    const { ctx, requests } = fakeContext(true)
+    expect(
+      await h.tool('delete_path').execute({ path: path.join(sb.root, 'slow') }, ctx),
+    ).toMatchObject({ isError: true, content: /stopped after 60 s/ })
+    expect(requests).toEqual([])
     expect(h.trashed).toEqual([])
   })
 

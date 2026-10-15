@@ -166,7 +166,10 @@ describe('read_file', () => {
     await put(path.join(sb.outside, 'secret.txt'), 'top secret')
     await fs.link(path.join(sb.outside, 'secret.txt'), path.join(sb.root, 'innocent.txt'))
     const r = await run('read_file', { path: path.join(sb.root, 'innocent.txt') })
-    expect(r).toMatchObject({ isError: true, content: /other hard links/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: /other hard links.*another name.*copy it into a granted folder/s,
+    })
     expect(r.content).not.toContain('top secret')
     expect(h.audit.entries[0]).toMatchObject({ outcome: 'error', error: 'hard-link' })
   })

@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import { ToolFailure, errorResult, type ToolCall, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
 import { assertSingleLink, openVerified } from './safe-fs'
-import { assertNoBlockedInside } from './walk'
+import { MAX_TREE_CHECK_MS, assertNoBlockedInside } from './walk'
 
 interface Input {
   path: string
@@ -28,7 +28,7 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
     summarize: (input) => ({ ...input }),
     async run(input, call) {
       const plan = await planDelete(input, call)
-      const summary = `Move ${plan.kind} ${plan.path} to the Recycle Bin`
+      const summary = `Move ${plan.kind} ${plan.path}${describeContents(plan.entries)} to the Recycle Bin`
       if (!(await call.approve({ kind: 'delete', summary, detail: plan.path }))) {
         return errorResult(
           `The user declined deleting ${plan.path}. Nothing was changed.`,
@@ -36,7 +36,8 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
         )
       }
       const again = await planDelete(input, call)
-      if (again.path !== plan.path || again.kind !== plan.kind) {
+      // The user approved this many items: a folder that gained or lost some is not what they saw.
+      if (again.path !== plan.path || again.kind !== plan.kind || again.entries !== plan.entries) {
         throw new ToolFailure(
           `${plan.path} changed while waiting for approval; nothing was deleted.`,
           'changed',
@@ -54,7 +55,10 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
     },
   }
 
-  async function planDelete(input: Input, call: ToolCall): Promise<{ path: string; kind: string }> {
+  async function planDelete(
+    input: Input,
+    call: ToolCall,
+  ): Promise<{ path: string; kind: string; entries: number | null }> {
     const target = await call.resolve(input.path, { followFinalSymlink: false })
     if (!target.exists) throw new ToolFailure(`Not found: ${target.path}`, 'not-found')
     if (guard.containsRoot(target.path)) {
@@ -65,16 +69,30 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
     }
     const stats = await fs.lstat(target.path)
     if (stats.isDirectory()) {
-      await assertNoBlockedInside(target.path, guard, limits.maxScanEntries, call.ctx.signal)
+      const { entries } = await assertNoBlockedInside(
+        target.path,
+        guard,
+        limits.maxScanEntries,
+        call.ctx.signal,
+        { ms: MAX_TREE_CHECK_MS, now: deps.now },
+      )
       call.throwIfAborted()
-      return { path: target.path, kind: 'folder' }
+      return { path: target.path, kind: 'folder', entries }
     }
     if (stats.isFile()) {
       const { handle } = await openVerified(guard, target.path, 'read')
       await handle.close()
-      return { path: target.path, kind: 'file' }
+      return { path: target.path, kind: 'file', entries: null }
     }
     assertSingleLink(target.path, await fs.lstat(target.path, { bigint: true }))
-    return { path: target.path, kind: stats.isSymbolicLink() ? 'link' : 'file' }
+    return { path: target.path, kind: stats.isSymbolicLink() ? 'link' : 'file', entries: null }
   }
+}
+
+/** The exact count of what goes with a folder (every entry was walked to check it). */
+function describeContents(entries: number | null): string {
+  if (entries === null) return ''
+  if (entries === 0) return ' (empty)'
+  const n = entries.toLocaleString('en-US')
+  return ` and the ${n} ${entries === 1 ? 'item' : 'items'} inside it`
 }
