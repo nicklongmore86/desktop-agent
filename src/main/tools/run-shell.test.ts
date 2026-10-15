@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { spawn as nodeSpawn } from 'node:child_process'
 import { readFileSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -14,6 +15,7 @@ import {
   type ShellSpawner,
   windowsRoot,
 } from './run-shell'
+import { encodePowerShell, powerShellScript, treeKillScript, UTF8_PREAMBLE } from './shell-windows'
 import { toolHarness } from './test-support'
 
 class FakeProcess extends EventEmitter implements ShellProcess {
@@ -317,13 +319,25 @@ describe('run_shell', () => {
   })
 })
 
+const decode = (base64: string) => Buffer.from(base64, 'base64').toString('utf16le')
+
 describe('shellInvocation', () => {
   it('runs PowerShell by absolute path under %SystemRoot%, and /bin/sh elsewhere', () => {
     expect(shellInvocation('Get-Date', 'win32', { SystemRoot: 'D:\\WINNT' })).toEqual({
       file: 'D:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-      args: ['-NoProfile', '-NonInteractive', '-Command', 'Get-Date'],
+      args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', expect.any(String)],
     })
     expect(shellInvocation('date', 'linux', {})).toEqual({ file: '/bin/sh', args: ['-c', 'date'] })
+  })
+
+  it('passes the exact command as base64 UTF-16LE after the UTF-8 preamble', () => {
+    const command = `Write-Output "a \\"b\\" 'c''d' \`$x"; # café 日本語 😀\r\nexit 3\\`
+    const { args } = shellInvocation(command, 'win32', {})
+    const encoded = args.at(-1) ?? ''
+    // Nothing a command-line parser could reinterpret.
+    expect(encoded).toMatch(/^[A-Za-z0-9+/]+=*$/)
+    expect(encoded).toBe(encodePowerShell(powerShellScript(command)))
+    expect(decode(encoded)).toBe(`${UTF8_PREAMBLE}\n${command}`)
   })
 
   it('falls back to C:\\Windows when %SystemRoot% is missing or not a plain local path', () => {
@@ -362,21 +376,60 @@ describe('defaultKillTree', () => {
     })
   })
 
-  it("reports taskkill's failure instead of assuming success", async () => {
+  it('falls back to a PowerShell tree kill when taskkill fails or cannot start', async () => {
+    for (const taskkill of ['exit', 'error', 'throw'] as const) {
+      const calls: SpawnCall[] = []
+      const spawn: ShellSpawner = (file, args, options) => {
+        const child = new FakeProcess()
+        calls.push({ file, args, options, child })
+        if (file.endsWith('taskkill.exe') && taskkill === 'throw') throw new Error('EACCES')
+        setImmediate(() => {
+          if (!file.endsWith('taskkill.exe')) child.exit(0)
+          else if (taskkill === 'exit') child.exit(1)
+          else child.emit('error', new Error('ENOENT'))
+        })
+        return child
+      }
+      const shell = new FakeProcess()
+      expect(await defaultKillTree('win32', spawn, { SystemRoot: 'C:\\Windows' })(shell)).toEqual({
+        ok: true,
+      })
+      expect(calls.map((c) => c.file)).toEqual([
+        'C:\\Windows\\System32\\taskkill.exe',
+        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      ])
+      const fallback = calls[1]
+      expect(fallback?.args.slice(0, -1)).toEqual([
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+      ])
+      expect(decode(fallback?.args.at(-1) ?? '')).toBe(treeKillScript(4242))
+      expect(fallback?.options.env).toEqual({ SystemRoot: 'C:\\Windows', windir: 'C:\\Windows' })
+      expect(shell.kill).toHaveBeenCalledWith('SIGKILL')
+    }
+  })
+
+  it('reports failure, with both reasons, when taskkill and the fallback fail', async () => {
     const failing = fakeSpawner((child) => {
       child.exit(128)
     })
     expect(await defaultKillTree('win32', failing.spawn, {})(new FakeProcess())).toEqual({
       ok: false,
-      reason: 'taskkill exited with code 128',
+      reason: 'taskkill exited with code 128; the PowerShell fallback exited with code 128',
     })
     const missing = fakeSpawner((child) => {
       child.emit('error', new Error('ENOENT'))
     })
     expect(await defaultKillTree('win32', missing.spawn, {})(new FakeProcess())).toMatchObject({
       ok: false,
-      reason: /taskkill could not start/,
+      reason: /^taskkill could not start: ENOENT; the PowerShell fallback could not start/,
     })
+  })
+
+  it('only builds a tree-kill script for a real pid', () => {
+    expect(treeKillScript(77)).toContain('$queue.Enqueue(77)')
+    for (const pid of [0, -1, 1.5, Number.NaN]) expect(() => treeKillScript(pid)).toThrow()
   })
 
   it('kills the process group elsewhere, falling back to the child', async () => {
@@ -396,11 +449,70 @@ describe('defaultKillTree', () => {
 describe('shellEnv', () => {
   it("drops the app's own variables", () => {
     expect(
-      shellEnv({ Path: 'x', anthropic_api_key: 'k', ELECTRON_NO_ASAR: '1', HOME: '/h' }),
+      shellEnv({ Path: 'x', anthropic_api_key: 'k', ELECTRON_NO_ASAR: '1', HOME: '/h' }, 'win32'),
     ).toEqual({
       Path: 'x',
       HOME: '/h',
     })
+  })
+
+  it('passes only allowlisted variables, matching case-insensitively on Windows', () => {
+    const kept = {
+      Path: 'C:\\bin',
+      SYSTEMROOT: 'C:\\Windows',
+      windir: 'C:\\Windows',
+      comspec: 'C:\\Windows\\System32\\cmd.exe',
+      PATHEXT: '.EXE',
+      TEMP: 't',
+      tmp: 't',
+      USERPROFILE: 'C:\\Users\\u',
+      APPDATA: 'a',
+      LocalAppData: 'l',
+      ProgramFiles: 'p',
+      'ProgramFiles(x86)': 'p86',
+      ProgramW6432: 'p64',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'C.UTF-8',
+    }
+    const env = {
+      ...kept,
+      NODE_OPTIONS: '--require evil.js',
+      SECRET_THING: 's',
+      AWS_SECRET_ACCESS_KEY: 's',
+      npm_config_registry: 'r',
+    }
+    expect(shellEnv(env, 'win32')).toEqual(kept)
+    // POSIX names are case-sensitive: "Path" and "comspec" are not PATH and ComSpec there.
+    expect(
+      shellEnv({ PATH: '/bin', Path: 'x', HOME: '/h', LC_CTYPE: 'C', TMPDIR: '/t' }, 'linux'),
+    ).toEqual({
+      PATH: '/bin',
+      HOME: '/h',
+      LC_CTYPE: 'C',
+      TMPDIR: '/t',
+    })
+  })
+
+  it('keeps one of several names that differ only in case on Windows', () => {
+    expect(shellEnv({ Path: 'first', PATH: 'second' }, 'win32')).toEqual({ Path: 'first' })
+  })
+
+  it('never passes credentials or app variables, even with allowlisted-looking names', () => {
+    const denied = {
+      ANTHROPIC_API_KEY: 'k',
+      anthropic_base_url: 'u',
+      OPENAI_API_KEY: 'k',
+      CODEX_HOME: 'c',
+      CLAUDE_CONFIG_DIR: 'c',
+      ELECTRON_RUN_AS_NODE: '1',
+      GITHUB_TOKEN: 't',
+      LC_API_KEY: 'k',
+      LC_TOKEN: 't',
+      MY_API_KEY_FILE: 'f',
+    }
+    for (const platform of ['win32', 'linux'] as const) {
+      expect(shellEnv({ ...denied, PATH: '/bin' }, platform), platform).toEqual({ PATH: '/bin' })
+    }
   })
 })
 
@@ -427,23 +539,110 @@ describe('run_shell with a real shell', () => {
     expect(Date.now() - started).toBeLessThan(20_000)
   })
 
-  it('kills grandchildren too when aborted', { timeout: 60_000 }, async () => {
-    const h = toolHarness(sb)
+  // The shell starts a child, which starts a grandchild; both pids are written down.
+  const treeCommand =
+    process.platform === 'win32'
+      ? '$p = Start-Process -FilePath "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" ' +
+        "-ArgumentList '-NoProfile','-NonInteractive','-Command'," +
+        "'$g = Start-Process -FilePath \"$env:SystemRoot\\System32\\PING.EXE\" -ArgumentList ''-n'',''300'',''127.0.0.1'' -PassThru -NoNewWindow; " +
+        "Set-Content -Path grandchild.pid -Value $g.Id; Start-Sleep 300' -PassThru -NoNewWindow; " +
+        'Set-Content -Path child.pid -Value $p.Id; Start-Sleep 300'
+      : "sh -c 'sleep 300 & echo $! > grandchild.pid; wait' & echo $! > child.pid; wait"
+
+  async function expectTreeKilled(
+    overrides: Parameters<typeof toolHarness>[1],
+    stop: 'timeout' | 'cancel',
+  ): Promise<void> {
+    const h = toolHarness(sb, overrides)
     const { ctx, controller } = fakeContext(true)
-    const pidFile = path.join(sb.root, 'grandchild.pid')
+    const running = h.tool('run_shell').execute(
+      // Long enough for PowerShell to start both processes on a slow CI runner.
+      { command: treeCommand, cwd: sb.root, timeoutMs: stop === 'timeout' ? 15_000 : 300_000 },
+      ctx,
+    )
+    const child = await waitForPid(path.join(sb.root, 'child.pid'), 30_000)
+    const grandchild = await waitForPid(path.join(sb.root, 'grandchild.pid'), 30_000)
+    expect(isAlive(child)).toBe(true)
+    expect(isAlive(grandchild)).toBe(true)
+    if (stop === 'cancel') controller.abort()
+    const r = await running
+    expect(r).toMatchObject({
+      isError: true,
+      content:
+        stop === 'cancel'
+          ? /^Cancelled; the process tree was killed/
+          : /^Timed out after 15 s; the process tree was killed/,
+    })
+    expect(await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)).toBe(true)
+  }
+
+  for (const stop of ['cancel', 'timeout'] as const) {
+    it(`kills children and grandchildren on ${stop}`, { timeout: 90_000 }, async () => {
+      await expectTreeKilled({}, stop)
+    })
+  }
+
+  it.runIf(process.platform === 'win32')(
+    'kills the whole tree with the PowerShell fallback when taskkill cannot start',
+    { timeout: 90_000 },
+    async () => {
+      const spawn: ShellSpawner = (file, args, options) => {
+        if (file.toLowerCase().endsWith('taskkill.exe')) throw new Error('taskkill blocked by test')
+        return nodeSpawn(file, args, options)
+      }
+      await expectTreeKilled({ spawn, limits: { killGraceMs: 20_000 } }, 'cancel')
+    },
+  )
+
+  const nonAscii = 'café Ünïcödé 日本語 中文 한국어 😀'
+
+  it('returns non-ASCII stdout and stderr as UTF-8', { timeout: 30_000 }, async () => {
+    const h = toolHarness(sb)
     const command =
       process.platform === 'win32'
-        ? '$p = Start-Process -FilePath "$env:SystemRoot\\System32\\PING.EXE" ' +
-          "-ArgumentList '-n','300','127.0.0.1' -PassThru -NoNewWindow; " +
-          'Set-Content -Path grandchild.pid -Value $p.Id; Start-Sleep 300'
-        : 'sleep 300 & echo $! > grandchild.pid; wait'
-    const running = h.tool('run_shell').execute({ command, cwd: sb.root }, ctx)
-    const grandchild = await waitForPid(pidFile, 30_000)
-    expect(isAlive(grandchild)).toBe(true)
-    controller.abort()
-    const r = await running
-    expect(r).toMatchObject({ isError: true, content: /^Cancelled; the process tree was killed/ })
-    expect(await waitUntil(() => !isAlive(grandchild), 10_000)).toBe(true)
+        ? `Write-Output '${nonAscii}'; [Console]::Error.WriteLine('err ${nonAscii}')`
+        : `printf '%s\\n' '${nonAscii}'; printf '%s\\n' 'err ${nonAscii}' >&2`
+    const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, fakeContext(true).ctx)
+    expect(r.content).toMatch(/^exit code: 0/)
+    expect(r.content).toContain(`--- stdout ---\n${nonAscii}`)
+    expect(r.content).toContain(`--- stderr ---\nerr ${nonAscii}`)
+    expect(r.content).not.toContain('\uFFFD')
+  })
+
+  it('runs the approved command exactly, quotes and all', { timeout: 30_000 }, async () => {
+    const h = toolHarness(sb)
+    const { ctx, requests } = fakeContext(true)
+    // A backslash before a closing quote is where -Command quoting used to go wrong.
+    // (~ stands for PowerShell's backtick escape.)
+    const command =
+      process.platform === 'win32'
+        ? String.raw`$x = 'it''s'; Write-Output "[$x] ~"q~" ""r"" ~$notvar a\" 'b"c' '%PATH%' '^&|<>'`.replaceAll(
+            '~',
+            '`',
+          ) + '\nexit 7'
+        : String.raw`x="it's"; printf '%s\n' "[$x] \"q\" \"r\" \$notvar a\\" 'b"c' '%PATH%' '^&|<>'` +
+          '\nexit 7'
+    const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, ctx)
+    // The approval shows the original text, not the encoded form.
+    expect(requests[0]?.detail?.endsWith(`\n\n${command}`)).toBe(true)
+    const out = '[it\'s] "q" "r" $notvar a\\\nb"c\n%PATH%\n^&|<>'
+    expect(r.content).toMatch(/^exit code: 7/)
+    expect(r.content).toContain(`--- stdout ---\n${out}\n`)
+  })
+
+  it("does not leak the app's credentials into the shell", { timeout: 30_000 }, async () => {
+    const h = toolHarness(sb, {
+      env: { ...process.env, ANTHROPIC_API_KEY: 'sk-leak', DESKTOP_AGENT_SECRET: 'leak2' },
+    })
+    const command =
+      process.platform === 'win32'
+        ? 'Get-ChildItem env: | ForEach-Object { "$($_.Name)=$($_.Value)" }'
+        : 'env'
+    const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, fakeContext(true).ctx)
+    expect(r.content).toMatch(/^exit code: 0/)
+    expect(r.content).toMatch(/^PATH=/im)
+    expect(r.content).not.toContain('sk-leak')
+    expect(r.content).not.toContain('leak2')
   })
 
   it.runIf(process.platform === 'win32')(
