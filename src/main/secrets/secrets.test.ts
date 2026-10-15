@@ -102,4 +102,21 @@ describe('encrypted API key store', () => {
     await expect(result).rejects.toThrow('Could not save the encrypted API key.')
     await expect(result).rejects.not.toThrow(path)
   })
+  it.each(['writeFile', 'rename'] as const)(
+    'removes the temporary file when %s fails',
+    async (step) => {
+      const { path, safeStorage } = await fixture()
+      const failing = {
+        ...fs,
+        [step]: async (...args: [string, Buffer]) => {
+          // Fail after the temporary file exists, as a partial write or a locked target would.
+          if (step === 'writeFile') await fs.writeFile(args[0], 'partial')
+          throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+        },
+      }
+      const store = createApiKeyStore({ userDataPath: path, safeStorage, fs: failing })
+      await expect(store.set('secret-key')).rejects.toThrow('Could not save the encrypted API key.')
+      expect(await fs.readdir(path)).toEqual([])
+    },
+  )
 })
