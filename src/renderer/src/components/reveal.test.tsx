@@ -75,6 +75,43 @@ describe('revealUnsafe', () => {
     ).toEqual(['U+0000', 'U+0007', 'U+0008', 'U+007F', 'U+0085', 'U+009B', 'U+2028'])
   })
 
+  it('reveals other invisible format characters, variation selectors and fillers', () => {
+    const text = `a${ch(0xad)}b${String.fromCodePoint(0xe0041)}c${ch(0xfe0f)}d${ch(0x3164)}e${ch(0x2063)}`
+    expect(tokens(text)).toEqual(['U+00AD', 'U+E0041', 'U+FE0F', 'U+3164', 'U+2063'])
+  })
+
+  it('reveals spaces that are not U+0020', () => {
+    expect(tokens(`rm -rf C:\\tmp${ch(0xa0)}${ch(0x2007)}${ch(0x3000)}x`)).toEqual([
+      'U+00A0',
+      'U+2007',
+      'U+3000',
+    ])
+  })
+
+  it('reveals look-alike slashes, dots and colons and fullwidth ASCII', () => {
+    expect(
+      tokens(`a${ch(0x2215)}..${ch(0x2044)}b${ch(0xff0e)}txt${ch(0xff3c)}C${ch(0xa789)}`),
+    ).toEqual(['U+2215', 'U+2044', 'U+FF0E', 'U+FF3C', 'U+A789'])
+  })
+
+  it('reveals Cyrillic, Greek and Armenian letters posing as Latin ones', () => {
+    // pаypаl with Cyrillic а, a Greek ο in micrοsoft, an Armenian օ in gօogle.
+    expect(
+      tokens(`C:\\p${ch(0x430)}yp${ch(0x430)}l\\micr${ch(0x3bf)}soft g${ch(0x585)}ogle`),
+    ).toEqual(['U+0430', 'U+0430', 'U+03BF', 'U+0585'])
+    // A whole word of look-alikes (Cyrillic рау) next to Latin text.
+    expect(tokens(`C:\\${ch(0x440, 0x430, 0x443)}.exe`)).toEqual(['U+0440', 'U+0430', 'U+0443'])
+  })
+
+  it('leaves real Cyrillic and Greek words alone', () => {
+    // Документы and λόγος: not made of Latin look-alikes, so not disguised.
+    const russian = ch(0x414, 0x43e, 0x43a, 0x443, 0x43c, 0x435, 0x43d, 0x442, 0x44b)
+    const greek = ch(0x3bb, 0x3cc, 0x3b3, 0x3bf, 0x3c2)
+    expect(revealUnsafe(`C:\\Users\\me\\${russian}\\${greek}.txt`).suspicious).toBe(false)
+    // With no Latin text at all, even look-alike words are left alone.
+    expect(revealUnsafe(ch(0x440, 0x430, 0x443)).suspicious).toBe(false)
+  })
+
   it('reveals whole ANSI escape sequences', () => {
     const revealed = revealUnsafe(`${ESC}[31mred${ESC}[0m ${ESC}]0;title${ch(7)}x ${ESC}c`)
     expect(revealed.suspicious).toBe(true)
@@ -204,7 +241,7 @@ function renderCard(prompt: ApprovalPrompt) {
 describe('ApprovalCard reveals spoofing characters', () => {
   it('shows no warning for clean requests', () => {
     renderCard({ ...base, detail: 'cwd: C:\\work\nshell: C:\\ps.exe -Command\n\nGet-Date' })
-    expect(screen.queryByText(/hidden or control characters/)).toBeNull()
+    expect(screen.queryByText(/hidden, control or look-alike characters/)).toBeNull()
   })
 
   it('reveals a bidi override in the summary and warns', () => {
@@ -214,7 +251,9 @@ describe('ApprovalCard reveals spoofing characters', () => {
       tool: 'delete_path',
       summary: `Move file C:\\docs\\invoice${RLO}txt.ps1 to the Recycle Bin`,
     })
-    expect(within(dialog).getByRole('alert').textContent).toContain('hidden or control characters')
+    expect(within(dialog).getByRole('alert').textContent).toContain(
+      'hidden, control or look-alike characters',
+    )
     expect(dialog.textContent).toContain('invoice⟨U+202E⟩txt.ps1')
     expect(dialog.textContent).not.toContain(RLO)
   })

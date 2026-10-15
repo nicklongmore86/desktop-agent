@@ -6,7 +6,16 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default defineConfig([
-  globalIgnores(['node_modules/', 'out/', 'dist/', 'release/', 'build/', '.polly/']),
+  globalIgnores([
+    'node_modules/',
+    'out/',
+    'dist/',
+    'release/',
+    'build/',
+    '.polly/',
+    'test-results/',
+    'e2e-artifacts/',
+  ]),
   js.configs.recommended,
   {
     files: ['**/*.{ts,tsx}'],
@@ -29,6 +38,15 @@ export default defineConfig([
     files: ['src/renderer/**/*.{ts,tsx}'],
     extends: [reactHooks.configs.flat['recommended-latest']],
     languageOptions: { globals: globals.browser },
+  },
+  {
+    files: ['e2e/**/*.ts'],
+    languageOptions: { globals: globals.node },
+  },
+  {
+    // The rendering-test harness: an Electron main and a sandboxed preload, plain CommonJS.
+    files: ['e2e/harness/*.cjs'],
+    languageOptions: { globals: globals.node, sourceType: 'commonjs' },
   },
   {
     files: ['**/*.mjs'],

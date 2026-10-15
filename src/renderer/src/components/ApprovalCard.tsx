@@ -134,15 +134,18 @@ export function ApprovalCard({ prompt, queued, onRespond }: ApprovalCardProps): 
         </header>
         {suspicious && (
           <p className="approval-warning" role="alert">
-            <strong>Warning:</strong> this request contains hidden or control characters (shown as
-            ⟨…⟩ tokens). They can make a path, command or change look different from what will
-            actually run. Deny unless you are sure.
+            <strong>Warning:</strong> this request contains hidden, control or look-alike characters
+            (shown as ⟨…⟩ tokens). They can make a path, command or change look different from what
+            will actually run. Deny unless you are sure.
           </p>
         )}
-        <p id={summaryId} className="approval-summary">
-          <SafeText text={prompt.summary} />
-        </p>
-        <Detail prompt={prompt} />
+        {/* Only the body scrolls, so the title, warning and buttons always stay on screen. */}
+        <div className="approval-body" tabIndex={0} aria-label="Request details">
+          <p id={summaryId} className="approval-summary">
+            <SafeText text={prompt.summary} />
+          </p>
+          <Detail prompt={prompt} />
+        </div>
         {queued > 0 && (
           <p className="approval-queue">
             {queued} more request{queued === 1 ? '' : 's'} waiting.

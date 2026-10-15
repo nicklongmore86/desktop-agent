@@ -2,9 +2,12 @@
  * Display-only defences for untrusted text in approval prompts. Paths,
  * commands and diffs come from the model or from files, so they can carry
  * characters that make what is shown differ from what will run: bidi
- * overrides (`invoice<U+202E>txt.ps1`), zero-width characters, control characters,
- * ANSI escape sequences and bare carriage returns. `revealUnsafe` swaps each
- * one for a visible token; the payload that runs is never changed.
+ * overrides (`invoice<U+202E>txt.ps1`), zero-width and other invisible format
+ * characters, control characters, ANSI escape sequences, bare carriage returns,
+ * spaces that are not U+0020, look-alike slashes and dots (`a∕..∕b`), and
+ * Cyrillic, Greek or Armenian letters posing as Latin ones (`pаypal`).
+ * `revealUnsafe` swaps each one for a visible token; the payload that runs is
+ * never changed.
  */
 
 export type Segment =
@@ -26,6 +29,25 @@ export interface Revealed {
 
 const BIDI = /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/
 const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF]/
+// Every other invisible format character (soft hyphen, tags, invisible operators, ...).
+const FORMAT = /\p{Cf}/u
+// Variation selectors, the grapheme joiner and the blank Hangul fillers: also invisible.
+// (Code points, not a regex class: these combine with whatever precedes them.)
+const isInvisible = (code: number): boolean =>
+  (code >= 0xfe00 && code <= 0xfe0f) ||
+  (code >= 0xe0100 && code <= 0xe01ef) ||
+  [0x034f, 0x115f, 0x1160, 0x3164, 0xffa0].includes(code)
+// Spaces that look like U+0020 but are not: a shell or a path treats them differently.
+const SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/
+// Look-alikes of path and command punctuation (/ \\ . :), and every fullwidth ASCII form.
+const LOOKALIKE =
+  /[\u2215\u2044\u29F8\u29F9\u2216\uFE68\u2024\u2025\u2236\uA789\u0589\u02F8\uFF01-\uFF5E]/
+// Scripts with letters that pass for Latin ones.
+const LOOKALIKE_SCRIPT = /[\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Armenian}]/u
+// Letters of those scripts that look like Latin letters on their own (а е о р с у х ...).
+const LATIN_LOOKALIKE =
+  /[\u0430\u0435\u043E\u0440\u0441\u0443\u0445\u0455\u0456\u0458\u0501\u051B\u051D\u04BB\u04CF\u04AF\u0410\u0412\u0415\u041A\u041C\u041D\u041E\u0420\u0421\u0422\u0425\u0405\u0406\u0408\u04AE\u03BF\u03B1\u03BD\u03B9\u03C1\u03C5\u0391\u0392\u0395\u0396\u0397\u0399\u039A\u039C\u039D\u039F\u03A1\u03A4\u03A5\u03A7\u0585\u057D\u0570]/
+const LATIN = /\p{Script=Latin}/u
 // C0 except \t (09) and \n (0A); CR (0D) is handled as a line end; DEL; C1;
 // and the Unicode line/paragraph separators, which some renderers break on.
 // eslint-disable-next-line no-control-regex
@@ -55,6 +77,35 @@ export function escapeLabel(text: string): string {
   return out
 }
 
+/**
+ * The offsets of letters posing as Latin ones: Cyrillic, Greek or Armenian
+ * letters in a word that also has Latin letters (`pаypal`), and whole words
+ * made only of Latin look-alikes (`рау`) when the text has Latin letters
+ * elsewhere. Words in those scripts that cannot pass for Latin are left alone.
+ */
+export function homoglyphOffsets(text: string): Set<number> {
+  const offsets = new Set<number>()
+  if (!LATIN.test(text)) return offsets
+  for (const match of text.matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
+    const word = match[0]
+    if (!LOOKALIKE_SCRIPT.test(word)) continue
+    let disguised = LATIN.test(word)
+    if (!disguised) {
+      disguised = true
+      for (const char of word) {
+        if (/\p{L}/u.test(char) && !LATIN_LOOKALIKE.test(char)) disguised = false
+      }
+    }
+    if (!disguised) continue
+    let offset = match.index
+    for (const char of word) {
+      if (LOOKALIKE_SCRIPT.test(char)) offsets.add(offset)
+      offset += char.length
+    }
+  }
+  return offsets
+}
+
 /** Splits `text` into lines and segments, replacing every unsafe character with a token. */
 export function revealUnsafe(text: string): Revealed {
   const lines: RevealedLine[] = []
@@ -76,6 +127,7 @@ export function revealUnsafe(text: string): Revealed {
     segments = []
   }
 
+  const homoglyphs = homoglyphOffsets(text)
   for (let i = 0; i < text.length;) {
     const char = text[i] ?? ''
     if (char === '\n') {
@@ -95,14 +147,25 @@ export function revealUnsafe(text: string): Revealed {
       const sequence = ESCAPE.exec(text.slice(i))?.[0] ?? char
       token(`ESC${escapeLabel(sequence.slice(1))}`)
       i += sequence.length
-    } else if (BIDI.test(char) || ZERO_WIDTH.test(char) || CONTROL.test(char)) {
-      token(hex(char))
-      i += 1
     } else {
       // Keep surrogate pairs together.
       const code = text.codePointAt(i) ?? 0
       const width = code > 0xffff ? 2 : 1
-      plain += text.slice(i, i + width)
+      const point = text.slice(i, i + width)
+      if (
+        BIDI.test(point) ||
+        ZERO_WIDTH.test(point) ||
+        CONTROL.test(point) ||
+        FORMAT.test(point) ||
+        isInvisible(code) ||
+        SPACES.test(point) ||
+        LOOKALIKE.test(point) ||
+        homoglyphs.has(i)
+      ) {
+        token(hex(point))
+      } else {
+        plain += point
+      }
       i += width
     }
   }

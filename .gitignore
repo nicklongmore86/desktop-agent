@@ -9,3 +9,5 @@ release/
 !.env.example
 
 build/
+test-results/
+e2e-artifacts/
