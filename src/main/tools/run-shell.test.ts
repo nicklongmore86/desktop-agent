@@ -642,10 +642,11 @@ describe('run_shell with a real shell', () => {
   })
 
   it('writes errors to stderr as plain text', { timeout: 30_000 }, async () => {
+    // The progress text is built at run time: error messages repeat the script itself.
     const h = toolHarness(sb)
     const command =
       process.platform === 'win32'
-        ? `Write-Progress -Activity busy -Status x\nWrite-Warning 'careful <&>'\nWrite-Error 'bad café 日本語 😀'\nexit 2`
+        ? `Write-Progress -Activity ('bu' + 'sy') -Status x\nWrite-Warning 'careful <&>'\nWrite-Error 'bad café 日本語 😀'\nexit 2`
         : `echo 'WARNING: careful <&>' >&2; echo 'bad café 日本語 😀' >&2; exit 2`
     const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, fakeContext(true).ctx)
     expect(r.content).toMatch(/^exit code: 2/)
