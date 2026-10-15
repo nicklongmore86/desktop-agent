@@ -8,6 +8,7 @@ import type {
   DesktopApi,
   GrantsState,
   ModelSettings,
+  ProviderLoginUrl,
   ProviderStatus,
   ProviderId,
 } from '../../../shared/ipc'
@@ -24,6 +25,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
   const chatListeners = new Set<(event: ChatEvent) => void>()
   const approvalListeners = new Set<(prompt: ApprovalPrompt) => void>()
   const auditListeners = new Set<(status: AuditStatus) => void>()
+  const loginListeners = new Set<(login: ProviderLoginUrl) => void>()
   let key: ApiKeyStatus = options.key ?? { saved: true, error: null }
   let grants: GrantsState = options.grants ?? {
     roots: ['C:\\Users\\me\\Projects'],
@@ -63,6 +65,11 @@ export function fakeApi(options: FakeApiOptions = {}) {
         return Promise.resolve(provider)
       }),
       cancelLogin: vi.fn(async () => {}),
+      openLoginUrl: vi.fn(async () => {}),
+      copyLoginUrl: vi.fn(async () => {}),
+      submitLoginCode: vi.fn((_code: string) =>
+        Promise.resolve<{ ok: true } | { ok: false; error: string }>({ ok: true }),
+      ),
     },
     getAppInfo: vi.fn(() =>
       Promise.resolve({ name: 'desktop-agent', version: '0.1.0', platform: 'win32' }),
@@ -115,6 +122,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
     onChatEvent: vi.fn(subscribe(chatListeners)),
     onApprovalRequest: vi.fn(subscribe(approvalListeners)),
     onAuditStatus: vi.fn(subscribe(auditListeners)),
+    onProviderLoginUrl: vi.fn(subscribe(loginListeners)),
   } satisfies DesktopApi
 
   return {
@@ -128,6 +136,10 @@ export function fakeApi(options: FakeApiOptions = {}) {
     pushAudit: (status: AuditStatus) => {
       for (const listener of auditListeners) listener(status)
     },
-    listenerCount: () => chatListeners.size + approvalListeners.size + auditListeners.size,
+    pushLoginUrl: (login: ProviderLoginUrl) => {
+      for (const listener of loginListeners) listener(login)
+    },
+    listenerCount: () =>
+      chatListeners.size + approvalListeners.size + auditListeners.size + loginListeners.size,
   }
 }

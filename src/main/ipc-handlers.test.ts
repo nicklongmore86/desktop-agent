@@ -41,6 +41,9 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       set: vi.fn(() => Promise.resolve(status)),
       login: vi.fn(() => Promise.resolve(status)),
       cancelLogin: vi.fn(() => Promise.resolve()),
+      openLoginUrl: vi.fn(() => Promise.resolve()),
+      copyLoginUrl: vi.fn(() => Promise.resolve()),
+      submitLoginCode: vi.fn(() => Promise.resolve({ ok: true as const })),
     },
     appInfo: () => ({ name: 'desktop-agent', version: '0.1.0', platform: 'win32' }),
     apiKey: {
@@ -128,6 +131,7 @@ describe('registerIpcHandlers', () => {
       IpcChannels.chatEvent,
       IpcChannels.approvalRequest,
       IpcChannels.auditStatusChanged,
+      IpcChannels.providerLoginUrl,
     ])
     const expected = Object.values(IpcChannels).filter((channel) => !pushes.has(channel))
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())
@@ -367,5 +371,19 @@ describe('provider IPC', () => {
     const { invoke, services } = setup()
     await invoke(IpcChannels.providerSet, appFrame, 'codex-subscription')
     expect(services.provider.set).toHaveBeenCalledWith('codex-subscription')
+  })
+  it('opens and copies only the link main validated, never a renderer-supplied URL', async () => {
+    const { invoke, services } = setup()
+    await invoke(IpcChannels.providerOpenLoginUrl, appFrame, 'https://evil.example/')
+    await invoke(IpcChannels.providerCopyLoginUrl, appFrame, 'https://evil.example/')
+    expect(services.provider.openLoginUrl).toHaveBeenCalledExactlyOnceWith()
+    expect(services.provider.copyLoginUrl).toHaveBeenCalledExactlyOnceWith()
+  })
+  it.each([null, 3, {}, ['a#b']])('refuses a non-string sign-in code %j', async (value) => {
+    const { invoke, services } = setup()
+    expect(await invoke(IpcChannels.providerSubmitLoginCode, appFrame, value)).toMatchObject({
+      ok: false,
+    })
+    expect(services.provider.submitLoginCode).not.toHaveBeenCalled()
   })
 })

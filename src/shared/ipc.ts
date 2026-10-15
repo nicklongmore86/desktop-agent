@@ -14,6 +14,9 @@ export const IpcChannels = {
   providerSet: 'provider:set',
   providerLogin: 'provider:login',
   providerCancelLogin: 'provider:cancel-login',
+  providerOpenLoginUrl: 'provider:open-login-url',
+  providerCopyLoginUrl: 'provider:copy-login-url',
+  providerSubmitLoginCode: 'provider:submit-login-code',
   modelGet: 'model:get',
   modelSet: 'model:set',
 
@@ -29,6 +32,7 @@ export const IpcChannels = {
   chatEvent: 'chat:event',
   approvalRequest: 'approval:request',
   auditStatusChanged: 'audit:status-changed',
+  providerLoginUrl: 'provider:login-url',
 } as const
 
 export const PROVIDERS = ['anthropic-api', 'claude-subscription', 'codex-subscription'] as const
@@ -38,6 +42,14 @@ export interface ProviderStatus {
   state: 'ready' | 'missing-runtime' | 'signed-out' | 'unsupported' | 'error'
   message: string
 }
+
+/** Pushed while Claude sign-in waits: the validated link main has opened. */
+export interface ProviderLoginUrl {
+  provider: ProviderId
+  url: string
+}
+
+export type LoginCodeResult = { ok: true } | { ok: false; error: string }
 
 export interface AppInfo {
   name: string
@@ -157,6 +169,7 @@ export interface PushPayloads {
   [IpcChannels.chatEvent]: ChatEvent
   [IpcChannels.approvalRequest]: ApprovalPrompt
   [IpcChannels.auditStatusChanged]: AuditStatus
+  [IpcChannels.providerLoginUrl]: ProviderLoginUrl
 }
 export type PushChannel = keyof PushPayloads
 
@@ -169,6 +182,12 @@ export interface DesktopApi {
     set: (provider: ProviderId) => Promise<ProviderStatus>
     login: () => Promise<ProviderStatus>
     cancelLogin: () => Promise<void>
+    /** Re-opens the sign-in link main validated; takes no URL. */
+    openLoginUrl: () => Promise<void>
+    /** Copies the sign-in link main validated to the clipboard; takes no URL. */
+    copyLoginUrl: () => Promise<void>
+    /** Main validates the code before passing it to the waiting runtime. */
+    submitLoginCode: (code: string) => Promise<LoginCodeResult>
   }
   getAppInfo: () => Promise<AppInfo>
   apiKey: {
@@ -201,4 +220,5 @@ export interface DesktopApi {
   onChatEvent: (listener: (event: ChatEvent) => void) => Unsubscribe
   onApprovalRequest: (listener: (prompt: ApprovalPrompt) => void) => Unsubscribe
   onAuditStatus: (listener: (status: AuditStatus) => void) => Unsubscribe
+  onProviderLoginUrl: (listener: (login: ProviderLoginUrl) => void) => Unsubscribe
 }

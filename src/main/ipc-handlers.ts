@@ -146,6 +146,14 @@ export function registerIpcHandlers(
   })
   handle(IpcChannels.providerLogin, () => services.provider.login())
   handle(IpcChannels.providerCancelLogin, () => services.provider.cancelLogin())
+  // No URL argument: main only ever opens or copies the link it validated itself.
+  handle(IpcChannels.providerOpenLoginUrl, () => services.provider.openLoginUrl())
+  handle(IpcChannels.providerCopyLoginUrl, () => services.provider.copyLoginUrl())
+  handle(IpcChannels.providerSubmitLoginCode, (code) =>
+    typeof code === 'string'
+      ? services.provider.submitLoginCode(code)
+      : { ok: false, error: 'Enter the sign-in code.' },
+  )
 
   handle(IpcChannels.modelGet, () => services.settings.view())
   handle(IpcChannels.modelSet, async (model) => {

@@ -1,4 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  safeStorage,
+  session,
+  shell,
+} from 'electron'
 import { IpcChannels, type PushChannel, type PushPayloads } from '../shared/ipc'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { registerIpcHandlers } from './ipc-handlers'
@@ -51,6 +60,7 @@ void app.whenReady().then(async () => {
   const services = await createAppServices({
     userData: app.getPath('userData'),
     openUrl: (url) => shell.openExternal(url),
+    copyText: (text) => clipboard.writeText(text),
     safeStorage,
     trash: (path) => shell.trashItem(path),
     emit: (event) => {
@@ -61,6 +71,9 @@ void app.whenReady().then(async () => {
     },
     onAuditStatus: (status) => {
       push(IpcChannels.auditStatusChanged, status)
+    },
+    onProviderLoginUrl: (login) => {
+      push(IpcChannels.providerLoginUrl, login)
     },
   })
   const { chat } = services

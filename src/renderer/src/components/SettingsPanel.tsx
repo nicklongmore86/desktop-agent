@@ -1,4 +1,4 @@
-import { useId, useState, type SubmitEvent } from 'react'
+import { useEffect, useId, useState, type SubmitEvent } from 'react'
 import type {
   ApiKeyStatus,
   AuditStatus,
@@ -277,6 +277,117 @@ export function SettingsPanel(props: SettingsPanelProps): React.JSX.Element {
   )
 }
 
+/** Claude prints `<code>#<state>`; main checks it again before passing it on. */
+const LOGIN_CODE = /^[^#\s]+#[^#\s]+$/
+
+function LoginLink({ url }: { url: string }): React.JSX.Element {
+  const api = useApi()
+  const linkId = useId()
+  const codeId = useId()
+  const [code, setCode] = useState('')
+  const [note, setNote] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const request = (operation: () => Promise<void>, done: string, failed: string) => {
+    setError(null)
+    setNote(null)
+    operation().then(
+      () => {
+        setNote(done)
+      },
+      () => {
+        setError(failed)
+      },
+    )
+  }
+  const submit = (event: SubmitEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    setError(null)
+    setNote(null)
+    const value = code.trim()
+    if (!LOGIN_CODE.test(value)) {
+      setError('That does not look like a sign-in code. Copy the whole code.')
+      return
+    }
+    api.provider.submitLoginCode(value).then(
+      (result) => {
+        if (result.ok) {
+          setCode('')
+          setNote('Code sent. Finishing sign-in…')
+        } else setError(result.error)
+      },
+      () => {
+        setError('Could not send the code. Try again.')
+      },
+    )
+  }
+  return (
+    <div className="login-link">
+      <p className="settings-hint">
+        Your browser should open to sign in. If it did not, open or copy this link, then paste the
+        code shown after you authorize.
+      </p>
+      <label htmlFor={linkId}>Sign-in link</label>
+      <div className="settings-row">
+        <input
+          id={linkId}
+          type="text"
+          readOnly
+          value={url}
+          spellCheck={false}
+          onFocus={(event) => {
+            event.target.select()
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            request(() => api.provider.copyLoginUrl(), 'Link copied.', 'Could not copy the link.')
+          }}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            request(
+              () => api.provider.openLoginUrl(),
+              'Opened in your browser.',
+              'Could not open the browser. Copy the link instead.',
+            )
+          }}
+        >
+          Open in browser
+        </button>
+      </div>
+      <form className="settings-row" onSubmit={submit}>
+        <label htmlFor={codeId} className="visually-hidden">
+          Paste code
+        </label>
+        <input
+          id={codeId}
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Paste code"
+          value={code}
+          onChange={(event) => {
+            setCode(event.target.value)
+          }}
+        />
+        <button type="submit" disabled={!code.trim()}>
+          Submit code
+        </button>
+      </form>
+      {note && <p className="settings-hint">{note}</p>}
+      {error && (
+        <p className="settings-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ProviderSection({
   provider,
   onProvider,
@@ -285,7 +396,16 @@ function ProviderSection({
   const api = useApi()
   const switchProvider = onSwitchProvider ?? ((next: ProviderId) => api.provider.set(next))
   const [busy, setBusy] = useState(false)
+  const [signingIn, setSigningIn] = useState(false)
+  const [loginUrl, setLoginUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  useEffect(
+    () =>
+      api.onProviderLoginUrl((login) => {
+        setLoginUrl(login.url)
+      }),
+    [api],
+  )
   const run = async (operation: () => Promise<ProviderStatus>) => {
     setBusy(true)
     setError(null)
@@ -295,6 +415,16 @@ function ProviderSection({
       setError('Provider request failed. Try again.')
     } finally {
       setBusy(false)
+    }
+  }
+  const signIn = async () => {
+    setSigningIn(true)
+    setLoginUrl(null)
+    try {
+      await run(() => api.provider.login())
+    } finally {
+      setSigningIn(false)
+      setLoginUrl(null)
     }
   }
   return (
@@ -315,8 +445,22 @@ function ProviderSection({
         <option value="claude-subscription">Claude subscription</option>
         <option value="codex-subscription">Codex subscription (ChatGPT)</option>
       </select>
-      <p role="status">{provider?.message ?? 'Loading provider…'}</p>
-      {error && <p role="alert">{error}</p>}
+      {signingIn ? (
+        <p className="settings-status" role="status">
+          Waiting for sign-in…
+        </p>
+      ) : provider?.state === 'error' ? (
+        <p className="settings-error" role="alert">
+          {provider.message}
+        </p>
+      ) : (
+        <p role="status">{provider?.message ?? 'Loading provider…'}</p>
+      )}
+      {error && (
+        <p className="settings-error" role="alert">
+          {error}
+        </p>
+      )}
       {provider && provider.provider !== 'anthropic-api' && (
         <>
           <p>
@@ -341,7 +485,7 @@ function ProviderSection({
           <button
             disabled={busy}
             onClick={() => {
-              void run(() => api.provider.login())
+              void signIn()
             }}
           >
             Sign in with subscription
@@ -355,6 +499,7 @@ function ProviderSection({
               Cancel sign-in
             </button>
           )}
+          {signingIn && loginUrl && <LoginLink url={loginUrl} />}
         </>
       )}
     </section>

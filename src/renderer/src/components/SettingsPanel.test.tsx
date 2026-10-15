@@ -1,8 +1,8 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { describe, expect, it } from 'vitest'
-import type { ApiKeyStatus, GrantsState, ModelSettings } from '../../../shared/ipc'
+import { describe, expect, it, vi } from 'vitest'
+import type { ApiKeyStatus, GrantsState, ModelSettings, ProviderStatus } from '../../../shared/ipc'
 import { ApiContext } from '../api'
 import { fakeApi } from '../test/fake-api'
 import { SettingsPanel } from './SettingsPanel'
@@ -114,5 +114,125 @@ describe('SettingsPanel', () => {
     expect(
       screen.getByText('C:\\Users\\me\\AppData\\Roaming\\desktop-agent\\audit.jsonl'),
     ).toBeTruthy()
+  })
+})
+
+describe('Claude subscription sign-in', () => {
+  const LINK = 'https://claude.com/cai/oauth/authorize?code=true&state=xyz'
+
+  function ProviderHarness() {
+    const [provider, setProvider] = useState<ProviderStatus>({
+      provider: 'claude-subscription',
+      state: 'signed-out',
+      message: 'Sign in with your subscription.',
+    })
+    return (
+      <SettingsPanel
+        provider={provider}
+        onProvider={setProvider}
+        keyStatus={{ saved: false, error: null }}
+        onKeyStatus={() => {}}
+        grants={{ roots: [], loadError: null }}
+        onGrants={() => {}}
+        model={null}
+        onModel={() => {}}
+        audit={null}
+      />
+    )
+  }
+
+  function renderSignIn() {
+    const fake = fakeApi()
+    let finish: (status: ProviderStatus) => void = () => {}
+    fake.api.provider.login.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const user = userEvent.setup()
+    render(
+      <ApiContext value={fake.api}>
+        <ProviderHarness />
+      </ApiContext>,
+    )
+    return {
+      ...fake,
+      user,
+      finish: async (status: ProviderStatus) => {
+        await act(async () => {
+          finish(status)
+          await Promise.resolve()
+        })
+      },
+    }
+  }
+
+  it('shows the waiting state, the link, and asks main to copy or re-open it', async () => {
+    const { api, user, pushLoginUrl, finish } = renderSignIn()
+    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    expect(screen.getByRole('status').textContent).toBe('Waiting for sign-in…')
+    expect(screen.getByRole('button', { name: 'Cancel sign-in' })).toBeTruthy()
+    act(() => {
+      pushLoginUrl({ provider: 'claude-subscription', url: LINK })
+    })
+    const link = screen.getByLabelText('Sign-in link')
+    expect(link).toHaveProperty('value', LINK)
+    expect(link).toHaveProperty('readOnly', true)
+    await user.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(api.provider.copyLoginUrl).toHaveBeenCalledExactlyOnceWith()
+    expect(screen.getByText('Link copied.')).toBeTruthy()
+    const open = vi.spyOn(window, 'open')
+    await user.click(screen.getByRole('button', { name: 'Open in browser' }))
+    // No URL leaves the renderer: main re-opens the link it validated.
+    expect(api.provider.openLoginUrl).toHaveBeenCalledExactlyOnceWith()
+    expect(open).not.toHaveBeenCalled()
+    await finish({
+      provider: 'claude-subscription',
+      state: 'ready',
+      message: 'Subscription signed in. No API key is used.',
+    })
+    expect(screen.getByRole('status').textContent).toBe(
+      'Subscription signed in. No API key is used.',
+    )
+    expect(screen.queryByLabelText('Sign-in link')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull()
+  })
+
+  it('sends a valid pasted code and rejects a malformed one locally', async () => {
+    const { api, user, pushLoginUrl } = renderSignIn()
+    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    act(() => {
+      pushLoginUrl({ provider: 'claude-subscription', url: LINK })
+    })
+    const code = screen.getByLabelText('Paste code')
+    await user.type(code, 'not-a-code')
+    await user.click(screen.getByRole('button', { name: 'Submit code' }))
+    expect(api.provider.submitLoginCode).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain('does not look like a sign-in code')
+    await user.clear(code)
+    await user.type(code, 'abc123#state')
+    await user.click(screen.getByRole('button', { name: 'Submit code' }))
+    expect(api.provider.submitLoginCode).toHaveBeenCalledExactlyOnceWith('abc123#state')
+    expect(screen.getByText('Code sent. Finishing sign-in…')).toBeTruthy()
+    api.provider.submitLoginCode.mockResolvedValueOnce({ ok: false, error: 'Rejected by main.' })
+    await user.type(code, 'x#y')
+    await user.click(screen.getByRole('button', { name: 'Submit code' }))
+    expect(screen.getByRole('alert').textContent).toBe('Rejected by main.')
+  })
+
+  it('cancels and shows sign-in failures as alerts', async () => {
+    const { api, user, finish } = renderSignIn()
+    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Cancel sign-in' }))
+    expect(api.provider.cancelLogin).toHaveBeenCalledOnce()
+    await finish({
+      provider: 'claude-subscription',
+      state: 'error',
+      message: 'Claude sign-in failed (exit code 1). OAuth error',
+    })
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toBe('Claude sign-in failed (exit code 1). OAuth error')
+    expect(alert.className).toBe('settings-error')
   })
 })

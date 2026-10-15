@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { ProviderId, ProviderStatus } from '../../shared/ipc'
 import type { AgentTool } from '../agent'
 import { createClaudeSubscriptionRunner } from './claude'
+import { ClaudeLogin } from './claude-login'
 import {
   codexAccount,
   codexLogin,
@@ -20,13 +21,39 @@ import {
   runtimeEnv,
 } from './runtime'
 
+export interface SubscriptionOptions {
+  /** Shows Claude's validated sign-in link in Settings while sign-in is waiting. */
+  onLoginUrl?: (provider: ProviderId, url: string) => void
+  /** Claude sign-in timeout (tests only). */
+  loginTimeout?: number
+}
+
 export class SubscriptionProviders {
   private readonly checks = new Set<AbortController>()
   private loginController: AbortController | undefined
+  private claudeLogin: ClaudeLogin | undefined
   constructor(
     private readonly userData: string,
     private readonly openUrl: (url: string) => Promise<void>,
+    private readonly options: SubscriptionOptions = {},
   ) {}
+
+  /** The validated link of the Claude sign-in in progress, if it has printed one. */
+  get loginUrl(): string | undefined {
+    return this.claudeLogin?.url
+  }
+
+  /** Re-opens the same validated link; the renderer never supplies a URL. */
+  async openLoginUrl(): Promise<void> {
+    const url = this.loginUrl
+    if (!url) throw new Error('No sign-in link is waiting.')
+    await this.openUrl(url)
+  }
+
+  submitLoginCode(code: unknown): { ok: true } | { ok: false; error: string } {
+    if (!this.claudeLogin) return { ok: false, error: 'Sign-in is no longer waiting for a code.' }
+    return this.claudeLogin.submitCode(code)
+  }
 
   async context(provider: ProviderId, signal?: AbortSignal): Promise<RuntimeContext> {
     const name = provider === 'claude-subscription' ? 'claude' : 'codex'
@@ -157,14 +184,14 @@ export class SubscriptionProviders {
         const peer = await connectCodex(context, controller.signal)
         await codexLogin(peer, this.openUrl, controller.signal)
       } else {
-        await capture(
-          context.file,
-          ['auth', 'login'],
-          context.cwd,
-          context.env,
-          controller.signal,
-          120000,
-        )
+        const login = new ClaudeLogin(context, {
+          signal: controller.signal,
+          openUrl: this.openUrl,
+          onUrl: (url) => this.options.onLoginUrl?.(provider, url),
+          ...(this.options.loginTimeout ? { timeout: this.options.loginTimeout } : {}),
+        })
+        this.claudeLogin = login
+        await login.done
       }
       return await this.status(provider)
     } catch (error) {
@@ -179,6 +206,7 @@ export class SubscriptionProviders {
       }
     } finally {
       this.loginController = undefined
+      this.claudeLogin = undefined
     }
   }
 

@@ -25,6 +25,9 @@ const api: DesktopApi = {
     set: (provider) => invoke(IpcChannels.providerSet, provider),
     login: () => invoke(IpcChannels.providerLogin),
     cancelLogin: () => invoke(IpcChannels.providerCancelLogin),
+    openLoginUrl: () => invoke(IpcChannels.providerOpenLoginUrl),
+    copyLoginUrl: () => invoke(IpcChannels.providerCopyLoginUrl),
+    submitLoginCode: (code) => invoke(IpcChannels.providerSubmitLoginCode, code),
   },
   getAppInfo: () => invoke(IpcChannels.getAppInfo),
   apiKey: {
@@ -56,6 +59,7 @@ const api: DesktopApi = {
   onChatEvent: (listener) => subscribe(IpcChannels.chatEvent, listener),
   onApprovalRequest: (listener) => subscribe(IpcChannels.approvalRequest, listener),
   onAuditStatus: (listener) => subscribe(IpcChannels.auditStatusChanged, listener),
+  onProviderLoginUrl: (listener) => subscribe(IpcChannels.providerLoginUrl, listener),
 }
 
 contextBridge.exposeInMainWorld('desktopApi', api)
