@@ -33,7 +33,9 @@ export function sameIdentity(a: Identity, b: Identity): boolean {
 export function assertSingleLink(path: string, stats: { nlink: bigint | number }): void {
   if (BigInt(stats.nlink) > 1n) {
     throw new ToolFailure(
-      `${path} has other hard links (it may also live outside the granted folders); refusing.`,
+      `${path} has other hard links: the same file also has another name, possibly outside the ` +
+        'granted folders, so it is refused (common in pnpm node_modules and C:\\Windows). To ' +
+        'use it, the user can copy it into a granted folder: a copy is a separate file.',
       'hard-link',
     )
   }
@@ -148,8 +150,8 @@ export async function overwriteHandle(handle: FileHandle, data: Buffer): Promise
   await handle.sync()
 }
 
-/** Replaces the content of `to` with all of `from`, in chunks, and syncs it. */
-export async function copyHandle(from: FileHandle, to: FileHandle): Promise<void> {
+/** Replaces the content of `to` with all of `from`, in chunks, and syncs it. Returns the bytes copied. */
+export async function copyHandle(from: FileHandle, to: FileHandle): Promise<bigint> {
   await to.truncate(0)
   const chunk = Buffer.alloc(64 * 1024)
   let position = 0
@@ -169,4 +171,5 @@ export async function copyHandle(from: FileHandle, to: FileHandle): Promise<void
     position += bytesRead
   }
   await to.sync()
+  return BigInt(position)
 }

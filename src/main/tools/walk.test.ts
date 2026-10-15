@@ -3,7 +3,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PathGuard } from '../permissions/guard'
 import { makeSandbox, put, trySymlink, type Sandbox } from '../permissions/test-support'
-import { MAX_TREE_ENTRIES, assertNoBlockedInside, walk } from './walk'
+import { MAX_TREE_CHECK_MS, MAX_TREE_ENTRIES, assertNoBlockedInside, walk } from './walk'
 
 let sb: Sandbox
 let guard: PathGuard
@@ -223,4 +223,38 @@ describe('assertNoBlockedInside', () => {
       message: /more than 149,999 entries/,
     })
   }, 30_000)
+
+  it('stops at the wall-clock budget with a helpful message', async () => {
+    for (let i = 0; i < 20; i++) await put(path.join(sb.root, 'slow', `f${String(i)}`))
+    let t = 0
+    const budget = { ms: MAX_TREE_CHECK_MS, now: () => (t += 10_000) }
+    await expect(
+      assertNoBlockedInside(path.join(sb.root, 'slow'), guard, MAX_TREE_ENTRIES, signal, budget),
+    ).rejects.toMatchObject({
+      code: 'too-large',
+      message: /stopped after 60 s \(\d+ entries checked so far\).*subfolders one at a time/,
+    })
+  })
+
+  it('never stats a protected or ungranted entry', async () => {
+    await put(path.join(sb.root, 'dir', 'a.txt'))
+    await put(path.join(sb.root, 'dir', '.env'))
+    const statted: string[] = []
+    const realLstat = fs.lstat.bind(fs)
+    vi.spyOn(fs, 'lstat').mockImplementation(((p: string, o?: object) => {
+      statted.push(path.basename(p))
+      return realLstat(p, o)
+    }) as typeof fs.lstat)
+    const blocked: string[] = []
+    for await (const _ of walk(path.join(sb.root, 'dir'), guard, {
+      maxDepth: 1,
+      signal,
+      onBlocked: (p) => blocked.push(path.basename(p)),
+    })) {
+      // drain
+    }
+    expect(blocked).toEqual(['.env'])
+    expect(statted).toContain('a.txt')
+    expect(statted).not.toContain('.env')
+  })
 })

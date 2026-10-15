@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import { ToolFailure, errorResult, type ToolCall, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
 import { assertSingleLink, openVerified } from './safe-fs'
-import { assertNoBlockedInside } from './walk'
+import { MAX_TREE_CHECK_MS, assertNoBlockedInside } from './walk'
 
 interface Input {
   path: string
@@ -74,6 +74,7 @@ export function deletePathTool(deps: ResolvedDeps): ToolSpec<Input> {
         guard,
         limits.maxScanEntries,
         call.ctx.signal,
+        { ms: MAX_TREE_CHECK_MS, now: deps.now },
       )
       call.throwIfAborted()
       return { path: target.path, kind: 'folder', entries }

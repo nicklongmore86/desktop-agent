@@ -104,28 +104,40 @@ export async function* walk(
       options.onError?.(dir, reasonOf(error))
       return
     }
-    // lstat runs ahead in batches so big folders are not one syscall round trip per
-    // entry; every other check still happens in order, just before an entry is yielded.
+    // lstat runs ahead in batches so big folders are not one syscall round trip per entry.
+    // The path checks come first, so a protected or ungranted path is never even stat'ed;
+    // the grant check is repeated in order, just before an entry is yielded.
+    const aborted = () => options.signal.aborted
     for (let start = 0; start < names.length; start += LSTAT_BATCH) {
-      const batch = names.slice(start, start + LSTAT_BATCH)
-      const lstats = batch.map((name) =>
-        fs.lstat(P.join(dir, name), { bigint: true }).then(
-          (stats) => ({ stats }),
-          (error: unknown) => ({ error }),
-        ),
-      )
-      for (const [i, name] of batch.entries()) {
-        if (options.signal.aborted) return
+      if (aborted()) return
+      const batch = names.slice(start, start + LSTAT_BATCH).map((name) => {
         const path = P.join(dir, name)
+        const allowed = guard.isWithinGrants(path)
+        const blocked = allowed && guard.blockedReason(path) !== null
+        const lstat =
+          allowed && !blocked
+            ? fs.lstat(path, { bigint: true }).then(
+                (stats) => ({ stats }),
+                (error: unknown) => ({ error }),
+              )
+            : null
+        return { name, path, blocked, lstat }
+      })
+      for (const { name, path, blocked, lstat } of batch) {
+        if (aborted()) return
+        if (!lstat && !blocked) {
+          options.onError?.(path, 'no longer inside a granted folder')
+          return
+        }
+        if (blocked) {
+          options.onBlocked?.(path)
+          continue
+        }
         if (!guard.isWithinGrants(path)) {
           options.onError?.(path, 'no longer inside a granted folder')
           return
         }
-        if (guard.blockedReason(path)) {
-          options.onBlocked?.(path)
-          continue
-        }
-        const result = await (lstats[i] as (typeof lstats)[number])
+        const result = await (lstat as NonNullable<typeof lstat>)
         if ('error' in result) {
           options.onError?.(path, reasonOf(result.error))
           continue
@@ -160,6 +172,14 @@ export async function* walk(
  */
 export const MAX_TREE_ENTRIES = 1_000_000
 
+/**
+ * Wall-clock budget for one such check (it runs twice: before and after
+ * approval). About 100,000 entries take 3–4 s on an SSD, so the entry cap
+ * normally binds first; this stops a slow disk or network share from making
+ * the user wait for minutes.
+ */
+export const MAX_TREE_CHECK_MS = 60_000
+
 /** How many files inside a folder are opened at once to check their link count. */
 const HANDLE_CHECKS = 32
 
@@ -170,13 +190,14 @@ const HANDLE_CHECKS = 32
  * entries are inside, for the approval. Fails closed: throws ToolFailure when
  * a protected entry or a file with other hard links is found, when anything
  * inside cannot be listed or stat'ed, when the folder has more than `limit`
- * entries (too big to check), or when the walk is cancelled.
+ * entries or runs past `budget` (too big to check), or when the walk is cancelled.
  */
 export async function assertNoBlockedInside(
   dir: string,
   guard: PathGuard,
   limit: number,
   signal: AbortSignal,
+  budget?: { ms: number; now: () => number },
 ): Promise<{ entries: number }> {
   const blocked: string[] = []
   const errors: string[] = []
@@ -184,6 +205,8 @@ export async function assertNoBlockedInside(
   const failed = () => blocked.length > 0 || errors.length > 0 || hardLinked.length > 0
   let count = 0
   let tooLarge = false
+  let overBudget = false
+  const started = budget?.now() ?? 0
   // Moving a hard link (especially copying it across volumes) or trashing it would
   // turn a second name of some file outside the grants into a plain, readable file.
   // The walk's lstat count catches most; opening each file proves it through the handle.
@@ -206,6 +229,10 @@ export async function assertNoBlockedInside(
       if (failed()) break
       if (++count > limit) {
         tooLarge = true
+        break
+      }
+      if (budget && budget.now() - started > budget.ms) {
+        overBudget = true
         break
       }
       if (entry.kind !== 'file') continue
@@ -235,6 +262,14 @@ export async function assertNoBlockedInside(
     throw new ToolFailure(
       `Could not check everything inside ${dir} for protected files: ${errors[0] ?? ''}. Nothing was done.`,
       'protected',
+    )
+  }
+  if (overBudget && budget) {
+    throw new ToolFailure(
+      `Checking ${dir} for protected files was stopped after ${String(Math.round(budget.ms / 1000))} s ` +
+        `(${count.toLocaleString('en-US')} entries checked so far). Nothing was done; move or ` +
+        'delete its subfolders one at a time.',
+      'too-large',
     )
   }
   if (tooLarge) {
