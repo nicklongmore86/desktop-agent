@@ -7,7 +7,9 @@
  * spaces that are not U+0020, look-alike slashes and dots (`a∕..∕b`), and
  * Cyrillic, Greek or Armenian letters posing as Latin ones (`pаypal`).
  * `revealUnsafe` swaps each one for a visible token; the payload that runs is
- * never changed.
+ * never changed. Right-to-left letters (Hebrew, Arabic, ...) are not
+ * tokenised but flagged (`rtl`): the stylesheet shows untrusted text in stored
+ * order, left to right, which is not how those words normally read.
  */
 
 export type Segment =
@@ -25,6 +27,18 @@ export interface Revealed {
   lines: RevealedLine[]
   /** True when anything but plain text, tabs and LF/CRLF line ends was found. */
   suspicious: boolean
+  /** True when the text has right-to-left letters; they are shown in stored order. */
+  rtl: boolean
+}
+
+export interface RevealOptions {
+  /**
+   * Whether the text is part of something with Latin letters, which makes a
+   * word of Latin look-alikes (`рау`) a disguise. Defaults to whether `text`
+   * itself has Latin letters; pass the answer for the whole prompt when
+   * showing one part of it (a command on its own may have none).
+   */
+  latinContext?: boolean | undefined
 }
 
 const BIDI = /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/
@@ -48,6 +62,18 @@ const LOOKALIKE_SCRIPT = /[\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Armenian
 const LATIN_LOOKALIKE =
   /[\u0430\u0435\u043E\u0440\u0441\u0443\u0445\u0455\u0456\u0458\u0501\u051B\u051D\u04BB\u04CF\u04AF\u0410\u0412\u0415\u041A\u041C\u041D\u041E\u0420\u0421\u0422\u0425\u0405\u0406\u0408\u04AE\u03BF\u03B1\u03BD\u03B9\u03C1\u03C5\u0391\u0392\u0395\u0396\u0397\u0399\u039A\u039C\u039D\u039F\u03A1\u03A4\u03A5\u03A7\u0585\u057D\u0570]/
 const LATIN = /\p{Script=Latin}/u
+// Strong right-to-left characters (Bidi_Class R and AL): the Hebrew, Arabic, Syriac,
+// Thaana, NKo, Samaritan, Mandaic ... blocks, their presentation forms, and the
+// right-to-left ranges of the supplementary planes; not the Arabic letter mark (U+061C),
+// a bidi control that is tokenised instead. (JS regexes have no Bidi_Class.)
+const RTL =
+  /[\u0590-\u061B\u061D-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFE\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u
+
+/** True when `text` has Latin letters. */
+export const hasLatin = (text: string): boolean => LATIN.test(text)
+
+/** True when `text` has right-to-left letters. */
+export const hasRtl = (text: string): boolean => RTL.test(text)
 // C0 except \t (09) and \n (0A); CR (0D) is handled as a line end; DEL; C1;
 // and the Unicode line/paragraph separators, which some renderers break on.
 // eslint-disable-next-line no-control-regex
@@ -80,17 +106,16 @@ export function escapeLabel(text: string): string {
 /**
  * The offsets of letters posing as Latin ones: Cyrillic, Greek or Armenian
  * letters in a word that also has Latin letters (`pаypal`), and whole words
- * made only of Latin look-alikes (`рау`) when the text has Latin letters
- * elsewhere. Words in those scripts that cannot pass for Latin are left alone.
+ * made only of Latin look-alikes (`рау`) when there is Latin context (see
+ * RevealOptions). Words in those scripts that cannot pass for Latin are left alone.
  */
-export function homoglyphOffsets(text: string): Set<number> {
+export function homoglyphOffsets(text: string, latinContext = hasLatin(text)): Set<number> {
   const offsets = new Set<number>()
-  if (!LATIN.test(text)) return offsets
   for (const match of text.matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
     const word = match[0]
     if (!LOOKALIKE_SCRIPT.test(word)) continue
     let disguised = LATIN.test(word)
-    if (!disguised) {
+    if (!disguised && latinContext) {
       disguised = true
       for (const char of word) {
         if (/\p{L}/u.test(char) && !LATIN_LOOKALIKE.test(char)) disguised = false
@@ -107,7 +132,7 @@ export function homoglyphOffsets(text: string): Set<number> {
 }
 
 /** Splits `text` into lines and segments, replacing every unsafe character with a token. */
-export function revealUnsafe(text: string): Revealed {
+export function revealUnsafe(text: string, options: RevealOptions = {}): Revealed {
   const lines: RevealedLine[] = []
   let segments: Segment[] = []
   let plain = ''
@@ -127,7 +152,7 @@ export function revealUnsafe(text: string): Revealed {
     segments = []
   }
 
-  const homoglyphs = homoglyphOffsets(text)
+  const homoglyphs = homoglyphOffsets(text, options.latinContext ?? hasLatin(text))
   for (let i = 0; i < text.length;) {
     const char = text[i] ?? ''
     if (char === '\n') {
@@ -170,11 +195,11 @@ export function revealUnsafe(text: string): Revealed {
     }
   }
   if (plain || segments.length > 0 || lines.length === 0) endLine('eof')
-  return { lines, suspicious }
+  return { lines, suspicious, rtl: hasRtl(text) }
 }
 
-export const isSuspicious = (text: string | null): boolean =>
-  text !== null && revealUnsafe(text).suspicious
+export const isSuspicious = (text: string | null, options: RevealOptions = {}): boolean =>
+  text !== null && revealUnsafe(text, options).suspicious
 
 function Segments({ segments }: { segments: Segment[] }): React.JSX.Element {
   return (
@@ -237,8 +262,14 @@ function Line({
  * characters revealed, and whitespace preserved (`.untrusted` is pre-wrap),
  * so two spaces, a tab and a line break never collapse into one space.
  */
-export function SafeText({ text }: { text: string }): React.JSX.Element {
-  const { lines } = revealUnsafe(text)
+export function SafeText({
+  text,
+  latinContext,
+}: {
+  text: string
+  latinContext?: boolean | undefined
+}): React.JSX.Element {
+  const { lines } = revealUnsafe(text, { latinContext })
   return (
     <bdi dir="ltr" className="untrusted">
       {lines.map((line, index) => (
@@ -252,11 +283,13 @@ export function SafeText({ text }: { text: string }): React.JSX.Element {
 export function SafeLines({
   text,
   lineClass,
+  latinContext,
 }: {
   text: string
   lineClass?: (line: RevealedLine) => string
+  latinContext?: boolean | undefined
 }): React.JSX.Element {
-  const { lines } = revealUnsafe(text)
+  const { lines } = revealUnsafe(text, { latinContext })
   if (lines.length > 1 && lines.at(-1)?.end === 'eof' && lines.at(-1)?.segments.length === 0) {
     lines.pop()
   }

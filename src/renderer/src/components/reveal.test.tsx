@@ -112,6 +112,49 @@ describe('revealUnsafe', () => {
     expect(revealUnsafe(ch(0x440, 0x430, 0x443)).suspicious).toBe(false)
   })
 
+  it.each([
+    ['Hebrew', [0x5d0]],
+    ['Arabic', [0x645, 0x644, 0x641]],
+    ['Syriac', [0x710]],
+    ['Thaana', [0x780]],
+    ['NKo', [0x7ca]],
+    ['Arabic presentation forms', [0xfeb3]],
+    ['Adlam', [0x1e900]],
+  ])('flags %s as right-to-left without tokenising it', (_name, codes) => {
+    const word = String.fromCodePoint(...codes)
+    const revealed = revealUnsafe(`C:\\safe\\${word}\\..\\evil.exe -Force`)
+    expect(revealed.rtl).toBe(true)
+    expect(revealed.suspicious).toBe(false)
+    expect(revealed.lines[0]?.segments).toEqual([
+      { kind: 'text', text: `C:\\safe\\${word}\\..\\evil.exe -Force` },
+    ])
+  })
+
+  it('does not flag left-to-right text as right-to-left', () => {
+    const cyrillic = ch(0x414, 0x43e, 0x43a)
+    expect(revealUnsafe(`C:\\${cyrillic}\\caf${ch(0xe9)} 12`).rtl).toBe(false)
+    // The Arabic letter mark is a bidi control: tokenised, not a right-to-left letter.
+    expect(revealUnsafe(`a${ch(0x61c)}b`)).toMatchObject({ rtl: false, suspicious: true })
+  })
+
+  it('tokenises look-alike words by the context it is given', () => {
+    const pay = ch(0x440, 0x430, 0x443)
+    // A command on its own has no Latin letters; the prompt around it does.
+    expect(tokens(`.\\${pay}`)).toEqual([])
+    expect(revealUnsafe(`.\\${pay}`, { latinContext: true }).lines[0]?.segments).toEqual([
+      { kind: 'text', text: '.\\' },
+      { kind: 'token', label: 'U+0440' },
+      { kind: 'token', label: 'U+0430' },
+      { kind: 'token', label: 'U+0443' },
+    ])
+    // Real Cyrillic prose stays readable even in Latin context.
+    const russian = ch(0x414, 0x43e, 0x43a, 0x443, 0x43c, 0x435, 0x43d, 0x442, 0x44b)
+    expect(revealUnsafe(russian, { latinContext: true }).suspicious).toBe(false)
+    // And an explicit non-Latin context turns the whole-word rule off.
+    expect(tokens(`C:\\${pay}`)).toHaveLength(3)
+    expect(revealUnsafe(`C:\\${pay}`, { latinContext: false }).suspicious).toBe(false)
+  })
+
   it('reveals whole ANSI escape sequences', () => {
     const revealed = revealUnsafe(`${ESC}[31mred${ESC}[0m ${ESC}]0;title${ch(7)}x ${ESC}c`)
     expect(revealed.suspicious).toBe(true)
@@ -312,5 +355,32 @@ describe('ApprovalCard reveals spoofing characters', () => {
     expect(command.textContent).toBe(long)
     expect(command.className).toContain('command')
     expect(command.className).toContain('scroll-box')
+  })
+
+  it('tokenises a look-alike-only command in the Command box, in the prompt’s Latin context', () => {
+    const pay = ch(0x440, 0x430, 0x443)
+    renderCard({ ...base, detail: `cwd: C:\\work\nshell: C:\\ps.exe\n\n.\\${pay}` })
+    expect(screen.getByLabelText('Command').textContent).toBe('.\\⟨U+0440⟩⟨U+0430⟩⟨U+0443⟩')
+    expect(screen.getByRole('alert').textContent).toContain('look-alike')
+  })
+
+  it('says right-to-left text is shown in stored order', () => {
+    const dialog = renderCard({
+      ...base,
+      kind: 'delete',
+      tool: 'delete_path',
+      summary: `Move C:\\safe\\${ch(0x5d0)}\\..\\evil.exe to the Recycle Bin`,
+    })
+    const alerts = within(dialog).getAllByRole('alert')
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]?.textContent).toContain('contains right-to-left characters')
+    expect(alerts[0]?.textContent).toContain('shown in stored order')
+    // The letters themselves are shown, not tokenised.
+    expect(dialog.textContent).toContain(`C:\\safe\\${ch(0x5d0)}\\..\\evil.exe`)
+  })
+
+  it('shows no right-to-left notice for left-to-right text', () => {
+    renderCard({ ...base, detail: 'cwd: C:\\work\nshell: C:\\ps.exe\n\nGet-Date' })
+    expect(screen.queryByText(/right-to-left/)).toBeNull()
   })
 })

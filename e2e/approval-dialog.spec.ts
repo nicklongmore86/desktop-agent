@@ -28,12 +28,21 @@ interface Case {
   shows: string[]
   /** The prompt has hidden characters, so the warning must be shown. */
   warns: boolean
+  /** The prompt has right-to-left letters, so the stored-order notice must be shown. */
+  rtl?: boolean
 }
 
 const longSegment = 'a'.repeat(300)
 const longCommand = `powershell.exe-NoProfile-Command${'Get-ChildItem|'.repeat(150)}END_OF_COMMAND`
 const shellDetail = (cwd: string, command: string): string =>
   `cwd: ${cwd}\nshell: powershell.exe\n\n${command}`
+
+// Natural right-to-left letters, written as escapes so this file holds none.
+const ALEF = '\u05D0'
+const SHALOM = '\u05E9\u05DC\u05D5\u05DD'
+const FIX = '\u05EA\u05D9\u05E7\u05D5\u05DF'
+const DANA = '\u05D3\u05E0\u05D4'
+const MILAF = '\u0645\u0644\u0641'
 
 const CASES: Case[] = [
   {
@@ -96,6 +105,18 @@ const CASES: Case[] = [
     warns: true,
   },
   {
+    // Cyrillic рау on its own in the command box: tokenised in the prompt's Latin context.
+    name: 'lookalike-command',
+    prompt: {
+      tool: 'run_shell',
+      kind: 'shell',
+      summary: `Run a command in ${PROJECT}`,
+      detail: shellDetail(PROJECT, '.\\\u0440\u0430\u0443'),
+    },
+    shows: ['.\\⟨U+0440⟩⟨U+0430⟩⟨U+0443⟩'],
+    warns: true,
+  },
+  {
     name: 'ansi',
     prompt: {
       tool: 'run_shell',
@@ -137,6 +158,61 @@ const CASES: Case[] = [
     },
     shows: ['**bold** <img src=x onerror="window.pwned=1">', '<script>window.pwned=1</script>'],
     warns: false,
+  },
+  {
+    // Without an override, the bidi algorithm shows this as C:\\safe\\..\\א\\evil.exe or similar.
+    name: 'rtl-path',
+    prompt: {
+      tool: 'delete_path',
+      kind: 'delete',
+      summary: `Move C:\\safe\\${ALEF}\\..\\evil.exe to the Recycle Bin`,
+      detail: `C:\\safe\\${ALEF}\\..\\evil.exe`,
+    },
+    shows: [`C:\\safe\\${ALEF}\\..\\evil.exe`],
+    warns: false,
+    rtl: true,
+  },
+  {
+    name: 'rtl-flags',
+    prompt: {
+      tool: 'run_shell',
+      kind: 'shell',
+      summary: `Run a command in ${PROJECT}\\${SHALOM}`,
+      detail: shellDetail(
+        `${PROJECT}\\${SHALOM} 2`,
+        `Copy-Item -Force .\\${SHALOM}\\..\\a.ps1 -Destination C:\\Windows\\System32\\ ${MILAF}.txt:1 -Recurse`,
+      ),
+    },
+    shows: [`.\\${SHALOM}\\..\\a.ps1 -Destination`, `${MILAF}.txt:1 -Recurse`],
+    warns: false,
+    rtl: true,
+  },
+  {
+    name: 'rtl-move',
+    prompt: {
+      tool: 'move_file',
+      kind: 'move',
+      summary: `Move ${MILAF}.1.txt to ${MILAF} 2\\..\\x.exe`,
+      detail: `${PROJECT}\\${MILAF}.1.txt\n→ ${PROJECT}\\${MILAF} 2\\..\\x.exe`,
+    },
+    shows: [`${MILAF}.1.txt`, `${MILAF} 2\\..\\x.exe`],
+    warns: false,
+    rtl: true,
+  },
+  {
+    name: 'rtl-mixed-command',
+    prompt: {
+      tool: 'run_shell',
+      kind: 'shell',
+      summary: `Run a command in ${PROJECT}`,
+      detail: shellDetail(
+        PROJECT,
+        `git commit -m "${FIX} bug 12 ${ALEF}-v2.0" --author="${DANA} <d@x.io>"`,
+      ),
+    },
+    shows: [`"${FIX} bug 12 ${ALEF}-v2.0" --author="${DANA} <d@x.io>"`],
+    warns: false,
+    rtl: true,
   },
   {
     name: 'everything',
@@ -418,6 +494,9 @@ for (const { width, height } of WIDTHS) {
         await expect(
           dialog.getByText('this request contains hidden, control or look-alike'),
         ).toHaveCount(testCase.warns ? 1 : 0)
+        await expect(dialog.getByText('contains right-to-left characters')).toHaveCount(
+          testCase.rtl ? 1 : 0,
+        )
 
         // Nothing in the untrusted text is rendered as markup.
         expect(

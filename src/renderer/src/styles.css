@@ -569,11 +569,18 @@ pre {
   overflow-wrap: anywhere;
 }
 
-/* Untrusted text in approvals: isolated left-to-right, hidden characters revealed. */
-
+/*
+ * Untrusted text in approvals: isolated, and forced left-to-right in stored
+ * order. A plain isolate still lets the bidi algorithm reorder right-to-left
+ * letters and the slashes, dots and spaces around them, so a path or command
+ * could be shown in a different order from what runs. The override applies to
+ * every character inside, tokens included. (bidi-override is the fallback.)
+ */
 .untrusted,
-.untrusted-line {
-  unicode-bidi: isolate;
+.untrusted-line,
+.untrusted-block {
+  unicode-bidi: bidi-override;
+  unicode-bidi: isolate-override;
   direction: ltr;
 }
 
@@ -589,8 +596,6 @@ pre {
 }
 
 .untrusted-block {
-  unicode-bidi: isolate;
-  direction: ltr;
   text-align: left;
 }
 
