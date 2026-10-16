@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApprovalPrompt } from '../../../shared/ipc'
-import css from '../styles.css?raw'
+import css from '../styles/components.css?raw'
 import { ApprovalCard } from './ApprovalCard'
 import { SafeText } from './reveal'
 import { summarizeInput, ToolCard } from './ToolCard'

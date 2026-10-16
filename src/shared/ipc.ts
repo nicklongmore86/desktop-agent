@@ -20,6 +20,8 @@ export const IpcChannels = {
   providerSubmitLoginCode: 'provider:submit-login-code',
   modelGet: 'model:get',
   modelSet: 'model:set',
+  themeGet: 'theme:get',
+  themeSet: 'theme:set',
 
   chatLoad: 'chat:load',
   chatSend: 'chat:send',
@@ -56,6 +58,10 @@ export interface ProviderLoginState {
 }
 
 export type LoginCodeResult = { ok: true } | { ok: false; error: string }
+
+/** The colour theme: follow the operating system, or force light or dark. */
+export const THEMES = ['system', 'light', 'dark'] as const
+export type ThemePreference = (typeof THEMES)[number]
 
 export interface AppInfo {
   name: string
@@ -211,6 +217,11 @@ export interface DesktopApi {
   model: {
     get: () => Promise<ModelSettings>
     set: (model: string) => Promise<ModelSettings>
+  }
+  theme: {
+    get: () => Promise<ThemePreference>
+    /** Saves the choice and answers with what is now stored. */
+    set: (theme: ThemePreference) => Promise<ThemePreference>
   }
   chat: {
     load: () => Promise<ChatState>

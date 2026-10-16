@@ -11,6 +11,7 @@ import type {
   ProviderLoginState,
   ProviderStatus,
   ProviderId,
+  ThemePreference,
 } from '../../../shared/ipc'
 
 export interface FakeApiOptions {
@@ -19,6 +20,7 @@ export interface FakeApiOptions {
   chat?: ChatState
   provider?: ProviderStatus
   audit?: AuditStatus
+  theme?: ThemePreference
 }
 
 /** A DesktopApi double: spies for every call, plus `push*` to simulate main's events. */
@@ -40,6 +42,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
       { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
     ],
   }
+  let theme: ThemePreference = options.theme ?? 'system'
   const subscribe =
     <T>(set: Set<(value: T) => void>) =>
     (listener: (value: T) => void) => {
@@ -114,6 +117,13 @@ export function fakeApi(options: FakeApiOptions = {}) {
       set: vi.fn((id: string) => {
         model = { ...model, model: id }
         return Promise.resolve(model)
+      }),
+    },
+    theme: {
+      get: vi.fn(() => Promise.resolve(theme)),
+      set: vi.fn((next: ThemePreference) => {
+        theme = next
+        return Promise.resolve(theme)
       }),
     },
     chat: {

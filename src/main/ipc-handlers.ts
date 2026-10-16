@@ -1,6 +1,9 @@
+import { z } from 'zod'
 import {
   IpcChannels,
   PROVIDERS,
+  THEMES,
+  type ThemePreference,
   type ProviderId,
   type DesktopApi,
   type ApiKeyStatus,
@@ -58,10 +61,14 @@ export interface IpcServices {
   settings: {
     view: () => ModelSettings
     setModel: (model: string) => Promise<ModelSettings>
+    readonly theme: ThemePreference
+    setTheme: (theme: ThemePreference) => Promise<ThemePreference>
   }
   chat: ChatService
   audit: () => AuditStatus
 }
+
+const themeSchema = z.enum(THEMES)
 
 /** Messages the stores throw are written for users and never contain the key. */
 function messageOf(error: unknown, fallback: string): string {
@@ -160,6 +167,13 @@ export function registerIpcHandlers(
   handle(IpcChannels.modelSet, async (model) => {
     if (typeof model !== 'string') throw new Error('Unknown model.')
     return services.settings.setModel(model)
+  })
+
+  handle(IpcChannels.themeGet, () => services.settings.theme)
+  handle(IpcChannels.themeSet, (theme) => {
+    const parsed = themeSchema.safeParse(theme)
+    if (!parsed.success) throw new Error('Unknown theme.')
+    return services.settings.setTheme(parsed.data)
   })
 
   handle(IpcChannels.chatLoad, () => services.chat.state())

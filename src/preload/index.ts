@@ -45,6 +45,10 @@ const api: DesktopApi = {
     get: () => invoke(IpcChannels.modelGet),
     set: (model) => invoke(IpcChannels.modelSet, model),
   },
+  theme: {
+    get: () => invoke(IpcChannels.themeGet),
+    set: (theme) => invoke(IpcChannels.themeSet, theme),
+  },
   chat: {
     load: () => invoke(IpcChannels.chatLoad),
     send: (text) => invoke(IpcChannels.chatSend, text),

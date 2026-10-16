@@ -1,0 +1,167 @@
+/*
+ * Design tokens: the only place raw colours, radii, spacing, type sizes and
+ * durations are defined. Components use `var(--…)` and never hard-code them.
+ *
+ *   --color-*     colour roles (light and dark; see below)
+ *   --radius-*    corner radii: sm 6, md 10, lg 16, pill
+ *   --space-*     4px scale: 1=4  2=8  3=12  4=16  6=24  8=32
+ *   --font-*      families and the type scale: xs 12, sm 13, base 14, md 16, lg 20, xl 24
+ *   --duration-*  motion: fast 120ms, base 200ms
+ *
+ * Colour roles
+ *   surface-0/1/2     page / panels and sidebar / raised, hovered, user bubble
+ *   border            hairlines; border-control: input and select outlines (3:1)
+ *   text, text-muted  body and secondary text (>= 4.5:1 on every surface)
+ *   accent            fills and the focus ring; on-accent is the text on it
+ *   accent-text       accent used as text or a link (>= 4.5:1 on the surfaces)
+ *   danger/warning/success
+ *                     solid fill (+ on-*), readable text colour (*-text) and a
+ *                     tinted background (*-bg); text sits on surface-0 or *-bg
+ *   diff-*            diff additions and deletions
+ *
+ * Theme: light by default. Dark applies when the OS prefers it (theme "system")
+ * or when <html data-theme="dark"> is set. data-theme="light" forces light.
+ * styles/contrast.test.ts
+ * checks the text pairs, so edit values there and in both dark blocks together.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Colour: light */
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f7f7f8;
+  --color-surface-2: #efeff1;
+  --color-border: #e4e4e7;
+  --color-border-control: #8a8a92;
+  --color-text: #18181b;
+  --color-text-muted: #5f6368;
+  --color-accent: #2f6fed;
+  --color-accent-hover: #2760d4;
+  --color-accent-text: #1f55c9;
+  --color-on-accent: #ffffff;
+  --color-accent-bg: #e8effd;
+  --color-danger: #c62828;
+  --color-danger-text: #b3261e;
+  --color-on-danger: #ffffff;
+  --color-danger-bg: #fdecec;
+  --color-warning: #b25e00;
+  --color-warning-text: #7a4300;
+  --color-warning-bg: #fff4d6;
+  --color-success: #1a7f37;
+  --color-success-text: #166a2e;
+  --color-success-bg: #e6f6ea;
+  --color-diff-add-bg: #dafbe1;
+  --color-diff-add-text: #116329;
+  --color-diff-del-bg: #ffebe9;
+  --color-diff-del-text: #82071e;
+  --color-code-bg: var(--color-surface-1);
+  --color-overlay: rgb(0 0 0 / 45%);
+  --color-focus-ring: var(--color-accent);
+  --shadow-raised: 0 4px 24px rgb(0 0 0 / 6%);
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* Spacing (4px scale) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Type */
+  --font-ui: system-ui, 'Segoe UI Variable', 'Segoe UI', sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, monospace;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-base: 14px;
+  --font-size-md: 16px;
+  --font-size-lg: 20px;
+  --font-size-xl: 24px;
+  /* Chat body text, and the cap for headings inside messages. */
+  --font-size-body: 15px;
+  --font-size-message-heading: 18px;
+  --line-height-body: 1.6;
+  --line-height-tight: 1.35;
+
+  /* Layout */
+  --message-column: 720px;
+
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --ease: ease-out;
+}
+
+/* Dark: the OS prefers it and the user has not forced light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --color-surface-0: #171717;
+    --color-surface-1: #202020;
+    --color-surface-2: #2a2a2a;
+    --color-border: #333333;
+    --color-border-control: #78787f;
+    --color-text: #ececec;
+    --color-text-muted: #a1a1a6;
+    --color-accent: #6c9dff;
+    --color-accent-hover: #86afff;
+    --color-accent-text: #8ab0ff;
+    --color-on-accent: #0b1220;
+    --color-accent-bg: #1c2a47;
+    --color-danger: #ff7b72;
+    --color-danger-text: #ff8d85;
+    --color-on-danger: #1c0a09;
+    --color-danger-bg: #3a1c1e;
+    --color-warning: #e0a63c;
+    --color-warning-text: #e8b95a;
+    --color-warning-bg: #33290f;
+    --color-success: #4ccf7a;
+    --color-success-text: #5ad886;
+    --color-success-bg: #12261a;
+    --color-diff-add-bg: #12261e;
+    --color-diff-add-text: #7ee787;
+    --color-diff-del-bg: #2d1214;
+    --color-diff-del-text: #ffa198;
+    --color-overlay: rgb(0 0 0 / 60%);
+    --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
+  }
+}
+
+/* Dark: forced by the user. Keep identical to the block above. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-surface-0: #171717;
+  --color-surface-1: #202020;
+  --color-surface-2: #2a2a2a;
+  --color-border: #333333;
+  --color-border-control: #78787f;
+  --color-text: #ececec;
+  --color-text-muted: #a1a1a6;
+  --color-accent: #6c9dff;
+  --color-accent-hover: #86afff;
+  --color-accent-text: #8ab0ff;
+  --color-on-accent: #0b1220;
+  --color-accent-bg: #1c2a47;
+  --color-danger: #ff7b72;
+  --color-danger-text: #ff8d85;
+  --color-on-danger: #1c0a09;
+  --color-danger-bg: #3a1c1e;
+  --color-warning: #e0a63c;
+  --color-warning-text: #e8b95a;
+  --color-warning-bg: #33290f;
+  --color-success: #4ccf7a;
+  --color-success-text: #5ad886;
+  --color-success-bg: #12261a;
+  --color-diff-add-bg: #12261e;
+  --color-diff-add-text: #7ee787;
+  --color-diff-del-bg: #2d1214;
+  --color-diff-del-text: #ffa198;
+  --color-overlay: rgb(0 0 0 / 60%);
+  --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
+}

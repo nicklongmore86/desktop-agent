@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChatEvent } from '../src/shared/ipc'
 
-for (const width of [360, 1280]) {
+for (const width of [360, 400, 1280]) {
   test(`workspace chat stays usable at ${String(width)}px and labels the selected provider`, async () => {
     const app = await electron.launch({
       args: [

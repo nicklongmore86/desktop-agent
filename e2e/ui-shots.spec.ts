@@ -54,10 +54,23 @@ for (const width of [1280, 400]) {
     test(`screens at ${String(width)}px, ${scheme}`, async () => {
       mkdirSync(OUT, { recursive: true })
       const { app, page } = await launch(width)
-      const shot = (name: string): Promise<Buffer> =>
-        page.screenshot({ path: join(OUT, `${name}-${scheme}-${String(width)}.png`) })
+      const shot = async (name: string): Promise<void> => {
+        // Let the frame settle (media-query changes repaint asynchronously) before capturing.
+        await page.evaluate(
+          () =>
+            new Promise<void>((done) => {
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  done()
+                })
+              })
+            }),
+        )
+        await page.screenshot({ path: join(OUT, `${name}-${scheme}-${String(width)}.png`) })
+      }
       try {
-        await page.emulateMedia({ colorScheme: scheme })
+        // Reduced motion keeps the screenshots from catching a colour transition mid-way.
+        await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' })
 
         // Empty chat.
         await expect(

@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { IpcChannels, type ApprovalPrompt, type ChatEvent } from '../shared/ipc'
+import {
+  IpcChannels,
+  type ApprovalPrompt,
+  type ChatEvent,
+  type ThemePreference,
+} from '../shared/ipc'
 import type { RunOptions } from './agent'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { ChatSession } from './chat/session'
@@ -68,6 +73,8 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
     },
     pickFolder: vi.fn(() => Promise.resolve<string | null>('/picked')),
     settings: {
+      theme: 'system' as const,
+      setTheme: vi.fn((theme: ThemePreference) => Promise.resolve(theme)),
       view: () => ({ model: 'm', defaultModel: 'm', options: [{ id: 'm', label: 'M' }] }),
       setModel: vi.fn(() =>
         Promise.resolve({ model: 'm', defaultModel: 'm', options: [{ id: 'm', label: 'M' }] }),
@@ -250,6 +257,17 @@ describe('registerIpcHandlers', () => {
     expect(services.settings.setModel).not.toHaveBeenCalled()
     await invoke(IpcChannels.modelSet, appFrame, 'm')
     expect(services.settings.setModel).toHaveBeenCalledWith('m')
+  })
+
+  it('validates the theme before saving it', async () => {
+    const { invoke, services } = setup()
+    expect(await invoke(IpcChannels.themeGet, appFrame)).toBe('system')
+    for (const bad of ['sepia', 'DARK', 1, null, { theme: 'dark' }]) {
+      await expect(invoke(IpcChannels.themeSet, appFrame, bad)).rejects.toThrow('Unknown theme.')
+    }
+    expect(services.settings.setTheme).not.toHaveBeenCalled()
+    await invoke(IpcChannels.themeSet, appFrame, 'dark')
+    expect(services.settings.setTheme).toHaveBeenCalledWith('dark')
   })
 
   it('passes chat calls and approval answers through to the session', async () => {
