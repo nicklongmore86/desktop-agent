@@ -7,6 +7,7 @@ import './styles/tokens.css'
 import './styles/base.css'
 import './styles/components.css'
 import './styles/files.css'
+import './styles/git.css'
 
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root element')

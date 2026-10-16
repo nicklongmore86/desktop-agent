@@ -22,6 +22,8 @@
  *   ft-*              file types in the Files tree (icon and extension badge): doc,
  *                     sheet, slide, pdf, code, image, media, archive (>= 4.5:1 on
  *                     surface-0/1/2 and accent-bg, the selected row)
+ *   git-*             change status in the Git panel: added, modified, deleted,
+ *                     renamed, untracked (>= 4.5:1 on surface-0/1/2 and accent-bg)
  *
  * Theme: light by default. Dark applies when the OS prefers it (theme "system")
  * or when <html data-theme="dark"> is set. data-theme="light" forces light.
@@ -74,6 +76,11 @@
   --color-ft-image: #b02a68;
   --color-ft-media: #4a4ac8;
   --color-ft-archive: #7a4f2a;
+  --color-git-added: #166a2e;
+  --color-git-modified: #7a4300;
+  --color-git-deleted: #b3261e;
+  --color-git-renamed: #1f55c9;
+  --color-git-untracked: #0b6a73;
   --color-code-bg: var(--color-surface-1);
   --color-overlay: rgb(0 0 0 / 45%);
   --color-focus-ring: var(--color-accent);
@@ -171,6 +178,11 @@
     --color-ft-image: #ff8cc0;
     --color-ft-media: #a9acff;
     --color-ft-archive: #d3a67e;
+    --color-git-added: #7ee787;
+    --color-git-modified: #e3b341;
+    --color-git-deleted: #ffa198;
+    --color-git-renamed: #7fb0ff;
+    --color-git-untracked: #6fd3dc;
     --color-overlay: rgb(0 0 0 / 60%);
     --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
   }
@@ -220,6 +232,11 @@
   --color-ft-image: #ff8cc0;
   --color-ft-media: #a9acff;
   --color-ft-archive: #d3a67e;
+  --color-git-added: #7ee787;
+  --color-git-modified: #e3b341;
+  --color-git-deleted: #ffa198;
+  --color-git-renamed: #7fb0ff;
+  --color-git-untracked: #6fd3dc;
   --color-overlay: rgb(0 0 0 / 60%);
   --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
 }

@@ -71,6 +71,14 @@ const PAIRS: [string, string, number][] = [
         4.5,
       ]),
   ),
+  ...['added', 'modified', 'deleted', 'renamed', 'untracked'].flatMap(
+    (name): [string, string, number][] =>
+      [...SURFACES, '--color-accent-bg'].map((surface): [string, string, number] => [
+        `--color-git-${name}`,
+        surface,
+        4.5,
+      ]),
+  ),
   ['--color-border-control', '--color-surface-0', 3],
   ['--color-border-control', '--color-surface-1', 3],
   ['--color-accent', '--color-surface-0', 3],
@@ -226,11 +234,14 @@ function tokenProblems(source: string, defined: ReadonlySet<string>): string[] {
 }
 
 describe('stylesheets use tokens', () => {
-  const sheets = import.meta.glob<string>(['./base.css', './components.css', './files.css'], {
-    query: '?raw',
-    import: 'default',
-    eager: true,
-  })
+  const sheets = import.meta.glob<string>(
+    ['./base.css', './components.css', './files.css', './git.css'],
+    {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    },
+  )
 
   it.each(Object.entries(sheets))('%s only uses defined tokens, with no literals', (_file, css) => {
     // The scanner really read declarations (a parse failure must not look like a pass).
