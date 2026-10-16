@@ -162,7 +162,14 @@ for (const width of [1280, 400]) {
             plan: 'Plus',
             state: 'available',
             resetsAt: null,
-            windows: [{ limitId: 'codex:secondary', remainingPercent: 18, resetsAt: null }],
+            windows: [
+              {
+                limitId: 'codex:secondary',
+                remainingPercent: 18,
+                resetsAt: null,
+                label: 'weekly limit',
+              },
+            ],
             lastError: null,
           })
         })

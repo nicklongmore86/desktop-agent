@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ProviderAllowance, ProviderId } from '../../shared/ipc'
+import type {
+  AllowanceWindow,
+  ProviderAllowance,
+  ProviderFailure,
+  ProviderId,
+} from '../../shared/ipc'
 import { useApi } from './api'
 
 /** At or above this share of any window used, the indicator turns amber. */
@@ -20,8 +25,8 @@ export const usedPercent = (remainingPercent: number): number =>
   Math.min(100, Math.max(0, Math.round(100 - remainingPercent)))
 
 /** The user-facing name of a rate-limit window. */
-export const windowName = (limitId: string): string =>
-  limitId.endsWith(':secondary') ? 'weekly limit' : 'usage limit'
+export const windowName = (window: Pick<AllowanceWindow, 'label'>): string =>
+  window.label ?? 'usage limit'
 
 /** The window with the most usage, or null when the provider reports none (Claude). */
 function busiestWindow(allowance: ProviderAllowance): { used: number; name: string } | null {
@@ -29,7 +34,7 @@ function busiestWindow(allowance: ProviderAllowance): { used: number; name: stri
   for (const window of allowance.windows) {
     const used = usedPercent(window.remainingPercent)
     if (!best || used > best.used) {
-      best = { used, name: windowName(window.limitId) }
+      best = { used, name: windowName(window) }
     }
   }
   return best
@@ -81,14 +86,42 @@ export function summarizeUsage(
   return { level, text, detail: `${plan}: ${text}` }
 }
 
+/**
+ * Specific text for a typed provider failure, or null for codes without one
+ * (callers keep their generic text).
+ */
+export function describeFailure(
+  failure: ProviderFailure | null | undefined,
+  now: Date = new Date(),
+): string | null {
+  if (!failure) return null
+  switch (failure.code) {
+    case 'auth_expired':
+      return 'Sign-in expired — sign in again'
+    case 'usage_limit': {
+      const reset = formatReset(failure.resetsAt, now)
+      return reset ? `Limit reached — resets ${reset}` : 'Limit reached'
+    }
+    case 'runtime_unavailable':
+      return 'The provider runtime is unavailable right now'
+    case 'model_unavailable':
+      return 'That model is not available for this account'
+    default:
+      return null
+  }
+}
+
 interface Loaded {
   provider: ProviderId
-  allowance: ProviderAllowance
+  allowance: ProviderAllowance | null
+  failure: ProviderFailure | null
 }
 
 export interface ProviderUsage {
   /** The allowance of `provider`; null while unknown, unreadable or from another provider. */
   allowance: ProviderAllowance | null
+  /** Why the allowance could not be read, when the provider gave a typed reason. */
+  failure: ProviderFailure | null
   /** Reads it again. Safe to call at any time; stale answers are ignored. */
   refresh: () => void
 }
@@ -108,11 +141,15 @@ export function useProviderUsage(provider: ProviderId | undefined): ProviderUsag
     let current = true
     const read = async (): Promise<void> => {
       let next: ProviderAllowance | null = null
+      let failure: ProviderFailure | null = null
       try {
         const result = await api.provider.allowance()
         if (result.ok) {
           if (result.value.provider === provider) next = result.value
-        } else if (result.failure.code === 'usage_limit') {
+        } else {
+          failure = result.failure
+        }
+        if (!result.ok && result.failure.code === 'usage_limit') {
           next = {
             provider,
             plan: null,
@@ -125,7 +162,7 @@ export function useProviderUsage(provider: ProviderId | undefined): ProviderUsag
       } catch {
         // Unknown allowance is shown as nothing.
       }
-      if (current) setLoaded(next ? { provider, allowance: next } : null)
+      if (current) setLoaded({ provider, allowance: next, failure })
     }
     void read()
     return () => {
@@ -137,5 +174,6 @@ export function useProviderUsage(provider: ProviderId | undefined): ProviderUsag
     setTick((value) => value + 1)
   }, [])
 
-  return { allowance: loaded && loaded.provider === provider ? loaded.allowance : null, refresh }
+  const own = loaded && loaded.provider === provider ? loaded : null
+  return { allowance: own?.allowance ?? null, failure: own?.failure ?? null, refresh }
 }

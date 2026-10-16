@@ -1,5 +1,5 @@
 import type { ChatItem } from '../../../shared/ipc'
-import { SafeLines, SafeText } from './reveal'
+import { hasLatin, SafeLines, SafeText } from './reveal'
 import { StatusIcon, type ToolStatus } from './StatusIcon'
 
 const MAX_SUMMARY = 80
@@ -52,15 +52,18 @@ export function ToolCard({
 }): React.JSX.Element {
   const status = toolStatus(item, running)
   const content = item.result?.content ?? ''
+  // The expanded input is JSON, whose Latin keys make a look-alike word a disguise; give the
+  // one-line summary the same context so a command made only of look-alikes is marked too.
+  const latinContext = hasLatin(stringify(item.input)) || hasLatin(item.name)
   return (
     <details className={`tool-card tool-${status.replace(' ', '-')}`}>
       <summary>
         <StatusIcon status={status} />
         <span className="tool-name">
-          <SafeText text={item.name} />
+          <SafeText text={item.name} latinContext={latinContext} />
         </span>
         <span className="tool-input">
-          <SafeText text={summarizeInput(item.input)} />
+          <SafeText text={summarizeInput(item.input)} latinContext={latinContext} />
         </span>
         <span className="tool-status">{status}</span>
       </summary>

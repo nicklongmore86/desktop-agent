@@ -172,7 +172,8 @@ async function nativeClaude(f: Awaited<ReturnType<typeof fixture>>) {
 /** Project and user configuration that must never load, including an API key helper. */
 async function hostileClaudeConfig(f: Awaited<ReturnType<typeof fixture>>) {
   const settings = JSON.stringify({
-    apiKeyHelper: 'echo sk-ant-api03-hostile-helper',
+    // Leaves a trace if it ever runs; the tests assert the trace never appears.
+    apiKeyHelper: 'echo sk-ant-api03-hostile-helper && echo ran > api-key-helper-marker.txt',
     hooks: {
       SessionStart: [{ hooks: [{ type: 'command', command: 'echo bypass > bypass-marker.txt' }] }],
     },
@@ -217,6 +218,7 @@ it('pinned native Claude ignores hostile project hooks, MCP and instructions wit
     }
     expect(initialized).toBe(true)
     await expect(readFile(join(f.cwd, 'bypass-marker.txt'))).rejects.toThrow()
+    await expect(readFile(join(f.cwd, 'api-key-helper-marker.txt'))).rejects.toThrow()
   } finally {
     clearTimeout(timer)
     controller.abort()
@@ -228,19 +230,21 @@ it('pinned native Claude reads the subscription sign-in from the isolated direct
   const f = await fixture()
   const file = await nativeClaude(f)
   await hostileClaudeConfig(f)
-  // The shape written by `claude auth login`; the token is never sent because no prompt is.
-  await writeFile(
-    join(f.auth, '.credentials.json'),
+  const signIn = (subscriptionType: string, tag: string) =>
     JSON.stringify({
       claudeAiOauth: {
-        accessToken: 'sk-ant-oat01-desktop-agent-test',
-        refreshToken: 'sk-ant-ort01-desktop-agent-test',
+        accessToken: `sk-ant-oat01-${tag}`,
+        refreshToken: `sk-ant-ort01-${tag}`,
         expiresAt: Date.now() + 3600000,
         scopes: ['user:inference', 'user:profile'],
-        subscriptionType: 'max',
+        subscriptionType,
       },
-    }),
-  )
+    })
+  // A different sign-in in the host's own Claude folder, outside the app's provider folder.
+  await mkdir(join(f.home, '.claude'))
+  await writeFile(join(f.home, '.claude', '.credentials.json'), signIn('pro', 'host-competing'))
+  // The shape written by `claude auth login`; the token is never sent because no prompt is.
+  await writeFile(join(f.auth, '.credentials.json'), signIn('max', 'desktop-agent-test'))
   const controller = new AbortController()
   const timer = setTimeout(() => {
     controller.abort()
@@ -265,12 +269,15 @@ it('pinned native Claude reads the subscription sign-in from the isolated direct
   try {
     const account = await stream.accountInfo()
     expect(account).toMatchObject({ apiProvider: 'firstParty', subscriptionType: 'Claude Max' })
+    // Only the app's own sign-in (Max) is used, never the competing host one (Pro).
+    expect(account.subscriptionType).not.toBe('Claude Pro')
     expect(account.apiKeySource ?? 'none').toBe('none')
     expect(account.tokenSource).not.toBe('none')
     expect((await stream.getContextUsage()).memoryFiles).toEqual([])
     expect(await stream.mcpServerStatus()).toEqual([])
     expect((await stream.initializationResult()).commands).toEqual([])
     await expect(readFile(join(f.cwd, 'bypass-marker.txt'))).rejects.toThrow()
+    await expect(readFile(join(f.cwd, 'api-key-helper-marker.txt'))).rejects.toThrow()
   } finally {
     clearTimeout(timer)
     controller.abort()

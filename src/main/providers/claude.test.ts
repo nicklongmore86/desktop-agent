@@ -23,6 +23,8 @@ let mode:
   | 'normal'
   | 'api'
   | 'bare'
+  | 'no-subscription'
+  | 'no-token'
   | 'cloud'
   | 'builtin'
   | 'expired'
@@ -49,18 +51,27 @@ beforeEach(() => {
             // Shapes reported by the pinned CLI: subscription sign-in, and --bare (no sign-in read).
             mode === 'bare'
               ? { apiProvider: 'firstParty', tokenSource: 'none' }
-              : mode === 'api'
-                ? {
-                    apiProvider: 'firstParty',
-                    apiKeySource: 'ANTHROPIC_API_KEY',
-                    subscriptionType: 'Claude Max',
-                  }
-                : mode === 'cloud'
-                  ? { apiProvider: 'bedrock', subscriptionType: 'Claude Max' }
-                  : {
+              : // Each "not signed in" condition alone: a token without a plan, and a plan without a token.
+                mode === 'no-subscription'
+                ? { apiProvider: 'firstParty', tokenSource: 'claude.ai' }
+                : mode === 'no-token'
+                  ? {
                       apiProvider: 'firstParty',
-                      subscriptionType: mode === 'free' ? 'Free' : 'Claude Max',
-                    },
+                      tokenSource: 'none',
+                      subscriptionType: 'Claude Max',
+                    }
+                  : mode === 'api'
+                    ? {
+                        apiProvider: 'firstParty',
+                        apiKeySource: 'ANTHROPIC_API_KEY',
+                        subscriptionType: 'Claude Max',
+                      }
+                    : mode === 'cloud'
+                      ? { apiProvider: 'bedrock', subscriptionType: 'Claude Max' }
+                      : {
+                          apiProvider: 'firstParty',
+                          subscriptionType: mode === 'free' ? 'Free' : 'Claude Max',
+                        },
           ),
         async *[Symbol.asyncIterator]() {
           if (typeof request.prompt === 'string') throw new Error('Expected gated input.')
@@ -123,7 +134,7 @@ beforeEach(() => {
       }) as unknown as ReturnType<typeof query>,
   )
 })
-function setup() {
+function setup(observe: Parameters<typeof createClaudeSubscriptionRunner>[2] = {}) {
   const events: AgentEvent[] = []
   const controller = new AbortController()
   const execute = vi.fn(() => Promise.resolve({ content: 'safe' }))
@@ -136,6 +147,7 @@ function setup() {
   const runner = createClaudeSubscriptionRunner(
     { file: 'C:\\Program Files\\Claude\\claude.exe', cwd: 'C:\\isolated', env: {} },
     [tool],
+    observe,
   )
   const run = () =>
     runner.run([{ role: 'user', content: 'read' }], {
@@ -174,7 +186,7 @@ it('gates input on subscription auth and bridges only app tools', async () => {
   expect(options?.extraArgs).not.toHaveProperty('bare')
   expect(close).toHaveBeenCalledOnce()
 })
-it.each(['api', 'cloud', 'bare'] as const)(
+it.each(['api', 'cloud', 'bare', 'no-subscription', 'no-token'] as const)(
   'refuses %s authentication before sending any prompt',
   async (state) => {
     mode = state
@@ -222,6 +234,16 @@ it.each([
   if (state === 'limit')
     expect(events.at(-1)).toMatchObject({ resetsAt: '2027-01-15T08:00:00.000Z' })
   expect(query).toHaveBeenCalledTimes(1)
+})
+
+it('reports a rejected rate_limit_event to onLimit with the plausible reset', async () => {
+  mode = 'limit'
+  const onLimit = vi.fn()
+  const onAvailable = vi.fn()
+  const { run } = setup({ onLimit, onAvailable })
+  await run()
+  expect(onLimit).toHaveBeenCalledExactlyOnceWith('2027-01-15T08:00:00.000Z')
+  expect(onAvailable).not.toHaveBeenCalled()
 })
 
 beforeEach(() => {

@@ -279,10 +279,16 @@ export function moveFileTool(deps: ResolvedDeps): ToolSpec<Input> {
     const before = await fs.lstat(destination, { bigint: true })
     if (!before.isFile()) throw movedChanged(destination, 'nothing was moved')
     assertSingleLink(destination, before)
-    const path = guard.path.join(
-      guard.path.dirname(destination),
-      `.${guard.path.basename(destination)}.${randomBytes(6).toString('hex')}.replaced`,
-    )
+    // The name starts with a fixed marker, never the file's own name, so a set-aside copy of
+    // `env.local` cannot be taken for a protected `.env.*` file. If the random name is taken
+    // (vanishingly unlikely) one fresh name is tried before giving up.
+    const candidate = (): string =>
+      guard.path.join(
+        guard.path.dirname(destination),
+        `.aside-${randomBytes(6).toString('hex')}.${guard.path.basename(destination)}.replaced`,
+      )
+    let path = candidate()
+    if (await occupied(path)) path = candidate()
     if (!(await renameNoClobber(destination, path))) {
       throw movedChanged(destination, 'nothing was moved')
     }

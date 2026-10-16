@@ -43,6 +43,26 @@ describe('ToolCard reveals hidden characters', () => {
     )
   })
 
+  it('marks a command made only of look-alike letters in the collapsed summary', () => {
+    const { container } = render(
+      <ToolCard
+        running={false}
+        item={{
+          kind: 'tool',
+          id: 't2',
+          name: 'run_shell',
+          input: { command: ch(0x440, 0x430, 0x443) },
+          result: null,
+        }}
+      />,
+    )
+    const summary = container.querySelector('.tool-input')
+    expect(summary?.querySelectorAll('.unsafe-char').length).toBeGreaterThan(0)
+    expect(
+      screen.getByLabelText('Tool input').querySelectorAll('.unsafe-char').length,
+    ).toBeGreaterThan(0)
+  })
+
   it('summarises only the first line of a multi-line command, without collapsing spaces', () => {
     expect(summarizeInput({ command: 'echo  a\tb\nRemove-Item x' })).toBe('echo  a\tb ⏎…')
     expect(summarizeInput({ command: 'one\rtwo' })).toBe('one ⏎…')

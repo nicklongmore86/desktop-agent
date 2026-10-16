@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ModelOption, ProviderId } from '../../shared/ipc'
+import type { ModelOption, ProviderFailure, ProviderId } from '../../shared/ipc'
 import { useApi } from './api'
 
 export interface ModelChoice {
@@ -14,6 +14,8 @@ export interface ModelChoice {
 export interface ProviderModelPicker {
   /** Null while loading, or when the provider has no list to choose from. */
   choice: ModelChoice | null
+  /** The typed reason the last read or save failed; null when it did not, or gave none. */
+  failure: ProviderFailure | null
   refresh: () => void
   /** Saves a model (null: the default). Returns false when it could not be saved. */
   select: (model: string | null) => Promise<boolean>
@@ -27,6 +29,8 @@ export interface ProviderModelPicker {
 export function useProviderModels(provider: ProviderId | undefined): ProviderModelPicker {
   const api = useApi()
   const [choice, setChoice] = useState<ModelChoice | null>(null)
+  const [readFailure, setReadFailure] = useState<ProviderFailure | null>(null)
+  const [saveFailure, setSaveFailure] = useState<ProviderFailure | null>(null)
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
@@ -34,6 +38,7 @@ export function useProviderModels(provider: ProviderId | undefined): ProviderMod
     let current = true
     const read = async (): Promise<void> => {
       let next: ModelChoice | null = null
+      let failed: ProviderFailure | null = null
       try {
         if (provider === 'anthropic-api') {
           const model = await api.model.get()
@@ -53,12 +58,17 @@ export function useProviderModels(provider: ProviderId | undefined): ProviderMod
                   ? 'Using default model'
                   : null,
             }
+          } else if (!result.ok) {
+            failed = result.failure
           }
         }
       } catch {
         // No picker when the list cannot be read.
       }
-      if (current) setChoice(next)
+      if (current) {
+        setChoice(next)
+        setReadFailure(failed)
+      }
     }
     void read()
     return () => {
@@ -67,18 +77,23 @@ export function useProviderModels(provider: ProviderId | undefined): ProviderMod
   }, [api, provider, tick])
 
   const refresh = useCallback(() => {
+    setSaveFailure(null)
     setTick((value) => value + 1)
   }, [])
 
   const select = useCallback(
     async (model: string | null): Promise<boolean> => {
+      setSaveFailure(null)
       try {
         if (provider === 'anthropic-api') {
           if (model === null) return false
           await api.model.set(model)
         } else {
           const result = await api.provider.setModel(model)
-          if (!result.ok) return false
+          if (!result.ok) {
+            setSaveFailure(result.failure)
+            return false
+          }
         }
       } catch {
         return false
@@ -90,5 +105,10 @@ export function useProviderModels(provider: ProviderId | undefined): ProviderMod
     [api, provider],
   )
 
-  return { choice: choice && choice.provider === provider ? choice : null, refresh, select }
+  return {
+    choice: choice && choice.provider === provider ? choice : null,
+    failure: saveFailure ?? readFailure,
+    refresh,
+    select,
+  }
 }
