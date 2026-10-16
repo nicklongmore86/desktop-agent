@@ -18,7 +18,7 @@ export default defineConfig({
           include: ['src/renderer/**/*.test.{ts,tsx}'],
           environment: 'jsdom',
           // Let tests read the real stylesheet (e.g. the untrusted-text rules).
-          css: { include: [/styles\.css/] },
+          css: { include: [/styles\/.*\.css/] },
           setupFiles: ['src/renderer/src/test/setup.ts'],
         },
       },

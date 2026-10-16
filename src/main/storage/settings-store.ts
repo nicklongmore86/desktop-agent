@@ -1,5 +1,12 @@
 import { z } from 'zod'
-import { PROVIDERS, type ProviderId, type ModelOption, type ModelSettings } from '../../shared/ipc'
+import {
+  PROVIDERS,
+  THEMES,
+  type ProviderId,
+  type ModelOption,
+  type ModelSettings,
+  type ThemePreference,
+} from '../../shared/ipc'
 import { DEFAULT_MODEL } from '../agent'
 import { readJsonFile, writeJsonFile } from './json-file'
 
@@ -16,6 +23,8 @@ interface SettingsFile {
   model: string
   provider: ProviderId
   providerModels: Partial<Record<ProviderId, string>>
+  /** Added later without a version bump: a missing or unknown value means 'system'. */
+  theme?: ThemePreference
 }
 
 export interface SettingsStore {
@@ -25,6 +34,9 @@ export interface SettingsStore {
   setProvider: (provider: ProviderId) => Promise<void>
   readonly model: string
   view: () => ModelSettings
+  readonly theme: ThemePreference
+  /** Throws for a theme that is not offered. */
+  setTheme: (theme: ThemePreference) => Promise<ThemePreference>
   /** Throws for a model that is not offered. */
   setModel: (model: string) => Promise<ModelSettings>
 }
@@ -36,6 +48,7 @@ const isOffered = (model: unknown): model is string =>
 export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let model = DEFAULT_MODEL
   let provider: ProviderId = 'anthropic-api'
+  let theme: ThemePreference = 'system'
   const selectionSchema = z.partialRecord(
     z.enum(PROVIDERS),
     z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/),
@@ -48,6 +61,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     const selections = selectionSchema.safeParse(parsed?.providerModels ?? {})
     if (selections.success) providerModels = selections.data
     if (isOffered(parsed?.model)) model = parsed.model
+    if (THEMES.includes(parsed?.theme as ThemePreference)) theme = parsed?.theme as ThemePreference
   } catch {
     // Keep the default.
   }
@@ -77,6 +91,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
           model,
           provider,
           providerModels: validated,
+          theme,
         } satisfies SettingsFile)
         providerModels = validated
       })
@@ -92,6 +107,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
           model,
           provider: next,
           providerModels,
+          theme,
         } satisfies SettingsFile)
         provider = next
       })
@@ -100,6 +116,23 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
       return model
     },
     view,
+    get theme() {
+      return theme
+    },
+    async setTheme(next) {
+      if (!THEMES.includes(next)) throw new Error('Unknown theme.')
+      return serial(async () => {
+        await writeJsonFile(file, {
+          version: 2,
+          model,
+          provider,
+          providerModels,
+          theme: next,
+        } satisfies SettingsFile)
+        theme = next
+        return theme
+      })
+    },
     async setModel(next) {
       if (!isOffered(next)) throw new Error('Unknown model.')
       return serial(async () => {
@@ -108,6 +141,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
           model: next,
           provider,
           providerModels,
+          theme,
         } satisfies SettingsFile)
         model = next
         return view()

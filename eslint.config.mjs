@@ -49,6 +49,11 @@ export default defineConfig([
     languageOptions: { globals: globals.node, sourceType: 'commonjs' },
   },
   {
+    // Classic script loaded from index.html before first paint.
+    files: ['src/renderer/public/*.js'],
+    languageOptions: { globals: globals.browser, sourceType: 'script' },
+  },
+  {
     files: ['**/*.mjs'],
     languageOptions: { globals: globals.node },
   },

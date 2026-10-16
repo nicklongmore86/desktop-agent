@@ -13,6 +13,7 @@ import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SettingsPanel } from './components/SettingsPanel'
+import { useTheme } from './theme'
 import { useChat } from './use-chat'
 
 const PROVIDER_NAMES: Record<ProviderId, string> = {
@@ -47,6 +48,8 @@ function SetupGuide({
 export function App(): React.JSX.Element {
   const api = useApi()
   const chat = useChat()
+  // Loads the saved theme and applies it; Settings reads and changes it with useTheme() too.
+  useTheme()
   const [view, setView] = useState<'chat' | 'settings'>('chat')
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
