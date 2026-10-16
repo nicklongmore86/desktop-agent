@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   ApiKeyStatus,
   AppInfo,
   AuditStatus,
   GrantsState,
-  ModelSettings,
   ProviderStatus,
   ProviderId,
 } from '../../shared/ipc'
@@ -13,9 +12,10 @@ import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SettingsDialog } from './components/SettingsDialog'
-import type { SettingsSection } from './components/SettingsPanel'
+import type { OpenSettings, SettingsSection } from './open-settings'
 import { useTheme } from './theme'
 import { useChat } from './use-chat'
+import { useShortcuts } from './use-shortcuts'
 
 const PROVIDER_NAMES: Record<ProviderId, string> = {
   'codex-subscription': 'Codex · ChatGPT',
@@ -39,7 +39,13 @@ function SetupGuide({
         {!keySaved && <li>Add your Anthropic API key, so Claude can answer.</li>}
         {!hasGrants && <li>Grant at least one folder, so the agent can work with your files.</li>}
       </ul>
-      <button type="button" className="button-primary" onClick={onOpenSettings}>
+      <button
+        type="button"
+        className="button-primary"
+        onClick={() => {
+          onOpenSettings()
+        }}
+      >
         Open Settings
       </button>
     </div>
@@ -55,7 +61,6 @@ export function App(): React.JSX.Element {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
   const [grants, setGrants] = useState<GrantsState | null>(null)
-  const [model, setModel] = useState<ModelSettings | null>(null)
   const [provider, setProvider] = useState<ProviderStatus | null>(null)
   const [audit, setAudit] = useState<AuditStatus | null>(null)
 
@@ -69,7 +74,6 @@ export function App(): React.JSX.Element {
     api.getAppInfo().then(setAppInfo, report('getAppInfo'))
     api.apiKey.status().then(setKeyStatus, report('apiKey.status'))
     api.grants.list().then(setGrants, report('grants.list'))
-    api.model.get().then(setModel, report('model.get'))
     api.audit.status().then(setAudit, report('audit.status'))
     return api.onAuditStatus(setAudit)
   }, [api])
@@ -77,14 +81,29 @@ export function App(): React.JSX.Element {
   const loaded = keyStatus !== null && grants !== null
   const keySaved = keyStatus?.saved ?? false
   const hasGrants = (grants?.roots.length ?? 0) > 0
-  const openSettings = (section: SettingsSection = 'accounts'): void => {
-    setSettingsSection(
-      ['accounts', 'folders', 'appearance', 'privacy', 'about'].includes(section)
-        ? section
-        : 'accounts',
-    )
+  const openSettings: OpenSettings = (section = 'accounts') => {
+    setSettingsSection(section)
   }
+  const composerRef = useRef<HTMLTextAreaElement>(null)
   const [approval, ...queued] = chat.state.approvals
+  useShortcuts(
+    {
+      newChat: () => {
+        if (chat.state.switching) return
+        setSettingsSection(null)
+        void chat.newChat()
+      },
+      openSettings: () => {
+        openSettings()
+      },
+      focusComposer: () => {
+        setSettingsSection(null)
+        // The message box mounts when the chat view is showing.
+        requestAnimationFrame(() => composerRef.current?.focus())
+      },
+    },
+    approval !== undefined,
+  )
   const providerName = provider ? PROVIDER_NAMES[provider.provider] : 'Loading provider…'
   const switchProvider = async (next: ProviderId): Promise<void> => {
     try {
@@ -122,31 +141,6 @@ export function App(): React.JSX.Element {
         >
           New chat
         </button>
-        <div className="sidebar-section">
-          <label htmlFor="chat-provider">Active provider</label>
-          <select
-            id="chat-provider"
-            value={provider?.provider ?? ''}
-            disabled={!provider || chat.state.switching}
-            onChange={(event) => {
-              void switchProvider(event.target.value as ProviderId)
-            }}
-          >
-            {!provider && <option value="">Loading…</option>}
-            {Object.entries(PROVIDER_NAMES).map(([id, label]) => (
-              <option key={id} value={id}>
-                {label}
-              </option>
-            ))}
-          </select>
-          <p className="sidebar-hint">
-            {chat.state.switching
-              ? 'Switching provider…'
-              : provider?.state === 'ready'
-                ? 'Connected'
-                : (provider?.message ?? 'Checking connection…')}
-          </p>
-        </div>
         <div className="sidebar-section sidebar-folders">
           <span className="sidebar-label">Folder access</span>
           {grants?.roots.length ? (
@@ -233,6 +227,10 @@ export function App(): React.JSX.Element {
             onDismissBanner={chat.dismissBanner}
             onDismissStorageWarning={chat.dismissStorageWarning}
             onOpenSettings={openSettings}
+            provider={provider}
+            providerNames={PROVIDER_NAMES}
+            onSwitchProvider={switchProvider}
+            composerRef={composerRef}
             notice={
               loaded && provider?.provider === 'anthropic-api' && (!keySaved || !hasGrants) ? (
                 <SetupGuide
@@ -275,8 +273,6 @@ export function App(): React.JSX.Element {
           onKeyStatus={setKeyStatus}
           grants={grants}
           onGrants={setGrants}
-          model={model}
-          onModel={setModel}
           audit={audit}
         />
       )}

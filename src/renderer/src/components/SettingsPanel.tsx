@@ -2,11 +2,11 @@ import type {
   ApiKeyStatus,
   AuditStatus,
   GrantsState,
-  ModelSettings,
   ProviderStatus,
   ProviderId,
   AppInfo,
 } from '../../../shared/ipc'
+import type { SettingsSection } from '../open-settings'
 import { AccountsSection } from './settings/AccountsSection'
 import { FoldersSection } from './settings/FoldersSection'
 import { AppearanceSection, PrivacySection, AboutSection } from './settings/OtherSections'
@@ -14,17 +14,14 @@ export interface SettingsPanelProps {
   provider?: ProviderStatus | null | undefined
   onProvider?: ((status: ProviderStatus) => void) | undefined
   /** Switches provider; the chat uses it to hide the old conversation meanwhile. */
-  onSwitchProvider?: ((provider: ProviderId) => Promise<ProviderStatus>) | undefined
+  onSwitchProvider: (provider: ProviderId) => Promise<ProviderStatus>
   keyStatus: ApiKeyStatus | null
   onKeyStatus: (status: ApiKeyStatus) => void
   grants: GrantsState | null
   onGrants: (grants: GrantsState) => void
-  model: ModelSettings | null
-  onModel: (model: ModelSettings) => void
   audit: AuditStatus | null
 }
 
-export type SettingsSection = 'accounts' | 'folders' | 'appearance' | 'privacy' | 'about'
 export const SETTINGS_SECTIONS = {
   accounts: 'Accounts & providers',
   folders: 'Folders & permissions',

@@ -7,15 +7,11 @@ import {
   type RefObject,
   type SubmitEvent,
 } from 'react'
-import type {
-  ApiKeyStatus,
-  ProviderLoginState,
-  ProviderStatus,
-  ProviderId,
-} from '../../../../shared/ipc'
+import type { ApiKeyStatus, ProviderLoginState, ProviderStatus } from '../../../../shared/ipc'
 import { useApi } from '../../api'
 import { UsageSection } from './UsageSection'
 
+import { useProviderModels } from '../../provider-models'
 import type { SettingsPanelProps } from '../SettingsPanel'
 export function ApiKeySection({
   keyStatus,
@@ -122,14 +118,12 @@ export function ApiKeySection({
   )
 }
 
-function ModelSection({
-  model,
-  onModel,
-}: Pick<SettingsPanelProps, 'model' | 'onModel'>): React.JSX.Element {
-  const api = useApi()
+function ModelSection(): React.JSX.Element {
   const selectId = useId()
   const [error, setError] = useState<string | null>(null)
-  if (!model) return <section className="settings-section">Loading…</section>
+  const models = useProviderModels('anthropic-api')
+  const choice = models.choice
+  if (!choice) return <section className="settings-section">Loading…</section>
   return (
     <section className="settings-section">
       <h3>
@@ -137,18 +131,17 @@ function ModelSection({
       </h3>
       <select
         id={selectId}
-        value={model.model}
+        value={choice.selected ?? ''}
         onChange={(event) => {
           setError(null)
-          api.model.set(event.target.value).then(onModel, () => {
-            setError('Could not change the model.')
+          void models.select(event.target.value).then((saved) => {
+            if (!saved) setError('Could not change the model.')
           })
         }}
       >
-        {model.options.map((option) => (
+        {choice.options.map((option) => (
           <option key={option.id} value={option.id}>
             {option.label}
-            {option.id === model.defaultModel ? ' (default)' : ''}
           </option>
         ))}
       </select>
@@ -292,7 +285,6 @@ export function ProviderSection({
   onSwitchProvider,
 }: Pick<SettingsPanelProps, 'provider' | 'onProvider' | 'onSwitchProvider'>): React.JSX.Element {
   const api = useApi()
-  const switchProvider = onSwitchProvider ?? ((next: ProviderId) => api.provider.set(next))
   const mounted = useMounted()
   const [busy, setBusy] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
@@ -388,7 +380,7 @@ export function ProviderSection({
               checked={(current ?? 'anthropic-api') === id}
               disabled={busy}
               onChange={() => {
-                void run(() => switchProvider(id))
+                void run(() => onSwitchProvider(id))
               }}
             />
             <span>
@@ -473,7 +465,7 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
       {!props.provider || props.provider.provider === 'anthropic-api' ? (
         <>
           <ApiKeySection keyStatus={props.keyStatus} onKeyStatus={props.onKeyStatus} />
-          <ModelSection model={props.model} onModel={props.onModel} />
+          <ModelSection />
         </>
       ) : (
         <UsageSection key={props.provider.provider} provider={props.provider.provider} />

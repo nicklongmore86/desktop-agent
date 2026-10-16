@@ -1,167 +1,114 @@
-import { useEffect, useRef, useState } from 'react'
-import type { ProviderAllowance, ProviderId, ProviderModels } from '../../../../shared/ipc'
-import { useApi } from '../../api'
+import { useId, useState } from 'react'
+import type { ProviderId } from '../../../../shared/ipc'
+import { useProviderModels } from '../../provider-models'
+import {
+  formatReset,
+  summarizeUsage,
+  usageLevel,
+  usedPercent,
+  useProviderUsage,
+  windowName,
+} from '../../usage'
 
-function resetTime(value: string): string {
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return ''
-  return date.toLocaleString(undefined, {
-    ...(date.toDateString() === new Date().toDateString()
-      ? {}
-      : { weekday: 'short' as const, month: 'short' as const, day: 'numeric' as const }),
-    hour: 'numeric',
-    minute: '2-digit',
-  })
-}
+const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
+
+/** Plan, limits and (for Codex) the model; reads through the same hooks as the chat indicator. */
 export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.Element {
-  const api = useApi()
-  const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-    }
-  }, [])
-  const [saving, setSaving] = useState(false)
-  const [usage, setUsage] = useState<ProviderAllowance | null>(null)
-  const [models, setModels] = useState<ProviderModels | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const modelId = useId()
   const [modelError, setModelError] = useState<string | null>(null)
-  const [refresh, setRefresh] = useState(0)
-  useEffect(() => {
-    let live = true
-    api.provider.allowance().then(
-      (result) => {
-        if (!live) return
-        if (result.ok && result.value.provider !== provider) return
-        if (result.ok) {
-          setUsage(result.value)
-          setError(null)
-        } else {
-          setUsage(null)
-          setError(result.failure.message)
-        }
-      },
-      () => {
-        if (live) {
-          setUsage(null)
-          setError('Usage unavailable right now')
-        }
-      },
-    )
-    if (provider === 'codex-subscription')
-      api.provider.models().then(
-        (result) => {
-          if (!live || (result.ok && result.value.provider !== provider)) return
-          if (result.ok) {
-            setModels(result.value)
-            setModelError(null)
-          } else {
-            setModels(null)
-            setModelError(result.failure.message)
-          }
-        },
-        () => {
-          if (live) {
-            setModels(null)
-            setModelError('Could not load models. Refresh to try again.')
-          }
-        },
-      )
-    return () => {
-      live = false
-    }
-  }, [api, provider, refresh])
+  const usage = useProviderUsage(provider)
+  const models = useProviderModels(provider)
+  const { allowance } = usage
+  const summary = summarizeUsage(allowance)
+  const level = usageLevel(allowance)
+  const resetsAt = formatReset(allowance?.resetsAt)
+  const choice = models.choice
   return (
     <section className="settings-section">
       <div className="settings-row">
         <h3>Usage</h3>
         <button
+          type="button"
           onClick={() => {
-            setRefresh((value) => value + 1)
+            setModelError(null)
+            usage.refresh()
+            models.refresh()
           }}
         >
           Refresh
         </button>
       </div>
-      <p>{usage?.plan ?? 'Plan unavailable'}</p>
+      <p>{allowance?.plan ?? 'Plan unavailable'}</p>
       <p role="status">
-        {usage?.state === 'available'
-          ? 'Available'
-          : usage?.state === 'limited'
-            ? `Limit reached${usage.resetsAt ? ` — resets ${resetTime(usage.resetsAt)}` : ''}`
+        {allowance?.state === 'limited'
+          ? `Limit reached${resetsAt ? ` — resets ${resetsAt}` : ''}`
+          : allowance?.state === 'available'
+            ? 'Available'
             : 'Usage unavailable right now'}
       </p>
-      {usage?.credits && (
+      {allowance?.credits && (
         <p>
-          {usage.credits.unlimited
+          {allowance.credits.unlimited
             ? 'Unlimited credits'
-            : usage.credits.hasCredits
+            : allowance.credits.hasCredits
               ? 'Credits available'
               : 'No credits available'}
         </p>
       )}
-      {error && <p className="settings-hint">{error}</p>}
       {provider === 'claude-subscription' ? (
         <p className="settings-hint">
           Last known limit state. Claude does not report usage percentages.
         </p>
       ) : (
-        usage?.windows.map((window) => {
-          const used = Math.round(100 - window.remainingPercent)
-          return (
-            <div
-              key={window.limitId}
-              className={used >= 100 ? 'usage-limited' : used >= 80 ? 'usage-warning' : ''}
-            >
-              <p>
-                {window.limitId} · {used}% used
-              </p>
-              <progress aria-label={`${window.limitId} usage`} max={100} value={used} />
-              {window.resetsAt && (
-                <p className="settings-hint">Resets {resetTime(window.resetsAt)}</p>
-              )}
-            </div>
-          )
-        })
+        <>
+          {summary && summary.level !== 'limited' && summary.text && (
+            <p className={level === 'ok' ? undefined : `usage-${level}`}>{summary.detail}</p>
+          )}
+          {allowance?.windows.map((window) => {
+            const used = usedPercent(window.remainingPercent)
+            const reset = formatReset(window.resetsAt)
+            return (
+              <div
+                key={window.limitId}
+                className={used >= 100 ? 'usage-limited' : used >= 80 ? 'usage-warning' : ''}
+              >
+                <p>
+                  {capitalize(windowName(window.limitId))} · {used}% used
+                </p>
+                <progress aria-label={`${window.limitId} usage`} max={100} value={used} />
+                {reset && <p className="settings-hint">Resets {reset}</p>}
+              </div>
+            )
+          })}
+        </>
       )}
       {provider === 'codex-subscription' && (
         <>
-          {modelError && <p className="settings-hint">{modelError}</p>}
-          <label htmlFor="codex-model">Codex model</label>
+          <label htmlFor={modelId}>Codex model</label>
           <select
-            id="codex-model"
-            disabled={!models || saving}
-            value={models?.selectedModel ?? ''}
+            id={modelId}
+            disabled={!choice}
+            value={choice?.selected ?? ''}
             onChange={(event) => {
-              setSaving(true)
-              void api.provider.setModel(event.target.value || null).then(
-                (result) => {
-                  if (!mounted.current) return
-                  setSaving(false)
-                  if (result.ok && result.value.provider === provider) {
-                    setModels(result.value)
-                    setError(null)
-                  } else if (!result.ok) setError(result.failure.message)
-                },
-                () => {
-                  if (!mounted.current) return
-                  setSaving(false)
-                  setError('Could not change the model.')
-                },
-              )
+              setModelError(null)
+              void models.select(event.target.value || null).then((saved) => {
+                if (!saved) setModelError('Could not change the model.')
+              })
             }}
           >
             <option value="">Account default</option>
-            {models?.options.map((model) => (
+            {choice?.options.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.label}
               </option>
             ))}
           </select>
-          {models && models.resolvedModel !== models.savedModel && (
-            <p className="settings-hint">Using default model</p>
+          {modelError && (
+            <p className="settings-error" role="alert">
+              {modelError}
+            </p>
           )}
+          {choice?.note && <p className="settings-hint">{choice.note}</p>}
         </>
       )}
     </section>

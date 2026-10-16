@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppInfo } from '../../../shared/ipc'
-import {
-  SettingsPanel,
-  SETTINGS_SECTIONS,
-  type SettingsPanelProps,
-  type SettingsSection,
-} from './SettingsPanel'
+import type { SettingsSection } from '../open-settings'
+import { SettingsPanel, SETTINGS_SECTIONS, type SettingsPanelProps } from './SettingsPanel'
 
 export function SettingsDialog(
   props: SettingsPanelProps & {
@@ -90,7 +86,7 @@ export function SettingsDialog(
       >
         <header className="settings-dialog-header">
           <h2 id="settings-title">Settings</h2>
-          <button aria-label="Close settings" onClick={props.onClose}>
+          <button type="button" aria-label="Close settings" onClick={props.onClose}>
             ×
           </button>
         </header>
@@ -98,6 +94,7 @@ export function SettingsDialog(
           <nav aria-label="Settings sections">
             {Object.entries(SETTINGS_SECTIONS).map(([id, label]) => (
               <button
+                type="button"
                 key={id}
                 aria-current={section === id ? 'page' : undefined}
                 onClick={() => {

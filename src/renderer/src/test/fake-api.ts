@@ -59,15 +59,38 @@ export function fakeApi(options: FakeApiOptions = {}) {
   }
   const api = {
     provider: {
-      models: vi.fn<DesktopApi['provider']['models']>().mockResolvedValue({
-        ok: false,
-        failure: { code: 'internal', message: 'Models unavailable' },
-      }),
-      setModel: vi.fn<DesktopApi['provider']['setModel']>(),
-      allowance: vi.fn<DesktopApi['provider']['allowance']>().mockResolvedValue({
-        ok: false,
-        failure: { code: 'internal', message: 'Usage unavailable right now' },
-      }),
+      models: vi.fn<DesktopApi['provider']['models']>(() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            provider: provider.provider,
+            options: [],
+            selectedModel: null,
+            savedModel: null,
+            defaultModel: null,
+            resolvedModel: null,
+          },
+        }),
+      ),
+      setModel: vi.fn<DesktopApi['provider']['setModel']>(() =>
+        Promise.resolve({
+          ok: false,
+          failure: { code: 'invalid_request', message: 'Not supported.' },
+        }),
+      ),
+      allowance: vi.fn<DesktopApi['provider']['allowance']>(() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            provider: provider.provider,
+            plan: null,
+            state: 'unknown',
+            resetsAt: null,
+            windows: [],
+            lastError: null,
+          },
+        }),
+      ),
       get: vi.fn(() => Promise.resolve(provider)),
       set: vi.fn((next: ProviderId) => {
         provider = {

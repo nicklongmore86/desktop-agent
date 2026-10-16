@@ -15,7 +15,7 @@ const allowance: ProviderAllowance = {
   lastError: null,
 }
 describe('Accounts usage', () => {
-  it('explains a failed model lookup and recovers on refresh', async () => {
+  it('disables the model picker until models load, and recovers on refresh', async () => {
     const { api } = fakeApi()
     api.provider.models.mockResolvedValueOnce({
       ok: false,
@@ -26,24 +26,25 @@ describe('Accounts usage', () => {
         <UsageSection provider="codex-subscription" />
       </ApiContext>,
     )
-    expect(await screen.findByText('Models are unavailable right now.')).toBeTruthy()
+    await waitFor(() => {
+      expect(api.provider.models).toHaveBeenCalledOnce()
+    })
     expect(screen.getByLabelText('Codex model')).toHaveProperty('disabled', true)
     api.provider.models.mockResolvedValue({
       ok: true,
       value: {
         provider: 'codex-subscription',
-        options: [],
+        options: [{ id: 'terra', label: 'Terra' }] as never,
         selectedModel: null,
         savedModel: null,
-        defaultModel: null,
-        resolvedModel: null,
+        defaultModel: 'terra',
+        resolvedModel: 'terra',
       },
     })
     await userEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     await waitFor(() => {
-      expect(screen.queryByText('Models are unavailable right now.')).toBeNull()
+      expect(screen.getByLabelText('Codex model')).toHaveProperty('disabled', false)
     })
-    expect(screen.getByLabelText('Codex model')).toHaveProperty('disabled', false)
   })
 
   it('shows advisory usage and refreshes a limited window without gating anything', async () => {
@@ -60,7 +61,7 @@ describe('Accounts usage', () => {
     expect(await screen.findByText('Plus')).toBeTruthy()
     expect(screen.getByText('Available')).toBeTruthy()
     expect(screen.getByText('Credits available')).toBeTruthy()
-    expect(screen.getByText('Five hour · 85% used')).toBeTruthy()
+    expect(screen.getByText('Usage limit · 85% used')).toBeTruthy()
     expect(screen.getByRole('progressbar').getAttribute('value')).toBe('85')
     api.provider.allowance.mockResolvedValue({
       ok: true,
@@ -83,9 +84,8 @@ describe('Accounts usage', () => {
     expect(await screen.findByText('Pro')).toBeTruthy()
     expect(screen.queryByRole('progressbar')).toBeNull()
     expect(screen.getByText(/does not report usage percentages/)).toBeTruthy()
-    expect(api.provider.models).not.toHaveBeenCalled()
   })
-  it('shows operational failures and ignores a late response after unmount', async () => {
+  it('shows unavailable usage when the read fails, and ignores a late response after unmount', async () => {
     const { api } = fakeApi()
     let resolve!: (value: ProviderResult<ProviderAllowance>) => void
     api.provider.allowance.mockImplementation(
@@ -134,9 +134,10 @@ describe('Accounts usage', () => {
       resolvedModel: 'terra',
     }
     api.provider.models.mockResolvedValue({ ok: true, value: models })
-    api.provider.setModel.mockResolvedValue({
-      ok: true,
-      value: { ...models, selectedModel: 'terra', savedModel: 'terra' },
+    const saved = { ...models, selectedModel: 'terra', savedModel: 'terra' }
+    api.provider.setModel.mockImplementation(() => {
+      api.provider.models.mockResolvedValue({ ok: true, value: saved })
+      return Promise.resolve({ ok: true, value: saved })
     })
     render(
       <ApiContext value={api}>
@@ -154,6 +155,6 @@ describe('Accounts usage', () => {
       failure: { code: 'model_unavailable', message: 'Model unavailable' },
     })
     await userEvent.selectOptions(screen.getByLabelText('Codex model'), '')
-    expect(await screen.findByText('Model unavailable')).toBeTruthy()
+    expect(await screen.findByText('Could not change the model.')).toBeTruthy()
   })
 })

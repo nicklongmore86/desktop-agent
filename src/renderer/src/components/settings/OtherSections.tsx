@@ -12,6 +12,7 @@ export function AppearanceSection(): React.JSX.Element {
       <div role="group" aria-label="Theme" className="theme-segments">
         {(['system', 'light', 'dark'] as const).map((value) => (
           <button
+            type="button"
             key={value}
             aria-pressed={theme === value}
             onClick={() => {
@@ -42,6 +43,7 @@ export function PrivacySection({ audit }: { audit: AuditStatus | null }): React.
       </p>
       <div className="settings-row">
         <button
+          type="button"
           onClick={() => {
             void navigator.clipboard.writeText(audit?.path ?? '').catch(() => {
               setError('Could not copy the path.')
@@ -51,6 +53,7 @@ export function PrivacySection({ audit }: { audit: AuditStatus | null }): React.
           Copy path
         </button>
         <button
+          type="button"
           onClick={() => {
             void api.audit.reveal().catch(() => {
               setError('Could not show the audit log.')
@@ -86,6 +89,7 @@ export function AboutSection({
         <summary>Diagnostics</summary>
         <pre>{diagnostics}</pre>
         <button
+          type="button"
           onClick={() => {
             void navigator.clipboard.writeText(diagnostics).catch(() => {
               setError('Could not copy diagnostics.')

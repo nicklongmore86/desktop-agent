@@ -221,6 +221,18 @@ Renderer tests run in jsdom with Testing Library (`src/renderer/**/*.test.tsx`, 
 
 ### Workspace chat
 
+**Composer and shortcuts.** Provider and model pickers live in the composer. Switching provider uses the same operation as Settings (the conversation is cleared, with separate history per provider). The model picker uses `provider.models()` / `provider.setModel()` for Codex and the existing model API for Anthropic API mode; it is hidden when a provider has no model list (Claude subscription). A usage indicator next to the pickers reads `provider.allowance()` (on provider switch, after each completed turn and on usage-limit errors; never polled) and is advisory only: amber from 80% of any window used, red when limited, and it never blocks sending. Click it to open account settings.
+
+| Shortcut            | Action                                                                 |
+| ------------------- | ---------------------------------------------------------------------- |
+| Enter / Shift+Enter | Send / new line in the message box                                     |
+| Esc                 | Stop a running reply (in an approval dialog, Esc still denies instead) |
+| Ctrl+N (Cmd+N)      | New chat                                                               |
+| Ctrl+, (Cmd+,)      | Open Settings                                                          |
+| Ctrl+K (Cmd+K)      | Focus the message box                                                  |
+
+Assistant Markdown supports GFM tables, task lists and strikethrough, and highlights code (TypeScript, JavaScript, JSON, Bash, PowerShell, Python, CSS, HTML, Markdown, diff, YAML) with a Copy button that copies the raw source text. Raw HTML is still dropped, images are never loaded and unsafe links are stripped. Consecutive tool calls in a turn are grouped into one collapsible "Used N tools" block.
+
 The sidebar shows the selected provider and granted folders. Provider selection uses the same switch operation as Settings, with separate history for each provider; there is no automatic fallback. Progress and assistant labels identify the selected provider. A signed-in status confirms authentication, not remaining subscription quota.
 
 The native Codex tool regression test uses a local fake Responses server with the real pinned app-server and execution host. It discovers granted folders, lists an RFI subfolder, confirms a denied shell command does not run, and refuses a read outside the grant. No subscription or API key is used. This runs on Windows CI and against the installer’s bundled runtimes. Real-window tests cover the workspace layout at 360px and 1280px.

@@ -5,41 +5,35 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   ApiKeyStatus,
   GrantsState,
-  ModelSettings,
   ProviderLoginState,
   ProviderStatus,
 } from '../../../shared/ipc'
-import { ApiContext } from '../api'
+import { ApiContext, useApi } from '../api'
 import { fakeApi } from '../test/fake-api'
 import { SettingsPanel } from './SettingsPanel'
 
-function Harness(props: { key0: ApiKeyStatus; grants0: GrantsState; model0: ModelSettings }) {
+function Harness(props: { key0: ApiKeyStatus; grants0: GrantsState }) {
+  const api = useApi()
   const [keyStatus, setKeyStatus] = useState(props.key0)
   const [grants, setGrants] = useState(props.grants0)
-  const [model, setModel] = useState(props.model0)
   return (
     <SettingsPanel
       keyStatus={keyStatus}
       onKeyStatus={setKeyStatus}
       grants={grants}
       onGrants={setGrants}
-      model={model}
-      onModel={setModel}
+      onSwitchProvider={(next) => api.provider.set(next)}
       audit={{ healthy: true, path: 'C:\\Users\\me\\AppData\\Roaming\\desktop-agent\\audit.jsonl' }}
     />
   )
 }
 
-async function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
+function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
   const fake = fakeApi({ key: key0, grants: { roots, loadError: null } })
   const user = userEvent.setup()
   render(
     <ApiContext value={fake.api}>
-      <Harness
-        key0={key0}
-        grants0={{ roots, loadError: null }}
-        model0={await fake.api.model.get()}
-      />
+      <Harness key0={key0} grants0={{ roots, loadError: null }} />
     </ApiContext>,
   )
   return { ...fake, user }
@@ -47,7 +41,7 @@ async function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
 
 describe('SettingsPanel', () => {
   it('saves a key through a masked input and only ever shows "Key saved"', async () => {
-    const { api, user } = await renderSettings({ saved: false, error: null })
+    const { api, user } = renderSettings({ saved: false, error: null })
     expect(screen.getByText('No key saved.')).toBeTruthy()
     const input = screen.getByLabelText('API key')
     expect(input.getAttribute('type')).toBe('password')
@@ -61,7 +55,7 @@ describe('SettingsPanel', () => {
   })
 
   it('replaces and clears a saved key', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null })
+    const { api, user } = renderSettings({ saved: true, error: null })
     await user.click(screen.getByRole('button', { name: 'Replace key' }))
     const input = screen.getByLabelText('API key')
     expect(input).toHaveProperty('value', '')
@@ -74,7 +68,7 @@ describe('SettingsPanel', () => {
   })
 
   it('shows key store errors', async () => {
-    const { api, user } = await renderSettings({ saved: false, error: null })
+    const { api, user } = renderSettings({ saved: false, error: null })
     api.apiKey.set.mockResolvedValueOnce({
       saved: false,
       error: 'OS encryption is unavailable. API key storage is disabled.',
@@ -85,7 +79,7 @@ describe('SettingsPanel', () => {
   })
 
   it('adds folders only through the native picker and removes them', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null }, ['C:\\Projects'])
+    const { api, user } = renderSettings({ saved: true, error: null }, ['C:\\Projects'])
     const list = screen.getByRole('list', { name: 'Granted folders' })
     expect(within(list).getByText('C:\\Projects')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Add folder…' }))
@@ -98,7 +92,7 @@ describe('SettingsPanel', () => {
   })
 
   it('reports a refused folder', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null })
+    const { api, user } = renderSettings({ saved: true, error: null })
     api.grants.add.mockResolvedValueOnce({
       status: 'refused',
       reason: 'Granting a whole drive or file system root is not allowed.',
@@ -112,10 +106,10 @@ describe('SettingsPanel', () => {
   })
 
   it('changes the model and shows the audit log location', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null })
-    const select = screen.getByLabelText('Model')
+    const { api, user } = renderSettings({ saved: true, error: null })
+    const select = await screen.findByLabelText('Model')
     expect(select).toHaveProperty('value', 'claude-sonnet-5-5')
-    expect(screen.getByRole('option', { name: 'Claude Sonnet 5.5 (default)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Claude Sonnet 5.5' })).toBeTruthy()
     await user.selectOptions(select, 'claude-opus-5-5')
     expect(api.model.set).toHaveBeenCalledWith('claude-opus-5-5')
     expect(select).toHaveProperty('value', 'claude-opus-5-5')
@@ -131,6 +125,7 @@ describe('Claude subscription sign-in', () => {
 
   /** Like the app: provider status lives above Settings, which can be closed and reopened. */
   function ProviderHarness() {
+    const api = useApi()
     const [open, setOpen] = useState(true)
     const [provider, setProvider] = useState<ProviderStatus>({
       provider: 'claude-subscription',
@@ -155,8 +150,7 @@ describe('Claude subscription sign-in', () => {
             onKeyStatus={() => {}}
             grants={{ roots: [], loadError: null }}
             onGrants={() => {}}
-            model={null}
-            onModel={() => {}}
+            onSwitchProvider={(next) => api.provider.set(next)}
             audit={null}
           />
         )}
