@@ -120,6 +120,7 @@ it('native Codex discovers grants and lists a folder through the guarded tool br
   })
   peer.onRequest = async (method, params) => {
     expect(method).toBe('item/tool/call')
+    expect(params['namespace'] ?? null).toBeNull()
     const name = String(params['tool'])
     calls.push(name)
     const result = await bridge.call(name, params['arguments'])
