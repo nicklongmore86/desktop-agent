@@ -38,8 +38,8 @@ Damaged/missing bundled runtime (repair or reinstall the app), unsupported versi
 
 ## Subscription implementation and distribution notes
 
-- Claude uses `@anthropic-ai/claude-agent-sdk` **0.3.299** with Claude Code **2.1.299**, an in-process custom MCP bridge to `createTools`, `tools: []`, strict MCP configuration, empty settings sources, bare mode, disabled hooks, and no project/skill/plugin discovery. Input is withheld until account metadata indicates a subscription and no API-key source. Unexpected built-in tools fail closed. [SDK overview](https://code.claude.com/docs/en/agent-sdk/overview), [CLI isolation flags](https://code.claude.com/docs/en/cli-reference), [authentication](https://code.claude.com/docs/en/authentication).
-- Codex uses **0.162.1** stdio app-server, experimental dynamic tools and `environments: []`, explicit feature controls, an isolated `CODEX_HOME`, and ChatGPT-managed login only. It rejects nonempty inherited config/managed requirements, unexpected environments, workspace roots, and instruction sources. All server requests except the current thread's registered dynamic tools are denied. [App-server protocol](https://learn.chatgpt.com/docs/app-server), [authentication](https://learn.chatgpt.com/docs/auth), [pinned thread protocol](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server-protocol/src/protocol/v2/thread.rs), [pinned tool registration](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/spec_plan.rs).
+- Claude uses `@anthropic-ai/claude-agent-sdk` **0.3.299** with Claude Code **2.1.299**, an in-process custom MCP bridge to `createTools`, `tools: []`, strict MCP configuration, empty settings sources, disabled project instructions/auto-memory, disabled hooks, and no project/skill/plugin discovery. Input is withheld until account metadata indicates a subscription and no API-key source. Unexpected built-in tools fail closed. [SDK overview](https://code.claude.com/docs/en/agent-sdk/overview), [CLI isolation flags](https://code.claude.com/docs/en/cli-reference), [authentication](https://code.claude.com/docs/en/authentication).
+- Codex uses **0.162.1** stdio app-server, experimental dynamic tools and `environments: []`, explicit feature controls (including the execution host needed to dispatch app-owned dynamic tools), an isolated `CODEX_HOME`, and ChatGPT-managed login only. It rejects nonempty inherited config/managed requirements, unexpected environments, workspace roots, and instruction sources. All server requests except the current thread's registered dynamic tools are denied. [App-server protocol](https://learn.chatgpt.com/docs/app-server), [authentication](https://learn.chatgpt.com/docs/auth), [pinned thread protocol](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server-protocol/src/protocol/v2/thread.rs), [pinned tool registration](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/spec_plan.rs).
 - Both bridges execute the existing validated, guarded, audited tools and approval broker in Electron main. Credential locations are protected from file tools; provider credentials, API keys, endpoint overrides and Node preload options are removed from runtime/shell environments as appropriate. The renderer receives status and chat events only. No runtime filesystem/shell tools are granted.
 - Settings v1 migrates in memory to API mode; subsequent writes use v2. The existing `conversation.json` remains the API history. Subscriptions have separate conversation files. Each request starts an isolated runtime session and replays only that provider's app transcript; CLI session IDs/project histories are deliberately not resumed. This also prevents old runtime configuration from reappearing after a restart. The shared persisted message envelope retains tool-call/result pairing for all providers.
 - **Claude distribution ambiguity remains unresolved:** the [Claude support article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) describes using a Claude plan with the SDK, while the [SDK overview](https://code.claude.com/docs/en/agent-sdk/overview) says third-party products offering claude.ai login require prior approval. Local implementation and tests do not establish such approval. Obtain clarification before distributing this as an authorized subscription integration; this PR makes no authorization claim.
@@ -130,15 +130,16 @@ const tools = createTools({
 })
 ```
 
-| Tool           | Does                                                                              | Approval                    |
-| -------------- | --------------------------------------------------------------------------------- | --------------------------- |
-| `list_dir`     | Entries with type, size, mtime; optional depth (max 5), at most 1000 entries      | no                          |
-| `read_file`    | Text up to 1 MB (or a line range of a bigger file); refuses binary files          | no                          |
-| `search_files` | Name glob and/or content substring/regex; result, depth, entry and 10 s time caps | no                          |
-| `write_file`   | Create or replace a file; diffs over 256 KB are refused                           | always, with the full diff  |
-| `move_file`    | Move or rename within the grants                                                  | always                      |
-| `delete_path`  | Send to the Recycle Bin (never a permanent delete)                                | always                      |
-| `run_shell`    | PowerShell (`-NoProfile -NonInteractive -Command`) on Windows, `/bin/sh -c` else  | always, exact command + cwd |
+| Tool                   | Does                                                                                    | Approval                    |
+| ---------------------- | --------------------------------------------------------------------------------------- | --------------------------- |
+| `list_granted_folders` | Current accessible grant roots, refreshed on each call; never adds permissions          | no                          |
+| `list_dir`             | Entries with type, size, mtime; optional depth (max 5), at most 1000 entries            | no                          |
+| `read_file`            | Text up to 1 MB (or a line range of a bigger file); refuses binary files                | no                          |
+| `search_files`         | Name glob and/or content substring/regex; result, depth, entry and 10 s time caps       | no                          |
+| `write_file`           | Create or replace a file; diffs over 256 KB are refused                                 | always, with the full diff  |
+| `move_file`            | Move or rename within the grants                                                        | always                      |
+| `delete_path`          | Send to the Recycle Bin (never a permanent delete)                                      | always                      |
+| `run_shell`            | PowerShell (`-NoProfile -NonInteractive -EncodedCommand`) on Windows, `/bin/sh -c` else | always, exact command + cwd |
 
 Tools never throw: a refused path, a declined approval, bad input or even a failing audit sink comes back as a normal result (`{ isError: true, content }` for failures), and a declined approval has no side effect.
 
@@ -217,3 +218,9 @@ Every untrusted field in the dialog (tool name, summary, paths, shell path, cwd,
 **Rendering.** Assistant text is rendered as Markdown with `react-markdown` without raw HTML (`skipHtml`), images are shown only as `[image: alt]` and never loaded, unsafe URLs are stripped by react-markdown's default URL transform, and links open in the default browser through the window-open handler. Nothing uses `dangerouslySetInnerHTML`; model output and file contents are treated as untrusted. When the agent discards a truncated response, the UI removes that turn's streamed text. A reply cut off by Stop stays on screen, marked as not saved.
 
 Renderer tests run in jsdom with Testing Library (`src/renderer/**/*.test.tsx`, the `renderer` Vitest project); main-process tests run in Node (the `main` project).
+
+### Workspace chat
+
+The sidebar shows the selected provider and granted folders. Provider selection uses the same switch operation as Settings, with separate history for each provider; there is no automatic fallback. Progress and assistant labels identify the selected provider. A signed-in status confirms authentication, not remaining subscription quota.
+
+The native Codex tool regression test uses a local fake Responses server with the real pinned app-server and execution host. It discovers granted folders, lists an RFI subfolder, confirms a denied shell command does not run, and refuses a read outside the grant. No subscription or API key is used. This runs on Windows CI and against the installer’s bundled runtimes. Real-window tests cover the workspace layout at 360px and 1280px.

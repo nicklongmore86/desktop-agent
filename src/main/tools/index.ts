@@ -50,6 +50,34 @@ export function createTools(deps: ToolDeps): AgentTool[] {
       }),
   }
   return [
+    defineTool(
+      {
+        name: 'list_granted_folders',
+        description:
+          'Discover the absolute paths of folders currently granted in Desktop Agent. Call this before file operations when the user names a folder without an absolute path. This does not grant new access.',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        needsApproval: false,
+        parse: () => ({}),
+        summarize: () => ({}),
+        async run(_input, call) {
+          const roots: string[] = []
+          for (const root of deps.guard.grantedRoots()) {
+            const result = await deps.guard.resolve(root)
+            call.throwIfAborted()
+            if (result.ok && result.exists) roots.push(result.path)
+          }
+          return {
+            content: JSON.stringify({
+              roots,
+              message: roots.length
+                ? 'Use these paths with list_dir, read_file, and search_files.'
+                : 'No accessible folders are granted. Ask the user to add a folder in Settings.',
+            }),
+          }
+        },
+      },
+      wrap,
+    ),
     defineTool(listDirTool(resolved), wrap),
     defineTool(readFileTool(resolved), wrap),
     defineTool(searchFilesTool(resolved), wrap),

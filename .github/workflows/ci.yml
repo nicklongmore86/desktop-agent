@@ -81,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
-          pnpm exec vitest run src/main/providers/native.test.ts
+          pnpm exec vitest run src/main/providers/native.test.ts src/main/providers/codex-tools-native.test.ts
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-windows-x64

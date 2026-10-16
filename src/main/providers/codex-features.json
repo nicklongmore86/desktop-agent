@@ -19,7 +19,7 @@
   "cli_daybreak": false,
   "code_mode": false,
   "code_mode_buffered_exec": false,
-  "code_mode_host": false,
+  "code_mode_host": true,
   "code_mode_interrupt": false,
   "code_mode_only": false,
   "code_mode_only_strict_3p_tools": false,

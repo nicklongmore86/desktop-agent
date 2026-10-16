@@ -14,9 +14,10 @@ afterEach(async () => {
 })
 
 describe('createTools', () => {
-  it('provides the seven tools with closed object schemas', () => {
+  it('provides the file tools and live grant discovery with closed object schemas', () => {
     const { tools } = toolHarness(sb)
     expect(Object.keys(tools)).toEqual([
+      'list_granted_folders',
       'list_dir',
       'read_file',
       'search_files',
@@ -49,7 +50,7 @@ describe('createTools', () => {
       { command: {} },
     ]
     let calls = 0
-    for (const tool of Object.values(h.tools)) {
+    for (const tool of Object.values(h.tools).filter((t) => t.name !== 'list_granted_folders')) {
       for (const input of junk) {
         const result = await tool.execute(input, fakeContext(true).ctx)
         calls++
@@ -59,6 +60,26 @@ describe('createTools', () => {
     }
     expect(h.audit.entries).toHaveLength(calls)
     expect(h.audit.entries.every((e) => e.outcome === 'error')).toBe(true)
+  })
+
+  it('discovers live grants, reflects revocation, and audits discovery without approval', async () => {
+    let roots = [sb.root]
+    const { PathGuard } = await import('../permissions/guard')
+    const guard = new PathGuard({ roots: () => roots, protectedPaths: [sb.userData] })
+    const h = toolHarness(sb, { guard })
+    const { ctx, requests } = fakeContext()
+    expect(
+      JSON.parse((await h.tool('list_granted_folders').execute({}, ctx)).content),
+    ).toMatchObject({ roots: [sb.root] })
+    roots = []
+    expect(
+      JSON.parse((await h.tool('list_granted_folders').execute({}, ctx)).content),
+    ).toMatchObject({ roots: [] })
+    expect(requests).toHaveLength(0)
+    expect(h.audit.entries).toHaveLength(2)
+    expect((await h.tool('list_granted_folders').execute({ path: '/invented' }, ctx)).isError).toBe(
+      true,
+    )
   })
 
   it('only the mutating tools ask for approval', async () => {

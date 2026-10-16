@@ -14,6 +14,8 @@ export interface RuntimeContext {
 
 /** Pinned 0.162.1: no environment means no filesystem/apply_patch/exec handlers. */
 export const CODEX_CONFIG = {
+  // Pinned runtime emits functions.exec even for direct app tools. Its host must
+  // run to dispatch those calls; environments: [] still removes native FS/shell.
   features,
   forced_login_method: 'chatgpt',
   cli_auth_credentials_store: 'file',
@@ -93,6 +95,28 @@ export async function codexAccount(peer: RpcPeer): Promise<boolean> {
   return result['account'] !== null && object(result['account'])['type'] === 'chatgpt'
 }
 
+/** Shared with the native roundtrip test so tool registration cannot drift. */
+export function codexThreadOptions(context: RuntimeContext, tools: AgentTool[]): RpcObject {
+  return {
+    cwd: context.cwd,
+    ephemeral: true,
+    environments: [],
+    selectedCapabilityRoots: [],
+    approvalPolicy: 'untrusted',
+    sandbox: 'read-only',
+    baseInstructions:
+      DEFAULT_SYSTEM_PROMPT +
+      ' The active provider is Codex using the user’s ChatGPT subscription. Do not identify this runtime as Claude.',
+    dynamicTools: tools.map((tool) => ({
+      type: 'function',
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      deferLoading: false,
+    })),
+  }
+}
+
 export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): AgentRunner {
   return {
     async run(conversation, options): Promise<RunResult> {
@@ -111,21 +135,7 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
         options.signal.throwIfAborted()
         if (!(await codexAccount(peer)))
           throw new Error('Sign in with ChatGPT in Settings. API-key accounts are not accepted.')
-        const started = await peer.request('thread/start', {
-          cwd: context.cwd,
-          ephemeral: true,
-          environments: [],
-          selectedCapabilityRoots: [],
-          approvalPolicy: 'untrusted',
-          sandbox: 'read-only',
-          baseInstructions: DEFAULT_SYSTEM_PROMPT,
-          dynamicTools: tools.map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-            deferLoading: false,
-          })),
-        })
+        const started = await peer.request('thread/start', codexThreadOptions(context, tools))
         const thread = object(started['thread'])
         if (
           !Array.isArray(thread['environments']) ||

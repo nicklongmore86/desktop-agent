@@ -251,7 +251,7 @@ async function launch(
   })
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
-  await expect(page.getByRole('heading', { name: 'Desktop Agent' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Workspace chat' })).toBeVisible()
   // Wait for the chat to subscribe to approvals before pushing any.
   await expect
     .poll(() => page.evaluate(() => (window as unknown as E2eWindow).e2e.listenerCount()))
