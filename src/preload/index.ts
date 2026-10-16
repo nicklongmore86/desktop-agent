@@ -21,7 +21,7 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> =>
 
 // Expose narrow, typed functions only — never ipcRenderer itself.
 const api: DesktopApi = {
-  ...featureApis(invoke),
+  ...featureApis(invoke, subscribe),
   provider: {
     models: () => invoke(IpcChannels.providerModels),
     setModel: (model) => invoke(IpcChannels.providerSetModel, model),

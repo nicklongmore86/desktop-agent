@@ -1,4 +1,5 @@
 import type { FeatureApis } from './ipc-features'
+import { filesPushChannels, type FilesChanged } from './ipc-files'
 
 /** IPC channel names shared by the main process and the preload script. */
 export const IpcChannels = {
@@ -273,6 +274,7 @@ export interface PushPayloads {
   [IpcChannels.approvalRequest]: ApprovalPrompt
   [IpcChannels.auditStatusChanged]: AuditStatus
   [IpcChannels.providerLoginStateChanged]: ProviderLoginState
+  [filesPushChannels.filesChanged]: FilesChanged
 }
 export type PushChannel = keyof PushPayloads
 

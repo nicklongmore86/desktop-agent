@@ -46,9 +46,12 @@ Then give main the service: `src/main/index.ts` passes `projects: …` to
 
 ## Push (main -> renderer) channels
 
-A feature that pushes events keeps its channel constants in its own `ipc-<feature>.ts` too,
-and declares a payload map for the preload `subscribe`. The shared `PushPayloads` map in
-`ipc.ts` is the one place that is still central; extend it with a single line.
+A feature that pushes events keeps its channel constants in its own `ipc-<feature>.ts` too
+(`files` is the example: `filesPushChannels`). The shared `PushPayloads` map in `ipc.ts` is
+the one place that is still central; extend it with a single line. The preload module gets
+`subscribe` as its second argument (`filesApi(invoke, subscribe)`) and exposes an
+`on<Event>(listener)` that returns the unsubscribe. Main sends with the `push` helper in
+`src/main/index.ts`.
 
 ## Layout data
 
