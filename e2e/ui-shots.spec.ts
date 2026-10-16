@@ -187,7 +187,9 @@ for (const width of [1280, 400]) {
               )
               .first(),
           ).toBeVisible()
-          await page.getByRole('heading', { name: 'Usage', exact: true }).scrollIntoViewIfNeeded()
+          await page.getByRole('heading', { name: 'Usage', exact: true }).evaluate((element) => {
+            element.scrollIntoView({ block: 'start' })
+          })
           await shot(`settings-usage-${name}`)
         }
 
@@ -208,6 +210,9 @@ for (const width of [1280, 400]) {
         })
         await page.getByRole('radio', { name: /Claude · Subscription/ }).check()
         await expect(page.getByLabel('Sign-in link')).toBeVisible()
+        await page.locator('.login-link').evaluate((element) => {
+          element.scrollIntoView({ block: 'start' })
+        })
         await shot('settings-signin')
         expect(await noSidewaysScroll(page)).toBe(true)
       } finally {
