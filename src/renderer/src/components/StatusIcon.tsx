@@ -1,6 +1,10 @@
-export type ToolStatus = 'running' | 'done' | 'error' | 'no result'
+/**
+ * queued: waiting for the user's approval. denied: the user declined it. error: it failed.
+ * 'no result': the run ended without one.
+ */
+export type ToolStatus = 'queued' | 'running' | 'done' | 'error' | 'denied' | 'no result'
 
-/** A small status glyph: spinner (running), check (done), cross (error) or dash. Decorative. */
+/** A small status glyph, distinct in shape as well as colour. Decorative: the text beside it says it. */
 export function StatusIcon({ status }: { status: ToolStatus }): React.JSX.Element {
   return (
     <svg
@@ -11,6 +15,15 @@ export function StatusIcon({ status }: { status: ToolStatus }): React.JSX.Elemen
       aria-hidden="true"
       focusable="false"
     >
+      {status === 'queued' && (
+        <circle cx="8" cy="8" r="5.5" fill="none" strokeWidth="2" strokeDasharray="3 3" />
+      )}
+      {status === 'denied' && (
+        <>
+          <circle cx="8" cy="8" r="6" fill="none" strokeWidth="2" />
+          <path d="M4 12L12 4" fill="none" strokeWidth="2" />
+        </>
+      )}
       {status === 'running' && (
         <circle cx="8" cy="8" r="6" fill="none" strokeWidth="2" strokeDasharray="20 18" />
       )}
