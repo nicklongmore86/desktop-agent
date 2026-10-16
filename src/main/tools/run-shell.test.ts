@@ -987,6 +987,13 @@ describe('run_shell from the command bar', () => {
     return { h, session, events, prompts, store }
   }
 
+  /** Waits (up to 10 s: folder checks are slow on Windows runners) until `done` holds. */
+  async function until(done: () => boolean): Promise<void> {
+    for (const start = Date.now(); !done() && Date.now() - start < 10_000;) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+
   const commandResult = (events: ChatEvent[]) =>
     events.find((event) => event.type === 'tool_result')
 
@@ -1105,7 +1112,7 @@ describe('run_shell from the command bar', () => {
     })
     const { session, prompts } = commandSession({ spawn }, () => null)
     await session.runCommand('echo one', sb.root)
-    for (let i = 0; i < 50 && prompts.length === 0; i++) await new Promise((r) => setImmediate(r))
+    await until(() => prompts.length > 0)
     expect(prompts).toHaveLength(1)
     expect(await session.runCommand('echo two', sb.root)).toMatchObject({ ok: false, code: 'busy' })
     expect(await session.send('hello')).toMatchObject({ ok: false, code: 'busy' })
@@ -1136,7 +1143,7 @@ describe('run_shell from the command bar', () => {
     })
     const { h, session, events } = commandSession({ spawn, killTree })
     await session.runCommand('sleep 60', sb.root)
-    for (let i = 0; i < 50 && calls.length === 0; i++) await new Promise((r) => setImmediate(r))
+    await until(() => calls.length > 0)
     expect(calls).toHaveLength(1)
     await session.stop()
     expect(killTree).toHaveBeenCalledWith(calls[0]?.child)
