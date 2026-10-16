@@ -33,7 +33,9 @@ export function powerShellScript(command: string): string {
 export function treeKillScript(pid: number): string {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`invalid pid ${String(pid)}`)
   return `$ErrorActionPreference = 'SilentlyContinue'
+$diagSw = [Diagnostics.Stopwatch]::StartNew()
 $all = @(Get-CimInstance -ClassName Win32_Process)
+$diagCim = $diagSw.ElapsedMilliseconds
 $byId = @{}
 $children = @{}
 foreach ($p in $all) {
@@ -61,6 +63,7 @@ foreach ($id in $tree) {
   $p = Get-Process -Id $id
   if ($p -and -not $p.WaitForExit(2000)) { $alive++ }
 }
+[Console]::Error.WriteLine("TREEKILL-DIAG all=$($all.Count) cimMs=$diagCim totalMs=$($diagSw.ElapsedMilliseconds) tree=$($tree -join ',') alive=$alive errors=$($Error.Count): $(($Error | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join ' | ')")
 exit [int]($alive -gt 0)
 `
 }

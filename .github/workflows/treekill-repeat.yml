@@ -1,0 +1,55 @@
+# TEMPORARY: repeats the Windows tree-kill tests to measure flakiness. Remove before merge.
+name: treekill-repeat
+
+on:
+  push:
+    branches: [fix/treekill-liveness]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: repeat (${{ matrix.load }}, shard ${{ matrix.shard }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+        load: [idle, cpu]
+    env:
+      TREEKILL_DIAG: '1'
+      ROUNDS: '6'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.18.1
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start CPU load
+        if: matrix.load == 'cpu'
+        shell: pwsh
+        run: |
+          $n = [Environment]::ProcessorCount * 3
+          1..$n | ForEach-Object {
+            Start-Process -FilePath pwsh -ArgumentList '-NoProfile','-Command','while ($true) { $null = [Math]::Sqrt(12345) }' -WindowStyle Hidden
+          }
+          Write-Output "started $n busy loops on $([Environment]::ProcessorCount) CPUs"
+      - name: Repeat tree-kill tests
+        shell: pwsh
+        run: |
+          $pass = 0; $fail = 0
+          for ($i = 1; $i -le [int]$env:ROUNDS; $i++) {
+            Write-Output "::group::round $i"
+            pnpm exec vitest run src/main/tools/run-shell.test.ts -t "grandchildren|PowerShell fallback"
+            $code = $LASTEXITCODE
+            Write-Output "::endgroup::"
+            if ($code -eq 0) { $pass++ } else { $fail++; Write-Output "ROUND $i FAILED" }
+          }
+          Write-Output "TREEKILL-RESULT load=${{ matrix.load }} shard=${{ matrix.shard }} pass=$pass fail=$fail"
+          "load=${{ matrix.load }} shard=${{ matrix.shard }} pass=$pass fail=$fail" >> $env:GITHUB_STEP_SUMMARY
+          if ($fail -gt 0) { exit 1 }

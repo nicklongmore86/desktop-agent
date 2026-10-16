@@ -154,11 +154,14 @@ function runKiller(
       return
     }
     killer.stdout?.resume()
-    killer.stderr?.resume()
+    let diag = ''
+    if (process.env['TREEKILL_DIAG']) killer.stderr?.on('data', (c: Buffer) => (diag += c.toString()))
+    else killer.stderr?.resume()
     killer.once('error', (error) => {
       resolve({ ok: false, reason: `${name} could not start: ${error.message}` })
     })
     killer.once('close', (code) => {
+      if (process.env['TREEKILL_DIAG']) console.error(`[${new Date().toISOString()}] ${name} exited ${String(code)}: ${diag}`)
       resolve(
         code === 0
           ? { ok: true }
