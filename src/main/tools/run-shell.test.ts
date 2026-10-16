@@ -634,16 +634,24 @@ describe('shellEnv', () => {
 
 // Real processes, on whichever OS runs the tests (PowerShell on the Windows CI runner).
 describe('run_shell with a real shell', () => {
-  // The first PowerShell start on a fresh runner can take tens of seconds; pay it once
+  // The first command on a fresh Windows runner can take well over 30 s; pay that once
   // here rather than inside a test's budget.
   beforeAll(async () => {
-    if (process.platform === 'win32') await runPowerShell('exit 0', 120_000)
+    const warm = await makeSandbox()
+    try {
+      const r = await toolHarness(warm)
+        .tool('run_shell')
+        .execute({ command: 'exit 0', cwd: warm.root }, fakeContext(true).ctx)
+      expect(r.content).toMatch(/^exit code: 0/)
+    } finally {
+      await warm.cleanup()
+    }
   }, 150_000)
 
   // Windows can briefly refuse to remove a folder a process has just stopped using.
   afterEach(async () => {
-    await fs.rm(sb.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
-  })
+    await fs.rm(sb.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  }, 30_000)
 
   it('runs a command in the cwd', { timeout: 30_000 }, async () => {
     const h = toolHarness(sb)
@@ -876,25 +884,6 @@ function startPowerShell(script: string): ChildProcess {
     cwd: os.tmpdir(),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
-  })
-}
-
-/** Runs a PowerShell script to completion; rejects on a non-zero exit or after `ms`. */
-function runPowerShell(script: string, ms: number): Promise<void> {
-  const ps = startPowerShell(script)
-  ps.stdout?.resume()
-  ps.stderr?.resume()
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      ps.kill()
-      reject(new Error(`PowerShell did not finish within ${String(ms)} ms`))
-    }, ms)
-    ps.once('error', reject)
-    ps.once('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) resolve()
-      else reject(new Error(`PowerShell exited with code ${String(code)}`))
-    })
   })
 }
 
