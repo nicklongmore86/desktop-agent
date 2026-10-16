@@ -37,6 +37,7 @@ interface ProviderModel {
 interface ProviderAllowance {
   provider: ProviderId
   plan: string | null
+  credits?: { hasCredits: boolean; unlimited: boolean } // availability flags only
   state: 'available' | 'limited' | 'unknown'
   resetsAt: string | null // advisory reset when limited; never proof of recovery
   windows: {

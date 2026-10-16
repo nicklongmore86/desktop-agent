@@ -68,7 +68,7 @@ describe('SettingsPanel', () => {
     await user.type(input, 'sk-new')
     await user.click(screen.getByRole('button', { name: 'Replace key' }))
     expect(api.apiKey.set).toHaveBeenCalledWith('sk-new')
-    await user.click(screen.getByRole('button', { name: 'Clear key' }))
+    await user.click(screen.getByRole('button', { name: 'Remove key' }))
     expect(api.apiKey.clear).toHaveBeenCalledOnce()
     expect(screen.getByText('No key saved.')).toBeTruthy()
   })
@@ -106,7 +106,9 @@ describe('SettingsPanel', () => {
     } as never)
     await user.click(screen.getByRole('button', { name: 'Add folder…' }))
     expect(screen.getByRole('alert').textContent).toContain('whole drive')
-    expect(screen.getByText('No folders granted yet.')).toBeTruthy()
+    expect(
+      screen.getByText('No folders yet. Add one so the agent can work with your files.'),
+    ).toBeTruthy()
   })
 
   it('changes the model and shows the audit log location', async () => {
@@ -205,14 +207,14 @@ describe('Claude subscription sign-in', () => {
 
   const reopen = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
-    expect(screen.queryByLabelText('Access provider')).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Access provider' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Open settings' }))
   }
 
   it('shows the waiting state, the link, and asks main to copy or re-open it', async () => {
     const { api, user, showLink, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
-    expect(screen.getByRole('status').textContent).toBe('Waiting for sign-in…')
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(screen.getByText('Waiting for sign-in…').textContent).toBe('Waiting for sign-in…')
     expect(screen.getByRole('button', { name: 'Cancel sign-in' })).toBeTruthy()
     showLink()
     const link = screen.getByLabelText('Sign-in link')
@@ -231,16 +233,14 @@ describe('Claude subscription sign-in', () => {
       state: 'ready',
       message: 'Subscription signed in. No API key is used.',
     })
-    expect(screen.getByRole('status').textContent).toBe(
-      'Subscription signed in. No API key is used.',
-    )
+    expect(screen.getByText('Connected')).toBeTruthy()
     expect(screen.queryByLabelText('Sign-in link')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull()
   })
 
   it('sends a valid pasted code and rejects a malformed one locally', async () => {
     const { api, user, showLink } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     const code = screen.getByLabelText('Paste code')
     await user.type(code, 'not-a-code')
@@ -260,7 +260,7 @@ describe('Claude subscription sign-in', () => {
 
   it('cancels and shows sign-in failures as alerts', async () => {
     const { api, user, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     await user.click(screen.getByRole('button', { name: 'Cancel sign-in' }))
     expect(api.provider.cancelLogin).toHaveBeenCalledOnce()
     await finish({
@@ -275,26 +275,23 @@ describe('Claude subscription sign-in', () => {
 
   it('restores the sign-in controls after Settings is closed and reopened mid-login', async () => {
     const { api, user, showLink, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     const errors = vi.spyOn(console, 'error')
     await reopen(user)
     expect(await screen.findByLabelText('Sign-in link')).toHaveProperty('value', LINK)
-    expect(screen.getByRole('status').textContent).toBe('Waiting for sign-in…')
+    expect(screen.getByText('Waiting for sign-in…').textContent).toBe('Waiting for sign-in…')
     expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
     expect(screen.getByLabelText('Paste code')).toBeTruthy()
     // A second click cannot start another sign-in while main is still waiting.
-    expect(screen.getByRole('button', { name: 'Sign in with subscription' })).toHaveProperty(
-      'disabled',
-      true,
-    )
+    expect(screen.getByRole('button', { name: 'Sign in' })).toHaveProperty('disabled', true)
     await user.type(screen.getByLabelText('Paste code'), 'abc#def')
     await user.click(screen.getByRole('button', { name: 'Submit code' }))
     expect(api.provider.submitLoginCode).toHaveBeenCalledWith('abc#def')
     // The reopened panel learns the outcome from main's push, not the old login() call.
     await finish({ provider: 'claude-subscription', state: 'ready', message: 'Signed in.' })
-    expect(screen.getByRole('status').textContent).toBe('Signed in.')
+    expect(screen.getByText('Connected')).toBeTruthy()
     expect(screen.queryByLabelText('Sign-in link')).toBeNull()
     expect(api.provider.login).toHaveBeenCalledOnce()
     expect(errors).not.toHaveBeenCalled()
@@ -302,7 +299,7 @@ describe('Claude subscription sign-in', () => {
 
   it('cancels from a reopened Settings and ignores late replies to the closed one', async () => {
     const { api, user, showLink, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     await reopen(user)
     await user.click(await screen.findByRole('button', { name: 'Cancel sign-in' }))
@@ -332,10 +329,7 @@ describe('Claude subscription sign-in', () => {
       })
     })
     expect(screen.getByTestId('app-status').textContent).toBe('Sign in with your subscription.')
-    expect(screen.getByRole('button', { name: 'Sign in with subscription' })).toHaveProperty(
-      'disabled',
-      false,
-    )
+    expect(screen.getByRole('button', { name: 'Sign in' })).toHaveProperty('disabled', false)
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
   })
 })

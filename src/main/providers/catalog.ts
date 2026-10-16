@@ -113,6 +113,14 @@ export async function codexAllowance(peer: RpcPeer): Promise<ProviderAllowance> 
   }
   return {
     provider: 'codex-subscription',
+    ...(current['credits'] && typeof current['credits'] === 'object'
+      ? {
+          credits: {
+            hasCredits: credits['hasCredits'] === true,
+            unlimited: credits['unlimited'] === true,
+          },
+        }
+      : {}),
     plan: identifier(current['planType']) ? current['planType'] : null,
     state,
     resetsAt:

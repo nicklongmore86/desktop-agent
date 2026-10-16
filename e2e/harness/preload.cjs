@@ -14,6 +14,20 @@ const resolve = (value) => () => Promise.resolve(value)
 let provider = { provider: 'anthropic-api', state: 'ready', message: 'API mode' }
 let loginState = { provider: null, active: false, url: null, result: null }
 let theme = 'system'
+let allowance = {
+  provider: 'codex-subscription',
+  plan: 'Plus',
+  state: 'available',
+  resetsAt: null,
+  windows: [
+    {
+      limitId: 'Five hour',
+      remainingPercent: 65,
+      resetsAt: new Date(Date.now() + 3600000).toISOString(),
+    },
+  ],
+  lastError: null,
+}
 const loginCalls = { open: 0, copy: 0, codes: [] }
 const chatState = { items: [], running: false, loadError: null }
 const model = {
@@ -24,6 +38,32 @@ const model = {
 
 contextBridge.exposeInMainWorld('desktopApi', {
   provider: {
+    allowance: () =>
+      Promise.resolve({ ok: true, value: { ...allowance, provider: provider.provider } }),
+    models: () =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          provider: provider.provider,
+          options: [{ id: 'gpt-5.6-terra', label: 'Terra' }],
+          selectedModel: null,
+          savedModel: null,
+          defaultModel: 'gpt-5.6-terra',
+          resolvedModel: null,
+        },
+      }),
+    setModel: (model) =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          provider: provider.provider,
+          options: [{ id: 'gpt-5.6-terra', label: 'Terra' }],
+          selectedModel: model,
+          savedModel: model,
+          defaultModel: 'gpt-5.6-terra',
+          resolvedModel: model,
+        },
+      }),
     get: () => Promise.resolve(provider),
     set: (next) => {
       provider = { provider: next, state: 'ready', message: 'Ready.' }
@@ -82,7 +122,10 @@ contextBridge.exposeInMainWorld('desktopApi', {
       return Promise.resolve()
     },
   },
-  audit: { status: resolve({ healthy: true, path: 'C:\\Data\\audit.jsonl' }) },
+  audit: {
+    reveal: resolve(undefined),
+    status: resolve({ healthy: true, path: 'C:\\Data\\audit.jsonl' }),
+  },
   onChatEvent: subscribe(listeners.chat),
   onApprovalRequest: subscribe(listeners.approval),
   onAuditStatus: subscribe(listeners.audit),
@@ -97,6 +140,9 @@ contextBridge.exposeInMainWorld('e2e', {
     for (const listener of listeners.chat) listener(event)
   },
   // Choose the provider the app reports (before or after it has loaded).
+  setAllowance: (next) => {
+    allowance = next
+  },
   setProvider: (next) => {
     provider = next
   },

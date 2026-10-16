@@ -12,6 +12,7 @@ import type {
   ChatEvent,
   ProviderLoginState,
   ProviderStatus,
+  ProviderAllowance,
 } from '../src/shared/ipc'
 
 /**
@@ -25,6 +26,7 @@ const OUT = join(__dirname, '../e2e-artifacts/ui')
 
 interface E2eWindow {
   e2e: {
+    setAllowance: (allowance: ProviderAllowance) => void
     pushChat: (event: ChatEvent) => void
     pushApproval: (prompt: ApprovalPrompt) => void
     setProvider: (status: ProviderStatus) => void
@@ -131,6 +133,64 @@ for (const width of [1280, 400]) {
         await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
         await shot('settings-api')
 
+        for (const [id, label] of [
+          ['folders', 'Folders & permissions'],
+          ['appearance', 'Appearance'],
+          ['privacy', 'Privacy & audit log'],
+          ['about', 'About'],
+        ] as const) {
+          if (width > 540) await page.getByRole('button', { name: label, exact: true }).click()
+          await page.locator(`#settings-${id}`).scrollIntoViewIfNeeded()
+          await shot(`settings-${id}`)
+        }
+        if (width > 540)
+          await page.getByRole('button', { name: 'Accounts & providers', exact: true }).click()
+        await page.getByRole('radio', { name: /Codex · ChatGPT/ }).check()
+        for (const [name, state, remaining] of [
+          ['normal', 'available', 65],
+          ['amber', 'available', 15],
+          ['limited', 'limited', 0],
+          ['unknown', 'unknown', 65],
+        ] as const) {
+          await page.evaluate(
+            ({ state, remaining }) => {
+              ;(window as unknown as E2eWindow).e2e.setAllowance({
+                provider: 'codex-subscription',
+                plan: 'Plus',
+                state,
+                resetsAt: state === 'limited' ? '2026-10-20T15:00:00Z' : null,
+                windows:
+                  state === 'unknown'
+                    ? []
+                    : [
+                        {
+                          limitId: 'Five hour',
+                          remainingPercent: remaining,
+                          resetsAt: '2026-10-20T15:00:00Z',
+                        },
+                      ],
+                lastError: null,
+              })
+            },
+            { state, remaining },
+          )
+          await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+          await expect(
+            page
+              .getByText(
+                state === 'available'
+                  ? 'Available'
+                  : state === 'unknown'
+                    ? 'Usage unavailable right now'
+                    : /Limit reached/,
+                { exact: state !== 'limited' },
+              )
+              .first(),
+          ).toBeVisible()
+          await page.getByRole('heading', { name: 'Usage', exact: true }).scrollIntoViewIfNeeded()
+          await shot(`settings-usage-${name}`)
+        }
+
         // Settings, Claude subscription mid sign-in.
         await page.evaluate(() => {
           const { setProvider, pushLoginState } = (window as unknown as E2eWindow).e2e
@@ -146,7 +206,7 @@ for (const width of [1280, 400]) {
             result: null,
           })
         })
-        await page.getByLabel('Access provider').selectOption('claude-subscription')
+        await page.getByRole('radio', { name: /Claude · Subscription/ }).check()
         await expect(page.getByLabel('Sign-in link')).toBeVisible()
         await shot('settings-signin')
         expect(await noSidewaysScroll(page)).toBe(true)
