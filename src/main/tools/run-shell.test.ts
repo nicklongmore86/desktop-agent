@@ -634,8 +634,7 @@ describe('shellEnv', () => {
 
 // Real processes, on whichever OS runs the tests (PowerShell on the Windows CI runner).
 describe('run_shell with a real shell', () => {
-  // A fresh Windows runner is busy for its first minutes: a one-line PowerShell command
-  // can take 50 s there.
+  // Headroom for a busy Windows runner; these commands normally take a second or two.
   const SHELL_MS = 120_000
 
   // The first cmdlet a fresh Windows PowerShell looks up can take over a minute while it
@@ -643,7 +642,6 @@ describe('run_shell with a real shell', () => {
   beforeAll(async () => {
     if (process.platform !== 'win32') return
     const warm = await makeSandbox()
-    const started = Date.now()
     try {
       const r = await toolHarness(warm)
         .tool('run_shell')
@@ -653,7 +651,6 @@ describe('run_shell with a real shell', () => {
         )
       expect(r.content).toMatch(/^exit code: 0/)
     } finally {
-      console.error(`TEMPDIAG warm-up took ${String(Date.now() - started)} ms`)
       await fs.rm(warm.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     }
   }, 300_000)
