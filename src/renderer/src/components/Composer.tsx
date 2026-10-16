@@ -2,6 +2,7 @@ import type { ProviderId, ProviderStatus } from '../../../shared/ipc'
 import type { OpenSettings } from '../open-settings'
 import type { ProviderModelPicker } from '../provider-models'
 import { summarizeUsage, type ProviderUsage } from '../usage'
+import { useComposerReferences } from './files/use-composer-references'
 import { useToast } from './Toast'
 
 export interface ComposerProps {
@@ -43,6 +44,8 @@ export function Composer({
   const notify = useToast()
   const summary = summarizeUsage(usage.allowance)
   const { choice } = models
+  // File references: the `@` menu, drops from the Files tree, "Insert reference into chat".
+  const references = useComposerReferences({ draft, onDraft, inputRef })
 
   return (
     <form
@@ -52,7 +55,9 @@ export function Composer({
         onSubmit()
       }}
     >
+      {references.menu}
       <textarea
+        {...references.textareaProps}
         ref={inputRef}
         aria-label="Message"
         placeholder="Ask about your files…"
@@ -60,8 +65,10 @@ export function Composer({
         value={draft}
         onChange={(event) => {
           onDraft(event.target.value)
+          references.onInput(event.target)
         }}
         onKeyDown={(event) => {
+          if (references.onKeyDown(event)) return
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault()
             event.currentTarget.form?.requestSubmit()

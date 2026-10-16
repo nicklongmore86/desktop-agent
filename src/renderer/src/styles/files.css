@@ -1,0 +1,348 @@
+/*
+ * The Workspace panel's Files tree, its context menu, and the composer's `@` menu.
+ * Tokens only (styles/contrast.test.ts checks this sheet too); file-type colours
+ * are the --color-ft-* roles, and every type also has its own icon shape.
+ */
+
+.files-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
+  min-height: 0;
+}
+
+.files-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.files-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.files-header-actions button {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.files-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* The tree: 28px rows, 16px glyphs, indent set per row in script. */
+
+.file-tree {
+  flex: 1;
+  min-height: 0;
+  margin: 0 calc(-1 * var(--space-2));
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.file-tree:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 28px;
+  padding-inline-end: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  cursor: default;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tree-row:hover {
+  background: var(--color-surface-2);
+}
+
+.file-tree:focus-visible .tree-row-active,
+.tree-row-active {
+  background: var(--color-accent-bg);
+}
+
+.file-tree:focus-visible .tree-row-active {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.tree-root .tree-name {
+  font-weight: 600;
+}
+
+.tree-twisty {
+  flex: 0 0 auto;
+  width: 12px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+.tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+}
+
+.tree-root-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+}
+
+.tree-badge {
+  flex: 0 0 auto;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+}
+
+.tree-row-locked .tree-name {
+  color: var(--color-text-muted);
+}
+
+.tree-action {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  padding: 0 var(--space-1);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+}
+
+.tree-action + .tree-action {
+  margin-inline-start: 0;
+}
+
+.tree-remove {
+  visibility: hidden;
+}
+
+.tree-row:hover .tree-remove,
+.tree-row-active .tree-remove {
+  visibility: visible;
+}
+
+.tree-status {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-style: italic;
+}
+
+.tree-status-error {
+  color: var(--color-danger-text);
+  font-style: normal;
+  white-space: normal;
+}
+
+/* File-type colours: the icon is coloured, its shape differs per type too. */
+
+.file-icon {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+
+.file-icon-folder {
+  color: var(--color-accent-text);
+}
+
+.ft-doc {
+  color: var(--color-ft-doc);
+}
+
+.ft-sheet {
+  color: var(--color-ft-sheet);
+}
+
+.ft-slide {
+  color: var(--color-ft-slide);
+}
+
+.ft-pdf {
+  color: var(--color-ft-pdf);
+}
+
+.ft-code {
+  color: var(--color-ft-code);
+}
+
+.ft-image {
+  color: var(--color-ft-image);
+}
+
+.ft-media {
+  color: var(--color-ft-media);
+}
+
+.ft-archive {
+  color: var(--color-ft-archive);
+}
+
+.file-icon-locked {
+  color: var(--color-warning-text);
+}
+
+/* The tree's context menu (fixed, so the scroll box cannot clip it; placed in script). */
+
+.file-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 280px;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-0);
+  box-shadow: var(--shadow-raised);
+}
+
+.file-menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+
+.file-menu button:hover,
+.file-menu button:focus-visible {
+  background: var(--color-surface-2);
+}
+
+.file-menu button[aria-disabled='true'] {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.file-menu-note {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+/* The composer's `@` mention menu, above the message box. */
+
+.composer {
+  position: relative;
+}
+
+.mention-menu {
+  position: absolute;
+  right: var(--space-3);
+  bottom: 100%;
+  left: var(--space-3);
+  z-index: 5;
+  margin-bottom: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-0);
+  box-shadow: var(--shadow-raised);
+}
+
+.mention-menu ul {
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.mention-menu [role='option'] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.mention-menu [role='option']:hover,
+.mention-menu [role='option'][aria-selected='true'] {
+  background: var(--color-accent-bg);
+}
+
+.mention-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: plaintext;
+}
+
+.mention-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: plaintext;
+}
+
+.mention-hint {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+@media (forced-colors: active) {
+  /* The active row, the open menu option and locked entries show without colour. */
+  .tree-row-active,
+  .mention-menu [role='option'][aria-selected='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .file-icon {
+    forced-color-adjust: none;
+    color: CanvasText;
+  }
+
+  .tree-badge,
+  .file-menu,
+  .mention-menu {
+    border-color: CanvasText;
+  }
+
+  .file-menu button[aria-disabled='true'],
+  .tree-row-locked .tree-name {
+    color: GrayText;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-tree {
+    scroll-behavior: auto;
+  }
+}

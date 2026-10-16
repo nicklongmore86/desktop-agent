@@ -2,7 +2,13 @@
 // main -> renderer events and read back the renderer's approval answers.
 const { contextBridge } = require('electron')
 
-const listeners = { chat: new Set(), approval: new Set(), audit: new Set(), login: new Set() }
+const listeners = {
+  chat: new Set(),
+  approval: new Set(),
+  audit: new Set(),
+  login: new Set(),
+  files: new Set(),
+}
 const responses = []
 const subscribe = (set) => (listener) => {
   set.add(listener)
@@ -26,6 +32,47 @@ let layout = {
 const layoutSaves = []
 const commandRuns = []
 const loginCalls = { open: 0, copy: 0, codes: [] }
+
+// The Files tree: one granted folder with every kind of entry the tree draws.
+const ROOT = 'C:\\Users\\me\\Projects'
+const ROOT_ID = 'r00000000000000a1'
+const f = (rel, extra = {}) => ({
+  name: rel.split('/').pop(),
+  rel,
+  kind: 'file',
+  size: 1024,
+  ...extra,
+})
+const d = (rel, extra = {}) => ({ name: rel.split('/').pop(), rel, kind: 'dir', ...extra })
+let files = {
+  '': [
+    d('src'),
+    d('docs'),
+    d('.ssh', { kind: 'other', denied: '".ssh" is blocked (SSH keys).' }),
+    { name: 'shared-drive', rel: 'shared-drive', kind: 'link', linkOutside: true },
+    {
+      name: '.env',
+      rel: '.env',
+      kind: 'other',
+      denied: '".env" is blocked (environment files (.env, .env.*)).',
+    },
+    f('budget-2026.xlsx'),
+    f('kickoff.pptx'),
+    f('contract.pdf'),
+    f('README.md'),
+    f('logo.png'),
+    f('demo.mp4'),
+    f('backup.zip'),
+    f('secrets.json', { secret: true }),
+    f('notes.txt'),
+  ],
+  src: [d('src/components'), f('src/App.tsx'), f('src/main.ts'), f('src/styles.css')],
+  docs: [f('docs/plan.docx'), f('docs/brief.md')],
+  'src/components': [f('src/components/FileTree.tsx')],
+}
+const filesCalls = { watch: [], reveal: [], copy: [], reference: [], search: [] }
+const filesRoots = () => (rootsGranted ? [{ id: ROOT_ID, name: 'Projects', path: ROOT }] : [])
+let rootsGranted = true
 let allowance = { plan: null, state: 'unknown', resetsAt: null, windows: [], lastError: null }
 let codexModels = []
 let savedCodexModel = null
@@ -84,6 +131,60 @@ const modelsResult = () => {
 }
 
 contextBridge.exposeInMainWorld('desktopApi', {
+  files: {
+    roots: () => Promise.resolve(filesRoots()),
+    list: ({ rootId, rel }) => {
+      const entries = rootId === ROOT_ID && rootsGranted ? files[rel] : undefined
+      return Promise.resolve(
+        entries
+          ? { ok: true, entries, more: 0 }
+          : { ok: false, reason: 'That folder no longer exists.' },
+      )
+    },
+    watch: (locations) => {
+      filesCalls.watch.push(locations)
+      return Promise.resolve()
+    },
+    search: (query) => {
+      filesCalls.search.push(query)
+      const hits = []
+      for (const entries of Object.values(files))
+        for (const entry of entries)
+          if (
+            !entry.denied &&
+            !entry.secret &&
+            (entry.kind === 'file' || entry.kind === 'dir') &&
+            entry.name.toLowerCase().includes(query.toLowerCase())
+          )
+            hits.push({
+              rootId: ROOT_ID,
+              rel: entry.rel,
+              name: entry.name,
+              kind: entry.kind,
+              rootName: 'Projects',
+            })
+      return Promise.resolve(hits.slice(0, 20))
+    },
+    reveal: (location) => {
+      filesCalls.reveal.push(location)
+      // Like main: secret files are never revealed.
+      if (location.rel.includes('secrets'))
+        return Promise.resolve({ ok: false, reason: 'Secret files cannot be opened or revealed.' })
+      return Promise.resolve({ ok: true })
+    },
+    copyPath: (location) => {
+      filesCalls.copy.push(location)
+      return Promise.resolve({ ok: true })
+    },
+    reference: (location) => {
+      filesCalls.reference.push(location)
+      if (location.rel.includes('secrets'))
+        return Promise.resolve({ ok: false, reason: 'Not allowed.' })
+      const path = location.rel ? `${ROOT}\\${location.rel.replaceAll('/', '\\')}` : ROOT
+      return Promise.resolve({ ok: true, text: `@"${path}"` })
+    },
+    onChanged: subscribe(listeners.files),
+  },
   projects: {
     state: () => Promise.resolve(projectsState()),
     create: (name, icon) => {
@@ -215,7 +316,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
     clear: resolve({ saved: false, error: null }),
   },
   grants: {
-    list: resolve({ roots: ['C:\\Users\\me\\Projects'], loadError: null }),
+    list: () => Promise.resolve({ roots: rootsGranted ? [ROOT] : [], loadError: null }),
     add: resolve({ status: 'cancelled', grants: { roots: [], loadError: null } }),
     remove: resolve({ roots: [], loadError: null }),
   },
@@ -317,6 +418,12 @@ contextBridge.exposeInMainWorld('e2e', {
   layoutSaves: () => JSON.parse(JSON.stringify(layoutSaves)),
   // What the renderer passed to command.run, in order.
   commandRuns: () => commandRuns.slice(),
+  // Change what a folder lists and push the change like main's watcher does.
+  setFolder: (rel, entries) => {
+    files = { ...files, [rel]: entries }
+    for (const listener of listeners.files) listener({ rootId: ROOT_ID, rel })
+  },
+  filesCalls: () => JSON.parse(JSON.stringify(filesCalls)),
   responses: () => responses.slice(),
   stopCalls: () => stopCalls,
   listenerCount: () => listeners.chat.size + listeners.approval.size,

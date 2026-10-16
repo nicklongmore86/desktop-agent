@@ -3,14 +3,23 @@
  * spread below, in alphabetical order.
  */
 import type { FeatureApis } from '../shared/ipc-features'
+import type { PushChannel, PushPayloads } from '../shared/ipc'
 import { commandApi } from './command'
+import { filesApi } from './files'
 import { layoutApi } from './layout'
 import { projectsApi } from './projects'
 
 export type Invoke = <T>(channel: string, ...args: unknown[]) => Promise<T>
 
-export const featureApis = (invoke: Invoke): FeatureApis => ({
+/** Subscribes to a main -> renderer push; returns the unsubscribe. */
+export type Subscribe = <C extends PushChannel>(
+  channel: C,
+  listener: (payload: PushPayloads[C]) => void,
+) => () => void
+
+export const featureApis = (invoke: Invoke, subscribe: Subscribe): FeatureApis => ({
   ...commandApi(invoke),
+  ...filesApi(invoke, subscribe),
   ...layoutApi(invoke),
   ...projectsApi(invoke),
 })

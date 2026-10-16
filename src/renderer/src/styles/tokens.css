@@ -19,6 +19,9 @@
  *                     tinted background (*-bg); text sits on surface-0 or *-bg
  *   diff-*            diff additions and deletions
  *   hl-*              syntax highlighting in code blocks (>= 4.5:1 on surface-0/1/2)
+ *   ft-*              file types in the Files tree (icon and extension badge): doc,
+ *                     sheet, slide, pdf, code, image, media, archive (>= 4.5:1 on
+ *                     surface-0/1/2 and accent-bg, the selected row)
  *
  * Theme: light by default. Dark applies when the OS prefers it (theme "system")
  * or when <html data-theme="dark"> is set. data-theme="light" forces light.
@@ -63,6 +66,14 @@
   --color-hl-title: #1f55c9;
   --color-hl-attr: #0b6a73;
   --color-hl-meta: #6b4e00;
+  --color-ft-doc: #1d5fc4;
+  --color-ft-sheet: #2f6b1f;
+  --color-ft-slide: #835400;
+  --color-ft-pdf: #b23a00;
+  --color-ft-code: #7a3db8;
+  --color-ft-image: #b02a68;
+  --color-ft-media: #4a4ac8;
+  --color-ft-archive: #7a4f2a;
   --color-code-bg: var(--color-surface-1);
   --color-overlay: rgb(0 0 0 / 45%);
   --color-focus-ring: var(--color-accent);
@@ -152,6 +163,14 @@
     --color-hl-title: #8ab0ff;
     --color-hl-attr: #6fd3df;
     --color-hl-meta: #e8b95a;
+    --color-ft-doc: #7fb0ff;
+    --color-ft-sheet: #94d36f;
+    --color-ft-slide: #e5bf52;
+    --color-ft-pdf: #ff9966;
+    --color-ft-code: #c7a0ff;
+    --color-ft-image: #ff8cc0;
+    --color-ft-media: #a9acff;
+    --color-ft-archive: #d3a67e;
     --color-overlay: rgb(0 0 0 / 60%);
     --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
   }
@@ -193,6 +212,14 @@
   --color-hl-title: #8ab0ff;
   --color-hl-attr: #6fd3df;
   --color-hl-meta: #e8b95a;
+  --color-ft-doc: #7fb0ff;
+  --color-ft-sheet: #94d36f;
+  --color-ft-slide: #e5bf52;
+  --color-ft-pdf: #ff9966;
+  --color-ft-code: #c7a0ff;
+  --color-ft-image: #ff8cc0;
+  --color-ft-media: #a9acff;
+  --color-ft-archive: #d3a67e;
   --color-overlay: rgb(0 0 0 / 60%);
   --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
 }

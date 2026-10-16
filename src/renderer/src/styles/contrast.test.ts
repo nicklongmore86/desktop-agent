@@ -63,6 +63,14 @@ const PAIRS: [string, string, number][] = [
     (name): [string, string, number][] =>
       SURFACES.map((surface): [string, string, number] => [`--color-hl-${name}`, surface, 4.5]),
   ),
+  ...['doc', 'sheet', 'slide', 'pdf', 'code', 'image', 'media', 'archive'].flatMap(
+    (name): [string, string, number][] =>
+      [...SURFACES, '--color-accent-bg'].map((surface): [string, string, number] => [
+        `--color-ft-${name}`,
+        surface,
+        4.5,
+      ]),
+  ),
   ['--color-border-control', '--color-surface-0', 3],
   ['--color-border-control', '--color-surface-1', 3],
   ['--color-accent', '--color-surface-0', 3],
@@ -218,7 +226,7 @@ function tokenProblems(source: string, defined: ReadonlySet<string>): string[] {
 }
 
 describe('stylesheets use tokens', () => {
-  const sheets = import.meta.glob<string>(['./base.css', './components.css'], {
+  const sheets = import.meta.glob<string>(['./base.css', './components.css', './files.css'], {
     query: '?raw',
     import: 'default',
     eager: true,

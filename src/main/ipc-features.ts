@@ -3,6 +3,7 @@
  * one service in FeatureServices and one call below, in alphabetical order.
  */
 import { registerCommandHandlers, type CommandService } from './ipc-command'
+import { registerFilesHandlers, type FilesService } from './ipc-files'
 import { registerLayoutHandlers, type LayoutService } from './ipc-layout'
 import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 
@@ -11,12 +12,14 @@ export type IpcHandle = (channel: string, handler: (...args: unknown[]) => unkno
 
 export interface FeatureServices {
   command: CommandService
+  files: FilesService
   layout: LayoutService
   projects: ProjectsService
 }
 
 export function registerFeatureHandlers(handle: IpcHandle, services: FeatureServices): void {
   registerCommandHandlers(handle, services.command)
+  registerFilesHandlers(handle, services.files)
   registerLayoutHandlers(handle, services.layout)
   registerProjectsHandlers(handle, services.projects)
 }
