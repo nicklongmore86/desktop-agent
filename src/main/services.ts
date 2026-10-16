@@ -8,7 +8,7 @@ import { createAgent, createClaudeClient } from './agent'
 import { ChatSession } from './chat/session'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
 import { createApiKeyStore, type SafeStorage } from './secrets'
-import { createConversationStore } from './storage/conversation-store'
+import { openHistory, type ConversationHistory } from './storage/history-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
 
@@ -70,15 +70,28 @@ export async function createAppServices(deps: AppServiceDeps) {
     deps.openUrl ?? (() => Promise.reject(new Error('Browser sign-in is unavailable.'))),
     { settings, onLoginState: (state) => deps.onProviderLoginState?.(state) },
   )
-  const storeFor = (provider: ProviderId) =>
-    createConversationStore(
-      join(
-        userData,
-        provider === 'anthropic-api' ? 'conversation.json' : `conversation-${provider}.json`,
-      ),
-    )
+  // Each provider's conversations: userData/history/<provider>/index.json plus one file
+  // per conversation. Opened (and migrated from the old single file) on first use.
+  const histories = new Map<ProviderId, Promise<ConversationHistory>>()
+  const historyFor = (provider: ProviderId): Promise<ConversationHistory> => {
+    let history = histories.get(provider)
+    if (!history) {
+      history = openHistory(join(userData, 'history', provider), {
+        legacyFile: join(
+          userData,
+          provider === 'anthropic-api' ? 'conversation.json' : `conversation-${provider}.json`,
+        ),
+        onError: (error) => {
+          console.error('could not save the chat history list', error)
+        },
+      })
+      histories.set(provider, history)
+      history.catch(() => histories.delete(provider))
+    }
+    return history
+  }
   const chat = new ChatSession({
-    store: storeFor(settings.provider),
+    history: await historyFor(settings.provider),
     async createRunner(signal) {
       if (settings.provider !== 'anthropic-api') {
         try {
@@ -154,7 +167,7 @@ export async function createAppServices(deps: AppServiceDeps) {
       if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
       subscriptions.cancelLogin()
       subscriptions.invalidateMetadata()
-      await chat.switchStore(storeFor(next), () => settings.setProvider(next))
+      await chat.switchHistory(await historyFor(next), () => settings.setProvider(next))
       return subscriptions.status(settings.provider)
     },
     login: () => subscriptions.login(settings.provider),

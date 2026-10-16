@@ -9,6 +9,7 @@ import {
 import type { RunOptions } from './agent'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { ChatSession } from './chat/session'
+import { memoryHistory, memoryStore } from './chat/test-support'
 import {
   registerIpcHandlers,
   type IpcMainLike,
@@ -19,6 +20,7 @@ import { isTrustedIpcSender, isTrustedSenderFrame } from './security'
 
 const APP_URL = 'file:///C:/Program%20Files/Desktop%20Agent/resources/app/out/renderer/index.html'
 const appFrame: IpcSenderEvent = { senderFrame: { url: APP_URL, parent: null } }
+const OTHER_CHAT = '6f1c2a4e-8b3d-4c5e-9f7a-1b2c3d4e5f60'
 
 function fakeIpc() {
   const handlers = new Map<string, (event: IpcSenderEvent, ...args: unknown[]) => unknown>()
@@ -88,6 +90,10 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       send: vi.fn(() => Promise.resolve({ ok: true as const })),
       stop: vi.fn(() => Promise.resolve()),
       newChat: vi.fn(() => Promise.resolve({ items: [], running: false, loadError: null })),
+      historyState: vi.fn(() => ({ conversations: [], activeId: null })),
+      open: vi.fn(() => Promise.resolve({ items: [], running: false, loadError: null })),
+      rename: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
+      remove: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
       respondApproval: vi.fn(() => true),
     },
     revealAudit: vi.fn(),
@@ -296,6 +302,59 @@ describe('registerIpcHandlers', () => {
     expect(services.chat.newChat).toHaveBeenCalledOnce()
     expect(services.chat.respondApproval).toHaveBeenCalledWith('id-1', true)
   })
+
+  it('passes history calls through only with a valid id and title', async () => {
+    const { invoke, services } = setup()
+    await invoke(IpcChannels.chatHistory, appFrame)
+    await invoke(IpcChannels.chatOpen, appFrame, OTHER_CHAT)
+    await invoke(IpcChannels.chatRename, appFrame, OTHER_CHAT, 'Plans')
+    await invoke(IpcChannels.chatDelete, appFrame, OTHER_CHAT)
+    expect(services.chat.historyState).toHaveBeenCalledOnce()
+    expect(services.chat.open).toHaveBeenCalledWith(OTHER_CHAT)
+    expect(services.chat.rename).toHaveBeenCalledWith(OTHER_CHAT, 'Plans')
+    expect(services.chat.remove).toHaveBeenCalledWith(OTHER_CHAT)
+
+    const badIds = [
+      '../index',
+      '..\\..\\settings',
+      `${OTHER_CHAT}/../x`,
+      `${OTHER_CHAT}.json`,
+      OTHER_CHAT.toUpperCase(),
+      'index',
+      '',
+      42,
+      null,
+      { id: OTHER_CHAT },
+    ]
+    for (const id of badIds) {
+      for (const channel of [IpcChannels.chatOpen, IpcChannels.chatDelete]) {
+        await expect(invoke(channel, appFrame, id)).rejects.toThrow('Unknown chat.')
+      }
+      await expect(invoke(IpcChannels.chatRename, appFrame, id, 'x')).rejects.toThrow(
+        'Unknown chat.',
+      )
+    }
+    for (const title of [42, null, 'x'.repeat(1001)]) {
+      await expect(invoke(IpcChannels.chatRename, appFrame, OTHER_CHAT, title)).rejects.toThrow()
+    }
+    for (const channel of [
+      IpcChannels.chatHistory,
+      IpcChannels.chatOpen,
+      IpcChannels.chatRename,
+      IpcChannels.chatDelete,
+    ]) {
+      await expect(
+        invoke(
+          channel,
+          { senderFrame: { url: 'https://evil.example/', parent: null } },
+          OTHER_CHAT,
+        ),
+      ).rejects.toThrow('untrusted')
+    }
+    expect(services.chat.open).toHaveBeenCalledOnce()
+    expect(services.chat.rename).toHaveBeenCalledOnce()
+    expect(services.chat.remove).toHaveBeenCalledOnce()
+  })
 })
 
 describe('approvals over IPC with a real session', () => {
@@ -304,12 +363,10 @@ describe('approvals over IPC with a real session', () => {
     const events: ChatEvent[] = []
     const decisions: boolean[] = []
     let ids = 0
+    const history = memoryHistory()
+    history.add(OTHER_CHAT, memoryStore([{ role: 'user', content: 'other' }]))
     const chat = new ChatSession({
-      store: {
-        load: () => Promise.resolve({ messages: [], error: null }),
-        save: () => Promise.resolve(),
-        clear: () => Promise.resolve(),
-      },
+      history,
       createRunner: () =>
         Promise.resolve({
           ok: true,
@@ -365,31 +422,37 @@ describe('approvals over IPC with a real session', () => {
     expect(decisions).toEqual([true])
   })
 
-  it.each(['stop', 'new chat', 'window reload', 'renderer crash', 'window close'] as const)(
-    'denies a pending approval on %s',
-    async (how) => {
-      const { chat, invoke, decisions, pending } = sessionSetup()
-      const contents = new EventEmitter()
-      cancelOnPageEnd(contents, () => {
-        void chat.stop()
-      })
-      await invoke(IpcChannels.chatSend, appFrame, 'delete it')
-      await pending()
-      if (how === 'stop') await invoke(IpcChannels.chatStop, appFrame)
-      else if (how === 'new chat') await invoke(IpcChannels.chatNew, appFrame)
-      else
-        contents.emit(
-          how === 'window reload'
-            ? 'did-start-loading'
-            : how === 'renderer crash'
-              ? 'render-process-gone'
-              : 'destroyed',
-        )
-      await chat.idle()
-      expect(decisions).toEqual([false])
-      expect(chat.pendingApprovals).toEqual([])
-    },
-  )
+  it.each([
+    'stop',
+    'new chat',
+    'opening another chat',
+    'window reload',
+    'renderer crash',
+    'window close',
+  ] as const)('denies a pending approval on %s', async (how) => {
+    const { chat, invoke, decisions, pending } = sessionSetup()
+    const contents = new EventEmitter()
+    cancelOnPageEnd(contents, () => {
+      void chat.stop()
+    })
+    await invoke(IpcChannels.chatSend, appFrame, 'delete it')
+    await pending()
+    if (how === 'stop') await invoke(IpcChannels.chatStop, appFrame)
+    else if (how === 'new chat') await invoke(IpcChannels.chatNew, appFrame)
+    else if (how === 'opening another chat')
+      await invoke(IpcChannels.chatOpen, appFrame, OTHER_CHAT)
+    else
+      contents.emit(
+        how === 'window reload'
+          ? 'did-start-loading'
+          : how === 'renderer crash'
+            ? 'render-process-gone'
+            : 'destroyed',
+      )
+    await chat.idle()
+    expect(decisions).toEqual([false])
+    expect(chat.pendingApprovals).toEqual([])
+  })
 })
 
 describe('provider IPC', () => {

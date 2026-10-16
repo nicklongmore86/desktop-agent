@@ -30,6 +30,10 @@ export const IpcChannels = {
   chatSend: 'chat:send',
   chatStop: 'chat:stop',
   chatNew: 'chat:new',
+  chatHistory: 'chat:history',
+  chatOpen: 'chat:open',
+  chatRename: 'chat:rename',
+  chatDelete: 'chat:delete',
 
   approvalRespond: 'approval:respond',
   auditStatus: 'audit:status',
@@ -198,11 +202,29 @@ export type ChatItem =
       result: { content: string; isError: boolean } | null
     }
 
+/** One saved conversation in the history list. Times are milliseconds since the epoch. */
+export interface ConversationSummary {
+  id: string
+  /** Plain text: control and bidi formatting characters are removed in main. */
+  title: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** The current provider's saved conversations, newest first, and the one that is open. */
+export interface HistoryState {
+  conversations: ConversationSummary[]
+  /** Null for a new chat that has not been saved yet. */
+  activeId: string | null
+}
+
 export interface ChatState {
   items: ChatItem[]
   running: boolean
   /** Set when the saved conversation could not be read; the app then starts a fresh one. */
   loadError: string | null
+  /** Always sent by main; optional so older snapshots (and tests) can leave it out. */
+  history?: HistoryState
 }
 
 export type SendResult =
@@ -219,8 +241,10 @@ export type ChatEvent =
   | { type: 'approval_closed'; approvalId: string; approved: boolean }
   | { type: 'error'; runId: string; code: ChatErrorCode; message: string; resetsAt?: string }
   | { type: 'run_finished'; runId: string; stopReason: string }
-  /** New chat: the conversation is now empty. */
+  /** Another conversation (or provider) is now open; `state` is its history. */
   | { type: 'conversation_reset'; state?: ChatState }
+  /** The history list changed: a chat was saved, renamed or deleted. */
+  | { type: 'history_changed'; history: HistoryState }
   /** Saving or deleting the conversation on disk failed. */
   | { type: 'storage_warning'; message: string }
 
@@ -294,6 +318,13 @@ export interface DesktopApi {
     send: (text: string) => Promise<SendResult>
     stop: () => Promise<void>
     newChat: () => Promise<ChatState>
+    /** The current provider's saved conversations. */
+    history: () => Promise<HistoryState>
+    /** Opens a saved conversation; stops a running reply first, like a provider switch. */
+    open: (id: string) => Promise<ChatState>
+    rename: (id: string, title: string) => Promise<HistoryState>
+    /** Deletes a saved conversation; deleting the open one starts a new chat. */
+    remove: (id: string) => Promise<HistoryState>
   }
   approvals: {
     respond: (id: string, approved: boolean) => Promise<void>
