@@ -1,35 +1,12 @@
-import { useState } from 'react'
-import { useApi } from '../../api'
 import type { SettingsPanelProps } from '../SettingsPanel'
+import { useGrantActions } from './use-grant-actions'
+
 export function FoldersSection({
   grants,
   onGrants,
 }: Pick<SettingsPanelProps, 'grants' | 'onGrants'>): React.JSX.Element {
-  const api = useApi()
-  const [message, setMessage] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const { message, busy, add, remove } = useGrantActions(onGrants)
   const roots = grants?.roots ?? []
-
-  const add = async (): Promise<void> => {
-    setBusy(true)
-    setMessage(null)
-    try {
-      const result = await api.grants.add()
-      onGrants(result.grants)
-      if (result.status === 'refused') setMessage(result.reason)
-    } catch {
-      setMessage('Could not add the folder.')
-    } finally {
-      setBusy(false)
-    }
-  }
-  const remove = async (root: string): Promise<void> => {
-    try {
-      onGrants(await api.grants.remove(root))
-    } catch {
-      setMessage('Could not remove the folder.')
-    }
-  }
 
   return (
     <section className="settings-section" aria-labelledby="grants-title">

@@ -7,8 +7,10 @@ import {
   type ModelSettings,
   type ThemePreference,
 } from '../../shared/ipc'
+import { DEFAULT_LAYOUT, type LayoutPrefs } from '../../shared/ipc-layout'
 import { DEFAULT_MODEL } from '../agent'
 import { readJsonFile, writeJsonFile } from './json-file'
+import { parseLayout } from './layout-schema'
 
 /** Models offered in Settings. The default comes from the agent module. */
 export const MODEL_OPTIONS: readonly ModelOption[] = [
@@ -25,6 +27,8 @@ interface SettingsFile {
   providerModels: Partial<Record<ProviderId, string>>
   /** Added later without a version bump: a missing or unknown value means 'system'. */
   theme?: ThemePreference
+  /** Added later without a version bump: has its own version, and a missing or invalid one means the defaults. */
+  layout?: LayoutPrefs
 }
 
 export interface SettingsStore {
@@ -37,6 +41,9 @@ export interface SettingsStore {
   readonly theme: ThemePreference
   /** Throws for a theme that is not offered. */
   setTheme: (theme: ThemePreference) => Promise<ThemePreference>
+  readonly layout: LayoutPrefs
+  /** Validates (never throws): bad fields reset to their defaults, unknown keys are dropped. */
+  setLayout: (layout: unknown) => Promise<LayoutPrefs>
   /** Throws for a model that is not offered. */
   setModel: (model: string) => Promise<ModelSettings>
 }
@@ -49,6 +56,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let model = DEFAULT_MODEL
   let provider: ProviderId = 'anthropic-api'
   let theme: ThemePreference = 'system'
+  let layout: LayoutPrefs = { ...DEFAULT_LAYOUT }
   const selectionSchema = z.partialRecord(
     z.enum(PROVIDERS),
     z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/),
@@ -62,6 +70,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     if (selections.success) providerModels = selections.data
     if (isOffered(parsed?.model)) model = parsed.model
     if (THEMES.includes(parsed?.theme as ThemePreference)) theme = parsed?.theme as ThemePreference
+    layout = parseLayout(parsed?.layout)
   } catch {
     // Keep the default.
   }
@@ -71,6 +80,16 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     writes = result.catch(() => {})
     return result
   }
+  /** The whole file with some fields changed: every write keeps the fields it does not touch. */
+  const snapshot = (changes: Partial<SettingsFile>): SettingsFile => ({
+    version: 2,
+    model,
+    provider,
+    providerModels,
+    theme,
+    layout,
+    ...changes,
+  })
   const view = (): ModelSettings => ({
     model,
     defaultModel: DEFAULT_MODEL,
@@ -86,13 +105,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
         )
         if (next !== null) selections[id] = next
         const validated = selectionSchema.parse(selections)
-        await writeJsonFile(file, {
-          version: 2,
-          model,
-          provider,
-          providerModels: validated,
-          theme,
-        } satisfies SettingsFile)
+        await writeJsonFile(file, snapshot({ providerModels: validated }))
         providerModels = validated
       })
     },
@@ -102,13 +115,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     async setProvider(next) {
       if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
       await serial(async () => {
-        await writeJsonFile(file, {
-          version: 2,
-          model,
-          provider: next,
-          providerModels,
-          theme,
-        } satisfies SettingsFile)
+        await writeJsonFile(file, snapshot({ provider: next }))
         provider = next
       })
     },
@@ -122,27 +129,26 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     async setTheme(next) {
       if (!THEMES.includes(next)) throw new Error('Unknown theme.')
       return serial(async () => {
-        await writeJsonFile(file, {
-          version: 2,
-          model,
-          provider,
-          providerModels,
-          theme: next,
-        } satisfies SettingsFile)
+        await writeJsonFile(file, snapshot({ theme: next }))
         theme = next
         return theme
+      })
+    },
+    get layout() {
+      return layout
+    },
+    async setLayout(next) {
+      const validated = parseLayout(next)
+      return serial(async () => {
+        await writeJsonFile(file, snapshot({ layout: validated }))
+        layout = validated
+        return layout
       })
     },
     async setModel(next) {
       if (!isOffered(next)) throw new Error('Unknown model.')
       return serial(async () => {
-        await writeJsonFile(file, {
-          version: 2,
-          model: next,
-          provider,
-          providerModels,
-          theme,
-        } satisfies SettingsFile)
+        await writeJsonFile(file, snapshot({ model: next }))
         model = next
         return view()
       })

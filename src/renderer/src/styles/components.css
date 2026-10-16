@@ -8,16 +8,89 @@
   height: 100%;
 }
 
-.workspace-sidebar {
+.shell-pane {
+  position: relative;
   display: flex;
-  flex-direction: column;
   flex-shrink: 0;
+  overflow: hidden;
+  background: var(--color-surface-1);
+}
+
+.app[data-animated] .shell-pane {
+  transition:
+    width var(--duration-panel) var(--ease),
+    visibility var(--duration-panel) var(--ease);
+}
+
+/* No animation while a separator is being dragged: the pane follows the pointer. */
+.app[data-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.app[data-resizing] .shell-pane {
+  transition: none;
+}
+
+.shell-pane-left {
+  width: var(--sidebar-width-left);
+  border-right: 1px solid var(--color-border);
+}
+
+.shell-pane-right {
+  width: var(--sidebar-width-right);
+  border-left: 1px solid var(--color-border);
+}
+
+/* Collapsed: no width, no border, and out of the tab order and the accessibility tree (inert). */
+.shell-pane[data-open='false'] {
+  width: 0;
+  border-width: 0;
+  visibility: hidden;
+}
+
+/* The content keeps the pane's width while it animates, so it does not reflow. */
+.shell-pane-inner {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+
+.shell-pane-left > .shell-pane-inner {
+  width: var(--sidebar-width-left);
+}
+
+.shell-pane-right > .shell-pane-inner {
+  width: var(--sidebar-width-right);
+}
+
+/* The 4px drag handle between a pane and the chat; the pane's own border is the visible line. */
+.shell-separator {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 var(--separator-size);
+  margin: 0 calc(-1 * var(--separator-size) / 2);
+  cursor: col-resize;
+  touch-action: none;
+  transition: background-color var(--duration-fast) var(--ease);
+}
+
+.shell-separator:hover,
+.shell-separator:focus-visible,
+.shell-separator[data-dragging] {
+  background: var(--color-accent);
+}
+
+.left-sidebar {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   gap: var(--space-6);
-  width: 248px;
+  min-height: 0;
   padding: var(--space-6) var(--space-4) var(--space-4);
   overflow-y: auto;
-  border-right: 1px solid var(--color-border);
-  background: var(--color-surface-1);
 }
 
 .workspace-brand {
@@ -80,15 +153,36 @@
 
 .sidebar-folders li {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) 0;
   font-size: var(--font-size-sm);
 }
 
 .folder-path {
+  flex: 1;
+  min-width: 0;
   overflow-wrap: anywhere;
   unicode-bidi: plaintext;
+}
+
+.folder-remove {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.sidebar-error {
+  margin: 0;
+  color: var(--color-danger-text);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
 }
 
 .sidebar-footer {
@@ -126,10 +220,40 @@
 .app-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-6);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border);
+}
+
+.app-header-title {
+  min-width: 0;
+}
+
+.app-header-title h1,
+.app-header .header-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.icon-button[aria-expanded='true'] {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.header-settings {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .app-header h1 {
@@ -147,13 +271,57 @@
 
 .app-nav {
   display: flex;
+  flex-shrink: 0;
+  align-items: center;
   gap: var(--space-2);
   margin-left: auto;
 }
 
-.mobile-new,
-.mobile-history {
+.mobile-new {
   display: none;
+}
+
+/* Right panel (Workspace) */
+
+.right-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.right-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.right-tabs [role='tab'] {
+  margin-bottom: -1px;
+  border-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.right-tabs [role='tab'][aria-selected='true'] {
+  border-bottom: 2px solid var(--color-accent);
+  color: var(--color-text);
+}
+
+.right-tabpanel {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.git-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 /* Chat history (sidebar, and the drawer on narrow windows) */
@@ -282,37 +450,81 @@
   color: var(--color-danger-text);
 }
 
-.history-drawer-backdrop {
+/* Drawers: a pane as a modal sheet over the chat, where it cannot be docked. */
+
+.shell-drawers {
+  display: contents;
+}
+
+.shell-drawer-backdrop {
   position: fixed;
   inset: 0;
+  z-index: 40;
+  display: flex;
   background: var(--color-overlay);
 }
 
-.history-drawer-backdrop[hidden] {
+.shell-drawer-backdrop[data-side='right'] {
+  justify-content: flex-end;
+}
+
+.shell-drawer-backdrop[hidden] {
   display: none;
 }
 
-.history-drawer {
+.shell-drawer {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  width: min(320px, 86vw);
+  width: min(var(--drawer-width), 86vw);
   height: 100%;
   padding: var(--space-4);
-  border-right: 1px solid var(--color-border);
   background: var(--color-surface-1);
   box-shadow: var(--shadow-raised);
 }
 
-.history-drawer-header {
+.shell-drawer-backdrop[data-side='left'] .shell-drawer {
+  border-right: 1px solid var(--color-border);
+}
+
+.shell-drawer-backdrop[data-side='right'] .shell-drawer {
+  border-left: 1px solid var(--color-border);
+}
+
+.app[data-animated] .shell-drawer-backdrop {
+  animation: drawer-fade var(--duration-panel) var(--ease);
+}
+
+@keyframes drawer-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.shell-drawer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
-.history-drawer-header h2 {
+.shell-drawer-header h2 {
   margin: 0;
   font-size: var(--font-size-md);
+}
+
+.shell-drawer-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The right panel supplies its own padding. */
+.shell-drawer-body:has(> .right-panel) {
+  margin: 0 calc(-1 * var(--space-4));
+  gap: 0;
 }
 
 .confirm-dialog {
@@ -1077,6 +1289,8 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
+  /* Above the drawers (40) and Settings (90): approvals and confirmations come first. */
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1348,16 +1562,6 @@
 /* Narrow windows */
 
 @media (max-width: 760px) {
-  .workspace-sidebar {
-    width: 185px;
-    gap: var(--space-4);
-    padding: var(--space-4) var(--space-3);
-  }
-
-  .workspace-brand {
-    font-size: var(--font-size-sm);
-  }
-
   .app-header,
   .chat-toolbar {
     padding-right: var(--space-4);
@@ -1374,7 +1578,12 @@
 }
 
 @media (max-width: 540px) {
-  .workspace-sidebar {
+  /* Drawers fill the window, leaving a strip of the chat visible to tap. */
+  .shell-drawer {
+    width: calc(100% - var(--drawer-gutter));
+  }
+
+  .header-settings-label {
     display: none;
   }
 
@@ -1390,8 +1599,7 @@
     font-size: var(--font-size-xs);
   }
 
-  .mobile-new,
-  .mobile-history {
+  .mobile-new {
     display: inline-block;
   }
 }
@@ -1589,6 +1797,27 @@
   .usage-warning,
   .usage-limited {
     border: 2px solid CanvasText;
+  }
+
+  /* The drag handle, the open sidebar toggles and the selected tab show without colour. */
+  .shell-separator:hover,
+  .shell-separator:focus-visible,
+  .shell-separator[data-dragging] {
+    background: Highlight;
+  }
+
+  .shell-pane-left,
+  .shell-pane-right,
+  .shell-drawer {
+    border-color: CanvasText;
+  }
+
+  .icon-button[aria-expanded='true'] {
+    border: 2px solid CanvasText;
+  }
+
+  .right-tabs [role='tab'][aria-selected='true'] {
+    border-bottom-color: Highlight;
   }
 
   /* The open chat is marked by more than its background. */

@@ -1,3 +1,5 @@
+import type { FeatureApis } from './ipc-features'
+
 /** IPC channel names shared by the main process and the preload script. */
 export const IpcChannels = {
   getAppInfo: 'app:get-info',
@@ -277,7 +279,7 @@ export type PushChannel = keyof PushPayloads
 type Unsubscribe = () => void
 
 /** The API the preload script exposes to the renderer as `window.desktopApi`. */
-export interface DesktopApi {
+export interface DesktopApi extends FeatureApis {
   provider: {
     models: () => Promise<ProviderResult<ProviderModels>>
     setModel: (model: string | null) => Promise<ProviderResult<ProviderModels>>

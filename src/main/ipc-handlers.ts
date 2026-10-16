@@ -16,6 +16,7 @@ import {
   type ModelSettings,
   type SendResult,
 } from '../shared/ipc'
+import { registerFeatureHandlers, type FeatureServices } from './ipc-features'
 import type { AddGrantResult } from './permissions'
 import { CONVERSATION_ID } from './storage/history-store'
 
@@ -58,7 +59,7 @@ export interface ChatService {
   respondApproval: (id: unknown, approved: unknown) => boolean
 }
 
-export interface IpcServices {
+export interface IpcServices extends FeatureServices {
   provider: DesktopApi['provider']
   appInfo: () => AppInfo | Promise<AppInfo>
   apiKey: ApiKeyService
@@ -117,6 +118,8 @@ export function registerIpcHandlers(
     roots: [...services.grants.list()],
     loadError: services.grants.loadError,
   })
+
+  registerFeatureHandlers(handle, services)
 
   handle(IpcChannels.getAppInfo, () => services.appInfo())
 

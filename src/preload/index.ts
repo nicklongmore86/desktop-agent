@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannels, type DesktopApi, type PushChannel, type PushPayloads } from '../shared/ipc'
+import { featureApis } from './features'
 
 /** Subscribes to a main -> renderer push; the listener never sees the IPC event object. */
 function subscribe<C extends PushChannel>(
@@ -20,6 +21,7 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> =>
 
 // Expose narrow, typed functions only — never ipcRenderer itself.
 const api: DesktopApi = {
+  ...featureApis(invoke),
   provider: {
     models: () => invoke(IpcChannels.providerModels),
     setModel: (model) => invoke(IpcChannels.providerSetModel, model),

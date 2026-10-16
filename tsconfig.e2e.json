@@ -5,5 +5,5 @@
     "types": ["node"],
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.e2e.tsbuildinfo"
   },
-  "include": ["e2e/**/*.ts", "playwright.config.ts", "src/shared/ipc.ts"]
+  "include": ["e2e/**/*.ts", "playwright.config.ts", "src/shared/ipc.ts", "src/shared/ipc-*.ts"]
 }
