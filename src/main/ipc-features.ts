@@ -4,6 +4,7 @@
  */
 import { registerFilesHandlers, type FilesService } from './ipc-files'
 import { registerLayoutHandlers, type LayoutService } from './ipc-layout'
+import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 
 /** Registers a handler that has already passed the trusted-sender check. */
 export type IpcHandle = (channel: string, handler: (...args: unknown[]) => unknown) => void
@@ -11,9 +12,11 @@ export type IpcHandle = (channel: string, handler: (...args: unknown[]) => unkno
 export interface FeatureServices {
   files: FilesService
   layout: LayoutService
+  projects: ProjectsService
 }
 
 export function registerFeatureHandlers(handle: IpcHandle, services: FeatureServices): void {
   registerFilesHandlers(handle, services.files)
   registerLayoutHandlers(handle, services.layout)
+  registerProjectsHandlers(handle, services.projects)
 }

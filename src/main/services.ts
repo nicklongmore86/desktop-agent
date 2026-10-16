@@ -6,11 +6,13 @@ import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import type { FilesChanged } from '../shared/ipc-files'
 import { createAgent, createClaudeClient } from './agent'
+import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
 import { createApiKeyStore, type SafeStorage } from './secrets'
 import { openHistory, type ConversationHistory } from './storage/history-store'
+import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
 
@@ -179,11 +181,12 @@ export async function createAppServices(deps: AppServiceDeps) {
       metadataResult(() => subscriptions.setModel(settings.provider, model)),
     allowance: () => metadataResult(() => subscriptions.allowance(settings.provider)),
     get: () => subscriptions.status(settings.provider),
-    async set(next: ProviderId) {
+    /** `openId`: a saved chat of `next` to open instead of its last one. */
+    async set(next: ProviderId, openId?: string) {
       if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
       subscriptions.cancelLogin()
       subscriptions.invalidateMetadata()
-      await chat.switchHistory(await historyFor(next), () => settings.setProvider(next))
+      await chat.switchHistory(await historyFor(next), () => settings.setProvider(next), openId)
       return subscriptions.status(settings.provider)
     },
     login: () => subscriptions.login(settings.provider),
@@ -201,5 +204,14 @@ export async function createAppServices(deps: AppServiceDeps) {
     },
     submitLoginCode: (code: string) => Promise.resolve(subscriptions.submitLoginCode(code)),
   }
-  return { apiKey, grants, settings, chat, auditStatus, provider, files }
+  // Global across providers: a chat names its project by id in its own provider's index.
+  const projects = createOrganizer({
+    projects: await openProjectsStore(join(userData, 'projects.json')),
+    historyFor,
+    provider: () => settings.provider,
+    chat,
+    switchProvider: (next, id) => provider.set(next, id),
+    status: () => subscriptions.status(settings.provider),
+  })
+  return { apiKey, grants, settings, chat, auditStatus, provider, projects, files }
 }

@@ -1,4 +1,6 @@
-import type { ChatItem } from '../../../shared/ipc'
+import type { ViewItem } from '../chat-state'
+import { formatDuration } from '../turns'
+import { useNow } from '../use-now'
 import { hasLatin, SafeLines, SafeText } from './reveal'
 import { StatusIcon, type ToolStatus } from './StatusIcon'
 
@@ -35,22 +37,58 @@ function stringify(input: unknown): string {
   }
 }
 
-type ToolItem = Extract<ChatItem, { kind: 'tool' }>
+type ToolItem = Extract<ViewItem, { kind: 'tool' }>
 
-export function toolStatus(item: ToolItem, running: boolean): ToolStatus {
-  if (item.result) return item.result.isError ? 'error' : 'done'
-  return running ? 'running' : 'no result'
+/** What the tools say when the user declines their approval (see main/tools). */
+const DECLINED = /^The user declined /
+
+/** `queued`: the call is waiting for the user's approval. */
+export function toolStatus(item: ToolItem, running: boolean, queued = false): ToolStatus {
+  if (item.result) {
+    if (!item.result.isError) return 'done'
+    return DECLINED.test(item.result.content) ? 'denied' : 'error'
+  }
+  if (!running) return 'no result'
+  return queued ? 'queued' : 'running'
+}
+
+const STATUS_TEXT: Record<ToolStatus, string> = {
+  queued: 'queued',
+  running: 'running',
+  done: 'done',
+  error: 'failed',
+  denied: 'denied',
+  'no result': 'no result',
+}
+
+/** How long a call took: counts up while it is under way, then stays at its final value. */
+export function Elapsed({
+  item,
+  status,
+}: {
+  item: ToolItem
+  status: ToolStatus
+}): React.JSX.Element | null {
+  const live = status === 'running' || status === 'queued'
+  const now = useNow(live)
+  if (item.startedAt === undefined) return null
+  const end = item.endedAt ?? (live ? now : undefined)
+  if (end === undefined) return null
+  return <span className="tool-elapsed">{formatDuration(end - item.startedAt)}</span>
 }
 
 /** A collapsible card for one tool call: name, input summary, status, and full input/result. */
 export function ToolCard({
   item,
   running,
+  queued = false,
 }: {
   item: ToolItem
   running: boolean
+  /** Waiting for the user's approval. */
+  queued?: boolean
 }): React.JSX.Element {
-  const status = toolStatus(item, running)
+  const status = toolStatus(item, running, queued)
   const content = item.result?.content ?? ''
   // The expanded input is JSON, whose Latin keys make a look-alike word a disguise; give the
   // one-line summary the same context so a command made only of look-alikes is marked too.
@@ -65,7 +103,8 @@ export function ToolCard({
         <span className="tool-input">
           <SafeText text={summarizeInput(item.input)} latinContext={latinContext} />
         </span>
-        <span className="tool-status">{status}</span>
+        <span className="tool-status">{STATUS_TEXT[status]}</span>
+        <Elapsed item={item} status={status} />
       </summary>
       <div className="tool-body">
         <h4>Input</h4>

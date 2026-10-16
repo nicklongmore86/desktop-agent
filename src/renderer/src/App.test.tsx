@@ -50,7 +50,7 @@ describe('chat view', () => {
     act(() => {
       pushChat({ type: 'tool_result', runId: 'r1', id: 't1', content: 'Boom', isError: true })
     })
-    expect(within(messages).getByText('error')).toBeTruthy()
+    expect(within(messages).getByText('failed')).toBeTruthy()
     // The card is collapsible: the result is inside a <details>.
     const card = within(messages).getByText('list_dir').closest('details')
     expect(card).toBeTruthy()
@@ -232,7 +232,8 @@ describe('chat view', () => {
 
   it('unsubscribes from main pushes on unmount', async () => {
     const { view, listenerCount } = await renderApp()
-    expect(listenerCount()).toBe(3)
+    // Chat events twice (the chat, and the chat list's projects), approvals, audit.
+    expect(listenerCount()).toBe(4)
     view.unmount()
     expect(listenerCount()).toBe(0)
   })
