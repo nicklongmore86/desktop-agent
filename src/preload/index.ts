@@ -62,6 +62,7 @@ const api: DesktopApi = {
     respond: (id, approved) => invoke(IpcChannels.approvalRespond, id, approved),
   },
   audit: {
+    reveal: () => invoke(IpcChannels.auditReveal),
     status: () => invoke(IpcChannels.auditStatus),
   },
   onChatEvent: (listener) => subscribe(IpcChannels.chatEvent, listener),

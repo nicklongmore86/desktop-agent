@@ -170,6 +170,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
       respond: vi.fn((_id: string, _approved: boolean) => Promise.resolve()),
     },
     audit: {
+      reveal: vi.fn(async () => {}),
       status: vi.fn(() =>
         Promise.resolve(options.audit ?? { healthy: true, path: 'C:\\Data\\audit.jsonl' }),
       ),

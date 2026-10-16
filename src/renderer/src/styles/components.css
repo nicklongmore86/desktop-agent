@@ -1214,6 +1214,161 @@
   }
 }
 
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--color-overlay);
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+}
+.settings-dialog {
+  width: min(900px, 100%);
+  height: min(720px, 90dvh);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-0);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised);
+  overflow: hidden;
+}
+.settings-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-dialog-header h2 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+.settings-dialog-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.settings-dialog-body nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  background: var(--color-surface-1);
+  width: 220px;
+  flex-shrink: 0;
+}
+.settings-dialog-body nav button {
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+.settings-dialog-body nav button[aria-current] {
+  background: var(--color-surface-2);
+}
+.settings-pages {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+.settings-page[data-active='false'] {
+  display: none;
+}
+.settings-dialog .settings {
+  padding: var(--space-6);
+  max-width: none;
+}
+.provider-cards {
+  display: grid;
+  gap: var(--space-2);
+}
+.provider-card {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.provider-card:has(input:checked) {
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent);
+}
+.provider-card input {
+  width: auto;
+  flex: none;
+}
+.provider-card small {
+  display: block;
+  color: var(--color-text-muted);
+  margin-top: var(--space-1);
+}
+.theme-segments {
+  display: flex;
+  gap: var(--space-1);
+}
+.theme-segments [aria-pressed='true'] {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+.settings progress {
+  width: 100%;
+  accent-color: var(--color-accent);
+}
+.usage-warning progress {
+  accent-color: var(--color-warning);
+}
+.usage-limited progress {
+  accent-color: var(--color-danger);
+}
+.settings details {
+  margin-top: var(--space-6);
+}
+.settings pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 540px) {
+  .settings-overlay {
+    padding: var(--space-2);
+  }
+  .settings-dialog {
+    height: 96dvh;
+  }
+  .settings-dialog-body {
+    display: block;
+    overflow-y: auto;
+  }
+  .settings-dialog-body nav {
+    display: none;
+  }
+  .settings-pages {
+    overflow: visible;
+  }
+  .settings-page[data-active='false'] {
+    display: block;
+  }
+  .settings-dialog .settings {
+    padding: var(--space-4);
+  }
+  .settings-row {
+    flex-wrap: wrap;
+  }
+}
+
+.settings-retry {
+  border: none;
+  background: transparent;
+  color: var(--color-accent-text);
+  padding: 0;
+  text-decoration: underline;
+}
+
+.settings-overlay[hidden] {
+  display: none;
+}
+
 /*
  * Windows High Contrast: author colours are replaced by the user's palette, so
  * the things that carry meaning without colour need system colours here.

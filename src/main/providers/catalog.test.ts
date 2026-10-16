@@ -157,6 +157,13 @@ it.each([
         credits,
       },
     })
-    expect(await codexAllowance(peer)).toMatchObject({ state, windows: [{ remainingPercent: 0 }] })
+    const allowance = await codexAllowance(peer)
+    expect(allowance).toMatchObject({ state, windows: [{ remainingPercent: 0 }] })
+    if (credits)
+      expect(allowance.credits).toEqual({
+        hasCredits: credits.hasCredits,
+        unlimited: credits.unlimited,
+      })
+    expect(JSON.stringify(allowance)).not.toContain('balance')
   },
 )

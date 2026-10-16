@@ -90,6 +90,7 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       newChat: vi.fn(() => Promise.resolve({ items: [], running: false, loadError: null })),
       respondApproval: vi.fn(() => true),
     },
+    revealAudit: vi.fn(),
     audit: () => ({ healthy: true, path: '/data/audit.jsonl' }),
     ...overrides,
   }
@@ -132,6 +133,17 @@ describe('isTrustedIpcSender', () => {
 })
 
 describe('registerIpcHandlers', () => {
+  it('reveals only the app audit log and rejects renderer paths', async () => {
+    const revealAudit = vi.fn()
+    const { invoke } = setup({ revealAudit })
+    await invoke(IpcChannels.auditReveal, appFrame)
+    expect(revealAudit).toHaveBeenCalledExactlyOnceWith()
+    await expect(invoke(IpcChannels.auditReveal, appFrame, 'C:\\secret')).rejects.toThrow(
+      'takes no arguments',
+    )
+    expect(revealAudit).toHaveBeenCalledTimes(1)
+  })
+
   const untrusted: IpcSenderEvent[] = [
     { senderFrame: { url: 'https://evil.example/', parent: null } },
     { senderFrame: { url: APP_URL, parent: { url: APP_URL } } },

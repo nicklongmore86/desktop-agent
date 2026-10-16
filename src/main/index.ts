@@ -1,3 +1,4 @@
+import { discoverRuntime, CLAUDE_VERSION, CODEX_VERSION } from './providers/runtime'
 import {
   app,
   BrowserWindow,
@@ -88,7 +89,23 @@ void app.whenReady().then(async () => {
     return isTrustedIpcSender(event.senderFrame, window.webContents.mainFrame, appUrl())
   }
   registerIpcHandlers(ipcMain, isTrustedSender, {
-    appInfo: () => ({ name: app.getName(), version: app.getVersion(), platform: process.platform }),
+    appInfo: async () => ({
+      name: app.getName(),
+      version: app.getVersion(),
+      platform: process.platform,
+      runtimes: await Promise.all(
+        (
+          [
+            ['claude', CLAUDE_VERSION],
+            ['codex', CODEX_VERSION],
+          ] as const
+        ).map(async ([name, version]) => ({
+          name,
+          version,
+          location: await discoverRuntime(name).catch(() => null),
+        })),
+      ),
+    }),
     apiKey: services.apiKey,
     grants: services.grants,
     async pickFolder() {
@@ -107,6 +124,9 @@ void app.whenReady().then(async () => {
     provider: services.provider,
     chat,
     audit: services.auditStatus,
+    revealAudit: () => {
+      shell.showItemInFolder(services.auditStatus().path)
+    },
   })
 
   const openWindow = (): void => {

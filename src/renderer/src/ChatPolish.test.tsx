@@ -227,6 +227,80 @@ describe('Escape', () => {
   })
 })
 
+describe('Escape with Settings', () => {
+  const prompt: ApprovalPrompt = {
+    id: 'a1',
+    runId: 'r1',
+    toolUseId: 't1',
+    tool: 'write_file',
+    kind: 'write',
+    summary: 'Write C:\\x.txt',
+    detail: '+x\n',
+  }
+
+  it('denies an approval first, closes Settings next, and only then stops the reply', async () => {
+    const { api, user, pushChat, pushApproval } = await renderApp()
+    act(() => {
+      pushChat({ type: 'run_started', runId: 'r1', text: 'Hi' })
+    })
+    await user.keyboard('{Control>},{/Control}')
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy()
+
+    // 1. An approval pauses Settings; Escape denies it and leaves Settings and the run alone.
+    act(() => {
+      pushApproval(prompt)
+    })
+    expect(screen.getByRole('alertdialog')).toBeTruthy()
+    await user.keyboard('{Escape}')
+    expect(api.approvals.respond).toHaveBeenCalledWith('a1', false)
+    expect(api.chat.stop).not.toHaveBeenCalled()
+    act(() => {
+      pushChat({ type: 'approval_closed', approvalId: 'a1', approved: false })
+    })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy()
+
+    // 2. Settings open: Escape closes it and does not stop the running reply.
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+    expect(api.chat.stop).not.toHaveBeenCalled()
+
+    // 3. Neither open: Escape stops the running reply.
+    await user.keyboard('{Escape}')
+    expect(api.chat.stop).toHaveBeenCalledOnce()
+  })
+})
+
+describe('Settings and the composer share state', () => {
+  it('switches provider from Settings through chat.switchProvider and updates the composer', async () => {
+    const { api, user } = await renderApp()
+    await user.keyboard('{Control>},{/Control}')
+    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('codex-subscription')
+    })
+    expect(screen.getByRole('combobox', { name: 'Active provider', hidden: true })).toHaveProperty(
+      'value',
+      'codex-subscription',
+    )
+  })
+
+  it('opens Settings at Accounts & usage from the usage indicator', async () => {
+    const fake = fakeApi({ provider: codex })
+    fake.api.provider.allowance.mockResolvedValue(allowance({ state: 'limited' }))
+    const user = userEvent.setup()
+    render(
+      <ApiContext value={fake.api}>
+        <App />
+      </ApiContext>,
+    )
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+    await user.click(await screen.findByRole('button', { name: /Limit reached/ }))
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Usage' })).toBeTruthy()
+  })
+})
+
 describe('composer pickers', () => {
   it('switches provider through the existing switch path, clearing the conversation', async () => {
     const { api, user, pushChat } = await renderApp()

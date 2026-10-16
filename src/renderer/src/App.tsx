@@ -4,7 +4,6 @@ import type {
   AppInfo,
   AuditStatus,
   GrantsState,
-  ModelSettings,
   ProviderStatus,
   ProviderId,
 } from '../../shared/ipc'
@@ -12,8 +11,8 @@ import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { SettingsPanel } from './components/SettingsPanel'
-import type { OpenSettings } from './open-settings'
+import { SettingsDialog } from './components/SettingsDialog'
+import type { OpenSettings, SettingsSection } from './open-settings'
 import { useTheme } from './theme'
 import { useChat } from './use-chat'
 import { useShortcuts } from './use-shortcuts'
@@ -40,7 +39,13 @@ function SetupGuide({
         {!keySaved && <li>Add your Anthropic API key, so Claude can answer.</li>}
         {!hasGrants && <li>Grant at least one folder, so the agent can work with your files.</li>}
       </ul>
-      <button type="button" className="button-primary" onClick={onOpenSettings}>
+      <button
+        type="button"
+        className="button-primary"
+        onClick={() => {
+          onOpenSettings()
+        }}
+      >
         Open Settings
       </button>
     </div>
@@ -52,11 +57,10 @@ export function App(): React.JSX.Element {
   const chat = useChat()
   // Loads the saved theme and applies it; Settings reads and changes it with useTheme() too.
   useTheme()
-  const [view, setView] = useState<'chat' | 'settings'>('chat')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
   const [grants, setGrants] = useState<GrantsState | null>(null)
-  const [model, setModel] = useState<ModelSettings | null>(null)
   const [provider, setProvider] = useState<ProviderStatus | null>(null)
   const [audit, setAudit] = useState<AuditStatus | null>(null)
 
@@ -70,7 +74,6 @@ export function App(): React.JSX.Element {
     api.getAppInfo().then(setAppInfo, report('getAppInfo'))
     api.apiKey.status().then(setKeyStatus, report('apiKey.status'))
     api.grants.list().then(setGrants, report('grants.list'))
-    api.model.get().then(setModel, report('model.get'))
     api.audit.status().then(setAudit, report('audit.status'))
     return api.onAuditStatus(setAudit)
   }, [api])
@@ -78,12 +81,8 @@ export function App(): React.JSX.Element {
   const loaded = keyStatus !== null && grants !== null
   const keySaved = keyStatus?.saved ?? false
   const hasGrants = (grants?.roots.length ?? 0) > 0
-  const openSettings = (): void => {
-    setView('settings')
-  }
-  // The chat passes the section to open; the current panel has none yet.
-  const openSettingsAt: OpenSettings = (_section) => {
-    openSettings()
+  const openSettings: OpenSettings = (section = 'accounts') => {
+    setSettingsSection(section)
   }
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const [approval, ...queued] = chat.state.approvals
@@ -91,14 +90,14 @@ export function App(): React.JSX.Element {
     {
       newChat: () => {
         if (chat.state.switching) return
-        setView('chat')
+        setSettingsSection(null)
         void chat.newChat()
       },
       openSettings: () => {
         openSettings()
       },
       focusComposer: () => {
-        setView('chat')
+        setSettingsSection(null)
         // The message box mounts when the chat view is showing.
         requestAnimationFrame(() => composerRef.current?.focus())
       },
@@ -124,7 +123,7 @@ export function App(): React.JSX.Element {
 
   return (
     <div className="app">
-      <aside className="workspace-sidebar" aria-label="Workspace">
+      <aside inert={settingsSection !== null} className="workspace-sidebar" aria-label="Workspace">
         <div className="workspace-brand">
           <span className="brand-mark" aria-hidden="true">
             D
@@ -136,7 +135,7 @@ export function App(): React.JSX.Element {
           type="button"
           disabled={chat.state.switching}
           onClick={() => {
-            setView('chat')
+            setSettingsSection(null)
             void chat.newChat()
           }}
         >
@@ -156,22 +155,32 @@ export function App(): React.JSX.Element {
           ) : (
             <p className="sidebar-hint">No folders granted</p>
           )}
-          <button type="button" onClick={openSettings}>
+          <button
+            type="button"
+            onClick={() => {
+              openSettings('folders')
+            }}
+          >
             Manage folders
           </button>
         </div>
         <div className="sidebar-footer">
           <p>Changes require your approval.</p>
-          <button type="button" onClick={openSettings}>
+          <button
+            type="button"
+            onClick={() => {
+              openSettings()
+            }}
+          >
             Settings
           </button>
           <span className="app-version">{appInfo ? `v${appInfo.version}` : '…'}</span>
         </div>
       </aside>
-      <main className="workspace-main">
+      <main inert={settingsSection !== null} className="workspace-main">
         <header className="app-header">
           <div>
-            <h1>{view === 'settings' ? 'Preferences' : 'Workspace chat'}</h1>
+            <h1>Workspace chat</h1>
             <span className="header-subtitle">
               {chat.state.switching ? 'Switching provider…' : providerName}
             </span>
@@ -183,26 +192,20 @@ export function App(): React.JSX.Element {
               aria-label="Start new chat"
               disabled={chat.state.switching}
               onClick={() => {
-                setView('chat')
+                setSettingsSection(null)
                 void chat.newChat()
               }}
             >
               ＋
             </button>
-            {view === 'chat' ? (
-              <button type="button" onClick={openSettings}>
-                Preferences
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setView('chat')
-                }}
-              >
-                Back to chat
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                openSettings()
+              }}
+            >
+              Preferences
+            </button>
           </nav>
         </header>
 
@@ -213,54 +216,66 @@ export function App(): React.JSX.Element {
           </div>
         )}
 
-        {view === 'settings' ? (
-          <SettingsPanel
+        <ErrorBoundary onReset={chat.newChat} resetLabel="Start a new chat">
+          <ChatView
+            state={chat.state}
+            providerName={providerName}
+            grantedFolders={grants?.roots.length ?? 0}
+            onSend={chat.send}
+            onStop={chat.stop}
+            onNewChat={chat.newChat}
+            onDismissBanner={chat.dismissBanner}
+            onDismissStorageWarning={chat.dismissStorageWarning}
+            onOpenSettings={openSettings}
             provider={provider}
-            onProvider={setProvider}
-            onSwitchProvider={chat.switchProvider}
-            keyStatus={keyStatus}
-            onKeyStatus={setKeyStatus}
-            grants={grants}
-            onGrants={setGrants}
-            model={model}
-            onModel={setModel}
-            audit={audit}
+            providerNames={PROVIDER_NAMES}
+            onSwitchProvider={switchProvider}
+            composerRef={composerRef}
+            notice={
+              loaded && provider?.provider === 'anthropic-api' && (!keySaved || !hasGrants) ? (
+                <SetupGuide
+                  keySaved={keySaved}
+                  hasGrants={hasGrants}
+                  onOpenSettings={openSettings}
+                />
+              ) : provider &&
+                provider.provider !== 'anthropic-api' &&
+                provider.state !== 'ready' ? (
+                <div role="note" className="setup-guide">
+                  {provider.message}{' '}
+                  <button
+                    onClick={() => {
+                      openSettings()
+                    }}
+                  >
+                    Open Settings
+                  </button>
+                </div>
+              ) : undefined
+            }
           />
-        ) : (
-          <ErrorBoundary onReset={chat.newChat} resetLabel="Start a new chat">
-            <ChatView
-              state={chat.state}
-              providerName={providerName}
-              grantedFolders={grants?.roots.length ?? 0}
-              onSend={chat.send}
-              onStop={chat.stop}
-              onNewChat={chat.newChat}
-              onDismissBanner={chat.dismissBanner}
-              onDismissStorageWarning={chat.dismissStorageWarning}
-              onOpenSettings={openSettingsAt}
-              provider={provider}
-              providerNames={PROVIDER_NAMES}
-              onSwitchProvider={switchProvider}
-              composerRef={composerRef}
-              notice={
-                loaded && provider?.provider === 'anthropic-api' && (!keySaved || !hasGrants) ? (
-                  <SetupGuide
-                    keySaved={keySaved}
-                    hasGrants={hasGrants}
-                    onOpenSettings={openSettings}
-                  />
-                ) : provider &&
-                  provider.provider !== 'anthropic-api' &&
-                  provider.state !== 'ready' ? (
-                  <div role="note" className="setup-guide">
-                    {provider.message} <button onClick={openSettings}>Open Settings</button>
-                  </div>
-                ) : undefined
-              }
-            />
-          </ErrorBoundary>
-        )}
+        </ErrorBoundary>
       </main>
+
+      {settingsSection && (
+        <SettingsDialog
+          key={settingsSection}
+          initialSection={settingsSection}
+          suspended={Boolean(approval)}
+          onClose={() => {
+            setSettingsSection(null)
+          }}
+          appInfo={appInfo}
+          provider={provider}
+          onProvider={setProvider}
+          onSwitchProvider={chat.switchProvider}
+          keyStatus={keyStatus}
+          onKeyStatus={setKeyStatus}
+          grants={grants}
+          onGrants={setGrants}
+          audit={audit}
+        />
+      )}
 
       {approval && (
         <ApprovalCard

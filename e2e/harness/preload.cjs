@@ -111,7 +111,10 @@ contextBridge.exposeInMainWorld('desktopApi', {
       return Promise.resolve()
     },
   },
-  audit: { status: resolve({ healthy: true, path: 'C:\\Data\\audit.jsonl' }) },
+  audit: {
+    reveal: resolve(undefined),
+    status: resolve({ healthy: true, path: 'C:\\Data\\audit.jsonl' }),
+  },
   onChatEvent: subscribe(listeners.chat),
   onApprovalRequest: subscribe(listeners.approval),
   onAuditStatus: subscribe(listeners.audit),

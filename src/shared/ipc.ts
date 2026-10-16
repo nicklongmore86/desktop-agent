@@ -33,6 +33,7 @@ export const IpcChannels = {
 
   approvalRespond: 'approval:respond',
   auditStatus: 'audit:status',
+  auditReveal: 'audit:reveal',
 
   // Main -> renderer pushes (webContents.send).
   chatEvent: 'chat:event',
@@ -78,6 +79,7 @@ export const THEMES = ['system', 'light', 'dark'] as const
 export type ThemePreference = (typeof THEMES)[number]
 
 export interface AppInfo {
+  runtimes?: { name: string; version: string; location: string | null }[]
   name: string
   version: string
   platform: string
@@ -131,6 +133,8 @@ export interface AllowanceWindow {
   resetsAt: string | null
 }
 export interface ProviderAllowance {
+  /** Availability flags only; balances and account details stay in main. */
+  credits?: { hasCredits: boolean; unlimited: boolean }
   provider: ProviderId
   plan: string | null
   state: 'available' | 'limited' | 'unknown'
@@ -295,6 +299,7 @@ export interface DesktopApi {
     respond: (id: string, approved: boolean) => Promise<void>
   }
   audit: {
+    reveal: () => Promise<void>
     status: () => Promise<AuditStatus>
   }
   onChatEvent: (listener: (event: ChatEvent) => void) => Unsubscribe

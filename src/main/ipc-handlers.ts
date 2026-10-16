@@ -53,7 +53,7 @@ export interface ChatService {
 
 export interface IpcServices {
   provider: DesktopApi['provider']
-  appInfo: () => AppInfo
+  appInfo: () => AppInfo | Promise<AppInfo>
   apiKey: ApiKeyService
   grants: GrantService
   /** Shows the native folder picker; resolves to the chosen folder or null if cancelled. */
@@ -65,6 +65,7 @@ export interface IpcServices {
     setTheme: (theme: ThemePreference) => Promise<ThemePreference>
   }
   chat: ChatService
+  revealAudit: () => void
   audit: () => AuditStatus
 }
 
@@ -197,5 +198,9 @@ export function registerIpcHandlers(
     services.chat.respondApproval(id, approved)
   })
 
+  handle(IpcChannels.auditReveal, (...args) => {
+    if (args.length) throw new Error('Audit reveal takes no arguments.')
+    services.revealAudit()
+  })
   handle(IpcChannels.auditStatus, () => services.audit())
 }

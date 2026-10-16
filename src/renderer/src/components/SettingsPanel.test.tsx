@@ -5,41 +5,35 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   ApiKeyStatus,
   GrantsState,
-  ModelSettings,
   ProviderLoginState,
   ProviderStatus,
 } from '../../../shared/ipc'
-import { ApiContext } from '../api'
+import { ApiContext, useApi } from '../api'
 import { fakeApi } from '../test/fake-api'
 import { SettingsPanel } from './SettingsPanel'
 
-function Harness(props: { key0: ApiKeyStatus; grants0: GrantsState; model0: ModelSettings }) {
+function Harness(props: { key0: ApiKeyStatus; grants0: GrantsState }) {
+  const api = useApi()
   const [keyStatus, setKeyStatus] = useState(props.key0)
   const [grants, setGrants] = useState(props.grants0)
-  const [model, setModel] = useState(props.model0)
   return (
     <SettingsPanel
       keyStatus={keyStatus}
       onKeyStatus={setKeyStatus}
       grants={grants}
       onGrants={setGrants}
-      model={model}
-      onModel={setModel}
+      onSwitchProvider={(next) => api.provider.set(next)}
       audit={{ healthy: true, path: 'C:\\Users\\me\\AppData\\Roaming\\desktop-agent\\audit.jsonl' }}
     />
   )
 }
 
-async function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
+function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
   const fake = fakeApi({ key: key0, grants: { roots, loadError: null } })
   const user = userEvent.setup()
   render(
     <ApiContext value={fake.api}>
-      <Harness
-        key0={key0}
-        grants0={{ roots, loadError: null }}
-        model0={await fake.api.model.get()}
-      />
+      <Harness key0={key0} grants0={{ roots, loadError: null }} />
     </ApiContext>,
   )
   return { ...fake, user }
@@ -47,7 +41,7 @@ async function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
 
 describe('SettingsPanel', () => {
   it('saves a key through a masked input and only ever shows "Key saved"', async () => {
-    const { api, user } = await renderSettings({ saved: false, error: null })
+    const { api, user } = renderSettings({ saved: false, error: null })
     expect(screen.getByText('No key saved.')).toBeTruthy()
     const input = screen.getByLabelText('API key')
     expect(input.getAttribute('type')).toBe('password')
@@ -61,20 +55,20 @@ describe('SettingsPanel', () => {
   })
 
   it('replaces and clears a saved key', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null })
+    const { api, user } = renderSettings({ saved: true, error: null })
     await user.click(screen.getByRole('button', { name: 'Replace key' }))
     const input = screen.getByLabelText('API key')
     expect(input).toHaveProperty('value', '')
     await user.type(input, 'sk-new')
     await user.click(screen.getByRole('button', { name: 'Replace key' }))
     expect(api.apiKey.set).toHaveBeenCalledWith('sk-new')
-    await user.click(screen.getByRole('button', { name: 'Clear key' }))
+    await user.click(screen.getByRole('button', { name: 'Remove key' }))
     expect(api.apiKey.clear).toHaveBeenCalledOnce()
     expect(screen.getByText('No key saved.')).toBeTruthy()
   })
 
   it('shows key store errors', async () => {
-    const { api, user } = await renderSettings({ saved: false, error: null })
+    const { api, user } = renderSettings({ saved: false, error: null })
     api.apiKey.set.mockResolvedValueOnce({
       saved: false,
       error: 'OS encryption is unavailable. API key storage is disabled.',
@@ -85,7 +79,7 @@ describe('SettingsPanel', () => {
   })
 
   it('adds folders only through the native picker and removes them', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null }, ['C:\\Projects'])
+    const { api, user } = renderSettings({ saved: true, error: null }, ['C:\\Projects'])
     const list = screen.getByRole('list', { name: 'Granted folders' })
     expect(within(list).getByText('C:\\Projects')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Add folder…' }))
@@ -98,7 +92,7 @@ describe('SettingsPanel', () => {
   })
 
   it('reports a refused folder', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null })
+    const { api, user } = renderSettings({ saved: true, error: null })
     api.grants.add.mockResolvedValueOnce({
       status: 'refused',
       reason: 'Granting a whole drive or file system root is not allowed.',
@@ -106,14 +100,16 @@ describe('SettingsPanel', () => {
     } as never)
     await user.click(screen.getByRole('button', { name: 'Add folder…' }))
     expect(screen.getByRole('alert').textContent).toContain('whole drive')
-    expect(screen.getByText('No folders granted yet.')).toBeTruthy()
+    expect(
+      screen.getByText('No folders yet. Add one so the agent can work with your files.'),
+    ).toBeTruthy()
   })
 
   it('changes the model and shows the audit log location', async () => {
-    const { api, user } = await renderSettings({ saved: true, error: null })
-    const select = screen.getByLabelText('Model')
+    const { api, user } = renderSettings({ saved: true, error: null })
+    const select = await screen.findByLabelText('Model')
     expect(select).toHaveProperty('value', 'claude-sonnet-5-5')
-    expect(screen.getByRole('option', { name: 'Claude Sonnet 5.5 (default)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Claude Sonnet 5.5' })).toBeTruthy()
     await user.selectOptions(select, 'claude-opus-5-5')
     expect(api.model.set).toHaveBeenCalledWith('claude-opus-5-5')
     expect(select).toHaveProperty('value', 'claude-opus-5-5')
@@ -129,6 +125,7 @@ describe('Claude subscription sign-in', () => {
 
   /** Like the app: provider status lives above Settings, which can be closed and reopened. */
   function ProviderHarness() {
+    const api = useApi()
     const [open, setOpen] = useState(true)
     const [provider, setProvider] = useState<ProviderStatus>({
       provider: 'claude-subscription',
@@ -153,8 +150,7 @@ describe('Claude subscription sign-in', () => {
             onKeyStatus={() => {}}
             grants={{ roots: [], loadError: null }}
             onGrants={() => {}}
-            model={null}
-            onModel={() => {}}
+            onSwitchProvider={(next) => api.provider.set(next)}
             audit={null}
           />
         )}
@@ -205,14 +201,14 @@ describe('Claude subscription sign-in', () => {
 
   const reopen = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
-    expect(screen.queryByLabelText('Access provider')).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Access provider' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Open settings' }))
   }
 
   it('shows the waiting state, the link, and asks main to copy or re-open it', async () => {
     const { api, user, showLink, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
-    expect(screen.getByRole('status').textContent).toBe('Waiting for sign-in…')
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(screen.getByText('Waiting for sign-in…').textContent).toBe('Waiting for sign-in…')
     expect(screen.getByRole('button', { name: 'Cancel sign-in' })).toBeTruthy()
     showLink()
     const link = screen.getByLabelText('Sign-in link')
@@ -231,16 +227,14 @@ describe('Claude subscription sign-in', () => {
       state: 'ready',
       message: 'Subscription signed in. No API key is used.',
     })
-    expect(screen.getByRole('status').textContent).toBe(
-      'Subscription signed in. No API key is used.',
-    )
+    expect(screen.getByText('Connected')).toBeTruthy()
     expect(screen.queryByLabelText('Sign-in link')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull()
   })
 
   it('sends a valid pasted code and rejects a malformed one locally', async () => {
     const { api, user, showLink } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     const code = screen.getByLabelText('Paste code')
     await user.type(code, 'not-a-code')
@@ -260,7 +254,7 @@ describe('Claude subscription sign-in', () => {
 
   it('cancels and shows sign-in failures as alerts', async () => {
     const { api, user, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     await user.click(screen.getByRole('button', { name: 'Cancel sign-in' }))
     expect(api.provider.cancelLogin).toHaveBeenCalledOnce()
     await finish({
@@ -275,26 +269,23 @@ describe('Claude subscription sign-in', () => {
 
   it('restores the sign-in controls after Settings is closed and reopened mid-login', async () => {
     const { api, user, showLink, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     const errors = vi.spyOn(console, 'error')
     await reopen(user)
     expect(await screen.findByLabelText('Sign-in link')).toHaveProperty('value', LINK)
-    expect(screen.getByRole('status').textContent).toBe('Waiting for sign-in…')
+    expect(screen.getByText('Waiting for sign-in…').textContent).toBe('Waiting for sign-in…')
     expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
     expect(screen.getByLabelText('Paste code')).toBeTruthy()
     // A second click cannot start another sign-in while main is still waiting.
-    expect(screen.getByRole('button', { name: 'Sign in with subscription' })).toHaveProperty(
-      'disabled',
-      true,
-    )
+    expect(screen.getByRole('button', { name: 'Sign in' })).toHaveProperty('disabled', true)
     await user.type(screen.getByLabelText('Paste code'), 'abc#def')
     await user.click(screen.getByRole('button', { name: 'Submit code' }))
     expect(api.provider.submitLoginCode).toHaveBeenCalledWith('abc#def')
     // The reopened panel learns the outcome from main's push, not the old login() call.
     await finish({ provider: 'claude-subscription', state: 'ready', message: 'Signed in.' })
-    expect(screen.getByRole('status').textContent).toBe('Signed in.')
+    expect(screen.getByText('Connected')).toBeTruthy()
     expect(screen.queryByLabelText('Sign-in link')).toBeNull()
     expect(api.provider.login).toHaveBeenCalledOnce()
     expect(errors).not.toHaveBeenCalled()
@@ -302,7 +293,7 @@ describe('Claude subscription sign-in', () => {
 
   it('cancels from a reopened Settings and ignores late replies to the closed one', async () => {
     const { api, user, showLink, finish } = renderSignIn()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     await reopen(user)
     await user.click(await screen.findByRole('button', { name: 'Cancel sign-in' }))
@@ -332,10 +323,7 @@ describe('Claude subscription sign-in', () => {
       })
     })
     expect(screen.getByTestId('app-status').textContent).toBe('Sign in with your subscription.')
-    expect(screen.getByRole('button', { name: 'Sign in with subscription' })).toHaveProperty(
-      'disabled',
-      false,
-    )
+    expect(screen.getByRole('button', { name: 'Sign in' })).toHaveProperty('disabled', false)
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
   })
 })

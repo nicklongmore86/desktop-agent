@@ -16,8 +16,12 @@ export interface UsageSummary {
   detail: string
 }
 
-const usedPercent = (remainingPercent: number): number =>
+export const usedPercent = (remainingPercent: number): number =>
   Math.min(100, Math.max(0, Math.round(100 - remainingPercent)))
+
+/** The user-facing name of a rate-limit window. */
+export const windowName = (limitId: string): string =>
+  limitId.endsWith(':secondary') ? 'weekly limit' : 'usage limit'
 
 /** The window with the most usage, or null when the provider reports none (Claude). */
 function busiestWindow(allowance: ProviderAllowance): { used: number; name: string } | null {
@@ -25,7 +29,7 @@ function busiestWindow(allowance: ProviderAllowance): { used: number; name: stri
   for (const window of allowance.windows) {
     const used = usedPercent(window.remainingPercent)
     if (!best || used > best.used) {
-      best = { used, name: window.limitId.endsWith(':secondary') ? 'weekly limit' : 'usage limit' }
+      best = { used, name: windowName(window.limitId) }
     }
   }
   return best

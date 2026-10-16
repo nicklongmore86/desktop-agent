@@ -248,6 +248,7 @@ describe('first run', () => {
     expect(guide.textContent).toContain('Grant at least one folder')
     await user.click(within(guide).getByRole('button', { name: 'Open Settings' }))
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Accounts & providers' })).toBeTruthy()
   })
 
   it('stays out of the way once set up', async () => {
@@ -260,16 +261,20 @@ it('offers both subscriptions without an API-key setup gate and keeps API mode a
   const { api, user } = await renderApp({ key: { saved: false, error: null } })
   await user.click(screen.getByRole('button', { name: 'Settings' }))
   for (const provider of ['claude-subscription', 'codex-subscription']) {
-    await user.selectOptions(screen.getByLabelText('Access provider'), provider)
+    await user.click(
+      screen.getByRole('radio', {
+        name: provider === 'claude-subscription' ? /Claude · Subscription/ : /Codex · ChatGPT/,
+      }),
+    )
     expect(api.provider.set).toHaveBeenLastCalledWith(provider)
     expect(screen.queryByRole('heading', { name: 'Anthropic API key' })).toBeNull()
-    expect(screen.getByText(/No API key required/)).toBeTruthy()
-    await user.click(screen.getByRole('button', { name: 'Sign in with subscription' }))
-    await user.click(screen.getByRole('button', { name: 'Back to chat' }))
+    expect(screen.getAllByText(/No API key needed/)[0]).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    await user.click(screen.getByRole('button', { name: 'Close settings' }))
     expect(screen.queryByText(/Add your Anthropic API key/)).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Settings' }))
   }
-  await user.selectOptions(screen.getByLabelText('Access provider'), 'anthropic-api')
+  await user.click(screen.getByRole('radio', { name: /Anthropic API/ }))
   expect(screen.getByRole('heading', { name: 'Anthropic API key' })).toBeTruthy()
 })
 
@@ -335,8 +340,8 @@ describe('provider switch', () => {
         }),
     )
     await user.click(screen.getByRole('button', { name: 'Settings' }))
-    await user.selectOptions(screen.getByLabelText('Access provider'), 'codex-subscription')
-    await user.click(screen.getByRole('button', { name: 'Back to chat' }))
+    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await user.click(screen.getByRole('button', { name: 'Close settings' }))
 
     expect(screen.queryByText('Old provider history')).toBeNull()
     expect(screen.getByRole('status').textContent).toBe('Switching provider…')
@@ -380,9 +385,9 @@ describe('provider switch', () => {
     const { api, user } = await renderApp({ chat: oldChat })
     api.provider.set.mockRejectedValueOnce(new Error('nope'))
     await user.click(screen.getByRole('button', { name: 'Settings' }))
-    await user.selectOptions(screen.getByLabelText('Access provider'), 'codex-subscription')
+    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
     expect(await screen.findByText('Provider request failed. Try again.')).toBeTruthy()
-    await user.click(screen.getByRole('button', { name: 'Back to chat' }))
+    await user.click(screen.getByRole('button', { name: 'Close settings' }))
     expect(screen.getByText('Old provider history')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'New chat' })).toHaveProperty('disabled', false)
   })
