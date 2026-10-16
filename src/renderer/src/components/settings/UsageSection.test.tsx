@@ -152,9 +152,28 @@ describe('Accounts usage', () => {
     })
     api.provider.setModel.mockResolvedValue({
       ok: false,
-      failure: { code: 'model_unavailable', message: 'Model unavailable' },
+      failure: { code: 'internal', message: 'Something broke' },
     })
     await userEvent.selectOptions(screen.getByLabelText('Codex model'), '')
     expect(await screen.findByText('Could not change the model.')).toBeTruthy()
+    api.provider.setModel.mockResolvedValue({
+      ok: false,
+      failure: { code: 'auth_expired', message: 'expired' },
+    })
+    await userEvent.selectOptions(screen.getByLabelText('Codex model'), 'terra')
+    expect(await screen.findByText('Sign-in expired — sign in again')).toBeTruthy()
+  })
+  it('shows the specific reason the usage could not be read', async () => {
+    const { api } = fakeApi()
+    api.provider.allowance.mockResolvedValue({
+      ok: false,
+      failure: { code: 'auth_expired', message: 'expired' },
+    })
+    render(
+      <ApiContext value={api}>
+        <UsageSection provider="codex-subscription" />
+      </ApiContext>,
+    )
+    expect(await screen.findByText('Sign-in expired — sign in again')).toBeTruthy()
   })
 })

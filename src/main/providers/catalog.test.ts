@@ -102,6 +102,44 @@ it('normalizes remaining quota and Unix second reset timestamps without forwardi
     { timeoutMs: 1500, closeOnTimeout: false },
   )
 })
+it('labels windows from their length, and omits the label when it is absent or odd', async () => {
+  const { peer } = peerWith({
+    ordinaryUsageAllowed: true,
+    rateLimits: {
+      primary: { usedPercent: 10, windowDurationMins: 300 },
+      secondary: { usedPercent: 20, windowDurationMins: 10080 },
+    },
+    rateLimitsByLimitId: {
+      codex: {
+        primary: { usedPercent: 10, windowDurationMins: 300 },
+        secondary: { usedPercent: 20, windowDurationMins: 10080 },
+      },
+      other: {
+        primary: { usedPercent: 1, windowDurationMins: 45 },
+        secondary: { usedPercent: 2, windowDurationMins: 2880 },
+      },
+      bare: { primary: { usedPercent: 3 } },
+    },
+  })
+  const { windows } = await codexAllowance(peer)
+  const labels = Object.fromEntries(windows.map((window) => [window.limitId, window.label]))
+  expect(labels['codex:primary']).toBe('5-hour limit')
+  expect(labels['codex:secondary']).toBe('weekly limit')
+  expect(windows.find((window) => window.limitId === 'other:primary')).not.toHaveProperty('label')
+  expect(windows.find((window) => window.limitId === 'bare:primary')).not.toHaveProperty('label')
+  expect(windows.find((window) => window.limitId === 'other:secondary')?.label).toBe('2-day limit')
+})
+it('shows credits reported only on a bucket', async () => {
+  const { peer } = peerWith({
+    ordinaryUsageAllowed: true,
+    rateLimits: { primary: { usedPercent: 1 } },
+    rateLimitsByLimitId: {
+      codex: { credits: { hasCredits: true, unlimited: false, balance: '12' } },
+    },
+  })
+  const allowance = await codexAllowance(peer)
+  expect(allowance.credits).toEqual({ hasCredits: true, unlimited: false })
+})
 it('reports unavailable allowance as unknown rather than unlimited', async () => {
   const { peer } = peerWith({
     rateLimits: { primary: null, secondary: null },

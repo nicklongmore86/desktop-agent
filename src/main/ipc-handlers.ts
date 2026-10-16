@@ -12,10 +12,12 @@ import {
   type ChatState,
   type GrantAddResult,
   type GrantsState,
+  type HistoryState,
   type ModelSettings,
   type SendResult,
 } from '../shared/ipc'
 import type { AddGrantResult } from './permissions'
+import { CONVERSATION_ID } from './storage/history-store'
 
 /** The parts of an IPC invoke event the handlers look at. */
 export interface IpcSenderEvent {
@@ -48,6 +50,11 @@ export interface ChatService {
   send: (text: unknown) => Promise<SendResult>
   stop: () => Promise<void>
   newChat: () => Promise<ChatState>
+  historyState: () => HistoryState
+  /** Validates the id itself too: an unknown one rejects. */
+  open: (id: string) => Promise<ChatState>
+  rename: (id: string, title: string) => Promise<HistoryState>
+  remove: (id: string) => Promise<HistoryState>
   respondApproval: (id: unknown, approved: unknown) => boolean
 }
 
@@ -70,6 +77,10 @@ export interface IpcServices {
 }
 
 const themeSchema = z.enum(THEMES)
+// Conversation ids are main's own random UUIDs (see CONVERSATION_ID); anything else,
+// a path fragment included, is refused before it reaches the history store.
+const conversationIdSchema = z.string().regex(CONVERSATION_ID)
+const titleSchema = z.string().max(1000)
 
 /** Messages the stores throw are written for users and never contain the key. */
 function messageOf(error: unknown, fallback: string): string {
@@ -194,6 +205,24 @@ export function registerIpcHandlers(
   handle(IpcChannels.chatSend, (text) => services.chat.send(text))
   handle(IpcChannels.chatStop, () => services.chat.stop())
   handle(IpcChannels.chatNew, () => services.chat.newChat())
+  handle(IpcChannels.chatHistory, () => services.chat.historyState())
+  handle(IpcChannels.chatOpen, (id) => {
+    const parsed = conversationIdSchema.safeParse(id)
+    if (!parsed.success) throw new Error('Unknown chat.')
+    return services.chat.open(parsed.data)
+  })
+  handle(IpcChannels.chatRename, (id, title) => {
+    const parsedId = conversationIdSchema.safeParse(id)
+    const parsedTitle = titleSchema.safeParse(title)
+    if (!parsedId.success) throw new Error('Unknown chat.')
+    if (!parsedTitle.success) throw new Error('Enter a shorter name.')
+    return services.chat.rename(parsedId.data, parsedTitle.data)
+  })
+  handle(IpcChannels.chatDelete, (id) => {
+    const parsed = conversationIdSchema.safeParse(id)
+    if (!parsed.success) throw new Error('Unknown chat.')
+    return services.chat.remove(parsed.data)
+  })
   handle(IpcChannels.approvalRespond, (id, approved) => {
     services.chat.respondApproval(id, approved)
   })

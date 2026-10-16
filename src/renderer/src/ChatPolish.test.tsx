@@ -391,7 +391,14 @@ describe('usage indicator', () => {
     const fake = fakeApi({ provider: codex })
     fake.api.provider.allowance.mockResolvedValue(
       allowance({
-        windows: [{ limitId: 'codex:secondary', remainingPercent: 18, resetsAt: null }],
+        windows: [
+          {
+            limitId: 'codex:secondary',
+            remainingPercent: 18,
+            resetsAt: null,
+            label: 'weekly limit',
+          },
+        ],
       }),
     )
     const user = userEvent.setup()

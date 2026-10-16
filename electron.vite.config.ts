@@ -1,8 +1,17 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { buildCsp } from './src/shared/csp'
+
+// lowlight's package `exports` hides lib/, so resolve its entry point and step to lib/ beside it.
+const lowlightLib = join(
+  dirname(createRequire(import.meta.url).resolve('lowlight')),
+  'lib',
+  'index.js',
+)
 
 /** Injects the renderer's Content-Security-Policy, relaxed only for the dev server. */
 function cspPlugin(): Plugin {
@@ -38,9 +47,7 @@ export default defineConfig({
         },
         {
           find: 'lowlight-lib',
-          replacement: fileURLToPath(
-            new URL('./node_modules/lowlight/lib/index.js', import.meta.url),
-          ),
+          replacement: lowlightLib,
         },
       ],
     },

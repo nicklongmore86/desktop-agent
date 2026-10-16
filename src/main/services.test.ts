@@ -160,3 +160,73 @@ it('returns a serializable metadata success value', async () => {
   })
   expect(await services.provider.models()).toEqual({ ok: true, value })
 })
+
+it('keeps several chats per provider: migrates, opens, renames and deletes them', async () => {
+  const userData = await mkdtemp(join(tmpdir(), 'chat-history-'))
+  dirs.push(userData)
+  await writeFile(
+    join(userData, 'settings.json'),
+    JSON.stringify({ version: 2, provider: 'claude-subscription' }),
+  )
+  await writeFile(
+    join(userData, 'conversation-claude-subscription.json'),
+    JSON.stringify({ version: 1, messages: [{ role: 'user', content: 'legacy subscription' }] }),
+  )
+  vi.spyOn(SubscriptionProviders.prototype, 'status').mockImplementation((provider) =>
+    Promise.resolve({ provider, state: 'ready', message: 'ready' }),
+  )
+  vi.spyOn(SubscriptionProviders.prototype, 'runner').mockImplementation(() =>
+    Promise.resolve({
+      run: (conversation) =>
+        Promise.resolve({
+          conversation: [...conversation, { role: 'assistant', content: 'reply' }],
+          stopReason: 'end_turn',
+        }),
+    }),
+  )
+  const emit = vi.fn()
+  const services = await createAppServices({
+    userData,
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      encryptString: (text) => Buffer.from(text),
+      decryptString: (value) => value.toString(),
+    },
+    trash: () => Promise.resolve(),
+    emit,
+    promptApproval: vi.fn(),
+    onAuditStatus: vi.fn(),
+  })
+  const { chat } = services
+  const [legacy] = chat.historyState().conversations
+  expect(legacy).toMatchObject({ title: 'legacy subscription' })
+  expect(chat.state()).toMatchObject({
+    items: [{ text: 'legacy subscription' }],
+    history: { activeId: legacy?.id },
+  })
+
+  await chat.newChat()
+  expect(chat.state().items).toEqual([])
+  expect(await chat.send('A brand new question')).toEqual({ ok: true })
+  await chat.idle()
+  const listed = chat.historyState()
+  expect(listed.conversations.map((c) => c.title)).toEqual([
+    'A brand new question',
+    'legacy subscription',
+  ])
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'history_changed' }))
+
+  await chat.open(legacy?.id ?? '')
+  expect(chat.state().items[0]).toMatchObject({ text: 'legacy subscription' })
+  await chat.rename(legacy?.id ?? '', 'Renamed')
+  // Other providers have their own list.
+  await services.provider.set('codex-subscription')
+  expect(chat.historyState()).toEqual({ conversations: [], activeId: null })
+  await services.provider.set('claude-subscription')
+  expect(chat.historyState().activeId).toBe(legacy?.id)
+  expect(chat.historyState().conversations.map((c) => c.title)).toContain('Renamed')
+
+  await chat.remove(legacy?.id ?? '')
+  expect(chat.state().items).toEqual([])
+  expect(chat.historyState().conversations.map((c) => c.title)).toEqual(['A brand new question'])
+})

@@ -7,6 +7,7 @@ import type {
   ChatState,
   DesktopApi,
   GrantsState,
+  HistoryState,
   ModelSettings,
   ProviderLoginState,
   ProviderStatus,
@@ -21,6 +22,7 @@ export interface FakeApiOptions {
   provider?: ProviderStatus
   audit?: AuditStatus
   theme?: ThemePreference
+  history?: HistoryState
 }
 
 /** A DesktopApi double: spies for every call, plus `push*` to simulate main's events. */
@@ -43,6 +45,10 @@ export function fakeApi(options: FakeApiOptions = {}) {
     ],
   }
   let theme: ThemePreference = options.theme ?? 'system'
+  let history: HistoryState = options.history ?? { conversations: [], activeId: null }
+  // What main has open; New chat and opening a chat replace it.
+  let current: ChatState = { items: [], running: false, loadError: null, ...options.chat }
+  const chatState = (): ChatState => ({ ...current, history })
   const subscribe =
     <T>(set: Set<(value: T) => void>) =>
     (listener: (value: T) => void) => {
@@ -159,12 +165,36 @@ export function fakeApi(options: FakeApiOptions = {}) {
       }),
     },
     chat: {
-      load: vi.fn(() =>
-        Promise.resolve(options.chat ?? { items: [], running: false, loadError: null }),
-      ),
+      load: vi.fn(() => Promise.resolve(chatState())),
       send: vi.fn((_text: string) => Promise.resolve({ ok: true as const })),
       stop: vi.fn(() => Promise.resolve()),
-      newChat: vi.fn(() => Promise.resolve({ items: [], running: false, loadError: null })),
+      newChat: vi.fn((): Promise<ChatState> => {
+        history = { ...history, activeId: null }
+        current = { items: [], running: false, loadError: null }
+        return Promise.resolve(chatState())
+      }),
+      history: vi.fn(() => Promise.resolve(history)),
+      open: vi.fn((id: string): Promise<ChatState> => {
+        history = { ...history, activeId: id }
+        current = { items: [], running: false, loadError: null }
+        return Promise.resolve(chatState())
+      }),
+      rename: vi.fn((id: string, title: string) => {
+        history = {
+          ...history,
+          conversations: history.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
+        }
+        return Promise.resolve(history)
+      }),
+      remove: vi.fn((id: string) => {
+        // Like main: deleting the open chat leaves a new, empty one open.
+        if (history.activeId === id) current = { items: [], running: false, loadError: null }
+        history = {
+          activeId: history.activeId === id ? null : history.activeId,
+          conversations: history.conversations.filter((c) => c.id !== id),
+        }
+        return Promise.resolve(history)
+      }),
     },
     approvals: {
       respond: vi.fn((_id: string, _approved: boolean) => Promise.resolve()),

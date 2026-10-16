@@ -44,6 +44,7 @@ interface ProviderAllowance {
     limitId: string // quota bucket plus :primary or :secondary
     remainingPercent: number // 0..100; NOT a number of requests or tokens
     resetsAt: string | null // ISO 8601 UTC
+    label?: string // "weekly limit", "5-hour limit"; from the window length, absent if unknown
   }[]
   lastError: ProviderFailure | null // historical, not proof of current blockage
 }
@@ -86,6 +87,11 @@ runtime remain authoritative. Explicit model discovery returns a typed failure
 for a failed catalog rather than pretending to have fetched options. Model setting applies to the
 next run; it does not mutate an in-flight thread or clear history. Existing
 provider-switch cancellation/history clearing is unchanged.
+
+The catalog cache is keyed on the provider only, which is enough while the app has a
+single account per provider. If sign-out or account switching is ever added, the cache
+(and the saved model preference it validates) must be keyed on account identity, or
+cleared at that point, so one account's model list is never offered to another.
 
 The settings v2 file adds `providerModels: Partial<Record<ProviderId, string>>`.
 This field is Zod validated, bounded to safe model slugs, and persisted through the
