@@ -10,6 +10,7 @@ import {
 export function SettingsDialog(
   props: SettingsPanelProps & {
     initialSection: SettingsSection
+    suspended: boolean
     onClose: () => void
     appInfo: AppInfo | null
   },
@@ -33,6 +34,7 @@ export function SettingsDialog(
     element?.focus()
     element?.querySelector(`#settings-${props.initialSection}`)?.scrollIntoView({ block: 'start' })
     const focus = (event: FocusEvent) => {
+      if (element?.closest('[hidden]')) return
       if (event.target instanceof Node && !element?.contains(event.target)) element?.focus()
     }
     document.addEventListener('focusin', focus)
@@ -41,8 +43,11 @@ export function SettingsDialog(
       previous?.focus()
     }
   }, [props.initialSection])
+  useEffect(() => {
+    if (!props.suspended) dialog.current?.focus()
+  }, [props.suspended])
   return (
-    <div className="settings-overlay">
+    <div className="settings-overlay" hidden={props.suspended} inert={props.suspended}>
       <div
         ref={dialog}
         tabIndex={-1}

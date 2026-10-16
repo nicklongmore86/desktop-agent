@@ -958,3 +958,7 @@
   padding: 0;
   text-decoration: underline;
 }
+
+.settings-overlay[hidden] {
+  display: none;
+}

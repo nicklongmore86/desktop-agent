@@ -1,5 +1,6 @@
 import { _electron as electron, expect, test } from '@playwright/test'
 import { join } from 'node:path'
+import type { ApprovalPrompt } from '../src/shared/ipc'
 
 for (const width of [1280, 400]) {
   test(`Settings dialog focus, sections and theme at ${String(width)}px`, async () => {
@@ -42,9 +43,36 @@ for (const width of [1280, 400]) {
         await page.getByRole('button', { name: 'Privacy & audit log', exact: true }).click()
       } else await opener.click()
       await page.getByRole('button', { name: 'Show in folder' }).click()
+      // Tool approvals take precedence over Settings without changing ApprovalCard.
+      await page.evaluate(() => {
+        const harness = (
+          window as unknown as { e2e: { pushApproval: (prompt: ApprovalPrompt) => void } }
+        ).e2e
+        harness.pushApproval({
+          id: 'settings-approval',
+          runId: 'run',
+          toolUseId: null,
+          tool: 'write_file',
+          kind: 'write',
+          summary: 'Write notes.md',
+          detail: 'A small change',
+        })
+      })
+      await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0)
+      await expect(page.getByRole('alertdialog')).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Deny', exact: true })).toBeFocused()
+      await page.getByRole('button', { name: 'Deny', exact: true }).click()
+      await expect(page.getByRole('alertdialog')).toHaveCount(0)
+      await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible()
+      await expect(page.getByRole('dialog', { name: 'Settings' })).toBeFocused()
+
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
         true,
       )
+      await page.keyboard.press('Escape')
+      await expect(
+        width > 540 ? page.getByRole('button', { name: 'Manage folders' }) : opener,
+      ).toBeFocused()
     } finally {
       await app.close()
     }

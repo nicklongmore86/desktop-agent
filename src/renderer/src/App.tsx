@@ -263,6 +263,7 @@ export function App(): React.JSX.Element {
         <SettingsDialog
           key={settingsSection}
           initialSection={settingsSection}
+          suspended={Boolean(approval)}
           onClose={() => {
             setSettingsSection(null)
           }}
