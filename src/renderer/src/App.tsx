@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   ApiKeyStatus,
   AppInfo,
   AuditStatus,
-  ConversationSummary,
   GrantsState,
   ProviderStatus,
   ProviderId,
@@ -12,7 +11,6 @@ import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { CommandBar } from './components/CommandBar'
-import { ConfirmDeleteDialog } from './components/ConfirmDeleteDialog'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SettingsDialog } from './components/SettingsDialog'
 import { AppHeader } from './components/shell/AppHeader'
@@ -127,7 +125,11 @@ export function App(): React.JSX.Element {
   }
   const [approval, ...queued] = chat.state.approvals
   const shell = useRef<ShellHandle>(null)
-  const [deleting, setDeleting] = useState<ConversationSummary | null>(null)
+  // A chat-list dialog (delete, fork, project) is open: shortcuts wait for it.
+  const [listDialog, setListDialog] = useState(false)
+  const onListDialog = useCallback((open: boolean) => {
+    setListDialog(open)
+  }, [])
   const startNewChat = (): void => {
     if (chat.state.switching) return
     setSettingsSection(null)
@@ -146,13 +148,13 @@ export function App(): React.JSX.Element {
         focusInput(view)
       },
     },
-    approval !== undefined,
+    approval !== undefined || listDialog,
   )
   useViewModeHotkey(
     () => {
       if (!chat.state.switching) changeView(view === 'chat' ? 'command' : 'chat')
     },
-    approval !== undefined || settingsSection !== null || deleting !== null,
+    approval !== undefined || settingsSection !== null || listDialog,
   )
   const providerName = provider ? PROVIDER_NAMES[provider.provider] : 'Loading provider…'
   const switchProvider = async (next: ProviderId): Promise<void> => {
@@ -177,7 +179,7 @@ export function App(): React.JSX.Element {
         shellRef={shell}
         inert={settingsSection !== null}
         suspended={Boolean(approval)}
-        blocked={deleting !== null}
+        blocked={listDialog}
         left={(variant) => (
           <LeftSidebar
             variant={variant}
@@ -190,12 +192,26 @@ export function App(): React.JSX.Element {
               variant={variant}
               history={chat.state.history}
               switching={chat.state.switching}
+              running={chat.state.running}
+              provider={provider?.provider ?? null}
+              prompts={chat.state.items.flatMap((item) =>
+                item.kind === 'user' ? [item.text] : [],
+              )}
+              suspended={Boolean(approval)}
               onNewChat={startNewChat}
               onOpen={(id) => {
                 void chat.openConversation(id)
               }}
+              onOpenOther={(ref) => {
+                void chat.openOther(ref).then((status) => {
+                  if (status) setProvider(status)
+                })
+              }}
               onRename={chat.renameConversation}
-              onDelete={setDeleting}
+              onDelete={(id) => {
+                void chat.deleteConversation(id)
+              }}
+              onBlocking={onListDialog}
             />
           </LeftSidebar>
         )}
@@ -318,20 +334,6 @@ export function App(): React.JSX.Element {
           grants={grants}
           onGrants={setGrants}
           audit={audit}
-        />
-      )}
-
-      {deleting && (
-        <ConfirmDeleteDialog
-          title={deleting.title}
-          suspended={Boolean(approval)}
-          onCancel={() => {
-            setDeleting(null)
-          }}
-          onConfirm={() => {
-            setDeleting(null)
-            void chat.deleteConversation(deleting.id)
-          }}
         />
       )}
 

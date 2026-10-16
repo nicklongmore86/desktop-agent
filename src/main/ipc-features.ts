@@ -4,6 +4,7 @@
  */
 import { registerCommandHandlers, type CommandService } from './ipc-command'
 import { registerLayoutHandlers, type LayoutService } from './ipc-layout'
+import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 
 /** Registers a handler that has already passed the trusted-sender check. */
 export type IpcHandle = (channel: string, handler: (...args: unknown[]) => unknown) => void
@@ -11,9 +12,11 @@ export type IpcHandle = (channel: string, handler: (...args: unknown[]) => unkno
 export interface FeatureServices {
   command: CommandService
   layout: LayoutService
+  projects: ProjectsService
 }
 
 export function registerFeatureHandlers(handle: IpcHandle, services: FeatureServices): void {
   registerCommandHandlers(handle, services.command)
   registerLayoutHandlers(handle, services.layout)
+  registerProjectsHandlers(handle, services.projects)
 }

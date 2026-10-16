@@ -480,9 +480,32 @@ export class ChatSession {
     })
   }
 
-  /** Switches to another provider's history and opens its last conversation. */
-  switchHistory(history: ConversationHistory, commit: () => Promise<void>): Promise<ChatState> {
-    return this.switchTo(() => ({ store: history.current(), commit, history }))
+  /**
+   * Switches to another provider's history and opens its last conversation, or
+   * the saved conversation `id` of that history.
+   */
+  switchHistory(
+    history: ConversationHistory,
+    commit: () => Promise<void>,
+    id?: string,
+  ): Promise<ChatState> {
+    return this.switchTo(() => {
+      if (id === undefined) return { store: history.current(), commit, history }
+      if (!history.has(id)) throw new Error('That chat no longer exists.')
+      return {
+        store: history.open(id),
+        commit: async () => {
+          await commit()
+          await history.setActive(id)
+        },
+        history,
+      }
+    })
+  }
+
+  /** The open provider's chat list changed outside the session (a pin, archive or move). */
+  historyChanged(): void {
+    this.notifyHistory()
   }
 
   async rename(id: string, title: string): Promise<HistoryState> {
