@@ -205,7 +205,14 @@ export function fakeApi(options: FakeApiOptions = {}) {
         }
         return Promise.resolve(hits)
       }),
-      reveal: vi.fn((_location: FileLocation) => Promise.resolve({ ok: true as const })),
+      // Like main: secret files are never revealed (copying their path is allowed).
+      reveal: vi.fn((location: FileLocation) =>
+        Promise.resolve(
+          location.rel.includes('secret')
+            ? { ok: false as const, reason: 'Secret files cannot be opened or revealed.' }
+            : { ok: true as const },
+        ),
+      ),
       copyPath: vi.fn((_location: FileLocation) => Promise.resolve({ ok: true as const })),
       reference: vi.fn((location: FileLocation) => {
         const root = rootOf(location.rootId)

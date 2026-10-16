@@ -17,6 +17,10 @@ export function rootId(root: string): string {
 
 export const ROOT_ID = /^r[0-9a-f]{16}$/
 
+/** C0 and C1 control characters (NUL, CR, LF, tab, ESC, DEL, ...): never part of a usable name. */
+// eslint-disable-next-line no-control-regex -- control characters are exactly what we reject
+export const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/
+
 /** The granted folders as the tree shows them. */
 export function filesRoots(guard: PathGuard): FilesRoot[] {
   return guard.grantedRoots().map((root) => ({
@@ -33,8 +37,8 @@ export function rootForId(guard: PathGuard, id: string): string | null {
 
 /**
  * The name segments of a relative path, or why it is refused. Only plain names
- * joined by `/`: no `.` or `..`, no empty segments, no backslashes, NULs or
- * (on Windows) colons, so it can never climb out of its folder or name a
+ * joined by `/`: no `.` or `..`, no empty segments, no backslashes, control
+ * characters (NUL, CR, LF, ...) or (on Windows) colons, so it can never climb out of its folder or name a
  * device, an alternate data stream or an extended-length (`\\?\`) path.
  */
 export function parseRel(
@@ -47,7 +51,7 @@ export function parseRel(
   for (const segment of segments) {
     if (segment === '' || segment === '.' || segment === '..')
       return { ok: false, reason: 'That path is not a plain path inside the folder.' }
-    if (segment.includes('\\') || segment.includes('\0'))
+    if (segment.includes('\\') || CONTROL_CHARS.test(segment))
       return { ok: false, reason: 'That path is not a plain path inside the folder.' }
     if (platform === 'win32' && segment.includes(':'))
       return { ok: false, reason: 'That path is not a plain path inside the folder.' }

@@ -271,13 +271,17 @@ describe('entry actions', () => {
   it('reveals and copies only checked paths, and passes the real path on', async () => {
     const { guard, listFs, id } = setup()
     const act = vi.fn()
-    expect(await withEntryPath(guard, { rootId: id, rel: 'SRC/MAIN.TS' }, act, listFs)).toEqual({
+    expect(
+      await withEntryPath(guard, { rootId: id, rel: 'SRC/MAIN.TS' }, act, 'refuse', listFs),
+    ).toEqual({
       ok: true,
     })
     expect(act).toHaveBeenCalledWith(`${ROOT}\\src\\main.ts`)
     act.mockClear()
     for (const rel of ['escape', '.env', 'PROGRA~1']) {
-      expect((await withEntryPath(guard, { rootId: id, rel }, act, listFs)).ok, rel).toBe(false)
+      expect((await withEntryPath(guard, { rootId: id, rel }, act, 'refuse', listFs)).ok, rel).toBe(
+        false,
+      )
     }
     expect(act).not.toHaveBeenCalled()
   })

@@ -230,10 +230,15 @@ describe('Files tree: actions', () => {
     expect(insert.getAttribute('aria-disabled')).toBe('true')
     await user.click(insert)
     expect(api.files.reference).not.toHaveBeenCalled()
-    // Copying or revealing a secret file's location does not show its contents.
+    // Copying the path opens nothing; revealing it in Explorer is refused.
     expect(
       within(menu).getByRole('menuitem', { name: 'Copy path' }).getAttribute('aria-disabled'),
     ).toBeNull()
+    const reveal = within(menu).getByRole('menuitem', { name: 'Reveal in Explorer' })
+    expect(reveal.getAttribute('aria-disabled')).toBe('true')
+    expect(reveal.getAttribute('title')).toBe('Secret files cannot be opened or revealed.')
+    await user.click(reveal)
+    expect(api.files.reveal).not.toHaveBeenCalled()
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('menu')).toBeNull()
 

@@ -35,8 +35,10 @@ export function createFilesService(deps: FilesServiceDeps): FilesService & { clo
     list: (location) => listFolder(guard, location, fs),
     watch: (locations) => watcher.sync(locations),
     search: (query) => searchFiles(guard, query),
-    reveal: (location) => withEntryPath(guard, location, deps.reveal, fs),
-    copyPath: (location) => withEntryPath(guard, location, deps.copyText, fs),
+    // Reveal hands the file to Explorer, so it is refused for secret files; copying
+    // the path opens nothing and stays allowed (see withEntryPath).
+    reveal: (location) => withEntryPath(guard, location, deps.reveal, 'refuse', fs),
+    copyPath: (location) => withEntryPath(guard, location, deps.copyText, 'allow', fs),
     reference: (location) => referenceFor(guard, location, fs),
     close: () => {
       watcher.close()

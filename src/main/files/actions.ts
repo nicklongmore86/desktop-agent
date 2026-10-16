@@ -3,11 +3,11 @@
 import type { FileActionResult, FileLocation, FileReferenceResult } from '../../shared/ipc-files'
 import type { PathGuard } from '../permissions/guard'
 import { nodeListFs, type ListFs } from './listing'
-import { resolveLocation } from './location'
+import { CONTROL_CHARS, resolveLocation } from './location'
 import { isSecretName } from './secret-names'
 
 type Checked =
-  | { ok: true; path: string; isFile: boolean; hardLink: boolean }
+  | { ok: true; path: string; isFile: boolean; hardLink: boolean; secret: boolean }
   | {
       ok: false
       reason: string
@@ -20,7 +20,15 @@ async function check(guard: PathGuard, location: FileLocation, fs: ListFs): Prom
   try {
     const stats = await fs.lstat(where.path)
     if (stats.isSymbolicLink()) return { ok: false, reason: 'Links are not followed.' }
-    return { ok: true, path: where.path, isFile: stats.isFile(), hardLink: stats.nlink > 1 }
+    const isFile = stats.isFile()
+    return {
+      ok: true,
+      path: where.path,
+      isFile,
+      hardLink: stats.nlink > 1,
+      // The panels' secret rule applies to files, as in the listing (listing.ts).
+      secret: isFile && isSecretName(guard.path.basename(where.path)),
+    }
   } catch {
     return { ok: false, reason: 'That file or folder cannot be read.' }
   }
@@ -39,28 +47,47 @@ export async function referenceFor(
 ): Promise<FileReferenceResult> {
   const entry = await check(guard, location, fs)
   if (!entry.ok) return entry
-  if (entry.isFile && isSecretName(guard.path.basename(entry.path)))
-    return { ok: false, reason: 'Secret files (like .env) are not added to the chat from here.' }
+  if (entry.secret) return { ok: false, reason: SECRET_REFERENCE }
   if (entry.isFile && entry.hardLink)
     return {
       ok: false,
       reason:
         'This file has other hard links, so the agent cannot open it. Copy it into the folder first.',
     }
-  if (entry.path.includes('"'))
-    return { ok: false, reason: 'This path contains a quote mark and cannot be referenced.' }
+  // The reference is one quoted line of the message: a name must not end the quote,
+  // start a new line or reorder the text around it (prompt injection through a name).
+  if (entry.path.includes('"') || CONTROL_CHARS.test(entry.path) || BIDI_CONTROLS.test(entry.path))
+    return {
+      ok: false,
+      reason: 'This path contains a quote mark or control characters and cannot be referenced.',
+    }
   return { ok: true, text: `@"${entry.path}"` }
 }
 
-/** Runs `act` on the entry's real path once it has been checked (Reveal, Copy path). */
+export const SECRET_REFERENCE = 'Secret files (like .env) are not added to the chat from here.'
+export const SECRET_REVEAL = 'Secret files cannot be opened or revealed.'
+
+/** Bidirectional formatting characters, which can make text read differently from what it is. */
+const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+
+/**
+ * Runs `act` on the entry's real path once it has been checked.
+ *
+ * Secret files (secret-names.ts): `secrets: 'refuse'` is for anything that hands
+ * the file itself to another program, such as Reveal in Explorer (Explorer can
+ * preview or open it). Copy path passes `'allow'`: the path is the granted folder
+ * plus the name the panel already shows, and copying it opens nothing.
+ */
 export async function withEntryPath(
   guard: PathGuard,
   location: FileLocation,
   act: (path: string) => void | Promise<void>,
+  secrets: 'refuse' | 'allow',
   fs: ListFs = nodeListFs,
 ): Promise<FileActionResult> {
   const entry = await check(guard, location, fs)
   if (!entry.ok) return entry
+  if (entry.secret && secrets === 'refuse') return { ok: false, reason: SECRET_REVEAL }
   try {
     await act(entry.path)
     return { ok: true }

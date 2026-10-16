@@ -166,6 +166,9 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
     reveal: (location) => {
       filesCalls.reveal.push(location)
+      // Like main: secret files are never revealed.
+      if (location.rel.includes('secrets'))
+        return Promise.resolve({ ok: false, reason: 'Secret files cannot be opened or revealed.' })
       return Promise.resolve({ ok: true })
     },
     copyPath: (location) => {

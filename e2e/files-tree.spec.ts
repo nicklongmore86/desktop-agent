@@ -84,6 +84,22 @@ for (const viewport of [1280, 400]) {
         await expect(row(/^secrets\.json.*contents hidden/)).toHaveAttribute('draggable', 'false')
         await expect(row(/^shared-drive.*outside granted folders/)).toBeVisible()
 
+        // A secret file: Copy path works, Reveal in Explorer is refused.
+        await row(/^secrets\.json/).click({ button: 'right' })
+        const secretMenu = page.getByRole('menu', { name: 'Actions for secrets.json' })
+        await expect(
+          secretMenu.getByRole('menuitem', { name: 'Reveal in Explorer' }),
+        ).toHaveAttribute('aria-disabled', 'true')
+        await expect(
+          secretMenu.getByRole('menuitem', { name: 'Insert reference into chat' }),
+        ).toHaveAttribute('aria-disabled', 'true')
+        await expect(secretMenu.getByRole('menuitem', { name: 'Copy path' })).not.toHaveAttribute(
+          'aria-disabled',
+        )
+        await page.keyboard.press('Escape')
+        await expect(secretMenu).toBeHidden()
+        expect((await calls(page)).reveal).toEqual([])
+
         // Expand src and its components folder with the mouse, then the keyboard.
         await row(/^src\b/).click()
         await expect(row(/^App\.tsx/)).toBeVisible()

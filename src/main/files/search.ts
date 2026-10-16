@@ -4,7 +4,7 @@
 import { FILES_SEARCH_LIMIT, type FileSearchHit } from '../../shared/ipc-files'
 import type { PathGuard } from '../permissions/guard'
 import { walk } from '../tools/walk'
-import { rootId } from './location'
+import { parseRel, rootId } from './location'
 import { isSecretName } from './secret-names'
 
 /** Folders that are noise for a mention search; never descended into. */
@@ -63,6 +63,8 @@ export async function searchFiles(
       if (entry.kind !== 'file' && entry.kind !== 'dir') continue
       if (!entry.name.toLowerCase().includes(needle)) continue
       if (entry.kind === 'file' && (isSecretName(entry.name) || entry.nlink > 1)) continue
+      // Names the tree could not name back (control characters) are left out too.
+      if (!parseRel(entry.rel, guard.platform).ok) continue
       hits.push({
         rootId: rootId(root),
         rel: entry.rel,

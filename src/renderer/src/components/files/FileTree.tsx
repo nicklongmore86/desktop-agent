@@ -20,6 +20,9 @@ const INDENT = 16
 
 type ItemRow = Exclude<TreeRow, { type: 'status' }>
 
+/** Main's reason too (src/main/files/actions.ts); the menu says it before main has to. */
+const SECRET_REVEAL = 'Secret files cannot be opened or revealed.'
+
 /** Why an entry cannot be referenced, revealed or copied; null when it can. */
 function lockReason(entry: FileEntry): string | null {
   if (entry.denied) return entry.denied
@@ -173,9 +176,12 @@ export function FileTree({
   const menuItems = (row: ItemRow): FileMenuItem[] => {
     const location = locationOf(row)
     const blockedRef = referenceBlock(row)
-    const blockedPath = row.type === 'entry' ? lockReason(row.entry) : null
-    const pathBlock =
-      row.type === 'entry' && row.entry.secret && !row.entry.denied ? null : blockedPath
+    const lock = row.type === 'entry' ? lockReason(row.entry) : null
+    const secret = row.type === 'entry' && row.entry.secret === true && !row.entry.denied
+    // Copying a secret file's path opens nothing (the name is already shown); revealing
+    // it would hand the file to Explorer, so main refuses that and so does the menu.
+    const copyBlock = secret ? null : lock
+    const revealBlock = secret ? SECRET_REVEAL : lock
     const items: FileMenuItem[] = [
       {
         label: 'Insert reference into chat',
@@ -186,14 +192,14 @@ export function FileTree({
       },
       {
         label: 'Copy path',
-        disabled: pathBlock,
+        disabled: copyBlock,
         onSelect: () => {
           void run(() => api.files.copyPath(location), 'Path copied')
         },
       },
       {
         label: 'Reveal in Explorer',
-        disabled: pathBlock,
+        disabled: revealBlock,
         onSelect: () => {
           void run(() => api.files.reveal(location))
         },
