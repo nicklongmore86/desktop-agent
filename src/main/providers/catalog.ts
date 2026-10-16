@@ -71,6 +71,20 @@ export async function codexModels(
   }
 }
 
+/** A user-facing name for a window length, or null when the runtime gave none we can use. */
+export function windowLabel(minutes: unknown): string | null {
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes <= 0) return null
+  if (minutes === 7 * 24 * 60) return 'weekly limit'
+  if (minutes % (24 * 60) === 0) return `${String(minutes / (24 * 60))}-day limit`
+  if (minutes % 60 === 0) return `${String(minutes / 60)}-hour limit`
+  return null
+}
+
+const creditsOf = (snapshot: Record<string, unknown>): Record<string, unknown> | null =>
+  snapshot['credits'] && typeof snapshot['credits'] === 'object'
+    ? object(snapshot['credits'])
+    : null
+
 export async function codexAllowance(peer: RpcPeer): Promise<ProviderAllowance> {
   const result = await peer.request(
     'account/rateLimits/read',
@@ -90,6 +104,10 @@ export async function codexAllowance(peer: RpcPeer): Promise<ProviderAllowance> 
   const credits =
     current['credits'] && typeof current['credits'] === 'object' ? object(current['credits']) : {}
   const hasCredits = credits['hasCredits'] === true || credits['unlimited'] === true
+  // Display only: the aggregate snapshot plus each bucket, so credits reported on a bucket show.
+  const displayCredits = [current, ...snapshots.map(([, value]) => object(value))]
+    .map(creditsOf)
+    .filter((entry) => entry !== null)
   const state =
     hasCredits || result['ordinaryUsageAllowed'] === true
       ? 'available'
@@ -104,20 +122,22 @@ export async function codexAllowance(peer: RpcPeer): Promise<ProviderAllowance> 
       const used = window['usedPercent']
       if (typeof used !== 'number' || !Number.isFinite(used)) continue
       const reset = window['resetsAt']
+      const label = windowLabel(window['windowDurationMins'])
       windows.push({
         limitId: `${identifier(id) ? id : 'codex'}:${name}`,
         remainingPercent: Math.max(0, Math.min(100, 100 - used)),
         resetsAt: plausibleReset(reset) ?? null,
+        ...(label ? { label } : {}),
       })
     }
   }
   return {
     provider: 'codex-subscription',
-    ...(current['credits'] && typeof current['credits'] === 'object'
+    ...(displayCredits.length
       ? {
           credits: {
-            hasCredits: credits['hasCredits'] === true,
-            unlimited: credits['unlimited'] === true,
+            hasCredits: displayCredits.some((entry) => entry['hasCredits'] === true),
+            unlimited: displayCredits.some((entry) => entry['unlimited'] === true),
           },
         }
       : {}),

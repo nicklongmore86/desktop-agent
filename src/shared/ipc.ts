@@ -131,6 +131,8 @@ export interface AllowanceWindow {
   limitId: string
   remainingPercent: number
   resetsAt: string | null
+  /** User-facing window name from the runtime's window length ("weekly limit"); absent when unknown. */
+  label?: string
 }
 export interface ProviderAllowance {
   /** Availability flags only; balances and account details stay in main. */

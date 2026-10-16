@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderAllowance } from '../../shared/ipc'
-import { formatReset, summarizeUsage, usageLevel } from './usage'
+import { describeFailure, formatReset, summarizeUsage, usageLevel, windowName } from './usage'
 
 const allowance = (overrides: Partial<ProviderAllowance> = {}): ProviderAllowance => ({
   provider: 'codex-subscription',
@@ -74,7 +74,10 @@ describe('summarizeUsage', () => {
 
   it('words a warning like "82% of weekly limit used"', () => {
     expect(
-      summarizeUsage(allowance({ windows: [window('codex:secondary', 18)] }), now),
+      summarizeUsage(
+        allowance({ windows: [{ ...window('codex:secondary', 18), label: 'weekly limit' }] }),
+        now,
+      ),
     ).toMatchObject({ level: 'warning', text: '82% of weekly limit used' })
   })
 
@@ -87,5 +90,28 @@ describe('summarizeUsage', () => {
     expect(summary?.level).toBe('limited')
     expect(summary?.text).toMatch(/^Limit reached – resets .+/)
     expect(summarizeUsage(allowance({ state: 'limited' }), now)?.text).toBe('Limit reached')
+  })
+})
+
+describe('windowName', () => {
+  it('uses the label from the runtime, never the limit id', () => {
+    expect(windowName({ label: 'weekly limit' })).toBe('weekly limit')
+    expect(windowName({})).toBe('usage limit')
+  })
+})
+
+describe('describeFailure', () => {
+  it('words the typed reasons and leaves unknown ones to the caller', () => {
+    expect(describeFailure({ code: 'auth_expired', message: 'x' })).toBe(
+      'Sign-in expired — sign in again',
+    )
+    expect(describeFailure({ code: 'usage_limit', message: 'x' })).toBe('Limit reached')
+    expect(
+      describeFailure({ code: 'usage_limit', message: 'x', resetsAt: '2027-01-15T08:00:00Z' }),
+    ).toMatch(/^Limit reached — resets /)
+    expect(describeFailure({ code: 'runtime_unavailable', message: 'x' })).toMatch(/unavailable/)
+    expect(describeFailure({ code: 'model_unavailable', message: 'x' })).toMatch(/not available/)
+    expect(describeFailure({ code: 'internal', message: 'x' })).toBeNull()
+    expect(describeFailure(null)).toBeNull()
   })
 })

@@ -2,6 +2,7 @@ import { useId, useState } from 'react'
 import type { ProviderId } from '../../../../shared/ipc'
 import { useProviderModels } from '../../provider-models'
 import {
+  describeFailure,
   formatReset,
   summarizeUsage,
   usageLevel,
@@ -15,7 +16,7 @@ const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text
 /** Plan, limits and (for Codex) the model; reads through the same hooks as the chat indicator. */
 export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.Element {
   const modelId = useId()
-  const [modelError, setModelError] = useState<string | null>(null)
+  const [saveFailed, setSaveFailed] = useState(false)
   const usage = useProviderUsage(provider)
   const models = useProviderModels(provider)
   const { allowance } = usage
@@ -23,6 +24,9 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
   const level = usageLevel(allowance)
   const resetsAt = formatReset(allowance?.resetsAt)
   const choice = models.choice
+  const modelError = saveFailed
+    ? (describeFailure(models.failure) ?? 'Could not change the model.')
+    : null
   return (
     <section className="settings-section">
       <div className="settings-row">
@@ -30,7 +34,7 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
         <button
           type="button"
           onClick={() => {
-            setModelError(null)
+            setSaveFailed(false)
             usage.refresh()
             models.refresh()
           }}
@@ -44,7 +48,7 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
           ? `Limit reached${resetsAt ? ` — resets ${resetsAt}` : ''}`
           : allowance?.state === 'available'
             ? 'Available'
-            : 'Usage unavailable right now'}
+            : (describeFailure(usage.failure) ?? 'Usage unavailable right now')}
       </p>
       {allowance?.credits && (
         <p>
@@ -73,7 +77,7 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
                 className={used >= 100 ? 'usage-limited' : used >= 80 ? 'usage-warning' : ''}
               >
                 <p>
-                  {capitalize(windowName(window.limitId))} · {used}% used
+                  {capitalize(windowName(window))} · {used}% used
                 </p>
                 <progress aria-label={`${window.limitId} usage`} max={100} value={used} />
                 {reset && <p className="settings-hint">Resets {reset}</p>}
@@ -90,9 +94,9 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
             disabled={!choice}
             value={choice?.selected ?? ''}
             onChange={(event) => {
-              setModelError(null)
+              setSaveFailed(false)
               void models.select(event.target.value || null).then((saved) => {
-                if (!saved) setModelError('Could not change the model.')
+                if (!saved) setSaveFailed(true)
               })
             }}
           >

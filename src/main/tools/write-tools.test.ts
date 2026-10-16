@@ -12,6 +12,20 @@ import {
 } from '../permissions/test-support'
 import { toolHarness, type ToolHarness } from './test-support'
 
+const crypto = vi.hoisted(() => ({ fixed: null as Buffer | null }))
+vi.mock('node:crypto', async (original) => {
+  const actual = await original<typeof import('node:crypto')>()
+  return {
+    ...actual,
+    // Passes through unless a test pins the next name.
+    randomBytes: ((size: number) => {
+      const fixed = crypto.fixed
+      crypto.fixed = null
+      return fixed ?? actual.randomBytes(size)
+    }) as typeof actual.randomBytes,
+  }
+})
+
 let sb: Sandbox
 let h: ToolHarness
 
@@ -466,6 +480,31 @@ describe('move_file', () => {
     async function asides(): Promise<string[]> {
       return (await fs.readdir(sb.root)).filter((n) => n.endsWith('.replaced'))
     }
+
+    it('names a set-aside file so it cannot pass for a protected .env file', async () => {
+      destination = path.join(sb.root, 'env.local')
+      await put(destination, 'old')
+      const targets: string[] = []
+      vi.spyOn(fs, 'rename').mockImplementation((from, to) => {
+        if (from === destination) targets.push(path.basename(String(to)))
+        return realRename(from, to)
+      })
+      expect(await move(true)).toMatchObject({ content: /^Moved/ })
+      const [aside] = targets
+      expect(aside).toMatch(/\.replaced$/)
+      expect(aside?.startsWith('.env')).toBe(false)
+      expect(await fs.readFile(destination, 'utf8')).toBe('a')
+    })
+
+    it('tries one fresh set-aside name when the random one already exists', async () => {
+      await put(destination, 'old')
+      const taken = path.join(sb.root, '.aside-aaaaaaaaaaaa.b.txt.replaced')
+      await put(taken, 'someone else')
+      crypto.fixed = Buffer.from('aaaaaa', 'hex')
+      expect(await move(true)).toMatchObject({ content: /^Moved/ })
+      expect(await fs.readFile(taken, 'utf8')).toBe('someone else')
+      expect(await fs.readFile(destination, 'utf8')).toBe('a')
+    })
 
     it('leaves a foreign file swapped in before the rename where it is, keeping the replaced one', async () => {
       await put(destination, 'old')
