@@ -232,7 +232,8 @@ describe('chat view', () => {
 
   it('unsubscribes from main pushes on unmount', async () => {
     const { view, listenerCount } = await renderApp()
-    expect(listenerCount()).toBe(3)
+    // Chat events twice (the chat, and the chat list's projects), approvals, audit.
+    expect(listenerCount()).toBe(4)
     view.unmount()
     expect(listenerCount()).toBe(0)
   })

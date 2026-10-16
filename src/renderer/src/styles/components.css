@@ -379,7 +379,8 @@
 .history-open {
   flex: 1;
   min-width: 0;
-  padding: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  line-height: 20px;
   border: none;
   background: transparent;
   color: var(--color-text);
@@ -448,6 +449,349 @@
 
 .history-menu .danger {
   color: var(--color-danger-text);
+}
+
+.history-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.history-menu .menu-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+.history-menu .menu-more {
+  color: var(--color-text-muted);
+}
+
+.history-menu .separated {
+  margin-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+}
+
+.history-menu .menu-back {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.history-menu [aria-disabled='true'] {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+/* Chat list sections: Pinned, Projects (folders), Chats; New chat and the Archived filter. */
+
+.sidebar-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.sidebar-actions .sidebar-new {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.sidebar-filter[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.filter-count {
+  min-width: 18px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+.chat-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--duration-base) var(--ease),
+    box-shadow var(--duration-base) var(--ease);
+}
+
+.chat-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.chat-section-header h2 {
+  margin: 0;
+}
+
+.section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.section-toggle:hover:not(:disabled) {
+  background: transparent;
+  color: var(--color-text);
+}
+
+.section-caret,
+.project-caret {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentcolor;
+  transform: rotate(90deg);
+  transition: transform var(--duration-fast) var(--ease);
+}
+
+.section-toggle[aria-expanded='false'] .section-caret,
+.project-toggle[aria-expanded='false'] .project-caret {
+  transform: none;
+}
+
+.section-add {
+  padding: 0 var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-md);
+  line-height: 1.4;
+}
+
+.chat-rows,
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-folder {
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--duration-base) var(--ease),
+    box-shadow var(--duration-base) var(--ease);
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.project-row:hover {
+  background: var(--color-surface-2);
+}
+
+.project-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: 20px;
+  text-align: left;
+}
+
+.project-toggle:hover:not(:disabled) {
+  background: transparent;
+}
+
+.project-icon {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  color: var(--color-text-muted);
+}
+
+.project-toggle .history-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-count {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.project-chats {
+  padding-left: var(--space-4);
+}
+
+.project-folder > .drop-hint {
+  padding-left: calc(var(--space-4) + var(--space-2));
+}
+
+.drop-hint {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+/* While a chat is dragged: where it can go, and where it would go now. */
+.history-scroll[data-dragging] [data-drop='can'] {
+  box-shadow: inset 0 0 0 1px var(--color-border-control);
+}
+
+.history-scroll[data-dragging] [data-drop='over'] {
+  background: var(--color-accent-bg);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.history-item[data-dragging] {
+  opacity: 0.5;
+}
+
+.chat-provider {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+}
+
+.history-open:has(.chat-provider) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.history-open:has(.chat-provider) .history-title {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Dialogs of the chat list (project, fork). */
+
+.dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.dialog-field > span {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.dialog-field input,
+.dialog-field select {
+  padding: var(--space-2);
+}
+
+.icon-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.icon-choice {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.icon-choice[aria-checked='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.confirm-dialog > div > p + p {
+  margin-top: var(--space-2);
+}
+
+/* Undo for archive, unpin and move: bottom left, over the sidebar. */
+.undo-toast {
+  position: fixed;
+  bottom: var(--space-6);
+  left: var(--space-4);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: min(360px, calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--color-text);
+  color: var(--color-surface-0);
+  font-size: var(--font-size-sm);
+  box-shadow: var(--shadow-raised);
+  animation: toast-in var(--duration-base) var(--ease);
+}
+
+.undo-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+.undo-toast .link-button {
+  flex: none;
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.undo-toast .link-button:hover:not(:disabled) {
+  background: transparent;
+}
+
+.sidebar-error .link-button {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  text-decoration: underline;
 }
 
 /* Drawers: a pane as a modal sheet over the chat, where it cannot be docked. */
@@ -1823,5 +2167,23 @@
   /* The open chat is marked by more than its background. */
   .history-item[data-active] {
     outline: 2px solid CanvasText;
+  }
+
+  /* Drop targets while dragging a chat, and the undo toast, without colour alone. */
+  .history-scroll[data-dragging] [data-drop='can'] {
+    outline: 1px dashed CanvasText;
+  }
+
+  .history-scroll[data-dragging] [data-drop='over'] {
+    outline: 2px solid Highlight;
+  }
+
+  .icon-choice[aria-checked='true'],
+  .sidebar-filter[aria-pressed='true'] {
+    border: 2px solid CanvasText;
+  }
+
+  .undo-toast {
+    border: 1px solid CanvasText;
   }
 }
