@@ -183,40 +183,58 @@ describe('git detection', () => {
     expect(found).toBeNull()
   })
 
+  it('skips a folder link (a junction on Windows) into a granted folder on the real file system', async () => {
+    const windows = process.platform === 'win32'
+    const exe = windows ? 'git.exe' : 'git'
+    const sep = windows ? ';' : ':'
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'git-detect-')))
+    try {
+      const grant = join(base, 'grant')
+      const outside = join(base, 'outside')
+      mkdirSync(join(grant, 'bin'), { recursive: true })
+      mkdirSync(join(outside, 'real'), { recursive: true })
+      writeFileSync(join(grant, 'bin', exe), '#!/bin/sh\n')
+      writeFileSync(join(outside, 'real', exe), '#!/bin/sh\n')
+      // 'junction' makes an NTFS junction on Windows (no admin needed); ignored elsewhere.
+      symlinkSync(join(grant, 'bin'), join(outside, 'linkdir'), 'junction')
+      symlinkSync(join(outside, 'real'), join(outside, 'goodlink'), 'junction')
+      const deps = {
+        platform: process.platform,
+        grantedRoots: () => [grant],
+        // Only this test's folders count (the machine's own git is not looked at).
+        isFile: (path: string) => Promise.resolve(path.startsWith(base)),
+      }
+      expect(await findGit({ ...deps, env: { PATH: join(outside, 'linkdir') } })).toBeNull()
+      expect(
+        await findGit({
+          ...deps,
+          env: { PATH: `${join(outside, 'linkdir')}${sep}${join(outside, 'goodlink')}` },
+        }),
+      ).toBe(join(outside, 'real', exe))
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it.skipIf(process.platform === 'win32')(
-    'skips symbolic links (file or folder) into a granted folder on the real file system',
+    'skips a file symbolic link into a granted folder on the real file system',
     async () => {
-      const base = realpathSync(mkdtempSync(join(tmpdir(), 'git-detect-')))
+      const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'git-detect-')))
       try {
         const grant = join(base, 'grant')
-        const outside = join(base, 'outside')
         mkdirSync(join(grant, 'bin'), { recursive: true })
-        mkdirSync(join(outside, 'bin'), { recursive: true })
-        mkdirSync(join(outside, 'real'), { recursive: true })
+        mkdirSync(join(base, 'outside'))
         writeFileSync(join(grant, 'bin', 'git'), '#!/bin/sh\n')
-        writeFileSync(join(outside, 'real', 'git'), '#!/bin/sh\n')
         chmodSync(join(grant, 'bin', 'git'), 0o755)
-        symlinkSync(join(grant, 'bin', 'git'), join(outside, 'bin', 'git'))
-        symlinkSync(join(grant, 'bin'), join(outside, 'linkdir'))
-        symlinkSync(join(outside, 'real'), join(outside, 'goodlink'))
-        const deps = {
-          platform: process.platform,
-          grantedRoots: () => [grant],
-          // Only this test's folders count (the machine's own git is not looked at).
-          isFile: (path: string) => Promise.resolve(path.startsWith(base)),
-        }
+        symlinkSync(join(grant, 'bin', 'git'), join(base, 'outside', 'git'))
         expect(
           await findGit({
-            ...deps,
-            env: { PATH: `${join(outside, 'bin')}:${join(outside, 'linkdir')}` },
+            platform: process.platform,
+            grantedRoots: () => [grant],
+            isFile: (path: string) => Promise.resolve(path.startsWith(base)),
+            env: { PATH: join(base, 'outside') },
           }),
         ).toBeNull()
-        expect(
-          await findGit({
-            ...deps,
-            env: { PATH: `${join(outside, 'linkdir')}:${join(outside, 'goodlink')}` },
-          }),
-        ).toBe(join(outside, 'real', 'git'))
       } finally {
         rmSync(base, { recursive: true, force: true })
       }

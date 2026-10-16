@@ -39,7 +39,7 @@ describe('git service with a fake git', () => {
     })
 
   beforeEach(() => {
-    grant = realpathSync(mkdtempSync(join(tmpdir(), 'git-service-')))
+    grant = realpathSync.native(mkdtempSync(join(tmpdir(), 'git-service-')))
     mkdirSync(join(grant, '.git', 'objects', 'info'), { recursive: true })
     writeFileSync(join(grant, '.git', 'HEAD'), 'ref: refs/heads/main\n')
     calls = []

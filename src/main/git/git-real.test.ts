@@ -5,6 +5,10 @@
 import { execFileSync } from 'node:child_process'
 import {
   chmodSync,
+  closeSync,
+  ftruncateSync,
+  openSync,
+  writeSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -55,6 +59,17 @@ function git(cwd: string, ...args: string[]): string {
 
 const slash = (p: string): string => p.replace(/\\/g, '/')
 
+/** Replaces a file's text without recreating it (keeps a hidden file hidden and writable). */
+function rewrite(file: string, text: string): void {
+  const fd = openSync(file, 'r+')
+  try {
+    ftruncateSync(fd, 0)
+    writeSync(fd, text, 0)
+  } finally {
+    closeSync(fd)
+  }
+}
+
 describe.runIf(gitPath)('git panel with the real git', () => {
   let base: string
   let grant: string
@@ -80,7 +95,9 @@ describe.runIf(gitPath)('git panel with the real git', () => {
   }
 
   beforeAll(() => {
-    base = realpathSync(mkdtempSync(join(tmpdir(), 'git-panel-')))
+    // The native realpath, like GrantStore: on Windows the temp folder is an 8.3 name
+    // (RUNNER~1) that only it expands.
+    base = realpathSync.native(mkdtempSync(join(tmpdir(), 'git-panel-')))
     grant = join(base, 'granted')
     outside = join(base, 'outside')
     markers = join(base, 'markers')
@@ -447,9 +464,10 @@ describe.runIf(gitPath)('git panel with the real git', () => {
     git(main, 'worktree', 'add', '-q', join(grant, 'wt'))
     const pointer = join(grant, 'wt', '.git')
     const original = readFileSync(pointer, 'utf8')
-    writeFileSync(pointer, `${original.trimEnd()}   \n`)
+    // Git for Windows hides .git: rewrite it in place (creating over a hidden file fails).
+    rewrite(pointer, `${original.trimEnd()}   \n`)
     expect(await service.status(ref('wt'))).toMatchObject({ ok: true, branch: { head: 'wt' } })
-    writeFileSync(pointer, original)
+    rewrite(pointer, original)
 
     const guard = new PathGuard({ roots: () => [grant] })
     const changes: string[] = []
@@ -486,6 +504,14 @@ describe.runIf(gitPath)('git panel with the real git', () => {
       mkdirSync('C:\\dev')
       try {
         writeFileSync('C:\\dev\\null', `[core]\n\tfsmonitor = ${fsmonitor}\n`)
+        // Not asserted, reported: does plain git read the planted file as /dev/null?
+        let plain = ''
+        try {
+          plain = git(grant, 'config', '--global', '--get', 'core.fsmonitor').trim()
+        } catch {
+          plain = '(not read)'
+        }
+        console.info(`Plain git with GIT_CONFIG_GLOBAL=/dev/null read C:\\dev\\null: ${plain}`)
         okStatus(await service.status(ref('hostile')))
         expect(marked()).toEqual([])
       } finally {
