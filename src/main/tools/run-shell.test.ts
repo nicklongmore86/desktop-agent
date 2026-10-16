@@ -4,7 +4,7 @@ import { readFileSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeContext, makeSandbox, type Sandbox } from '../permissions/test-support'
 import { PathGuard } from '../permissions/guard'
 import {
@@ -637,6 +637,26 @@ describe('run_shell with a real shell', () => {
   // A fresh Windows runner is busy for its first minutes: a one-line PowerShell command
   // can take 50 s there.
   const SHELL_MS = 120_000
+
+  // The first cmdlet a fresh Windows PowerShell looks up can take over a minute while it
+  // indexes the installed modules; pay that once, here, not inside a test's budget.
+  beforeAll(async () => {
+    if (process.platform !== 'win32') return
+    const warm = await makeSandbox()
+    const started = Date.now()
+    try {
+      const r = await toolHarness(warm)
+        .tool('run_shell')
+        .execute(
+          { command: 'Write-Output (Get-Location).Path', cwd: warm.root, timeoutMs: 240_000 },
+          fakeContext(true).ctx,
+        )
+      expect(r.content).toMatch(/^exit code: 0/)
+    } finally {
+      console.error(`TEMPDIAG warm-up took ${String(Date.now() - started)} ms`)
+      await fs.rm(warm.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  }, 300_000)
 
   // Windows can briefly refuse to remove a folder a process has just stopped using.
   afterEach(async () => {

@@ -27,7 +27,7 @@ jobs:
             if grep -q "FAIL .*run-shell.test.ts\|run-shell.test.ts ([0-9]* tests | [0-9]* failed" "$1"; then
               fail=$((fail+1)); echo "::group::FAILED $1"; cat "$1"; echo "::endgroup::"
             elif grep -q "run-shell.test.ts\|Test Files  1 passed" "$1"; then pass=$((pass+1)); else fail=$((fail+1)); echo "::group::NO RESULT $1"; cat "$1"; echo "::endgroup::"; fi
-            grep -h "PowerShell fallback when taskkill cannot start" "$1" | sed "s|^|[$1] |" || true
+            grep -h "PowerShell fallback when taskkill cannot start\\|TEMPDIAG\\|runs a command in the cwd" "$1" | sed "s|^|[$1] |" || true
           }
           for i in 1 2 3 4 5; do
             for c in a b; do pnpm exec vitest run src/main/tools/run-shell.test.ts > "file-$i-$c.log" 2>&1 & done
