@@ -51,3 +51,17 @@ describe('forced colors: the app shell', () => {
     expect(block).toMatch(/\[aria-selected='true'\]\s*\{[^}]*border-bottom-color:\s*Highlight/)
   })
 })
+
+describe('forced colors: Chat | Command', () => {
+  const block = forcedColorsBlock()
+
+  it('outlines the switch, the command bar and command cards, and marks the chosen view', () => {
+    expect(block).toMatch(
+      /\.view-mode-toggle,\s*\.command-bar,\s*\.command-card\s*\{[^}]*border-color:\s*CanvasText/,
+    )
+    expect(block).toMatch(
+      /\.view-mode-option\[aria-pressed='true'\]\s*\{[^}]*outline:\s*2px solid Highlight/,
+    )
+    expect(block).toMatch(/\.command-bar:focus-within\s*\{[^}]*outline:\s*2px solid CanvasText/)
+  })
+})

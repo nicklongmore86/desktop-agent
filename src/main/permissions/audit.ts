@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import type { ToolOrigin } from '../tools/types'
 
 /** How a tool call got permission: no approval needed, the user's answer, or never asked. */
 export type AuditApproval = 'auto' | 'approved' | 'denied' | 'not-requested'
@@ -13,6 +14,8 @@ export interface AuditEntry {
   /** The resolved paths the call touched or was refused. */
   paths: string[]
   approval: AuditApproval
+  /** Who asked: the agent, or the user in the command bar (`user-terminal`). */
+  origin: ToolOrigin
   outcome: 'ok' | 'error'
   /**
    * For failed calls, a short category (`access-denied`, `declined`,

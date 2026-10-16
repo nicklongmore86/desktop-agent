@@ -23,6 +23,7 @@ describe('AuditLog', () => {
       args: { path: '/x' },
       paths: ['/x'],
       approval: 'auto' as const,
+      origin: 'agent' as const,
       outcome: 'ok' as const,
       durationMs: 3,
     }
@@ -45,6 +46,7 @@ describe('AuditLog', () => {
       args: {},
       paths: [],
       approval: 'denied',
+      origin: 'agent',
       outcome: 'error',
       error: 'declined',
       durationMs: 0,
@@ -65,6 +67,7 @@ describe('AuditLog', () => {
         args: {},
         paths: [],
         approval: 'auto',
+        origin: 'agent',
         outcome: 'ok',
         durationMs: 0,
       }),
@@ -97,6 +100,7 @@ describe('AuditLog error handling', () => {
       args: {},
       paths: [],
       approval: 'auto' as const,
+      origin: 'agent' as const,
       outcome: 'ok' as const,
       durationMs: 0,
     }

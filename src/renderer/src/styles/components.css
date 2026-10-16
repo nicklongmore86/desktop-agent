@@ -1255,6 +1255,175 @@
   text-align: center;
 }
 
+/* Chat | Command: the header switch, the command bar and the cards of commands the user ran */
+
+.view-mode-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 74px;
+  height: 24px;
+  padding: 1px;
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-1);
+}
+
+.view-mode-option {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.view-mode-option[aria-pressed='true'] {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.command-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-1);
+  box-shadow: var(--shadow-raised);
+}
+
+.command-bar:focus-within {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.command-bar-empty {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.command-bar-empty p {
+  margin: 0;
+}
+
+.command-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.command-prompt {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1);
+  border: none;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+}
+
+/* The bar shows the focus ring for its input. */
+.command-input:focus-visible {
+  outline: none;
+}
+
+.command-bar-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.command-cwd {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+}
+
+.command-cwd-single {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.command-hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.message-command {
+  align-self: stretch;
+}
+
+.command-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-1);
+  font-size: var(--font-size-base);
+}
+
+.command-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.command-card-label {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.command-card-prompt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-card-command {
+  font-family: var(--font-mono);
+}
+
+.approval-origin {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
 /* Toast: a short confirmation ("Copied") */
 
 .toast-region {
@@ -1823,5 +1992,22 @@
   /* The open chat is marked by more than its background. */
   .history-item[data-active] {
     outline: 2px solid CanvasText;
+  }
+
+  /* The chosen view and the command line show without colour. */
+  .view-mode-toggle,
+  .command-bar,
+  .command-card {
+    border-color: CanvasText;
+  }
+
+  .view-mode-option[aria-pressed='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .command-bar:focus-within {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
   }
 }

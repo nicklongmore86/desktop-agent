@@ -6,6 +6,8 @@ import { chatReducer, initialChatState, type ChatViewState, type SwitchKind } fr
 export interface ChatControls {
   state: ChatViewState
   send: (text: string) => Promise<boolean>
+  /** Runs a command typed in the command bar (main asks for approval). False, with a banner, if refused. */
+  runCommand: (command: string, cwd: string) => Promise<boolean>
   stop: () => Promise<void>
   /** Starts a new chat; the open one stays in the history. */
   newChat: () => Promise<void>
@@ -72,6 +74,25 @@ export function useChat(): ChatControls {
         dispatch({
           type: 'banner',
           banner: { code: 'internal', message: 'Could not send the message.' },
+        })
+        return false
+      }
+    },
+    [api],
+  )
+
+  const runCommand = useCallback(
+    async (command: string, cwd: string): Promise<boolean> => {
+      try {
+        const result = await api.command.run(command, cwd)
+        if (!result.ok) {
+          dispatch({ type: 'banner', banner: { code: result.code, message: result.message } })
+        }
+        return result.ok
+      } catch {
+        dispatch({
+          type: 'banner',
+          banner: { code: 'internal', message: 'Could not run the command.' },
         })
         return false
       }
@@ -177,6 +198,7 @@ export function useChat(): ChatControls {
   return {
     state,
     send,
+    runCommand,
     stop,
     newChat,
     openConversation,

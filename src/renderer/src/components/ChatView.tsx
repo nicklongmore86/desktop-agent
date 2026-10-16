@@ -5,6 +5,7 @@ import type { OpenSettings } from '../open-settings'
 import { useProviderModels } from '../provider-models'
 import { useProviderUsage } from '../usage'
 import { ActivityGroup } from './ActivityGroup'
+import { CommandCard } from './CommandCard'
 import { Composer } from './Composer'
 import { ErrorBanner } from './ErrorBanner'
 import { Markdown } from './Markdown'
@@ -30,16 +31,26 @@ export interface ChatViewProps {
   composerRef?: React.RefObject<HTMLTextAreaElement | null>
   /** Shown above the composer when setup is incomplete. */
   notice?: React.ReactNode
+  /** In Command view: the command bar, shown in place of the composer. */
+  commandBar?: React.ReactNode
+  /** The OS, for the shell prompt on command cards. */
+  platform?: string | undefined
 }
 
 type ToolItem = Extract<ViewItem, { kind: 'tool' }>
 type Entry =
-  { kind: 'item'; item: Exclude<ViewItem, { kind: 'tool' }> } | { kind: 'tools'; tools: ToolItem[] }
+  | { kind: 'item'; item: Exclude<ViewItem, { kind: 'tool' }> }
+  | { kind: 'tools'; tools: ToolItem[] }
+  | { kind: 'command'; item: ToolItem }
 
-/** Consecutive tool calls become one activity group. */
+/** Consecutive tool calls become one activity group; a command the user ran stands alone. */
 function groupItems(items: ViewItem[]): Entry[] {
   const entries: Entry[] = []
   for (const item of items) {
+    if (item.kind === 'tool' && item.origin === 'user-terminal') {
+      entries.push({ kind: 'command', item })
+      continue
+    }
     if (item.kind !== 'tool') {
       entries.push({ kind: 'item', item })
       continue
@@ -66,6 +77,8 @@ export function ChatView({
   onSwitchProvider,
   composerRef,
   notice,
+  commandBar,
+  platform,
 }: ChatViewProps): React.JSX.Element {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -194,6 +207,13 @@ export function ChatView({
           </li>
         )}
         {entries.map((entry) => {
+          if (entry.kind === 'command') {
+            return (
+              <li key={entry.item.id} className="message message-command">
+                <CommandCard item={entry.item} running={state.running} platform={platform} />
+              </li>
+            )
+          }
           if (entry.kind === 'tools') {
             return (
               <li key={`tools:${entry.tools[0]?.id ?? ''}`} className="message message-tool">
@@ -253,7 +273,9 @@ export function ChatView({
       )}
       {notice}
 
-      <div className="composer-dock">
+      {commandBar && <div className="composer-dock">{commandBar}</div>}
+      {/* Kept mounted in Command view, so the message draft survives the switch. */}
+      <div className="composer-dock" hidden={commandBar !== undefined}>
         <Composer
           draft={draft}
           onDraft={setDraft}

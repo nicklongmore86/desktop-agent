@@ -24,6 +24,7 @@ let layout = {
   rightTab: 'files',
 }
 const layoutSaves = []
+const commandRuns = []
 const loginCalls = { open: 0, copy: 0, codes: [] }
 let allowance = { plan: null, state: 'unknown', resetsAt: null, windows: [], lastError: null }
 let codexModels = []
@@ -82,6 +83,12 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
     submitLoginCode: (code) => {
       loginCalls.codes.push(code)
+      return Promise.resolve({ ok: true })
+    },
+  },
+  command: {
+    run: (command, cwd) => {
+      commandRuns.push({ command, cwd })
       return Promise.resolve({ ok: true })
     },
   },
@@ -200,6 +207,8 @@ contextBridge.exposeInMainWorld('e2e', {
   historyCalls: () => JSON.parse(JSON.stringify(historyCalls)),
   // What the renderer saved with layout.set, in order.
   layoutSaves: () => JSON.parse(JSON.stringify(layoutSaves)),
+  // What the renderer passed to command.run, in order.
+  commandRuns: () => commandRuns.slice(),
   responses: () => responses.slice(),
   stopCalls: () => stopCalls,
   listenerCount: () => listeners.chat.size + listeners.approval.size,

@@ -98,6 +98,26 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
         loadError: null,
         items: [...state.items, { kind: 'user', id: `${event.runId}:user`, text: event.text }],
       }
+    case 'command_started':
+      // A command typed in the command bar: its card, with the result to come.
+      return {
+        ...state,
+        running: true,
+        runId: event.runId,
+        banner: null,
+        loadError: null,
+        items: [
+          ...state.items,
+          {
+            kind: 'tool',
+            id: event.id,
+            name: 'run_shell',
+            input: { command: event.command, cwd: event.cwd },
+            result: null,
+            origin: 'user-terminal',
+          },
+        ],
+      }
     case 'conversation_reset':
       // Only a switch's reset carries the conversation switched to; a reset without one
       // is not the end of this switch.

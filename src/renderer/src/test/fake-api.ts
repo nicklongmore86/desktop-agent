@@ -11,6 +11,7 @@ import type {
   ModelSettings,
   ProviderLoginState,
   ProviderStatus,
+  SendResult,
   ProviderId,
   ThemePreference,
 } from '../../../shared/ipc'
@@ -159,6 +160,11 @@ export function fakeApi(options: FakeApiOptions = {}) {
         model = { ...model, model: id }
         return Promise.resolve(model)
       }),
+    },
+    command: {
+      run: vi.fn((_command: string, _cwd: string): Promise<SendResult> =>
+        Promise.resolve({ ok: true }),
+      ),
     },
     layout: {
       get: vi.fn(() => Promise.resolve(layout)),

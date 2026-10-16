@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import type {
+  ApprovalOrigin,
   ApprovalPrompt,
   ChatErrorCode,
   ChatEvent,
@@ -8,10 +9,18 @@ import type {
   HistoryState,
   SendResult,
 } from '../../shared/ipc'
-import type { AgentEvent, ApprovalRequest, RunOptions, RunResult } from '../agent'
+import type {
+  AgentEvent,
+  AgentTool,
+  ApprovalRequest,
+  RunOptions,
+  RunResult,
+  ToolResult,
+} from '../agent'
 import type { ConversationStore } from '../storage/conversation-store'
 import type { ConversationHistory } from '../storage/history-store'
 import { toTranscript } from './transcript'
+import { userCommandMessage } from './user-command'
 
 /** What a switch opens: a conversation, and what to record once it has loaded. */
 interface SwitchTarget {
@@ -42,6 +51,8 @@ export interface ChatSessionDeps {
   newId?: () => string
   /** Persistence failures; the conversation stays in memory. */
   onSaveError?: (error: unknown) => void
+  /** The agent's run_shell tool, for commands the user types in the command bar. */
+  userShell?: AgentTool
 }
 
 interface PendingApproval {
@@ -51,6 +62,8 @@ interface PendingApproval {
 
 interface ActiveRun {
   id: string
+  /** Whose run it is, for its approval prompts: a reply, or a typed command. */
+  origin: ApprovalOrigin
   controller: AbortController
   done: Promise<void>
 }
@@ -151,6 +164,7 @@ export class ChatSession {
     let release: () => void = () => {}
     this.active = {
       id,
+      origin: 'agent',
       controller,
       done: new Promise((resolve) => {
         release = resolve
@@ -284,6 +298,7 @@ export class ChatSession {
     request: ApprovalRequest,
   ): Promise<boolean> {
     if (signal.aborted || this.active?.id !== runId) return Promise.resolve(false)
+    const origin = this.active.origin
     const id = this.newId()
     return new Promise<boolean>((resolve) => {
       this.pending.set(id, { runId, resolve })
@@ -296,6 +311,7 @@ export class ChatSession {
           kind: request.kind,
           summary: request.summary,
           detail: request.detail ?? null,
+          origin,
         })
       } catch {
         // The prompt never reached the user, so it can only be a denial.
@@ -303,6 +319,98 @@ export class ChatSession {
         if (entry) this.settle(id, entry, false)
       }
     })
+  }
+
+  /**
+   * Runs a command the user typed in the command bar through `deps.userShell`, the
+   * agent's own run_shell tool: the same folder checks, approval prompt, launch and
+   * output limits, audited as `origin: 'user-terminal'`. It takes the send slot like a
+   * reply, so it is refused while a reply, another command or a switch is in flight,
+   * and stop() cancels it (killing the process tree). Its card is saved in the
+   * conversation. Resolves once it has started.
+   */
+  runCommand(command: unknown, cwd: unknown): Promise<SendResult> {
+    const shell = this.deps.userShell
+    if (!shell)
+      return Promise.resolve({
+        ok: false,
+        code: 'internal',
+        message: 'Commands are unavailable.',
+      })
+    if (typeof command !== 'string' || !command.trim() || typeof cwd !== 'string' || !cwd)
+      return Promise.resolve({
+        ok: false,
+        code: 'invalid_request',
+        message: 'Type a command first.',
+      })
+    if (this.resets > 0)
+      return Promise.resolve({
+        ok: false,
+        code: 'busy',
+        message: 'Chat is busy. Try again in a moment.',
+      })
+    if (this.active)
+      return Promise.resolve({
+        ok: false,
+        code: 'busy',
+        message: 'Wait for the current reply or command, or stop it.',
+      })
+    const generation = this.generation
+    const runId = this.newId()
+    const id = this.newId()
+    const controller = new AbortController()
+    let release: () => void = () => {}
+    this.active = {
+      id: runId,
+      origin: 'user-terminal',
+      controller,
+      done: new Promise((resolve) => {
+        release = resolve
+      }),
+    }
+    this.notify({ type: 'command_started', runId, id, command, cwd })
+    void this.executeCommand(shell, { runId, id, command, cwd }, controller, generation).finally(
+      () => {
+        this.denyPending(runId)
+        this.active = null
+        release()
+      },
+    )
+    return Promise.resolve({ ok: true })
+  }
+
+  private async executeCommand(
+    shell: AgentTool,
+    run: { runId: string; id: string; command: string; cwd: string },
+    controller: AbortController,
+    generation: number,
+  ): Promise<void> {
+    const { runId, id, command, cwd } = run
+    let result: ToolResult
+    try {
+      result = await shell.execute(
+        { command, cwd },
+        {
+          signal: controller.signal,
+          origin: 'user-terminal',
+          requestApproval: (request) => this.requestApproval(runId, controller.signal, id, request),
+        },
+      )
+    } catch {
+      result = { content: 'The command could not be run.', isError: true }
+    }
+    const isError = result.isError === true
+    // As for a reply: after a switch, this card belongs to the old conversation.
+    if (generation === this.generation) {
+      this.conversation = [
+        ...this.conversation,
+        userCommandMessage({ id, command, cwd, output: result.content, isError }),
+      ]
+      this.loadError = null
+      await this.persist()
+    }
+    this.notify({ type: 'tool_result', runId, id, content: result.content, isError })
+    this.notify({ type: 'run_finished', runId, stopReason: isError ? 'error' : 'end_turn' })
   }
 
   /**
