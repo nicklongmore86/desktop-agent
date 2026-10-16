@@ -6,6 +6,8 @@ import {
   type ChatEvent,
   type ThemePreference,
 } from '../shared/ipc'
+import { FEATURE_CHANNELS } from '../shared/ipc-features'
+import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
 import type { RunOptions } from './agent'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { ChatSession } from './chat/session'
@@ -96,6 +98,10 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       remove: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
       respondApproval: vi.fn(() => true),
     },
+    layout: {
+      get: vi.fn(() => ({ ...DEFAULT_LAYOUT })),
+      set: vi.fn((layout: unknown) => Promise.resolve(layout as LayoutPrefs)),
+    },
     revealAudit: vi.fn(),
     audit: () => ({ healthy: true, path: '/data/audit.jsonl' }),
     ...overrides,
@@ -150,6 +156,25 @@ describe('registerIpcHandlers', () => {
     expect(revealAudit).toHaveBeenCalledTimes(1)
   })
 
+  describe('layout', () => {
+    it('answers the saved layout', async () => {
+      const { invoke } = setup()
+      expect(await invoke(layoutChannels.layoutGet, appFrame)).toEqual(DEFAULT_LAYOUT)
+    })
+
+    it('passes a layout object on and refuses anything else', async () => {
+      const { invoke, services } = setup()
+      const layout = { ...DEFAULT_LAYOUT, leftOpen: false }
+      expect(await invoke(layoutChannels.layoutSet, appFrame, layout)).toEqual(layout)
+      expect(services.layout.set).toHaveBeenCalledWith(layout)
+      for (const bad of [undefined, null, 'C:\\Users', 7, ['x']])
+        await expect(invoke(layoutChannels.layoutSet, appFrame, bad)).rejects.toThrow(
+          'Invalid layout.',
+        )
+      expect(services.layout.set).toHaveBeenCalledOnce()
+    })
+  })
+
   const untrusted: IpcSenderEvent[] = [
     { senderFrame: { url: 'https://evil.example/', parent: null } },
     { senderFrame: { url: APP_URL, parent: { url: APP_URL } } },
@@ -164,7 +189,10 @@ describe('registerIpcHandlers', () => {
       IpcChannels.auditStatusChanged,
       IpcChannels.providerLoginStateChanged,
     ])
-    const expected = Object.values(IpcChannels).filter((channel) => !pushes.has(channel))
+    const expected = [
+      ...Object.values(IpcChannels).filter((channel) => !pushes.has(channel)),
+      ...FEATURE_CHANNELS,
+    ]
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())
   })
 

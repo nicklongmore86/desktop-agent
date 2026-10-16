@@ -15,6 +15,15 @@ let provider = { provider: 'anthropic-api', state: 'ready', message: 'API mode' 
 let loginState = { provider: null, active: false, url: null, result: null }
 let theme = 'system'
 let stopCalls = 0
+let layout = {
+  version: 1,
+  leftOpen: true,
+  leftWidth: 272,
+  rightOpen: true,
+  rightWidth: 320,
+  rightTab: 'files',
+}
+const layoutSaves = []
 const loginCalls = { open: 0, copy: 0, codes: [] }
 let allowance = { plan: null, state: 'unknown', resetsAt: null, windows: [], lastError: null }
 let codexModels = []
@@ -74,6 +83,14 @@ contextBridge.exposeInMainWorld('desktopApi', {
     submitLoginCode: (code) => {
       loginCalls.codes.push(code)
       return Promise.resolve({ ok: true })
+    },
+  },
+  layout: {
+    get: () => Promise.resolve(layout),
+    set: (next) => {
+      layout = next
+      layoutSaves.push(next)
+      return Promise.resolve(layout)
     },
   },
   theme: {
@@ -181,6 +198,8 @@ contextBridge.exposeInMainWorld('e2e', {
     pushHistory()
   },
   historyCalls: () => JSON.parse(JSON.stringify(historyCalls)),
+  // What the renderer saved with layout.set, in order.
+  layoutSaves: () => JSON.parse(JSON.stringify(layoutSaves)),
   responses: () => responses.slice(),
   stopCalls: () => stopCalls,
   listenerCount: () => listeners.chat.size + listeners.approval.size,

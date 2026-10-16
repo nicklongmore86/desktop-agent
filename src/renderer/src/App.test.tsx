@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApiContext } from './api'
 import { App } from './App'
 import { fakeApi, type FakeApiOptions } from './test/fake-api'
+import { setViewport } from './test/viewport'
 
 async function renderApp(options: FakeApiOptions = {}) {
   const fake = fakeApi(options)
@@ -394,6 +395,7 @@ describe('provider switch', () => {
 })
 
 it('labels Codex replies and progress from the selected provider and shows live folder access', async () => {
+  setViewport(1280)
   const { pushChat, user, api } = await renderApp({
     provider: { provider: 'codex-subscription', state: 'ready', message: 'Signed in' },
   })

@@ -1,16 +1,27 @@
 import { useEffect, useRef } from 'react'
 
+const FOCUSABLE =
+  'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]'
+
 /**
- * The chat list for narrow windows, where the sidebar is hidden: a modal
- * panel from the left. Escape or the backdrop closes it, Tab stays inside,
- * and focus returns to the button that opened it. Hidden while an approval
- * is open, like Settings.
+ * A pane as a modal drawer, for windows too narrow to dock it. Escape or the scrim
+ * closes it, Tab stays inside, and focus returns to what had it before (the button
+ * or shortcut that opened it). The page behind is inert (the shell sets that).
+ * Hidden while an approval is open, like Settings: the approval always wins focus.
  */
-export function HistoryDrawer({
+export function Drawer({
+  side,
+  id,
+  label,
+  closeLabel,
   suspended,
   onClose,
   children,
 }: {
+  side: 'left' | 'right'
+  id: string
+  label: string
+  closeLabel: string
   suspended: boolean
   onClose: () => void
   children: React.ReactNode
@@ -28,7 +39,8 @@ export function HistoryDrawer({
   }, [suspended])
   return (
     <div
-      className="history-drawer-backdrop"
+      className="shell-drawer-backdrop"
+      data-side={side}
       hidden={suspended}
       inert={suspended}
       onMouseDown={(event) => {
@@ -37,11 +49,11 @@ export function HistoryDrawer({
     >
       <div
         ref={panel}
-        id="history-drawer"
-        className="history-drawer"
+        id={id}
+        className="shell-drawer"
         role="dialog"
         aria-modal="true"
-        aria-label="Chats"
+        aria-label={label}
         tabIndex={-1}
         onKeyDown={(event) => {
           // Menus and rename fields inside handle their own Escape first.
@@ -52,11 +64,9 @@ export function HistoryDrawer({
             return
           }
           if (event.key !== 'Tab') return
-          const items = [
-            ...(panel.current?.querySelectorAll<HTMLElement>(
-              'button:not(:disabled), input:not(:disabled)',
-            ) ?? []),
-          ].filter((item) => item.tabIndex >= 0)
+          const items = [...(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter(
+            (item) => item.tabIndex >= 0,
+          )
           const first = items[0]
           const last = items.at(-1)
           if (
@@ -74,13 +84,13 @@ export function HistoryDrawer({
           }
         }}
       >
-        <header className="history-drawer-header">
-          <h2>Chats</h2>
-          <button type="button" aria-label="Close chats" onClick={onClose}>
+        <header className="shell-drawer-header">
+          <h2>{label}</h2>
+          <button type="button" aria-label={closeLabel} onClick={onClose}>
             ×
           </button>
         </header>
-        {children}
+        <div className="shell-drawer-body">{children}</div>
       </div>
     </div>
   )

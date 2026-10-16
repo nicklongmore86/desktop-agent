@@ -7,6 +7,7 @@ import { App } from './App'
 import { chatReducer, initialChatState } from './chat-state'
 import { groupConversations } from './components/HistoryList'
 import { fakeApi, type FakeApiOptions } from './test/fake-api'
+import { setViewport } from './test/viewport'
 
 const DAY = 24 * 60 * 60 * 1000
 const now = Date.now()
@@ -28,7 +29,7 @@ const history: HistoryState = {
   ],
 }
 
-async function renderApp(options: FakeApiOptions = {}) {
+async function renderApp(options: FakeApiOptions = {}, narrow = false) {
   const fake = fakeApi({
     history,
     chat: {
@@ -44,13 +45,21 @@ async function renderApp(options: FakeApiOptions = {}) {
       <App />
     </ApiContext>,
   )
+  // The version and the list are in the sidebar, which narrow windows only show as a drawer.
+  if (narrow) {
+    await screen.findByRole('heading', { name: 'Workspace chat' })
+    await waitFor(() => {
+      expect(fake.api.chat.load).toHaveBeenCalled()
+    })
+    return { ...fake, user }
+  }
   await screen.findByText('v0.1.0')
   const first = (options.history ?? history).conversations[0]
   if (first) await screen.findByRole('button', { name: first.title })
   return { ...fake, user }
 }
 
-const sidebar = () => screen.getByRole('complementary', { name: 'Workspace' })
+const sidebar = () => screen.getByRole('complementary', { name: 'Conversations' })
 const item = (name: string) => within(sidebar()).getByRole('button', { name })
 
 describe('groupConversations', () => {
@@ -299,8 +308,9 @@ describe('chat history in the sidebar', () => {
   })
 
   it('opens the list from the header on narrow windows', async () => {
-    const { api, user } = await renderApp()
-    const toggle = screen.getByRole('button', { name: 'Chats' })
+    setViewport(400)
+    const { api, user } = await renderApp({}, true)
+    const toggle = screen.getByRole('button', { name: 'Chats sidebar' })
     await user.click(toggle)
     const drawer = screen.getByRole('dialog', { name: 'Chats' })
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
@@ -310,7 +320,7 @@ describe('chat history in the sidebar', () => {
 
     await user.click(toggle)
     await user.click(
-      within(screen.getByRole('dialog', { name: 'Chats' })).getByRole('button', {
+      await within(screen.getByRole('dialog', { name: 'Chats' })).findByRole('button', {
         name: 'Old notes',
       }),
     )

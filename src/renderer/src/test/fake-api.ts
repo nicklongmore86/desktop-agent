@@ -14,6 +14,7 @@ import type {
   ProviderId,
   ThemePreference,
 } from '../../../shared/ipc'
+import { DEFAULT_LAYOUT, type LayoutPrefs } from '../../../shared/ipc-layout'
 
 export interface FakeApiOptions {
   key?: ApiKeyStatus
@@ -23,6 +24,7 @@ export interface FakeApiOptions {
   audit?: AuditStatus
   theme?: ThemePreference
   history?: HistoryState
+  layout?: LayoutPrefs
 }
 
 /** A DesktopApi double: spies for every call, plus `push*` to simulate main's events. */
@@ -45,6 +47,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
     ],
   }
   let theme: ThemePreference = options.theme ?? 'system'
+  let layout: LayoutPrefs = options.layout ?? DEFAULT_LAYOUT
   let history: HistoryState = options.history ?? { conversations: [], activeId: null }
   // What main has open; New chat and opening a chat replace it.
   let current: ChatState = { items: [], running: false, loadError: null, ...options.chat }
@@ -141,9 +144,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
     },
     grants: {
       list: vi.fn(() => Promise.resolve(grants)),
-      add: vi.fn((..._args: unknown[]) => {
+      add: vi.fn<DesktopApi['grants']['add']>((..._args: unknown[]) => {
         grants = { ...grants, roots: [...grants.roots, 'D:\\Docs'] }
-        return Promise.resolve({ status: 'added' as const, root: 'D:\\Docs', grants })
+        return Promise.resolve({ status: 'added', root: 'D:\\Docs', grants })
       }),
       remove: vi.fn((root: string) => {
         grants = { ...grants, roots: grants.roots.filter((r) => r !== root) }
@@ -155,6 +158,13 @@ export function fakeApi(options: FakeApiOptions = {}) {
       set: vi.fn((id: string) => {
         model = { ...model, model: id }
         return Promise.resolve(model)
+      }),
+    },
+    layout: {
+      get: vi.fn(() => Promise.resolve(layout)),
+      set: vi.fn((next: LayoutPrefs) => {
+        layout = next
+        return Promise.resolve(layout)
       }),
     },
     theme: {

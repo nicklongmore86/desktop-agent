@@ -12,10 +12,15 @@ import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { ConfirmDeleteDialog } from './components/ConfirmDeleteDialog'
-import { HistoryDrawer } from './components/HistoryDrawer'
-import { HistoryList } from './components/HistoryList'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SettingsDialog } from './components/SettingsDialog'
+import { AppHeader } from './components/shell/AppHeader'
+import { AppShell, type ShellHandle } from './components/shell/AppShell'
+import { ChatsPane } from './components/shell/ChatsPane'
+import { LeftSidebar } from './components/shell/LeftSidebar'
+import { RightPanel } from './components/shell/RightPanel'
+import { FilesTab } from './components/shell/tabs/FilesTab'
+import { GitTab } from './components/shell/tabs/GitTab'
 import type { OpenSettings, SettingsSection } from './open-settings'
 import { useTheme } from './theme'
 import { useChat } from './use-chat'
@@ -90,39 +95,14 @@ export function App(): React.JSX.Element {
   }
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const [approval, ...queued] = chat.state.approvals
-  const [historyOpen, setHistoryOpen] = useState(false)
+  const shell = useRef<ShellHandle>(null)
   const [deleting, setDeleting] = useState<ConversationSummary | null>(null)
-  // The drawer is for narrow windows only; widening the window closes it.
-  useEffect(() => {
-    if (!historyOpen) return
-    const media = window.matchMedia('(max-width: 540px)')
-    const close = (): void => {
-      if (!media.matches) setHistoryOpen(false)
-    }
-    media.addEventListener('change', close)
-    return () => {
-      media.removeEventListener('change', close)
-    }
-  }, [historyOpen])
   const startNewChat = (): void => {
     if (chat.state.switching) return
     setSettingsSection(null)
-    setHistoryOpen(false)
+    shell.current?.closeDrawer()
     void chat.newChat()
   }
-  const historyList = (showLabel: boolean) => (
-    <HistoryList
-      history={chat.state.history}
-      busy={chat.state.switching}
-      showLabel={showLabel}
-      onOpen={(id) => {
-        setHistoryOpen(false)
-        void chat.openConversation(id)
-      }}
-      onRename={chat.renameConversation}
-      onDelete={setDeleting}
-    />
-  )
   useShortcuts(
     {
       newChat: startNewChat,
@@ -155,128 +135,64 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <div className="app">
-      <aside inert={settingsSection !== null} className="workspace-sidebar" aria-label="Workspace">
-        <div className="workspace-brand">
-          <span className="brand-mark" aria-hidden="true">
-            D
-          </span>
-          <strong>Desktop Agent</strong>
-        </div>
-        <button
-          className="sidebar-new"
-          type="button"
-          disabled={chat.state.switching}
-          onClick={startNewChat}
-        >
-          New chat
-        </button>
-        {historyList(true)}
-        <div className="sidebar-section sidebar-folders">
-          <span className="sidebar-label">Folder access</span>
-          {grants?.roots.length ? (
-            <ul>
-              {grants.roots.map((root) => (
-                <li key={root}>
-                  <span aria-hidden="true">▱</span>
-                  <span className="folder-path">{root}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="sidebar-hint">No folders granted</p>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              openSettings('folders')
-            }}
-          >
-            Manage folders
-          </button>
-        </div>
-        <div className="sidebar-footer">
-          <p>Changes require your approval.</p>
-          <button
-            type="button"
-            onClick={() => {
+    <>
+      <AppShell
+        shellRef={shell}
+        inert={settingsSection !== null}
+        suspended={Boolean(approval)}
+        blocked={deleting !== null}
+        left={(variant) => (
+          <LeftSidebar
+            variant={variant}
+            appInfo={appInfo}
+            onOpenSettings={() => {
               openSettings()
             }}
           >
-            Settings
-          </button>
-          <span className="app-version">{appInfo ? `v${appInfo.version}` : '…'}</span>
-        </div>
-      </aside>
-      <main inert={settingsSection !== null} className="workspace-main">
-        <header className="app-header">
-          <div>
-            <h1>Workspace chat</h1>
-            <span className="header-subtitle">
-              {chat.state.switchKind === 'provider'
-                ? 'Switching provider…'
-                : chat.state.switchKind === 'chat'
-                  ? 'Opening chat…'
-                  : providerName}
-            </span>
-          </div>
-          <nav className="app-nav">
-            <button
-              type="button"
-              className="mobile-history"
-              aria-haspopup="dialog"
-              aria-expanded={historyOpen}
-              aria-controls={historyOpen ? 'history-drawer' : undefined}
-              onClick={() => {
-                setHistoryOpen(true)
+            <ChatsPane
+              variant={variant}
+              history={chat.state.history}
+              switching={chat.state.switching}
+              onNewChat={startNewChat}
+              onOpen={(id) => {
+                void chat.openConversation(id)
               }}
-            >
-              Chats
-            </button>
-            <button
-              type="button"
-              className="mobile-new"
-              aria-label="Start new chat"
-              disabled={chat.state.switching}
-              onClick={startNewChat}
-            >
-              ＋
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                openSettings()
-              }}
-            >
-              Preferences
-            </button>
-          </nav>
-        </header>
+              onRename={chat.renameConversation}
+              onDelete={setDeleting}
+            />
+          </LeftSidebar>
+        )}
+        right={() => (
+          <RightPanel
+            tabs={{
+              files: (
+                <FilesTab grants={grants} onGrants={setGrants} onOpenSettings={openSettings} />
+              ),
+              git: <GitTab />,
+            }}
+          />
+        )}
+      >
+        <AppHeader
+          subtitle={
+            chat.state.switchKind === 'provider'
+              ? 'Switching provider…'
+              : chat.state.switchKind === 'chat'
+                ? 'Opening chat…'
+                : providerName
+          }
+          switching={chat.state.switching}
+          onNewChat={startNewChat}
+          onOpenSettings={() => {
+            openSettings()
+          }}
+        />
 
         {audit && !audit.healthy && (
           <div className="banner banner-warning" role="alert">
             <strong>Audit logging is failing.</strong> Tool calls still run, but are not being
             recorded in <code>{audit.path}</code>.
           </div>
-        )}
-
-        {historyOpen && (
-          <HistoryDrawer
-            suspended={Boolean(approval)}
-            onClose={() => {
-              setHistoryOpen(false)
-            }}
-          >
-            <button
-              className="sidebar-new"
-              type="button"
-              disabled={chat.state.switching}
-              onClick={startNewChat}
-            >
-              New chat
-            </button>
-            {historyList(false)}
-          </HistoryDrawer>
         )}
 
         <ErrorBoundary onReset={chat.newChat} resetLabel="Start a new chat">
@@ -318,7 +234,7 @@ export function App(): React.JSX.Element {
             }
           />
         </ErrorBoundary>
-      </main>
+      </AppShell>
 
       {settingsSection && (
         <SettingsDialog
@@ -362,6 +278,6 @@ export function App(): React.JSX.Element {
           onRespond={chat.respond}
         />
       )}
-    </div>
+    </>
   )
 }

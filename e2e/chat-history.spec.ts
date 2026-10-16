@@ -85,11 +85,10 @@ for (const width of [1280, 400]) {
 
         let list
         if (width > 540) {
-          list = page.getByRole('complementary', { name: 'Workspace' })
-          await expect(page.getByRole('button', { name: 'Chats', exact: true })).toBeHidden()
+          list = page.getByRole('complementary', { name: 'Conversations' })
         } else {
-          await expect(page.getByRole('complementary', { name: 'Workspace' })).toBeHidden()
-          await page.getByRole('button', { name: 'Chats', exact: true }).click()
+          await expect(page.getByRole('complementary', { name: 'Conversations' })).toBeHidden()
+          await page.getByRole('button', { name: 'Chats sidebar', exact: true }).click()
           list = page.getByRole('dialog', { name: 'Chats' })
         }
         const nav = list.getByRole('navigation', { name: 'Chats' })

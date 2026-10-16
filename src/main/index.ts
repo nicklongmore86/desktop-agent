@@ -121,6 +121,10 @@ void app.whenReady().then(async () => {
       return result.canceled ? null : (result.filePaths[0] ?? null)
     },
     settings: services.settings,
+    layout: {
+      get: () => services.settings.layout,
+      set: (layout) => services.settings.setLayout(layout),
+    },
     provider: services.provider,
     chat,
     audit: services.auditStatus,

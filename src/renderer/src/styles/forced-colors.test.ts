@@ -29,3 +29,25 @@ describe('forced colors (Windows High Contrast)', () => {
     expect(block).toMatch(/:focus-visible[^{]*\{[^}]*outline:\s*2px solid CanvasText/)
   })
 })
+
+describe('forced colors: the app shell', () => {
+  const block = forcedColorsBlock()
+
+  it('shows the drag handle with a system colour on hover, focus and drag', () => {
+    const rule =
+      /\.shell-separator:hover,\s*\.shell-separator:focus-visible,\s*\.shell-separator\[data-dragging\]\s*\{([^}]*)\}/.exec(
+        block,
+      )?.[1] ?? ''
+    expect(rule).toMatch(/background:\s*Highlight/)
+  })
+
+  it('outlines the panes and drawers, and marks the open toggle and selected tab without colour alone', () => {
+    expect(block).toMatch(
+      /\.shell-pane-left[^{]*\.shell-drawer\s*\{[^}]*border-color:\s*CanvasText/,
+    )
+    expect(block).toMatch(
+      /\.icon-button\[aria-expanded='true'\]\s*\{[^}]*border:\s*2px solid CanvasText/,
+    )
+    expect(block).toMatch(/\[aria-selected='true'\]\s*\{[^}]*border-bottom-color:\s*Highlight/)
+  })
+})

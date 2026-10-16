@@ -6,7 +6,7 @@
  *   --radius-*    corner radii: xs 3 (inline chips), sm 6, md 10, lg 16, pill
  *   --space-*     4px scale: 1=4  2=8  3=12  4=16  6=24  8=32
  *   --font-*      families and the type scale: xs 12, sm 13, base 14, md 16, lg 20, xl 24
- *   --duration-*  motion: fast 120ms, base 200ms
+ *   --duration-*  motion: fast 120ms, base 200ms, panel 200ms (sidebars collapsing)
  *
  * Colour roles
  *   surface-0/1/2     page / panels and sidebar / raised, hovered, user bubble
@@ -100,10 +100,18 @@
 
   /* Layout */
   --message-column: 720px;
+  /* The drag handle between a pane and the chat, and the drawers (narrow windows). */
+  --separator-size: 4px;
+  --drawer-width: 320px;
+  --drawer-gutter: 56px;
+  /* Docked pane widths: the defaults; the shell sets the live values inline on .app. */
+  --sidebar-width-left: 272px;
+  --sidebar-width-right: 320px;
 
   /* Motion */
   --duration-fast: 120ms;
   --duration-base: 200ms;
+  --duration-panel: 200ms;
   --ease: ease-out;
 }
 
