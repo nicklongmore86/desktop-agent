@@ -96,24 +96,89 @@ const DEFINED = new Set(
   [...tokens.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((match) => match[1] as string),
 )
 
+/** CSS named colours; any of these as a value is a literal colour. */
+const NAMED_COLORS = new Set(
+  (
+    'aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet ' +
+    'brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan ' +
+    'darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta ' +
+    'darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue ' +
+    'darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey ' +
+    'dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray ' +
+    'green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush ' +
+    'lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray ' +
+    'lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray ' +
+    'lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon ' +
+    'mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue ' +
+    'mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin ' +
+    'navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen ' +
+    'paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple ' +
+    'rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna ' +
+    'silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle ' +
+    'tomato turquoise violet wheat white whitesmoke yellow yellowgreen'
+  ).split(' '),
+)
+
+const COLOR_FUNCTIONS =
+  /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\s*\(/i
+
+/**
+ * The `property: value` declarations of a stylesheet, comments removed (so they
+ * neither hide nor trigger a match). Selectors and at-rule preludes are skipped.
+ */
+function declarations(source: string): { property: string; value: string }[] {
+  const css = source.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ')
+  const found: { property: string; value: string }[] = []
+  let buffer = ''
+  let parens = 0
+  const flush = (): void => {
+    const colon = buffer.indexOf(':')
+    if (colon > 0)
+      found.push({
+        property: buffer.slice(0, colon).trim().toLowerCase(),
+        value: buffer.slice(colon + 1).trim(),
+      })
+    buffer = ''
+  }
+  for (const char of css) {
+    if (char === '(') parens += 1
+    if (char === ')') parens = Math.max(0, parens - 1)
+    if (parens === 0 && char === '{') buffer = ''
+    else if (parens === 0 && (char === ';' || char === '}')) flush()
+    else buffer += char
+  }
+  flush()
+  return found
+}
+
 /** What is wrong with how a stylesheet uses tokens: literals, fallbacks, undefined names. */
 function tokenProblems(source: string, defined: ReadonlySet<string>): string[] {
-  const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
   const problems: string[] = []
-  if (/#[0-9a-f]{3,8}\b/i.test(css)) problems.push('hex colour literal')
-  if (/\b(?:rgba?|hsla?)\(/i.test(css)) problems.push('functional colour literal')
-  // Every var() is exactly var(--name): no fallback, and the name is declared in tokens.css.
-  for (const match of css.matchAll(/var\(([^)]*)\)/g)) {
-    const inner = (match[1] as string).trim()
-    if (!/^--[a-z0-9-]+$/i.test(inner)) problems.push(`${match[0]} has a fallback or is malformed`)
-    else if (!defined.has(inner)) problems.push(`${match[0]} is not defined in tokens.css`)
-  }
-  // Every border-radius part is a --radius-* token (shorthand included).
-  for (const match of css.matchAll(/border(?:-[a-z]+)*-radius:\s*([^;]+);/g)) {
-    const parts = (match[1] as string).split(/\s+(?![^(]*\))|\//).filter(Boolean)
-    for (const part of parts)
-      if (!/^var\(--radius-[a-z0-9-]+\)$/i.test(part.trim()))
-        problems.push(`${match[0]} uses ${part.trim()}, not a --radius token`)
+  for (const { property, value } of declarations(source)) {
+    if (property.startsWith('--')) continue
+    const where = `${property}: ${value}`
+    // Every var() is exactly var(--name): no fallback, and the name is declared in tokens.css.
+    const calls = value.match(/var\s*\(/gi)?.length ?? 0
+    const exact = [...value.matchAll(/var\(\s*(--[a-z0-9-]+)\s*\)/gi)]
+    if (calls !== exact.length) problems.push(`${where}: var() with a fallback or malformed`)
+    for (const match of exact)
+      if (!defined.has((match[1] as string).toLowerCase()))
+        problems.push(`${where}: ${match[1] as string} is not defined in tokens.css`)
+    // Everything else must not be a literal colour.
+    const rest = value
+      .replace(/var\(\s*--[a-z0-9-]+\s*\)/gi, ' ')
+      .replace(/url\([^)]*\)|'[^']*'|"[^"]*"/gi, ' ')
+    if (/#[0-9a-f]{3,8}\b/i.test(rest)) problems.push(`${where}: hex colour literal`)
+    if (COLOR_FUNCTIONS.test(rest)) problems.push(`${where}: colour function literal`)
+    for (const word of rest.toLowerCase().match(/[a-z]+/g) ?? [])
+      if (NAMED_COLORS.has(word)) problems.push(`${where}: named colour ${word}`)
+    // Every border-radius part is a --radius-* token (shorthand included).
+    if (/^border(?:-[a-z]+)*-radius$/.test(property)) {
+      const parts = value.split(/\s*\/\s*|\s+(?![^(]*\))/).filter(Boolean)
+      for (const part of parts)
+        if (!/^var\(\s*--radius-[a-z0-9-]+\s*\)$/i.test(part))
+          problems.push(`${where}: ${part} is not a --radius token`)
+    }
   }
   return problems
 }
@@ -126,6 +191,8 @@ describe('stylesheets use tokens', () => {
   })
 
   it.each(Object.entries(sheets))('%s only uses defined tokens, with no literals', (_file, css) => {
+    // The scanner really read declarations (a parse failure must not look like a pass).
+    expect(declarations(css).length).toBeGreaterThan(20)
     expect(tokenProblems(css, DEFINED)).toEqual([])
   })
 
@@ -145,8 +212,36 @@ describe('stylesheets use tokens', () => {
     ['an undefined colour token', 'a { color: var(--color-missing); }'],
     ['a hex colour', 'a { color: #fff; }'],
     ['an rgb colour', 'a { color: rgb(0 0 0); }'],
+    ['an uppercase RGB colour', 'a { color: RGBA(0 0 0 / 50%); }'],
+    ['an uppercase VAR() with a literal fallback', 'a { color: VAR(--color-text, red); }'],
+    ['a spaced var() with a fallback', 'a { color: var( --color-text , #fff ); }'],
+    ['an uppercase BORDER-RADIUS literal', 'a { BORDER-RADIUS: 3px; }'],
+    ['an uppercase longhand radius literal', 'a { Border-Top-Left-Radius: 3px; }'],
+    ['a named colour', 'a { color: red; }'],
+    ['a named colour in a shorthand', 'a { border: 1px solid White; }'],
+    ['a named colour after a comment', 'a { color: /* var(--color-text) */ red; }'],
+    ['an oklch() colour', 'a { color: oklch(60% 0.2 250); }'],
+    [
+      'a color-mix() colour',
+      'a { color: color-mix(in srgb, var(--color-text) 50%, var(--color-accent)); }',
+    ],
+    ['a color() colour', 'a { background: color(display-p3 1 0 0); }'],
+    ['an hwb() colour', 'a { color: HWB(200 10% 10%); }'],
+    ['a literal inside a nested rule', '@media (min-width: 1px) { a { color: #fff; } }'],
   ])('rejects %s', (_name, css) => {
     expect(tokenProblems(css, DEFINED)).not.toEqual([])
+  })
+
+  it('accepts allowed keywords, comments and token-only values', () => {
+    expect(
+      tokenProblems(
+        `/* red, #fff and var(--nope, 1px) in a comment are ignored */
+        a { color: currentColor; background: transparent; border: none; outline: 2px solid VAR(--color-focus-ring);
+            white-space: pre-wrap; color: inherit; }
+        #root > a:hover { color: var(--color-text); }`,
+        DEFINED,
+      ),
+    ).toEqual([])
   })
 
   it('accepts a radius shorthand made only of defined tokens', () => {
