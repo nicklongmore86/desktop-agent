@@ -1,5 +1,6 @@
 import type { FeatureApis } from './ipc-features'
 import { filesPushChannels, type FilesChanged } from './ipc-files'
+import { gitPushChannels, type GitChanged } from './ipc-git'
 
 /** IPC channel names shared by the main process and the preload script. */
 export const IpcChannels = {
@@ -283,6 +284,7 @@ export interface PushPayloads {
   [IpcChannels.auditStatusChanged]: AuditStatus
   [IpcChannels.providerLoginStateChanged]: ProviderLoginState
   [filesPushChannels.filesChanged]: FilesChanged
+  [gitPushChannels.gitChanged]: GitChanged
 }
 export type PushChannel = keyof PushPayloads
 

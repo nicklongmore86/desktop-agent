@@ -11,6 +11,7 @@ import {
 } from 'electron'
 import { IpcChannels, type PushChannel, type PushPayloads } from '../shared/ipc'
 import { filesPushChannels } from '../shared/ipc-files'
+import { gitPushChannels } from '../shared/ipc-git'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { registerIpcHandlers } from './ipc-handlers'
 import { isTrustedIpcSender } from './security'
@@ -74,6 +75,9 @@ void app.whenReady().then(async () => {
     onFilesChanged: (change) => {
       push(filesPushChannels.filesChanged, change)
     },
+    onGitChanged: (change) => {
+      push(gitPushChannels.gitChanged, change)
+    },
     emit: (event) => {
       push(IpcChannels.chatEvent, event)
     },
@@ -129,6 +133,7 @@ void app.whenReady().then(async () => {
     },
     settings: services.settings,
     files: services.files,
+    git: services.git,
     layout: {
       get: () => services.settings.layout,
       set: (layout) => services.settings.setLayout(layout),
@@ -149,6 +154,7 @@ void app.whenReady().then(async () => {
     cancelOnPageEnd(window.webContents, () => {
       // The page that expanded those folders is gone; a reloaded one watches its own.
       services.files.close()
+      services.git.close()
       void services.provider.cancelLogin()
       void chat.stop()
     })
@@ -163,6 +169,7 @@ void app.whenReady().then(async () => {
   })
   app.on('before-quit', () => {
     services.files.close()
+    services.git.close()
     void services.provider.cancelLogin()
     void chat.stop()
   })
