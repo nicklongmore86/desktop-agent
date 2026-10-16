@@ -3,6 +3,7 @@ import type {
   ApiKeyStatus,
   AppInfo,
   AuditStatus,
+  ConversationSummary,
   GrantsState,
   ProviderStatus,
   ProviderId,
@@ -10,6 +11,9 @@ import type {
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
+import { ConfirmDeleteDialog } from './components/ConfirmDeleteDialog'
+import { HistoryDrawer } from './components/HistoryDrawer'
+import { HistoryList } from './components/HistoryList'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SettingsDialog } from './components/SettingsDialog'
 import type { OpenSettings, SettingsSection } from './open-settings'
@@ -86,13 +90,42 @@ export function App(): React.JSX.Element {
   }
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const [approval, ...queued] = chat.state.approvals
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [deleting, setDeleting] = useState<ConversationSummary | null>(null)
+  // The drawer is for narrow windows only; widening the window closes it.
+  useEffect(() => {
+    if (!historyOpen) return
+    const media = window.matchMedia('(max-width: 540px)')
+    const close = (): void => {
+      if (!media.matches) setHistoryOpen(false)
+    }
+    media.addEventListener('change', close)
+    return () => {
+      media.removeEventListener('change', close)
+    }
+  }, [historyOpen])
+  const startNewChat = (): void => {
+    if (chat.state.switching) return
+    setSettingsSection(null)
+    setHistoryOpen(false)
+    void chat.newChat()
+  }
+  const historyList = (showLabel: boolean) => (
+    <HistoryList
+      history={chat.state.history}
+      busy={chat.state.switching}
+      showLabel={showLabel}
+      onOpen={(id) => {
+        setHistoryOpen(false)
+        void chat.openConversation(id)
+      }}
+      onRename={chat.renameConversation}
+      onDelete={setDeleting}
+    />
+  )
   useShortcuts(
     {
-      newChat: () => {
-        if (chat.state.switching) return
-        setSettingsSection(null)
-        void chat.newChat()
-      },
+      newChat: startNewChat,
       openSettings: () => {
         openSettings()
       },
@@ -134,13 +167,11 @@ export function App(): React.JSX.Element {
           className="sidebar-new"
           type="button"
           disabled={chat.state.switching}
-          onClick={() => {
-            setSettingsSection(null)
-            void chat.newChat()
-          }}
+          onClick={startNewChat}
         >
           New chat
         </button>
+        {historyList(true)}
         <div className="sidebar-section sidebar-folders">
           <span className="sidebar-label">Folder access</span>
           {grants?.roots.length ? (
@@ -182,19 +213,32 @@ export function App(): React.JSX.Element {
           <div>
             <h1>Workspace chat</h1>
             <span className="header-subtitle">
-              {chat.state.switching ? 'Switching provider…' : providerName}
+              {chat.state.switchKind === 'provider'
+                ? 'Switching provider…'
+                : chat.state.switchKind === 'chat'
+                  ? 'Opening chat…'
+                  : providerName}
             </span>
           </div>
           <nav className="app-nav">
             <button
               type="button"
+              className="mobile-history"
+              aria-haspopup="dialog"
+              aria-expanded={historyOpen}
+              aria-controls={historyOpen ? 'history-drawer' : undefined}
+              onClick={() => {
+                setHistoryOpen(true)
+              }}
+            >
+              Chats
+            </button>
+            <button
+              type="button"
               className="mobile-new"
               aria-label="Start new chat"
               disabled={chat.state.switching}
-              onClick={() => {
-                setSettingsSection(null)
-                void chat.newChat()
-              }}
+              onClick={startNewChat}
             >
               ＋
             </button>
@@ -214,6 +258,25 @@ export function App(): React.JSX.Element {
             <strong>Audit logging is failing.</strong> Tool calls still run, but are not being
             recorded in <code>{audit.path}</code>.
           </div>
+        )}
+
+        {historyOpen && (
+          <HistoryDrawer
+            suspended={Boolean(approval)}
+            onClose={() => {
+              setHistoryOpen(false)
+            }}
+          >
+            <button
+              className="sidebar-new"
+              type="button"
+              disabled={chat.state.switching}
+              onClick={startNewChat}
+            >
+              New chat
+            </button>
+            {historyList(false)}
+          </HistoryDrawer>
         )}
 
         <ErrorBoundary onReset={chat.newChat} resetLabel="Start a new chat">
@@ -274,6 +337,20 @@ export function App(): React.JSX.Element {
           grants={grants}
           onGrants={setGrants}
           audit={audit}
+        />
+      )}
+
+      {deleting && (
+        <ConfirmDeleteDialog
+          title={deleting.title}
+          suspended={Boolean(approval)}
+          onCancel={() => {
+            setDeleting(null)
+          }}
+          onConfirm={() => {
+            setDeleting(null)
+            void chat.deleteConversation(deleting.id)
+          }}
         />
       )}
 

@@ -4,23 +4,7 @@ import type { ApprovalPrompt, ChatEvent } from '../../shared/ipc'
 import { createAgent, type AgentClient, type AgentTool, type RunOptions } from '../agent'
 import type { ConversationStore } from '../storage/conversation-store'
 import { ChatSession, type AgentRunner, type RunnerResult } from './session'
-
-function memoryStore(initial: MessageParam[] = []) {
-  let saved = structuredClone(initial)
-  const store: ConversationStore & { saved(): MessageParam[] } = {
-    load: vi.fn(() => Promise.resolve({ messages: structuredClone(saved), error: null })),
-    save: vi.fn((messages: MessageParam[]) => {
-      saved = structuredClone(messages)
-      return Promise.resolve()
-    }),
-    clear: vi.fn(() => {
-      saved = []
-      return Promise.resolve()
-    }),
-    saved: () => saved,
-  }
-  return store
-}
+import { memoryHistory, memoryStore } from './test-support'
 
 /** A fake agent that runs `script` with the session's run options. */
 function scriptedRunner(
@@ -49,8 +33,9 @@ function setup(
   const createRunner = vi.fn(() =>
     Promise.resolve<RunnerResult>('ok' in runner ? runner : { ok: true, runner }),
   )
+  const history = memoryHistory(store)
   const session = new ChatSession({
-    store,
+    history,
     createRunner,
     emit: (event) => {
       events.push(event)
@@ -59,7 +44,7 @@ function setup(
     promptApproval: (prompt) => prompts.push(prompt),
     newId: () => `id-${String(++n)}`,
   })
-  return { session, events, prompts, store, createRunner }
+  return { session, events, prompts, store, history, createRunner }
 }
 
 const reply = (text: string): MessageParam => ({ role: 'assistant', content: text })
@@ -105,7 +90,7 @@ describe('ChatSession', () => {
     await session.init()
     expect(await session.send('Hi')).toEqual({ ok: true })
     await session.idle()
-    expect(events).toEqual([
+    expect(events.filter((event) => event.type !== 'history_changed')).toEqual([
       { type: 'run_started', runId: 'id-1', text: 'Hi' },
       { type: 'text_delta', runId: 'id-1', turn: 1, text: 'Hel' },
       { type: 'text_delta', runId: 'id-1', turn: 1, text: 'lo' },
@@ -191,7 +176,7 @@ describe('ChatSession', () => {
     })
     await session.send('Hi')
     await session.idle()
-    expect(events.slice(1)).toEqual([
+    expect(events.filter((e) => e.type !== 'history_changed').slice(1)).toEqual([
       {
         type: 'error',
         runId: 'id-1',
@@ -283,18 +268,27 @@ describe('ChatSession', () => {
       expect(events.at(-1)).toEqual({ type: 'run_finished', runId: 'id-1', stopReason: 'aborted' })
     })
 
-    it('denies pending approvals on new chat and starts empty', async () => {
+    it('denies pending approvals on new chat, keeps the old chat and starts empty', async () => {
       const { runner, decisions } = approvalRunner()
-      const { session, prompts, events, store } = setup(runner, [{ role: 'user', content: 'old' }])
+      const { session, prompts, events, store, history } = setup(runner, [
+        { role: 'user', content: 'old' },
+      ])
       await session.init()
       await session.send('Write it')
       await until(() => prompts.length === 1)
       const state = await session.newChat()
       expect(decisions).toEqual([false])
-      expect(state).toEqual({ items: [], running: false, loadError: null })
-      expect(store.clear).toHaveBeenCalledOnce()
-      expect(store.saved()).toEqual([])
-      expect(events.at(-1)).toEqual({ type: 'conversation_reset' })
+      expect(state).toMatchObject({ items: [], running: false, loadError: null })
+      expect(store.clear).not.toHaveBeenCalled()
+      // The stopped run is saved to the chat it belongs to, not dropped.
+      expect(store.saved().slice(0, 2)).toEqual([
+        { role: 'user', content: 'old' },
+        { role: 'user', content: 'Write it' },
+      ])
+      expect(history.setActive).toHaveBeenCalledWith(null)
+      expect(events.at(-1)).toMatchObject({ type: 'conversation_reset', state: { items: [] } })
+      // Main has forgotten the prompt: a late answer resolves nothing.
+      expect(session.respondApproval(prompts[0]?.id, true)).toBe(false)
     })
 
     it('refuses approval requests from a run that has ended', async () => {
@@ -404,38 +398,54 @@ describe('ChatSession', () => {
   })
 
   describe('new chat', () => {
-    /** A store whose clear() waits until `finishClear()` is called. */
-    function slowClearStore(initial: MessageParam[] = []) {
-      const store = memoryStore(initial)
+    /** A history whose drafts load only when `finishLoad()` is called. */
+    function slowDraftHistory(initial: MessageParam[] = []) {
+      const history = memoryHistory(memoryStore(initial))
       const finishes: (() => void)[] = []
-      let clearing = 0
+      let loading = 0
       let maxConcurrent = 0
-      const clearNow = store.clear
-      store.clear = vi.fn(
-        () =>
-          new Promise<void>((resolve) => {
-            clearing += 1
-            maxConcurrent = Math.max(maxConcurrent, clearing)
-            finishes.push(() => {
-              clearing -= 1
-              void clearNow().then(resolve)
-            })
-          }),
-      )
+      const draft = history.draft
+      history.draft = () => {
+        const store = draft()
+        const loadNow = store.load
+        store.load = vi.fn(
+          () =>
+            new Promise<Awaited<ReturnType<ConversationStore['load']>>>((resolve) => {
+              loading += 1
+              maxConcurrent = Math.max(maxConcurrent, loading)
+              finishes.push(() => {
+                loading -= 1
+                void loadNow().then(resolve)
+              })
+            }),
+        )
+        return store
+      }
       return {
-        store,
-        finishClear: () => finishes.shift()?.(),
-        pendingClears: () => finishes.length,
+        history,
+        finishLoad: () => finishes.shift()?.(),
+        pendingLoads: () => finishes.length,
         maxConcurrent: () => maxConcurrent,
       }
     }
 
-    it('refuses send while a reset is in progress and resets only after the clear', async () => {
-      const slow = slowClearStore([{ role: 'user', content: 'old' }])
-      const { session, events, createRunner } = setup(
+    function sessionWith(history: ReturnType<typeof memoryHistory>, runner: AgentRunner) {
+      const events: ChatEvent[] = []
+      const createRunner = vi.fn(() => Promise.resolve<RunnerResult>({ ok: true, runner }))
+      const session = new ChatSession({
+        history,
+        createRunner,
+        emit: (event) => events.push(event),
+        promptApproval: () => {},
+      })
+      return { session, events, createRunner }
+    }
+
+    it('refuses send while a new chat is opening and resets only once it has loaded', async () => {
+      const slow = slowDraftHistory([{ role: 'user', content: 'old' }])
+      const { session, events, createRunner } = sessionWith(
+        slow.history,
         scriptedRunner((h) => Promise.resolve([...h, reply('ok')])),
-        [],
-        slow.store,
       )
       await session.init()
       const reset = session.newChat()
@@ -445,42 +455,43 @@ describe('ChatSession', () => {
         code: 'busy',
         message: 'Chat is busy. Try again in a moment.',
       })
-      await until(() => slow.pendingClears() === 1)
+      await until(() => slow.pendingLoads() === 1)
       expect(await session.send('still racing')).toMatchObject({ ok: false, code: 'busy' })
-      expect(events).not.toContainEqual({ type: 'conversation_reset' })
+      expect(events.some((e) => e.type === 'conversation_reset')).toBe(false)
       expect(createRunner).not.toHaveBeenCalled()
 
-      slow.finishClear()
-      expect(await reset).toEqual({ items: [], running: false, loadError: null })
-      expect(events.at(-1)).toEqual({ type: 'conversation_reset' })
-      expect(slow.store.saved()).toEqual([])
+      slow.finishLoad()
+      expect(await reset).toMatchObject({ items: [], running: false, loadError: null })
+      expect(events.at(-1)).toMatchObject({ type: 'conversation_reset' })
       expect(await session.send('after')).toEqual({ ok: true })
+      await session.idle()
+      // The new chat saves to its own draft, never over the old one.
+      expect(slow.history.drafts[0]?.saved()[0]).toEqual({ role: 'user', content: 'after' })
     })
 
     it('runs repeated New chat calls one after another', async () => {
-      const slow = slowClearStore()
-      const { session, events } = setup(
+      const slow = slowDraftHistory()
+      const { session, events } = sessionWith(
+        slow.history,
         scriptedRunner((h) => Promise.resolve(h)),
-        [],
-        slow.store,
       )
       const first = session.newChat()
       const second = session.newChat()
-      await until(() => slow.pendingClears() === 1)
-      // The second clear has not started: the first has not finished.
-      expect(slow.store.clear).toHaveBeenCalledOnce()
-      slow.finishClear()
+      await until(() => slow.pendingLoads() === 1)
+      // The second load has not started: the first has not finished.
+      expect(slow.history.drafts).toHaveLength(1)
+      slow.finishLoad()
       await first
-      await until(() => slow.pendingClears() === 1)
+      await until(() => slow.pendingLoads() === 1)
       expect(await session.send('too early')).toMatchObject({ ok: false, code: 'busy' })
-      slow.finishClear()
+      slow.finishLoad()
       await second
       expect(slow.maxConcurrent()).toBe(1)
       expect(events.filter((e) => e.type === 'conversation_reset')).toHaveLength(2)
       expect(await session.send('now')).toEqual({ ok: true })
     })
 
-    it('never lets a run save history after a reset, even if it ignores the abort', async () => {
+    it('never lets a run that ignores the abort write into the new chat', async () => {
       let finish: () => void = () => {}
       const runner = scriptedRunner(
         (history) =>
@@ -491,17 +502,19 @@ describe('ChatSession', () => {
             }
           }),
       )
-      const { session, store } = setup(runner)
+      const { session, store, history } = setup(runner)
       await session.send('Hi')
       const reset = session.newChat()
       finish()
       await reset
       await session.idle()
-      expect(store.saved()).toEqual([])
+      // The late answer belongs to the chat it was asked in.
+      expect(store.saved()).toEqual([{ role: 'user', content: 'Hi' }, reply('late answer')])
+      expect(history.drafts[0]?.saved()).toEqual([])
       expect(session.state().items).toEqual([])
     })
 
-    it('stops a send that is still saving the user message when a reset starts', async () => {
+    it('stops a send that is still saving the user message when a new chat starts', async () => {
       const store = memoryStore()
       let finishSave: () => void = () => {}
       store.save = vi.fn(
@@ -520,26 +533,97 @@ describe('ChatSession', () => {
       await reset
       expect(run).not.toHaveBeenCalled()
       expect(events.some((e) => e.type === 'run_started')).toBe(false)
-      expect(store.clear).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('history', () => {
+    it('opens a saved chat with the same protections as a switch', async () => {
+      const { runner, decisions } = approvalRunner()
+      const { session, prompts, history, events } = setup(runner, [
+        { role: 'user', content: 'first chat' },
+      ])
+      const other = memoryStore([{ role: 'user', content: 'second chat' }])
+      history.add('b', other)
+      await session.init()
+      await session.send('Write it')
+      await until(() => prompts.length === 1)
+      const opening = session.open('b')
+      // Approvals of the chat being left are denied at once, and sends refused.
+      expect(session.pendingApprovals).toEqual([])
+      expect(session.respondApproval(prompts[0]?.id, true)).toBe(false)
+      expect(await session.send('racing')).toMatchObject({ ok: false, code: 'busy' })
+      const state = await opening
+      expect(decisions).toEqual([false])
+      expect(state.items).toEqual([expect.objectContaining({ text: 'second chat' }) as unknown])
+      expect(history.setActive).toHaveBeenLastCalledWith('b')
+      expect(events.at(-1)).toMatchObject({ type: 'conversation_reset' })
     })
 
-    it('warns when the saved conversation cannot be deleted', async () => {
-      const store = memoryStore()
-      store.clear = vi.fn(() => Promise.reject(new Error('EPERM')))
-      const { session, events } = setup(
+    it('refuses to open an unknown chat and keeps the open one', async () => {
+      const { session } = setup(
         scriptedRunner((h) => Promise.resolve(h)),
-        [],
-        store,
+        [{ role: 'user', content: 'kept' }],
       )
-      await session.newChat()
-      expect(events).toEqual([
-        {
-          type: 'storage_warning',
-          message:
-            'The previous conversation could not be deleted from disk. It may come back after a restart.',
-        },
-        { type: 'conversation_reset' },
-      ])
+      await session.init()
+      await expect(session.open('missing')).rejects.toThrow('no longer exists')
+      await expect(session.open(42)).rejects.toThrow('no longer exists')
+      expect(session.state().items[0]).toMatchObject({ text: 'kept' })
+      expect(await session.send('still works')).toEqual({ ok: true })
+    })
+
+    it('starts a new chat before deleting the open one, and warns if deleting fails', async () => {
+      const { session, history, events } = setup(scriptedRunner((h) => Promise.resolve(h)))
+      const open = memoryStore([{ role: 'user', content: 'doomed' }])
+      history.add('a', open)
+      history.add('b', memoryStore([{ role: 'user', content: 'other' }]))
+      await session.open('a')
+      await session.remove('a')
+      expect(history.remove).toHaveBeenCalledWith('a')
+      expect(session.state().items).toEqual([])
+      expect(history.activeId).toBeNull()
+      expect(events.at(-1)).toMatchObject({ type: 'history_changed' })
+
+      vi.mocked(history.remove).mockRejectedValueOnce(new Error('EPERM'))
+      await session.remove('b')
+      expect(events).toContainEqual({
+        type: 'storage_warning',
+        message: 'The chat could not be deleted from disk. It may come back after a restart.',
+      })
+    })
+
+    it('deletes another chat without stopping the running reply', async () => {
+      let finish: () => void = () => {}
+      const runner = scriptedRunner(
+        (history) =>
+          new Promise((resolve) => {
+            finish = () => {
+              resolve([...history, reply('done')])
+            }
+          }),
+      )
+      const { session, history } = setup(runner)
+      history.add('b', memoryStore([{ role: 'user', content: 'other' }]))
+      await session.send('Hi')
+      await session.remove('b')
+      expect(session.running).toBe(true)
+      finish()
+      await session.idle()
+      expect(session.state().items.at(-1)).toMatchObject({ text: 'done' })
+    })
+
+    it('renames and announces the new list', async () => {
+      const { session, history, events } = setup(scriptedRunner((h) => Promise.resolve(h)))
+      history.add('a', memoryStore([{ role: 'user', content: 'x' }]))
+      await session.rename('a', 'Plans')
+      expect(history.rename).toHaveBeenCalledWith('a', 'Plans')
+      expect(events.at(-1)).toMatchObject({ type: 'history_changed' })
+    })
+
+    it('announces the list after every save', async () => {
+      const { session, events } = setup(scriptedRunner((h) => Promise.resolve([...h, reply('ok')])))
+      await session.send('Hi')
+      await session.idle()
+      expect(events.filter((e) => e.type === 'history_changed')).toHaveLength(2)
     })
   })
 
@@ -594,7 +678,7 @@ describe('ChatSession', () => {
     const { runner, decisions } = approvalRunner()
     const store = memoryStore()
     const session = new ChatSession({
-      store,
+      history: memoryHistory(store),
       createRunner: () => Promise.resolve({ ok: true, runner }),
       emit: () => {},
       promptApproval: () => {
@@ -621,7 +705,7 @@ describe('provider switching', () => {
     await until(() => session.pendingApprovals.length === 1)
     const next = memoryStore([{ role: 'user', content: 'other provider' }])
     const commit = vi.fn(() => Promise.resolve())
-    const switching = session.switchStore(next, commit)
+    const switching = session.switchHistory(memoryHistory(next), commit)
     expect(await session.send('racing send')).toMatchObject({ ok: false, code: 'busy' })
     await switching
     expect(session.pendingApprovals).toEqual([])
@@ -651,8 +735,8 @@ describe('provider switching', () => {
     )
     const loading = session.init()
     expect(await session.send('too early')).toMatchObject({ ok: false, code: 'busy' })
-    const switching = session.switchStore(
-      memoryStore([{ role: 'user', content: 'other provider' }]),
+    const switching = session.switchHistory(
+      memoryHistory(memoryStore([{ role: 'user', content: 'other provider' }])),
       () => Promise.resolve(),
     )
     await until(() => vi.mocked(old.load).mock.calls.length === 1)
@@ -666,19 +750,25 @@ describe('provider switching', () => {
     const { session } = setup(scriptedRunner((history) => Promise.resolve(history)))
     await session.init()
     const order: string[] = []
-    const first = session.switchStore(memoryStore([{ role: 'user', content: 'one' }]), () => {
-      order.push('one')
-      return Promise.resolve()
-    })
-    const second = session.switchStore(memoryStore([{ role: 'user', content: 'two' }]), () => {
-      order.push('two')
-      return Promise.resolve()
-    })
+    const first = session.switchHistory(
+      memoryHistory(memoryStore([{ role: 'user', content: 'one' }])),
+      () => {
+        order.push('one')
+        return Promise.resolve()
+      },
+    )
+    const second = session.switchHistory(
+      memoryHistory(memoryStore([{ role: 'user', content: 'two' }])),
+      () => {
+        order.push('two')
+        return Promise.resolve()
+      },
+    )
     await Promise.all([first, second])
     expect(order).toEqual(['one', 'two'])
     expect(session.state().items[0]).toMatchObject({ text: 'two' })
     await expect(
-      session.switchStore(memoryStore(), () => Promise.reject(new Error('disk full'))),
+      session.switchHistory(memoryHistory(), () => Promise.reject(new Error('disk full'))),
     ).rejects.toThrow('disk full')
     expect(session.state().items[0]).toMatchObject({ text: 'two' })
   })

@@ -57,6 +57,10 @@ const api: DesktopApi = {
     send: (text) => invoke(IpcChannels.chatSend, text),
     stop: () => invoke(IpcChannels.chatStop),
     newChat: () => invoke(IpcChannels.chatNew),
+    history: () => invoke(IpcChannels.chatHistory),
+    open: (id) => invoke(IpcChannels.chatOpen, id),
+    rename: (id, title) => invoke(IpcChannels.chatRename, id, title),
+    remove: (id) => invoke(IpcChannels.chatDelete, id),
   },
   approvals: {
     respond: (id, approved) => invoke(IpcChannels.approvalRespond, id, approved),

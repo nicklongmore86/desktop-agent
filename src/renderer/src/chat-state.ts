@@ -4,6 +4,7 @@ import type {
   ChatEvent,
   ChatItem,
   ChatState,
+  HistoryState,
 } from '../../shared/ipc'
 
 /** A chat item as shown: saved items, plus live ones tagged with their run and turn. */
@@ -35,11 +36,20 @@ export interface ChatViewState {
   /** Saving or deleting the conversation on disk failed. */
   storageWarning: string | null
   /**
-   * A provider switch is in progress: the old conversation is cleared and
-   * everything from it is ignored until main sends the new provider's history.
+   * A switch is in progress (provider, saved chat, or New chat): the old
+   * conversation is cleared and everything from it is ignored until main
+   * sends the conversation it switched to.
    */
   switching: boolean
+  /** What the switch in progress is for, to say so in the header. */
+  switchKind: SwitchKind | null
+  /** The current provider's saved chats, newest first, and the open one. */
+  history: HistoryState
 }
+
+export type SwitchKind = 'provider' | 'chat'
+
+export const emptyHistory: HistoryState = { conversations: [], activeId: null }
 
 export const initialChatState: ChatViewState = {
   items: [],
@@ -50,6 +60,8 @@ export const initialChatState: ChatViewState = {
   loadError: null,
   storageWarning: null,
   switching: false,
+  switchKind: null,
+  history: emptyHistory,
 }
 
 export type ChatAction =
@@ -58,13 +70,21 @@ export type ChatAction =
   | { type: 'approval'; prompt: ApprovalPrompt }
   | { type: 'banner'; banner: Banner | null }
   | { type: 'dismiss_storage_warning' }
-  /** The user picked another provider; main has not switched yet. */
-  | { type: 'switch_started' }
-  /** provider.set settled. `state` is main's conversation, if it could be read. */
+  /** The user picked another provider or chat, or New chat; main has not switched yet. */
+  | { type: 'switch_started'; kind?: SwitchKind }
+  /** The switch settled. `state` is main's conversation, if it could be read. */
   | { type: 'switch_finished'; state: ChatState | null }
+  /** A rename or delete answered with the new list. */
+  | { type: 'history'; history: HistoryState }
+
+/** A ChatState's fields other than `history`, which the view keeps separately. */
+function withoutHistory(state: ChatState | undefined): Partial<ChatViewState> {
+  if (!state) return {}
+  return { items: state.items, running: state.running, loadError: state.loadError }
+}
 
 function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
-  // While a provider switch is in progress, everything from the old provider is ignored:
+  // While a switch is in progress, everything from the old conversation is ignored:
   // only its reset, storage warnings and approval closings still apply.
   const switchSafe = ['conversation_reset', 'storage_warning', 'approval_closed']
   if (state.switching && !switchSafe.includes(event.type)) return state
@@ -79,11 +99,18 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
         items: [...state.items, { kind: 'user', id: `${event.runId}:user`, text: event.text }],
       }
     case 'conversation_reset':
-      // Only a switch's reset carries the new provider's history; a New chat queued
-      // before the switch resets to empty, and the switch is still under way.
+      // Only a switch's reset carries the conversation switched to; a reset without one
+      // is not the end of this switch.
       if (state.switching && !event.state) return state
-      // Keep a storage warning: a failed delete is reported just before the reset.
-      return { ...initialChatState, ...(event.state ?? {}), storageWarning: state.storageWarning }
+      // Keep a storage warning: a failed save is reported just before the reset.
+      return {
+        ...initialChatState,
+        ...withoutHistory(event.state),
+        history: event.state?.history ?? state.history,
+        storageWarning: state.storageWarning,
+      }
+    case 'history_changed':
+      return { ...state, history: event.history }
     case 'storage_warning':
       return { ...state, storageWarning: event.message }
     case 'approval_closed':
@@ -179,9 +206,8 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
       if (state.switching) return state
       return {
         ...state,
-        items: action.state.items,
-        running: action.state.running,
-        loadError: action.state.loadError,
+        ...withoutHistory(action.state),
+        history: action.state.history ?? state.history,
       }
     case 'event':
       return applyEvent(state, action.event)
@@ -194,8 +220,21 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
       return { ...state, banner: action.banner }
     case 'dismiss_storage_warning':
       return { ...state, storageWarning: null }
-    case 'switch_started':
-      return { ...initialChatState, storageWarning: state.storageWarning, switching: true }
+    case 'switch_started': {
+      const kind = action.kind ?? 'provider'
+      return {
+        ...initialChatState,
+        storageWarning: state.storageWarning,
+        switching: true,
+        switchKind: kind,
+        // Another chat of the same provider: the list stays. Another provider: it has its own.
+        history: kind === 'chat' ? state.history : emptyHistory,
+      }
+    }
+    case 'history':
+      // A list answered from before a switch may be another provider's; the switch brings its own.
+      if (state.switching) return state
+      return { ...state, history: action.history }
     case 'switch_finished':
       // Normally the switch's conversation_reset has already ended it. If not (the switch
       // failed, or the reset was lost), show whatever conversation main now has.
@@ -204,15 +243,16 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
         return {
           ...state,
           switching: false,
+          switchKind: null,
           banner: { code: 'internal', message: 'Could not load the conversation.' },
         }
       }
       return {
         ...state,
         switching: false,
-        items: action.state.items,
-        running: action.state.running,
-        loadError: action.state.loadError,
+        switchKind: null,
+        ...withoutHistory(action.state),
+        history: action.state.history ?? state.history,
       }
   }
 }

@@ -5,11 +5,21 @@ import type {
   ChatErrorCode,
   ChatEvent,
   ChatState,
+  HistoryState,
   SendResult,
 } from '../../shared/ipc'
 import type { AgentEvent, ApprovalRequest, RunOptions, RunResult } from '../agent'
 import type { ConversationStore } from '../storage/conversation-store'
+import type { ConversationHistory } from '../storage/history-store'
 import { toTranscript } from './transcript'
+
+/** What a switch opens: a conversation, and what to record once it has loaded. */
+interface SwitchTarget {
+  store: ConversationStore
+  commit: () => Promise<void>
+  /** Set by a provider switch: the new provider's history. */
+  history?: ConversationHistory
+}
 
 /** One agent run. `createAgent(...)` satisfies this. */
 export interface AgentRunner {
@@ -21,7 +31,8 @@ export type RunnerResult =
   | { ok: false; code: ChatErrorCode; message: string; resetsAt?: string }
 
 export interface ChatSessionDeps {
-  store: ConversationStore
+  /** The current provider's saved conversations; the open one is loaded by `init`. */
+  history: ConversationHistory
   /** Builds an agent with the current API key, model and tools. */
   createRunner: (signal: AbortSignal) => Promise<RunnerResult>
   /** Streams an event to the renderer. */
@@ -54,25 +65,34 @@ const toChatCode = (code: AgentErrorEvent['code']): ChatErrorCode => code
  * approvals. Every approval is denied unless the renderer answers its exact
  * random id while the run is still going; stop, new chat, window close or
  * reload and quit all deny whatever is pending.
+ *
+ * Opening another conversation, New chat and provider switches all go
+ * through `switchTo`: the send slot is reserved and the run stopped (its
+ * approvals denied) synchronously, then the switch waits for the run to end
+ * (it saves to the conversation it belongs to) before loading the next one.
  */
 export class ChatSession {
   private conversation: MessageParam[] = []
+  private history: ConversationHistory
+  private store: ConversationStore
   private loadError: string | null = null
   private active: ActiveRun | null = null
   private readonly pending = new Map<string, PendingApproval>()
   private readonly newId: () => string
-  /** Bumped by every New chat; a run or save from an older generation never touches history. */
+  /** Bumped by every switch; a run or save from an older generation never touches history. */
   private generation = 0
-  /** New chat calls in flight. While > 0, send() is refused. */
+  /** Loads and switches in flight. While > 0, send() is refused. */
   private resets = 0
   private resetQueue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly deps: ChatSessionDeps) {
     this.newId = deps.newId ?? randomUUID
+    this.history = deps.history
+    this.store = deps.history.current()
   }
 
   /**
-   * Loads the saved conversation. Like New chat and switchStore, it reserves
+   * Loads the open conversation. Like a switch, it reserves
    * the send slot and runs in the reset queue, so a send cannot start on
    * unloaded history and a late load can never overwrite a later switch.
    */
@@ -80,7 +100,7 @@ export class ChatSession {
     this.resets += 1
     const loaded = this.resetQueue.then(async () => {
       try {
-        const { messages, error } = await this.deps.store.load()
+        const { messages, error } = await this.store.load()
         this.conversation = messages
         this.loadError = error
       } finally {
@@ -105,7 +125,13 @@ export class ChatSession {
       items: toTranscript(this.conversation),
       running: this.running,
       loadError: this.loadError,
+      history: this.history.state(),
     }
+  }
+
+  /** The current provider's saved conversations. */
+  historyState(): HistoryState {
+    return this.history.state()
   }
 
   /** Starts a run. Resolves once it has started, not when it finishes (see `idle`). */
@@ -325,54 +351,77 @@ export class ChatSession {
     if (active) await active.done
   }
 
-  /**
-   * Stops any run and starts an empty conversation. The reset is reserved
-   * synchronously, so a send() racing it is refused; repeated calls run one
-   * after another; conversation_reset is sent only once the saved history
-   * is gone (or a warning says it could not be deleted).
-   */
+  /** Starts a new chat; the open one stays in the history. Nothing is saved until the first send. */
   newChat(): Promise<ChatState> {
-    this.resets += 1
-    this.generation += 1
-    this.active?.controller.abort()
-    this.denyPending()
-    const reset = this.resetQueue.then(async () => {
-      try {
-        await this.stop()
-        this.conversation = []
-        this.loadError = null
-        try {
-          await this.deps.store.clear()
-        } catch (error) {
-          this.deps.onSaveError?.(error)
-          this.notify({
-            type: 'storage_warning',
-            message:
-              'The previous conversation could not be deleted from disk. It may come back after a restart.',
-          })
-        }
-        this.notify({ type: 'conversation_reset' })
-        return this.state()
-      } finally {
-        this.resets -= 1
-      }
+    return this.switchTo(() => {
+      const history = this.history
+      return { store: history.draft(), commit: () => history.setActive(null) }
     })
-    this.resetQueue = reset.catch(() => {})
-    return reset
   }
 
-  /** Switches stores while the send slot is reserved; history never crosses providers. */
-  switchStore(store: ConversationStore, commit: () => Promise<void>): Promise<ChatState> {
+  /**
+   * Opens a saved conversation of the current provider. A reply still running
+   * is stopped first, as for a provider switch: it is saved to the
+   * conversation it belongs to, and its approvals are denied.
+   */
+  open(id: unknown): Promise<ChatState> {
+    return this.switchTo(() => {
+      const history = this.history
+      if (typeof id !== 'string' || !history.has(id)) throw new Error('That chat no longer exists.')
+      return { store: history.open(id), commit: () => history.setActive(id) }
+    })
+  }
+
+  /** Switches to another provider's history and opens its last conversation. */
+  switchHistory(history: ConversationHistory, commit: () => Promise<void>): Promise<ChatState> {
+    return this.switchTo(() => ({ store: history.current(), commit, history }))
+  }
+
+  async rename(id: string, title: string): Promise<HistoryState> {
+    await this.history.rename(id, title)
+    this.notifyHistory()
+    return this.history.state()
+  }
+
+  /** Deletes a saved conversation. Deleting the open one first starts a new chat. */
+  async remove(id: string): Promise<HistoryState> {
+    const history = this.history
+    if (!history.has(id)) return this.history.state()
+    if (history.activeId === id) await this.newChat()
+    // Reopened (or the provider changed) while the new chat started: leave it be.
+    if (this.history !== history || history.activeId === id) return this.history.state()
+    try {
+      await history.remove(id)
+    } catch (error) {
+      this.deps.onSaveError?.(error)
+      this.notify({
+        type: 'storage_warning',
+        message: 'The chat could not be deleted from disk. It may come back after a restart.',
+      })
+    }
+    this.notifyHistory()
+    return this.history.state()
+  }
+
+  /**
+   * Reserves the send slot, stops the run and denies its approvals
+   * synchronously, then, in turn with other switches, waits for the run to
+   * end and opens `prepare()`'s conversation. A load or commit failure leaves
+   * the current conversation open.
+   */
+  private switchTo(prepare: () => SwitchTarget | Promise<SwitchTarget>): Promise<ChatState> {
     this.resets += 1
     this.active?.controller.abort()
     this.denyPending()
     const switched = this.resetQueue.then(async () => {
       try {
         await this.stop()
-        const loaded = await store.load()
-        await commit()
+        const next = await prepare()
+        const loaded = await next.store.load()
+        await next.commit()
         this.generation += 1
-        this.deps.store = store
+        if (next.history) this.history = next.history
+        this.store = next.store
         this.conversation = loaded.messages
         this.loadError = loaded.error
         this.notify({ type: 'conversation_reset', state: this.state() })
@@ -390,9 +439,13 @@ export class ChatSession {
     await this.active?.done
   }
 
+  private notifyHistory(): void {
+    this.notify({ type: 'history_changed', history: this.history.state() })
+  }
+
   private async persist(): Promise<void> {
     try {
-      await this.deps.store.save(this.conversation)
+      await this.store.save(this.conversation)
     } catch (error) {
       this.deps.onSaveError?.(error)
       this.notify({
@@ -401,5 +454,7 @@ export class ChatSession {
           'The conversation could not be saved to disk. It will be lost when the app closes.',
       })
     }
+    // A first save adds the chat to the list; any save moves it to the top.
+    this.notifyHistory()
   }
 }
