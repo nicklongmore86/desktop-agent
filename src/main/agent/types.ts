@@ -27,6 +27,11 @@ export interface AgentClient {
   }
 }
 export type AgentErrorCode =
+  | 'usage_limit'
+  | 'plan_not_entitled'
+  | 'model_unavailable'
+  | 'auth_expired'
+  | 'runtime_unavailable'
   | 'authentication'
   | 'invalid_request'
   | 'permission'
@@ -50,7 +55,7 @@ export type AgentEvent =
   | { type: 'usage'; turn: number; usage: Usage }
   /** This turn's response was dropped (truncated tool calls): roll back its streamed text. */
   | { type: 'response_discarded'; turn: number }
-  | { type: 'error'; code: AgentErrorCode; message: string }
+  | { type: 'error'; code: AgentErrorCode; message: string; resetsAt?: string }
 export interface RunOptions extends ToolContext {
   onEvent(event: AgentEvent): void
 }

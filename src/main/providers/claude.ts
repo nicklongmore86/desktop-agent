@@ -12,6 +12,8 @@ import type { AgentTool, RunResult } from '../agent'
 import { DEFAULT_SYSTEM_PROMPT } from '../agent'
 import type { AgentRunner } from '../chat/session'
 import { ToolBridge, transcriptPrompt } from './bridge'
+import { SubscriptionError, subscriptionFailure, plausibleReset } from './errors'
+import type { ProviderFailure } from '../../shared/ipc'
 import type { RuntimeContext } from './codex'
 
 export function claudeOptions(context: RuntimeContext): Options {
@@ -51,6 +53,12 @@ export function claudeOptions(context: RuntimeContext): Options {
 export function createClaudeSubscriptionRunner(
   context: RuntimeContext,
   tools: AgentTool[],
+  observe: {
+    onLimit?: (resetsAt: string | undefined) => void
+    onAvailable?: () => void
+    onAccount?: (plan: string) => void
+    onFailure?: (failure: ProviderFailure) => void
+  } = {},
 ): AgentRunner {
   return {
     async run(conversation, options): Promise<RunResult> {
@@ -120,13 +128,23 @@ export function createClaudeSubscriptionRunner(
         })
         const account = await stream.accountInfo()
         if (account.apiKeySource && account.apiKeySource !== 'none')
-          throw new Error('Claude subscription sign-in required. API credentials are not accepted.')
+          throw new SubscriptionError(
+            'authentication',
+            'Claude subscription sign-in required. API credentials are not accepted.',
+          )
         if (account.apiProvider !== 'firstParty')
-          throw new Error(
+          throw new SubscriptionError(
+            'authentication',
             'Claude subscription sign-in required. Cloud API providers are not accepted.',
           )
         if (!account.subscriptionType || account.tokenSource === 'none')
           throw new Error("Claude isn't signed in with a subscription. Sign in again in Settings.")
+        observe.onAccount?.(account.subscriptionType)
+        if (/^(?:claude\s*)?free$/i.test(account.subscriptionType))
+          throw new SubscriptionError(
+            'plan_not_entitled',
+            "Your Claude plan doesn't include Claude Code. Claude Pro or Max is required.",
+          )
         releaseInput()
         let completed = false
         for await (const message of stream) {
@@ -146,36 +164,46 @@ export function createClaudeSubscriptionRunner(
             message.event.delta.type === 'text_delta'
           )
             bridge.delta(message.event.delta.text)
-          if (message.type === 'assistant' && message.error) {
-            if (message.error === 'rate_limit' || message.error === 'billing_error')
-              throw new Error(
-                'Claude subscription usage limit reached. Check your plan or wait for reset.',
-              )
-            if (message.error === 'authentication_failed')
-              throw new Error('Claude sign-in expired. Sign in again in Settings.')
-            throw new Error('Claude subscription request failed: ' + message.error)
+          if (message.type === 'rate_limit_event' && message.rate_limit_info.status !== 'rejected')
+            observe.onAvailable?.()
+          if (
+            message.type === 'rate_limit_event' &&
+            message.rate_limit_info.status === 'rejected'
+          ) {
+            observe.onLimit?.(plausibleReset(message.rate_limit_info.resetsAt))
+            throw subscriptionFailure(
+              { code: 'usage_limit', resetsAt: message.rate_limit_info.resetsAt },
+              'claude',
+            )
           }
+          if (message.type === 'assistant' && message.error)
+            throw subscriptionFailure({ code: message.error, message: message.message }, 'claude')
           if (message.type === 'result') {
             if (message.subtype !== 'success' || message.is_error)
-              throw new Error(
-                'Claude subscription request failed. Check your sign-in and usage allowance.',
+              throw subscriptionFailure(
+                {
+                  ...message,
+                  errors: 'errors' in message ? message.errors : [],
+                  result: 'result' in message ? message.result : '',
+                },
+                'claude',
               )
             completed = true
           }
         }
         if (!completed) throw new Error('Claude ended without a completed response.')
+        observe.onAvailable?.()
         bridge.flush()
         return { conversation: structuredClone(bridge.history), stopReason: 'end_turn' }
       } catch (error) {
-        const code = options.signal.aborted ? 'aborted' : 'api'
+        const failure = subscriptionFailure(error, 'claude')
+        const code = options.signal.aborted ? 'aborted' : failure.code
+        if (!options.signal.aborted) observe.onFailure?.(failure)
         options.onEvent({
           type: 'error',
           code,
-          message: options.signal.aborted
-            ? 'Reply stopped.'
-            : error instanceof Error
-              ? error.message
-              : 'Claude subscription failed.',
+          message: options.signal.aborted ? 'Reply stopped.' : failure.message,
+          ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
         })
         bridge.flush()
         return { conversation: structuredClone(bridge.history), stopReason: code }

@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import {
   PROVIDERS,
   THEMES,
@@ -21,11 +22,14 @@ interface SettingsFile {
   version: 2
   model: string
   provider: ProviderId
+  providerModels: Partial<Record<ProviderId, string>>
   /** Added later without a version bump: a missing or unknown value means 'system'. */
   theme?: ThemePreference
 }
 
 export interface SettingsStore {
+  selection: (provider: ProviderId) => string | null
+  setSelection: (provider: ProviderId, model: string | null) => Promise<void>
   readonly provider: ProviderId
   setProvider: (provider: ProviderId) => Promise<void>
   readonly model: string
@@ -45,10 +49,17 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let model = DEFAULT_MODEL
   let provider: ProviderId = 'anthropic-api'
   let theme: ThemePreference = 'system'
+  const selectionSchema = z.partialRecord(
+    z.enum(PROVIDERS),
+    z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/),
+  )
+  let providerModels: Partial<Record<ProviderId, string>> = {}
   try {
     const parsed = (await readJsonFile(file)) as Partial<SettingsFile> | undefined
     if (parsed?.version === 2 && PROVIDERS.includes(parsed.provider as ProviderId))
       provider = parsed.provider as ProviderId
+    const selections = selectionSchema.safeParse(parsed?.providerModels ?? {})
+    if (selections.success) providerModels = selections.data
     if (isOffered(parsed?.model)) model = parsed.model
     if (THEMES.includes(parsed?.theme as ThemePreference)) theme = parsed?.theme as ThemePreference
   } catch {
@@ -66,6 +77,25 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     options: MODEL_OPTIONS.map((option) => ({ ...option })),
   })
   return {
+    selection: (id) => providerModels[id] ?? null,
+    async setSelection(id, next) {
+      if (!PROVIDERS.includes(id)) throw new Error('Unknown provider.')
+      await serial(async () => {
+        const selections = Object.fromEntries(
+          Object.entries(providerModels).filter(([key]) => key !== id),
+        )
+        if (next !== null) selections[id] = next
+        const validated = selectionSchema.parse(selections)
+        await writeJsonFile(file, {
+          version: 2,
+          model,
+          provider,
+          providerModels: validated,
+          theme,
+        } satisfies SettingsFile)
+        providerModels = validated
+      })
+    },
     get provider() {
       return provider
     },
@@ -76,6 +106,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
           version: 2,
           model,
           provider: next,
+          providerModels,
           theme,
         } satisfies SettingsFile)
         provider = next
@@ -95,6 +126,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
           version: 2,
           model,
           provider,
+          providerModels,
           theme: next,
         } satisfies SettingsFile)
         theme = next
@@ -108,6 +140,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
           version: 2,
           model: next,
           provider,
+          providerModels,
           theme,
         } satisfies SettingsFile)
         model = next

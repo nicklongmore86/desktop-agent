@@ -1,6 +1,9 @@
 import type { AgentTool, RunResult } from '../agent'
 import { DEFAULT_SYSTEM_PROMPT } from '../agent'
 import type { AgentRunner } from '../chat/session'
+import { codexModels } from './catalog'
+import { SubscriptionError, subscriptionFailure } from './errors'
+import type { ProviderModels, ProviderFailure } from '../../shared/ipc'
 import features from './codex-features.json'
 import { ToolBridge, transcriptPrompt } from './bridge'
 import { RpcPeer, object, type RpcObject } from './rpc'
@@ -117,7 +120,18 @@ export function codexThreadOptions(context: RuntimeContext, tools: AgentTool[]):
   }
 }
 
-export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): AgentRunner {
+export interface CodexRunPreferences {
+  model?: string | null
+  catalog?: (peer: RpcPeer) => Promise<ProviderModels | null>
+  onAvailable?: () => void
+  onResolvedModel?: (model: string) => void
+  onFailure?: (failure: ProviderFailure) => void
+}
+export function createCodexRunner(
+  context: RuntimeContext,
+  tools: AgentTool[],
+  preferences: CodexRunPreferences = {},
+): AgentRunner {
   return {
     async run(conversation, options): Promise<RunResult> {
       const runController = new AbortController()
@@ -134,8 +148,26 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
         peer = await connectCodex(context, options.signal)
         options.signal.throwIfAborted()
         if (!(await codexAccount(peer)))
-          throw new Error('Sign in with ChatGPT in Settings. API-key accounts are not accepted.')
-        const started = await peer.request('thread/start', codexThreadOptions(context, tools))
+          throw new SubscriptionError(
+            'authentication',
+            'Sign in with ChatGPT in Settings. API-key accounts are not accepted.',
+          )
+        // Discovery is best-effort metadata. The server default remains usable if it fails.
+        const catalog = await (
+          preferences.catalog
+            ? preferences.catalog(peer)
+            : codexModels(peer, preferences.model ?? null)
+        ).catch(() => null)
+        const choice = catalog?.options.find((model) => model.id === catalog.selectedModel)
+        const started = await peer.request('thread/start', {
+          ...codexThreadOptions(context, tools),
+          ...(catalog?.selectedModel ? { model: catalog.selectedModel } : {}),
+          ...(choice?.defaultReasoningEffort
+            ? { config: { model_reasoning_effort: choice.defaultReasoningEffort } }
+            : {}),
+        })
+        if (typeof started['model'] === 'string' && /^[\w.:-]{1,128}$/.test(started['model']))
+          preferences.onResolvedModel?.(started['model'])
         const thread = object(started['thread'])
         if (
           !Array.isArray(thread['environments']) ||
@@ -194,9 +226,10 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
             if (method === 'turn/completed') {
               const turn = object(params['turn'])
               if (turn['status'] === 'completed') finish()
-              else finish(new Error(providerFailure(turn['error'])))
+              else finish(subscriptionFailure(turn['error'], 'codex'))
             }
-            if (method === 'error') finish(new Error(providerFailure(params)))
+            if (method === 'error' && params['willRetry'] !== true)
+              finish(subscriptionFailure(params, 'codex'))
           }
         })
         // Attach rejection handling before turn/start, since notifications can arrive first.
@@ -209,18 +242,18 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
         if (typeof id !== 'string') throw new Error('Invalid turn id.')
         activeTurn.id = id
         await done
+        preferences.onAvailable?.()
         bridge.flush()
         return { conversation: structuredClone(bridge.history), stopReason: 'end_turn' }
       } catch (error) {
-        const code = options.signal.aborted ? 'aborted' : 'api'
+        const failure = subscriptionFailure(error, 'codex')
+        const code = options.signal.aborted ? 'aborted' : failure.code
+        if (!options.signal.aborted) preferences.onFailure?.(failure)
         options.onEvent({
           type: 'error',
           code,
-          message: options.signal.aborted
-            ? 'Reply stopped.'
-            : error instanceof Error
-              ? error.message
-              : 'Subscription runtime failed.',
+          message: options.signal.aborted ? 'Reply stopped.' : failure.message,
+          ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
         })
         bridge.flush()
         return { conversation: structuredClone(bridge.history), stopReason: code }
@@ -232,15 +265,6 @@ export function createCodexRunner(context: RuntimeContext, tools: AgentTool[]): 
       }
     },
   }
-}
-
-function providerFailure(value: unknown): string {
-  const text = JSON.stringify(value)
-  if (/usage|limit|quota|429/i.test(text))
-    return 'Subscription usage limit reached. Wait for your allowance to reset or check your plan.'
-  if (/auth|expired|401|unauthorized/i.test(text))
-    return 'Subscription sign-in expired. Sign in again in Settings.'
-  return 'Subscription request failed. Check sign-in, plan availability, and network access.'
 }
 
 export async function codexLogin(

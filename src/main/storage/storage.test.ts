@@ -192,6 +192,21 @@ describe('theme setting', () => {
     expect((await openSettingsStore(file)).theme).toBe('dark')
   })
 
+  it('keeps theme and per-provider model selections together across every write', async () => {
+    const file = join(await tempDir(), 'settings.json')
+    const store = await openSettingsStore(file)
+    await store.setSelection('codex-subscription', 'gpt-5.5')
+    await store.setTheme('light')
+    await store.setProvider('codex-subscription')
+    await store.setModel(MODEL_OPTIONS[1]?.id ?? DEFAULT_MODEL)
+    await store.setSelection('claude-subscription', 'sonnet')
+    const reopened = await openSettingsStore(file)
+    expect(reopened.theme).toBe('light')
+    expect(reopened.provider).toBe('codex-subscription')
+    expect(reopened.selection('codex-subscription')).toBe('gpt-5.5')
+    expect(reopened.selection('claude-subscription')).toBe('sonnet')
+  })
+
   it('refuses unknown themes and ignores unknown stored ones', async () => {
     const file = join(await tempDir(), 'settings.json')
     const store = await openSettingsStore(file)

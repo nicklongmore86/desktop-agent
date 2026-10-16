@@ -159,6 +159,8 @@ describe('Claude subscription sign-in', { timeout: 30000 }, () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
+      10000,
+      [0, 1],
     )
     expect((await readFile(log, 'utf8')).split('\n').slice(1).join('\n')).toBe('abc123#state456\n')
   })
