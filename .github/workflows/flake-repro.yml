@@ -19,13 +19,21 @@ jobs:
           node-version: 24.18.1
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Run the full suite 6 times (realistic load)
+      - name: Repeat run-shell.test.ts (5 x 2 concurrent copies, then 2 full suites)
         shell: bash
         run: |
           pass=0; fail=0
-          for i in 1 2 3 4 5 6; do
-            if pnpm test > "out-$i.log" 2>&1; then pass=$((pass+1)); else fail=$((fail+1)); echo "::group::FAILED run $i"; cat "out-$i.log"; echo "::endgroup::"; fi
-            grep -h "DIAG root\|survivors\|PowerShell fallback when taskkill cannot start\|Tests  " "out-$i.log" | sed "s/^/[$i] /" | cut -c1-600 || true
+          tally() { # $1 = log; counts the run-shell file's own result
+            if grep -q "FAIL .*run-shell.test.ts\|run-shell.test.ts ([0-9]* tests | [0-9]* failed" "$1"; then
+              fail=$((fail+1)); echo "::group::FAILED $1"; cat "$1"; echo "::endgroup::"
+            elif grep -q "run-shell.test.ts\|Test Files  1 passed" "$1"; then pass=$((pass+1)); else fail=$((fail+1)); echo "::group::NO RESULT $1"; cat "$1"; echo "::endgroup::"; fi
+            grep -h "PowerShell fallback when taskkill cannot start" "$1" | sed "s|^|[$1] |" || true
+          }
+          for i in 1 2 3 4 5; do
+            for c in a b; do pnpm exec vitest run src/main/tools/run-shell.test.ts > "file-$i-$c.log" 2>&1 & done
+            wait
+            for c in a b; do tally "file-$i-$c.log"; done
           done
-          echo "RESULT shard ${{ matrix.shard }}: pass=$pass fail=$fail"
+          for i in 1 2; do pnpm test > "suite-$i.log" 2>&1 || echo "suite $i exited non-zero"; grep -h "Tests  \|FAIL " "suite-$i.log" | sort -u || true; tally "suite-$i.log"; done
+          echo "RESULT shard ${{ matrix.shard }}: run-shell.test.ts pass=$pass fail=$fail"
           [ "$fail" = 0 ]

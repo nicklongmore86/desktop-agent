@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events'
-import { spawn as nodeSpawn } from 'node:child_process'
+import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process'
 import { readFileSync, promises as fs } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeContext, makeSandbox, type Sandbox } from '../permissions/test-support'
 import { PathGuard } from '../permissions/guard'
 import {
@@ -633,6 +634,17 @@ describe('shellEnv', () => {
 
 // Real processes, on whichever OS runs the tests (PowerShell on the Windows CI runner).
 describe('run_shell with a real shell', () => {
+  // The first PowerShell start on a fresh runner can take tens of seconds; pay it once
+  // here rather than inside a test's budget.
+  beforeAll(async () => {
+    if (process.platform === 'win32') await runPowerShell('exit 0', 120_000)
+  }, 150_000)
+
+  // Windows can briefly refuse to remove a folder a process has just stopped using.
+  afterEach(async () => {
+    await fs.rm(sb.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+  })
+
   it('runs a command in the cwd', { timeout: 30_000 }, async () => {
     const h = toolHarness(sb)
     const command = process.platform === 'win32' ? 'Write-Output (Get-Location).Path' : 'pwd'
@@ -675,45 +687,50 @@ describe('run_shell with a real shell', () => {
       { command: treeCommand, cwd: sb.root, timeoutMs: stop === 'timeout' ? 15_000 : 300_000 },
       ctx,
     )
-    const child = await waitForPid(path.join(sb.root, 'child.pid'), 30_000)
-    const grandchild = await waitForPid(path.join(sb.root, 'grandchild.pid'), 30_000)
-    expect(isAlive(child)).toBe(true)
-    expect(isAlive(grandchild)).toBe(true)
-    if (stop === 'cancel') controller.abort()
-    const r = await running
-    expect(r).toMatchObject({
-      isError: true,
-      content:
-        stop === 'cancel'
-          ? /^Cancelled; the process tree was killed/
-          : /^Timed out after 15 s; the process tree was killed/,
-    })
-    const gone = await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)
-    if (!gone && process.platform === 'win32') {
-      const { execFileSync } = await import('node:child_process')
-      console.error(
-        'TEMPDIAG survivors',
-        child,
-        grandchild,
-        execFileSync('powershell.exe', [
-          '-NoProfile',
-          '-Command',
-          `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -in ${String(child)},${String(grandchild)} -or $_.ParentProcessId -in ${String(child)},${String(grandchild)} } | Format-List ProcessId,ParentProcessId,CreationDate,CommandLine`,
-        ]).toString(),
-      )
+    let pinned: Pinned = { pids: [], release: () => undefined }
+    try {
+      const child = await waitForPid(path.join(sb.root, 'child.pid'), 60_000)
+      const grandchild = await waitForPid(path.join(sb.root, 'grandchild.pid'), 60_000)
+      pinned = await pinProcesses([child, grandchild], 60_000)
+      expect(isAlive(child)).toBe(true)
+      expect(isAlive(grandchild)).toBe(true)
+      if (stop === 'cancel') controller.abort()
+      const r = await running
+      expect(r).toMatchObject({
+        isError: true,
+        content:
+          stop === 'cancel'
+            ? /^Cancelled; the process tree was killed/
+            : /^Timed out after 15 s; the process tree was killed/,
+      })
+      expect(await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)).toBe(true)
+    } finally {
+      // Whatever failed above, leave nothing running in the sandbox: it would hold the
+      // folder open and fail the next steps with EBUSY.
+      controller.abort()
+      await running
+      // Only pinned pids are certain to still be the processes the shell started.
+      for (const pid of pinned.pids.filter(isAlive)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // Exited in the meantime.
+        }
+      }
+      await waitUntil(() => !pinned.pids.some(isAlive), 10_000)
+      pinned.release()
     }
-    expect(gone).toBe(true)
   }
 
   for (const stop of ['cancel', 'timeout'] as const) {
-    it(`kills children and grandchildren on ${stop}`, { timeout: 90_000 }, async () => {
+    it(`kills children and grandchildren on ${stop}`, { timeout: 150_000 }, async () => {
       await expectTreeKilled({}, stop)
     })
   }
 
   it.runIf(process.platform === 'win32')(
     'kills the whole tree with the PowerShell fallback when taskkill cannot start',
-    { timeout: 90_000 },
+    { timeout: 150_000 },
     async () => {
       const spawn: ShellSpawner = (file, args, options) => {
         if (file.toLowerCase().endsWith('taskkill.exe')) throw new Error('taskkill blocked by test')
@@ -846,4 +863,83 @@ async function waitForPid(file: string, ms: number): Promise<number> {
   }, ms)
   if (!Number.isInteger(pid)) throw new Error('the grandchild never started')
   return pid
+}
+
+const WINDOWS_POWERSHELL = path.join(
+  process.env.SystemRoot ?? 'C:\\Windows',
+  'System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+)
+
+/** Starts Windows PowerShell outside the sandbox, so it never holds the sandbox open. */
+function startPowerShell(script: string): ChildProcess {
+  return nodeSpawn(WINDOWS_POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    cwd: os.tmpdir(),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+}
+
+/** Runs a PowerShell script to completion; rejects on a non-zero exit or after `ms`. */
+function runPowerShell(script: string, ms: number): Promise<void> {
+  const ps = startPowerShell(script)
+  ps.stdout?.resume()
+  ps.stderr?.resume()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ps.kill()
+      reject(new Error(`PowerShell did not finish within ${String(ms)} ms`))
+    }, ms)
+    ps.once('error', reject)
+    ps.once('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve()
+      else reject(new Error(`PowerShell exited with code ${String(code)}`))
+    })
+  })
+}
+
+interface Pinned {
+  pids: number[]
+  release: () => void
+}
+
+/**
+ * Windows hands a freed pid to the next new process almost at once, so on a busy runner
+ * `isAlive(pid)` can report an unrelated process. Holding an open handle to each process
+ * keeps its pid reserved (and reported as exited once it dies) until `release`.
+ */
+function pinProcesses(pids: number[], ms: number): Promise<Pinned> {
+  if (process.platform !== 'win32') return Promise.resolve({ pids, release: () => undefined })
+  const ps = startPowerShell(
+    `$ErrorActionPreference = 'Stop'; $all = @(Get-Process -Id ${pids.join(',')}); ` +
+      `foreach ($p in $all) { $null = $p.Handle }; [Console]::Out.WriteLine('pinned'); ` +
+      // Hold the handles until the test closes stdin.
+      `$null = [Console]::In.ReadLine()`,
+  )
+  const release = (): void => {
+    ps.stdin?.end()
+    ps.kill()
+  }
+  let output = ''
+  ps.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      release()
+      reject(new Error(`could not pin ${pids.join(', ')} within ${String(ms)} ms`))
+    }, ms)
+    ps.stdout?.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+      if (!output.includes('pinned')) return
+      clearTimeout(timer)
+      resolve({ pids, release })
+    })
+    ps.once('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    ps.once('close', (code) => {
+      clearTimeout(timer)
+      reject(new Error(`could not pin ${pids.join(', ')} (exit ${String(code)}): ${output}`))
+    })
+  })
 }

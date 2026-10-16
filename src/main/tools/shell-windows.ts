@@ -61,7 +61,6 @@ foreach ($id in $tree) {
   $p = Get-Process -Id $id
   if ($p -and -not $p.WaitForExit(2000)) { $alive++ }
 }
-[Console]::Out.WriteLine("DIAG root=${String(pid)} all=$($all.Count) rootSeen=$($byId.ContainsKey(${String(pid)})) tree=$($tree -join ',') alive=$alive errors=$($Error | ForEach-Object { $_.ToString() })")
 exit [int]($alive -gt 0)
 `
 }
