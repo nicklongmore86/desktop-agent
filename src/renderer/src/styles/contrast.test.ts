@@ -91,6 +91,33 @@ describe('theme blocks', () => {
   })
 })
 
+/** Every token tokens.css declares, e.g. `--radius-sm`. */
+const DEFINED = new Set(
+  [...tokens.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((match) => match[1] as string),
+)
+
+/** What is wrong with how a stylesheet uses tokens: literals, fallbacks, undefined names. */
+function tokenProblems(source: string, defined: ReadonlySet<string>): string[] {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
+  const problems: string[] = []
+  if (/#[0-9a-f]{3,8}\b/i.test(css)) problems.push('hex colour literal')
+  if (/\b(?:rgba?|hsla?)\(/i.test(css)) problems.push('functional colour literal')
+  // Every var() is exactly var(--name): no fallback, and the name is declared in tokens.css.
+  for (const match of css.matchAll(/var\(([^)]*)\)/g)) {
+    const inner = (match[1] as string).trim()
+    if (!/^--[a-z0-9-]+$/i.test(inner)) problems.push(`${match[0]} has a fallback or is malformed`)
+    else if (!defined.has(inner)) problems.push(`${match[0]} is not defined in tokens.css`)
+  }
+  // Every border-radius part is a --radius-* token (shorthand included).
+  for (const match of css.matchAll(/border(?:-[a-z]+)*-radius:\s*([^;]+);/g)) {
+    const parts = (match[1] as string).split(/\s+(?![^(]*\))|\//).filter(Boolean)
+    for (const part of parts)
+      if (!/^var\(--radius-[a-z0-9-]+\)$/i.test(part.trim()))
+        problems.push(`${match[0]} uses ${part.trim()}, not a --radius token`)
+  }
+  return problems
+}
+
 describe('stylesheets use tokens', () => {
   const sheets = import.meta.glob<string>(['./base.css', './components.css'], {
     query: '?raw',
@@ -98,11 +125,36 @@ describe('stylesheets use tokens', () => {
     eager: true,
   })
 
-  it.each(Object.entries(sheets))('%s has no colour or radius literals', (_file, css) => {
-    const code = css.replace(/\/\*[\s\S]*?\*\//g, '')
-    expect(code).not.toMatch(/#[0-9a-f]{3,8}\b/i)
-    expect(code).not.toMatch(/\b(?:rgba?|hsla?)\(/i)
-    for (const match of code.matchAll(/border(?:-[a-z]+)*-radius:\s*([^;]+);/g))
-      expect(match[1], match[0]).toMatch(/^var\(--radius-/)
+  it.each(Object.entries(sheets))('%s only uses defined tokens, with no literals', (_file, css) => {
+    expect(tokenProblems(css, DEFINED)).toEqual([])
+  })
+
+  it('knows the tokens it checks against', () => {
+    expect(DEFINED).toContain('--radius-xs')
+    expect(DEFINED).toContain('--color-text')
+  })
+
+  it.each([
+    ['a radius literal', 'a { border-radius: 3px; }'],
+    ['a radius fallback', 'a { border-radius: var(--radius-xs, 3px); }'],
+    ['an undefined radius token', 'a { border-radius: var(--radius-not-defined); }'],
+    ['a literal in a radius shorthand', 'a { border-radius: var(--radius-sm) 4px; }'],
+    ['a non-radius token as a radius', 'a { border-radius: var(--space-2); }'],
+    ['a colour fallback', 'a { color: var(--color-text, #000000); }'],
+    ['an empty-fallback var', 'a { color: var(--color-text,); }'],
+    ['an undefined colour token', 'a { color: var(--color-missing); }'],
+    ['a hex colour', 'a { color: #fff; }'],
+    ['an rgb colour', 'a { color: rgb(0 0 0); }'],
+  ])('rejects %s', (_name, css) => {
+    expect(tokenProblems(css, DEFINED)).not.toEqual([])
+  })
+
+  it('accepts a radius shorthand made only of defined tokens', () => {
+    expect(
+      tokenProblems(
+        'a { border-radius: var(--radius-lg) var(--radius-lg) var(--radius-xs) var(--radius-lg); color: var(--color-text); }',
+        DEFINED,
+      ),
+    ).toEqual([])
   })
 })
