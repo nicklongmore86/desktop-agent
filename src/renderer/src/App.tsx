@@ -11,6 +11,7 @@ import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { FileReferencesProvider } from './components/files/file-references'
 import { SettingsDialog } from './components/SettingsDialog'
 import { AppHeader } from './components/shell/AppHeader'
 import { AppShell, type ShellHandle } from './components/shell/AppShell'
@@ -137,7 +138,7 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <>
+    <FileReferencesProvider>
       <AppShell
         shellRef={shell}
         inert={settingsSection !== null}
@@ -280,6 +281,6 @@ export function App(): React.JSX.Element {
           onRespond={chat.respond}
         />
       )}
-    </>
+    </FileReferencesProvider>
   )
 }

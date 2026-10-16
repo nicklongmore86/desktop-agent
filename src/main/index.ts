@@ -10,6 +10,7 @@ import {
   shell,
 } from 'electron'
 import { IpcChannels, type PushChannel, type PushPayloads } from '../shared/ipc'
+import { filesPushChannels } from '../shared/ipc-files'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { registerIpcHandlers } from './ipc-handlers'
 import { isTrustedIpcSender } from './security'
@@ -67,6 +68,12 @@ void app.whenReady().then(async () => {
     },
     safeStorage,
     trash: (path) => shell.trashItem(path),
+    revealPath: (path) => {
+      shell.showItemInFolder(path)
+    },
+    onFilesChanged: (change) => {
+      push(filesPushChannels.filesChanged, change)
+    },
     emit: (event) => {
       push(IpcChannels.chatEvent, event)
     },
@@ -121,6 +128,7 @@ void app.whenReady().then(async () => {
       return result.canceled ? null : (result.filePaths[0] ?? null)
     },
     settings: services.settings,
+    files: services.files,
     layout: {
       get: () => services.settings.layout,
       set: (layout) => services.settings.setLayout(layout),
@@ -139,6 +147,8 @@ void app.whenReady().then(async () => {
     mainWindow = window
     // Reload, crash or close: deny pending approvals and stop the run.
     cancelOnPageEnd(window.webContents, () => {
+      // The page that expanded those folders is gone; a reloaded one watches its own.
+      services.files.close()
       void services.provider.cancelLogin()
       void chat.stop()
     })
@@ -152,6 +162,7 @@ void app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) openWindow()
   })
   app.on('before-quit', () => {
+    services.files.close()
     void services.provider.cancelLogin()
     void chat.stop()
   })

@@ -7,6 +7,7 @@ import {
   type ThemePreference,
 } from '../shared/ipc'
 import { FEATURE_CHANNELS } from '../shared/ipc-features'
+import { filesChannels, filesPushChannels } from '../shared/ipc-files'
 import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
 import { projectsChannels, type ProjectsState } from '../shared/ipc-projects'
 import type { RunOptions } from './agent'
@@ -24,6 +25,7 @@ import { isTrustedIpcSender, isTrustedSenderFrame } from './security'
 const APP_URL = 'file:///C:/Program%20Files/Desktop%20Agent/resources/app/out/renderer/index.html'
 const appFrame: IpcSenderEvent = { senderFrame: { url: APP_URL, parent: null } }
 const OTHER_CHAT = '6f1c2a4e-8b3d-4c5e-9f7a-1b2c3d4e5f60'
+const ROOT_ID = 'r0123456789abcdef'
 
 function fakeIpc() {
   const handlers = new Map<string, (event: IpcSenderEvent, ...args: unknown[]) => unknown>()
@@ -127,6 +129,15 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       remove: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
       respondApproval: vi.fn(() => true),
     },
+    files: {
+      roots: vi.fn(() => [{ id: ROOT_ID, name: 'granted', path: '/granted' }]),
+      list: vi.fn(() => Promise.resolve({ ok: true as const, entries: [], more: 0 })),
+      watch: vi.fn(() => Promise.resolve()),
+      search: vi.fn(() => Promise.resolve([])),
+      reveal: vi.fn(() => Promise.resolve({ ok: true as const })),
+      copyPath: vi.fn(() => Promise.resolve({ ok: true as const })),
+      reference: vi.fn(() => Promise.resolve({ ok: true as const, text: '@"/granted/a"' })),
+    },
     layout: {
       get: vi.fn(() => ({ ...DEFAULT_LAYOUT })),
       set: vi.fn((layout: unknown) => Promise.resolve(layout as LayoutPrefs)),
@@ -202,6 +213,74 @@ describe('registerIpcHandlers', () => {
           'Invalid layout.',
         )
       expect(services.layout.set).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('files', () => {
+    const at = { rootId: ROOT_ID, rel: 'src/main.ts' }
+    const badLocations = [
+      undefined,
+      null,
+      'C:\\Users\\me\\notes.txt',
+      '/etc/passwd',
+      { rootId: ROOT_ID },
+      { rootId: 'C:\\Users', rel: '' },
+      { rootId: '../r0123456789abcdef', rel: '' },
+      { rootId: ROOT_ID, rel: 7 },
+      { rootId: ROOT_ID, rel: 'x'.repeat(5000) },
+      { rootId: ROOT_ID, rel: '', path: 'C:\\Windows' },
+    ]
+
+    it('lists roots and passes valid locations on', async () => {
+      const { invoke, services } = setup()
+      expect(await invoke(filesChannels.filesRoots, appFrame)).toEqual([
+        { id: ROOT_ID, name: 'granted', path: '/granted' },
+      ])
+      for (const [channel, call] of [
+        [filesChannels.filesList, services.files.list],
+        [filesChannels.filesReveal, services.files.reveal],
+        [filesChannels.filesCopyPath, services.files.copyPath],
+        [filesChannels.filesReference, services.files.reference],
+      ] as const) {
+        await invoke(channel, appFrame, at)
+        expect(call).toHaveBeenCalledWith(at)
+      }
+    })
+
+    it.each([
+      filesChannels.filesList,
+      filesChannels.filesReveal,
+      filesChannels.filesCopyPath,
+      filesChannels.filesReference,
+    ])('%s refuses anything but a root id and a relative path', async (channel) => {
+      const { invoke, services } = setup()
+      for (const bad of badLocations)
+        await expect(invoke(channel, appFrame, bad)).rejects.toThrow('Unknown file.')
+      expect(services.files.list).not.toHaveBeenCalled()
+      expect(services.files.reveal).not.toHaveBeenCalled()
+      expect(services.files.copyPath).not.toHaveBeenCalled()
+      expect(services.files.reference).not.toHaveBeenCalled()
+    })
+
+    it('watches a bounded list of locations', async () => {
+      const { invoke, services } = setup()
+      await invoke(filesChannels.filesWatch, appFrame, [at])
+      expect(services.files.watch).toHaveBeenCalledWith([at])
+      for (const bad of [at, 'src', [at, '/etc'], Array.from({ length: 1000 }, () => at)])
+        await expect(invoke(filesChannels.filesWatch, appFrame, bad)).rejects.toThrow(
+          'Invalid folders to watch.',
+        )
+      expect(services.files.watch).toHaveBeenCalledOnce()
+    })
+
+    it('searches with a bounded string query', async () => {
+      const { invoke, services } = setup()
+      await invoke(filesChannels.filesSearch, appFrame, 'main')
+      expect(services.files.search).toHaveBeenCalledWith('main')
+      for (const bad of [undefined, 7, { q: 'x' }, 'x'.repeat(201)])
+        await expect(invoke(filesChannels.filesSearch, appFrame, bad)).rejects.toThrow(
+          'Invalid search.',
+        )
     })
   })
 
@@ -299,6 +378,7 @@ describe('registerIpcHandlers', () => {
       IpcChannels.approvalRequest,
       IpcChannels.auditStatusChanged,
       IpcChannels.providerLoginStateChanged,
+      filesPushChannels.filesChanged,
     ])
     const expected = [
       ...Object.values(IpcChannels).filter((channel) => !pushes.has(channel)),
