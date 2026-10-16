@@ -84,3 +84,43 @@ export function useLayoutHotkeys(onToggle: (side: LayoutHotkey) => void, disable
     }
   }, [disabled])
 }
+
+/**
+ * Ctrl/Cmd+Alt+\ switches between Chat and Command. Matched like the sidebar toggles
+ * (physical key, no repeat, never AltGraph: AltGr+\ types a character on some layouts).
+ */
+export function matchViewModeHotkey(
+  event: Pick<
+    KeyboardEvent,
+    'code' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'repeat' | 'defaultPrevented'
+  > & { getModifierState?: (key: string) => boolean },
+): boolean {
+  if (event.defaultPrevented || event.repeat || event.shiftKey || !event.altKey) return false
+  if (!(event.ctrlKey || event.metaKey)) return false
+  if (event.getModifierState?.('AltGraph')) return false
+  return event.code === 'Backslash'
+}
+
+/**
+ * The Chat | Command hotkey, in the capture phase so a focused input (the command line
+ * included) cannot swallow it first. Ignored while `disabled` (an approval or a dialog is open).
+ */
+export function useViewModeHotkey(onToggle: () => void, disabled: boolean): void {
+  const latest = useRef(onToggle)
+  useEffect(() => {
+    latest.current = onToggle
+  })
+  useEffect(() => {
+    if (disabled) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!matchViewModeHotkey(event)) return
+      event.preventDefault()
+      event.stopPropagation()
+      latest.current()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [disabled])
+}

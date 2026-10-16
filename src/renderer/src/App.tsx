@@ -10,6 +10,7 @@ import type {
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
+import { CommandBar } from './components/CommandBar'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { FileReferencesProvider } from './components/files/file-references'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -20,10 +21,13 @@ import { LeftSidebar } from './components/shell/LeftSidebar'
 import { RightPanel } from './components/shell/RightPanel'
 import { FilesTab } from './components/shell/tabs/FilesTab'
 import { GitTab } from './components/shell/tabs/GitTab'
+import { ViewModeToggle, type ViewMode } from './components/ViewModeToggle'
 import type { OpenSettings, SettingsSection } from './open-settings'
 import { useTheme } from './theme'
 import { useChat } from './use-chat'
-import { useShortcuts } from './use-shortcuts'
+import { useChatView } from './use-chat-view'
+import { useCommandLine } from './use-command-line'
+import { useShortcuts, useViewModeHotkey } from './use-shortcuts'
 
 const PROVIDER_NAMES: Record<ProviderId, string> = {
   'codex-subscription': 'Codex · ChatGPT',
@@ -93,6 +97,33 @@ export function App(): React.JSX.Element {
     setSettingsSection(section)
   }
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  const commandRef = useRef<HTMLInputElement>(null)
+  const [view, setView] = useChatView(chat.state.history.activeId, chat.state.switching)
+  const commandLine = useCommandLine(grants?.roots ?? [])
+  const [commandSending, setCommandSending] = useState(false)
+  const focusInput = (mode: ViewMode): void => {
+    // The input mounts (or shows) once the view has rendered.
+    requestAnimationFrame(() => {
+      if (mode === 'command') commandRef.current?.focus()
+      else composerRef.current?.focus()
+    })
+  }
+  const changeView = (mode: ViewMode): void => {
+    setView(mode)
+    focusInput(mode)
+  }
+  const runCommand = async (): Promise<void> => {
+    const command = commandLine.draft.trim()
+    const cwd = commandLine.cwd
+    if (!command || !cwd || chat.state.running || chat.state.switching || commandSending) return
+    setCommandSending(true)
+    try {
+      commandLine.remember(command)
+      if (await chat.runCommand(command, cwd)) commandLine.setDraft('')
+    } finally {
+      setCommandSending(false)
+    }
+  }
   const [approval, ...queued] = chat.state.approvals
   const shell = useRef<ShellHandle>(null)
   // A chat-list dialog (delete, fork, project) is open: shortcuts wait for it.
@@ -114,11 +145,17 @@ export function App(): React.JSX.Element {
       },
       focusComposer: () => {
         setSettingsSection(null)
-        // The message box mounts when the chat view is showing.
-        requestAnimationFrame(() => composerRef.current?.focus())
+        // The message box (or command line) mounts when the chat view is showing.
+        focusInput(view)
       },
     },
     approval !== undefined || listDialog,
+  )
+  useViewModeHotkey(
+    () => {
+      if (!chat.state.switching) changeView(view === 'chat' ? 'command' : 'chat')
+    },
+    approval !== undefined || settingsSection !== null || listDialog,
   )
   const providerName = provider ? PROVIDER_NAMES[provider.provider] : 'Loading provider…'
   const switchProvider = async (next: ProviderId): Promise<void> => {
@@ -203,6 +240,9 @@ export function App(): React.JSX.Element {
           onOpenSettings={() => {
             openSettings()
           }}
+          actions={
+            <ViewModeToggle view={view} onChange={changeView} disabled={chat.state.switching} />
+          }
         />
 
         {audit && !audit.healthy && (
@@ -227,6 +267,31 @@ export function App(): React.JSX.Element {
             providerNames={PROVIDER_NAMES}
             onSwitchProvider={switchProvider}
             composerRef={composerRef}
+            platform={appInfo?.platform}
+            commandBar={
+              view === 'command' ? (
+                <CommandBar
+                  draft={commandLine.draft}
+                  onDraft={commandLine.setDraft}
+                  inputRef={commandRef}
+                  roots={grants?.roots ?? []}
+                  cwd={commandLine.cwd}
+                  onCwd={commandLine.setCwd}
+                  history={commandLine.history}
+                  platform={appInfo?.platform}
+                  running={chat.state.running}
+                  switching={chat.state.switching}
+                  sending={commandSending}
+                  onSubmit={() => {
+                    void runCommand()
+                  }}
+                  onStop={() => {
+                    void chat.stop()
+                  }}
+                  onOpenSettings={openSettings}
+                />
+              ) : undefined
+            }
             notice={
               loaded && provider?.provider === 'anthropic-api' && (!keySaved || !hasGrants) ? (
                 <SetupGuide

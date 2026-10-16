@@ -6,6 +6,7 @@ import {
   type ChatEvent,
   type ThemePreference,
 } from '../shared/ipc'
+import { commandChannels } from '../shared/ipc-command'
 import { FEATURE_CHANNELS } from '../shared/ipc-features'
 import { filesChannels, filesPushChannels } from '../shared/ipc-files'
 import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
@@ -129,6 +130,9 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       remove: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
       respondApproval: vi.fn(() => true),
     },
+    command: {
+      run: vi.fn(() => Promise.resolve({ ok: true as const })),
+    },
     files: {
       roots: vi.fn(() => [{ id: ROOT_ID, name: 'granted', path: '/granted' }]),
       list: vi.fn(() => Promise.resolve({ ok: true as const, entries: [], more: 0 })),
@@ -213,6 +217,38 @@ describe('registerIpcHandlers', () => {
           'Invalid layout.',
         )
       expect(services.layout.set).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('command', () => {
+    it('hands a typed command and folder to the command service', async () => {
+      const { invoke, services } = setup()
+      expect(await invoke(commandChannels.commandRun, appFrame, 'dir', 'C:\\work')).toEqual({
+        ok: true,
+      })
+      expect(services.command.run).toHaveBeenCalledExactlyOnceWith('dir', 'C:\\work')
+    })
+
+    it('refuses anything but a non-empty command and a folder string', async () => {
+      const { invoke, services } = setup()
+      const bad: unknown[][] = [
+        [],
+        ['dir'],
+        ['dir', 'C:\\work', 'extra'],
+        ['', 'C:\\work'],
+        ['   ', 'C:\\work'],
+        ['x'.repeat(8001), 'C:\\work'],
+        [{ command: 'dir' }, 'C:\\work'],
+        ['dir', ''],
+        ['dir', 7],
+        ['dir', 'C:\\work\0'],
+        ['dir', ['C:\\work']],
+      ]
+      for (const args of bad)
+        await expect(invoke(commandChannels.commandRun, appFrame, ...args)).rejects.toThrow(
+          /Invalid (command|folder)\./,
+        )
+      expect(services.command.run).not.toHaveBeenCalled()
     })
   })
 
@@ -400,6 +436,14 @@ describe('registerIpcHandlers', () => {
     expect(services.apiKey.set).not.toHaveBeenCalled()
     expect(services.grants.remove).not.toHaveBeenCalled()
     for (const fn of Object.values(services.projects)) expect(fn).not.toHaveBeenCalled()
+  })
+
+  it.each(untrusted)('never runs a command for an untrusted frame (%j)', async (event) => {
+    const { invoke, services } = setup()
+    await expect(invoke(commandChannels.commandRun, event, 'dir', 'C:\\work')).rejects.toThrow(
+      'Rejected IPC from untrusted frame',
+    )
+    expect(services.command.run).not.toHaveBeenCalled()
   })
 
   describe('API key', () => {

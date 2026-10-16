@@ -4,7 +4,11 @@ type ToolItem = Extract<ViewItem, { kind: 'tool' }>
 type UserItem = Extract<ViewItem, { kind: 'user' }>
 type AssistantItem = Extract<ViewItem, { kind: 'assistant' }>
 
-export type Entry = { kind: 'item'; item: AssistantItem } | { kind: 'tools'; tools: ToolItem[] }
+export type Entry =
+  | { kind: 'item'; item: AssistantItem }
+  | { kind: 'tools'; tools: ToolItem[] }
+  /** A command the user typed in the command bar: shown on its own, not as agent work. */
+  | { kind: 'command'; item: ToolItem }
 
 /** One prompt and everything the agent did after it, up to the next prompt. */
 export interface Turn {
@@ -13,10 +17,17 @@ export interface Turn {
   entries: Entry[]
 }
 
-/** Consecutive tool calls become one activity group. */
+/**
+ * Consecutive tool calls become one activity group. A command the user ran stands alone
+ * (and splits the group around it); it is not a prompt, so it never starts a turn.
+ */
 export function groupItems(items: Exclude<ViewItem, UserItem>[]): Entry[] {
   const entries: Entry[] = []
   for (const item of items) {
+    if (item.kind === 'tool' && item.origin === 'user-terminal') {
+      entries.push({ kind: 'command', item })
+      continue
+    }
     if (item.kind === 'assistant') {
       entries.push({ kind: 'item', item })
       continue

@@ -30,6 +30,7 @@ let layout = {
   rightTab: 'files',
 }
 const layoutSaves = []
+const commandRuns = []
 const loginCalls = { open: 0, copy: 0, codes: [] }
 
 // The Files tree: one granted folder with every kind of entry the tree draws.
@@ -287,6 +288,12 @@ contextBridge.exposeInMainWorld('desktopApi', {
       return Promise.resolve({ ok: true })
     },
   },
+  command: {
+    run: (command, cwd) => {
+      commandRuns.push({ command, cwd })
+      return Promise.resolve({ ok: true })
+    },
+  },
   layout: {
     get: () => Promise.resolve(layout),
     set: (next) => {
@@ -409,6 +416,8 @@ contextBridge.exposeInMainWorld('e2e', {
   projectCalls: () => JSON.parse(JSON.stringify(projectCalls)),
   // What the renderer saved with layout.set, in order.
   layoutSaves: () => JSON.parse(JSON.stringify(layoutSaves)),
+  // What the renderer passed to command.run, in order.
+  commandRuns: () => commandRuns.slice(),
   // Change what a folder lists and push the change like main's watcher does.
   setFolder: (rel, entries) => {
     files = { ...files, [rel]: entries }
