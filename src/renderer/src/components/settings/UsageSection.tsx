@@ -26,18 +26,20 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
   const [usage, setUsage] = useState<ProviderAllowance | null>(null)
   const [models, setModels] = useState<ProviderModels | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [modelError, setModelError] = useState<string | null>(null)
   const [refresh, setRefresh] = useState(0)
   useEffect(() => {
     let live = true
     api.provider.allowance().then(
       (result) => {
         if (!live) return
-        if (result.ok && result.value.provider === provider) {
+        if (result.ok && result.value.provider !== provider) return
+        if (result.ok) {
           setUsage(result.value)
           setError(null)
         } else {
           setUsage(null)
-          setError(!result.ok ? result.failure.message : 'Usage unavailable right now')
+          setError(result.failure.message)
         }
       },
       () => {
@@ -50,11 +52,20 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
     if (provider === 'codex-subscription')
       api.provider.models().then(
         (result) => {
-          if (live && result.ok && result.value.provider === provider) setModels(result.value)
-          else if (live) setModels(null)
+          if (!live || (result.ok && result.value.provider !== provider)) return
+          if (result.ok) {
+            setModels(result.value)
+            setModelError(null)
+          } else {
+            setModels(null)
+            setModelError(result.failure.message)
+          }
         },
         () => {
-          if (live) setModels(null)
+          if (live) {
+            setModels(null)
+            setModelError('Could not load models. Refresh to try again.')
+          }
         },
       )
     return () => {
@@ -116,6 +127,7 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
       )}
       {provider === 'codex-subscription' && (
         <>
+          {modelError && <p className="settings-hint">{modelError}</p>}
           <label htmlFor="codex-model">Codex model</label>
           <select
             id="codex-model"

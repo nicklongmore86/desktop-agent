@@ -15,6 +15,37 @@ const allowance: ProviderAllowance = {
   lastError: null,
 }
 describe('Accounts usage', () => {
+  it('explains a failed model lookup and recovers on refresh', async () => {
+    const { api } = fakeApi()
+    api.provider.models.mockResolvedValueOnce({
+      ok: false,
+      failure: { code: 'model_unavailable', message: 'Models are unavailable right now.' },
+    })
+    render(
+      <ApiContext value={api}>
+        <UsageSection provider="codex-subscription" />
+      </ApiContext>,
+    )
+    expect(await screen.findByText('Models are unavailable right now.')).toBeTruthy()
+    expect(screen.getByLabelText('Codex model')).toHaveProperty('disabled', true)
+    api.provider.models.mockResolvedValue({
+      ok: true,
+      value: {
+        provider: 'codex-subscription',
+        options: [],
+        selectedModel: null,
+        savedModel: null,
+        defaultModel: null,
+        resolvedModel: null,
+      },
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => {
+      expect(screen.queryByText('Models are unavailable right now.')).toBeNull()
+    })
+    expect(screen.getByLabelText('Codex model')).toHaveProperty('disabled', false)
+  })
+
   it('shows advisory usage and refreshes a limited window without gating anything', async () => {
     const { api } = fakeApi()
     api.provider.allowance.mockResolvedValue({
