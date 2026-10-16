@@ -9,7 +9,12 @@ import type {
 
 /** A chat item as shown: saved items, plus live ones tagged with their run and turn. */
 export type ViewItem =
-  | Extract<ChatItem, { kind: 'user' | 'tool' }>
+  | Extract<ChatItem, { kind: 'user' }>
+  | (Extract<ChatItem, { kind: 'tool' }> & {
+      /** Live calls only: when the call began and when its result arrived (epoch ms). */
+      startedAt?: number
+      endedAt?: number
+    })
   | {
       kind: 'assistant'
       id: string
@@ -161,7 +166,14 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
         ...state,
         items: [
           ...state.items,
-          { kind: 'tool', id: event.id, name: event.name, input: event.input, result: null },
+          {
+            kind: 'tool',
+            id: event.id,
+            name: event.name,
+            input: event.input,
+            result: null,
+            startedAt: Date.now(),
+          },
         ],
       }
     case 'tool_result':
@@ -169,7 +181,11 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
         ...state,
         items: state.items.map((item) =>
           item.kind === 'tool' && item.id === event.id
-            ? { ...item, result: { content: event.content, isError: event.isError } }
+            ? {
+                ...item,
+                result: { content: event.content, isError: event.isError },
+                endedAt: Date.now(),
+              }
             : item,
         ),
       }
