@@ -4,7 +4,7 @@ import { readFileSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeContext, makeSandbox, type Sandbox } from '../permissions/test-support'
 import { PathGuard } from '../permissions/guard'
 import {
@@ -634,26 +634,16 @@ describe('shellEnv', () => {
 
 // Real processes, on whichever OS runs the tests (PowerShell on the Windows CI runner).
 describe('run_shell with a real shell', () => {
-  // The first command on a fresh Windows runner can take well over 30 s; pay that once
-  // here rather than inside a test's budget.
-  beforeAll(async () => {
-    const warm = await makeSandbox()
-    try {
-      const r = await toolHarness(warm)
-        .tool('run_shell')
-        .execute({ command: 'exit 0', cwd: warm.root }, fakeContext(true).ctx)
-      expect(r.content).toMatch(/^exit code: 0/)
-    } finally {
-      await warm.cleanup()
-    }
-  }, 150_000)
+  // A fresh Windows runner is busy for its first minutes: a one-line PowerShell command
+  // can take 50 s there.
+  const SHELL_MS = 120_000
 
   // Windows can briefly refuse to remove a folder a process has just stopped using.
   afterEach(async () => {
     await fs.rm(sb.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   }, 30_000)
 
-  it('runs a command in the cwd', { timeout: 30_000 }, async () => {
+  it('runs a command in the cwd', { timeout: SHELL_MS }, async () => {
     const h = toolHarness(sb)
     const command = process.platform === 'win32' ? 'Write-Output (Get-Location).Path' : 'pwd'
     const r = await h.tool('run_shell').execute({ command, cwd: sb.root }, fakeContext(true).ctx)
@@ -662,7 +652,7 @@ describe('run_shell with a real shell', () => {
     expect(r.content.toLowerCase()).toContain(sb.root.toLowerCase())
   })
 
-  it('kills a long-running command on abort', { timeout: 30_000 }, async () => {
+  it('kills a long-running command on abort', { timeout: SHELL_MS }, async () => {
     const h = toolHarness(sb)
     const { ctx, controller } = fakeContext(true)
     const started = Date.now()
@@ -750,7 +740,7 @@ describe('run_shell with a real shell', () => {
 
   const nonAscii = 'café Ünïcödé 日本語 中文 한국어 😀'
 
-  it('returns non-ASCII stdout and stderr as UTF-8', { timeout: 30_000 }, async () => {
+  it('returns non-ASCII stdout and stderr as UTF-8', { timeout: SHELL_MS }, async () => {
     const h = toolHarness(sb)
     const command =
       process.platform === 'win32'
@@ -764,7 +754,7 @@ describe('run_shell with a real shell', () => {
     expect(content).not.toContain('\uFFFD')
   })
 
-  it('writes errors to stderr as plain text', { timeout: 30_000 }, async () => {
+  it('writes errors to stderr as plain text', { timeout: SHELL_MS }, async () => {
     // The progress text is built at run time: error messages repeat the script itself.
     const h = toolHarness(sb)
     const command =
@@ -778,7 +768,7 @@ describe('run_shell with a real shell', () => {
     expect(r.content).not.toMatch(/CLIXML|<Objs|<S S=|_x[0-9A-F]{4}_|busy/)
   })
 
-  it('runs the approved command exactly, quotes and all', { timeout: 30_000 }, async () => {
+  it('runs the approved command exactly, quotes and all', { timeout: SHELL_MS }, async () => {
     const h = toolHarness(sb)
     const { ctx, requests } = fakeContext(true)
     // A backslash before a closing quote is where -Command quoting used to go wrong.
@@ -801,7 +791,7 @@ describe('run_shell with a real shell', () => {
     )
   })
 
-  it("does not leak the app's credentials into the shell", { timeout: 30_000 }, async () => {
+  it("does not leak the app's credentials into the shell", { timeout: SHELL_MS }, async () => {
     const h = toolHarness(sb, {
       env: { ...process.env, ANTHROPIC_API_KEY: 'sk-leak', DESKTOP_AGENT_SECRET: 'leak2' },
     })
@@ -818,7 +808,7 @@ describe('run_shell with a real shell', () => {
 
   it.runIf(process.platform === 'win32')(
     'ignores a powershell.exe planted in the working folder',
-    { timeout: 30_000 },
+    { timeout: SHELL_MS },
     async () => {
       const root = windowsRoot(process.env)
       await fs.copyFile(`${root}\\System32\\whoami.exe`, path.join(sb.root, 'powershell.exe'))
