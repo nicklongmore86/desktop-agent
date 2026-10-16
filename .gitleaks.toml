@@ -1,0 +1,15 @@
+# gitleaks configuration for Desktop Agent.
+#
+# Extends the default ruleset. The unit tests for secret redaction, git
+# parsing and chat organization deliberately embed fake credentials
+# (e.g. "sk-abc...", "AKIAABCDEFGHIJKLMNOP", "sk-ant-api03-abc...",
+# "https://user:pass@claude.ai") to prove they are detected and redacted.
+# None of these are real secrets, so findings are allowlisted for test
+# files only; every other path is still scanned with the full ruleset.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deliberate fake secrets in unit-test fixtures"
+paths = ['''.*\.test\.ts$''']
