@@ -3,7 +3,7 @@
  * durations are defined. Components use `var(--…)` and never hard-code them.
  *
  *   --color-*     colour roles (light and dark; see below)
- *   --radius-*    corner radii: sm 6, md 10, lg 16, pill
+ *   --radius-*    corner radii: xs 3 (inline chips), sm 6, md 10, lg 16, pill
  *   --space-*     4px scale: 1=4  2=8  3=12  4=16  6=24  8=32
  *   --font-*      families and the type scale: xs 12, sm 13, base 14, md 16, lg 20, xl 24
  *   --duration-*  motion: fast 120ms, base 200ms
@@ -61,6 +61,7 @@
   --shadow-raised: 0 4px 24px rgb(0 0 0 / 6%);
 
   /* Radius */
+  --radius-xs: 3px;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;

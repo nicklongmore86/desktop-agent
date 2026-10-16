@@ -90,3 +90,19 @@ describe('theme blocks', () => {
     expect(tokens).toMatch(/:root\[data-theme='dark'\]\s*\{\s*color-scheme:\s*dark;/)
   })
 })
+
+describe('stylesheets use tokens', () => {
+  const sheets = import.meta.glob<string>(['./base.css', './components.css'], {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  })
+
+  it.each(Object.entries(sheets))('%s has no colour or radius literals', (_file, css) => {
+    const code = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(code).not.toMatch(/#[0-9a-f]{3,8}\b/i)
+    expect(code).not.toMatch(/\b(?:rgba?|hsla?)\(/i)
+    for (const match of code.matchAll(/border(?:-[a-z]+)*-radius:\s*([^;]+);/g))
+      expect(match[1], match[0]).toMatch(/^var\(--radius-/)
+  })
+})
