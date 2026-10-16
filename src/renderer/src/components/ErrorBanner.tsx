@@ -2,11 +2,11 @@ import type { ChatErrorCode } from '../../../shared/ipc'
 import type { Banner } from '../chat-state'
 
 const TITLES: Record<ChatErrorCode, string> = {
-  authentication: 'API key rejected',
-  permission: 'Access denied by the API',
+  authentication: 'Authentication failed',
+  permission: 'Access denied',
   invalid_request: 'Request rejected',
   rate_limit: 'Rate limit reached',
-  overloaded: 'Claude is overloaded',
+  overloaded: 'Provider is overloaded',
   network: 'Connection problem',
   api: 'Request failed',
   aborted: 'Stopped',

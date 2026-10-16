@@ -139,7 +139,7 @@ describe('Codex app-server adapter', () => {
     expect(frames.find((f) => f['method'] === 'thread/start')?.['params']).toMatchObject({
       environments: [],
       ephemeral: true,
-      dynamicTools: [{ name: 'read_file' }],
+      dynamicTools: [{ type: 'function', name: 'read_file' }],
     })
     expect(frames.find((f) => f['id'] === 'tool-request')?.['result']).toEqual({
       contentItems: [{ type: 'inputText', text: 'guarded result' }],

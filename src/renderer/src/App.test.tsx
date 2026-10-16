@@ -90,10 +90,10 @@ describe('chat view', () => {
   })
 
   it.each([
-    ['authentication', 'API key rejected', true],
-    ['permission', 'Access denied by the API', true],
+    ['authentication', 'Authentication failed', true],
+    ['permission', 'Access denied', true],
     ['rate_limit', 'Rate limit reached', false],
-    ['overloaded', 'Claude is overloaded', false],
+    ['overloaded', 'Provider is overloaded', false],
     ['network', 'Connection problem', false],
     ['invalid_request', 'Request rejected', false],
     ['max_tokens', 'Reply too long', false],
@@ -386,4 +386,26 @@ describe('provider switch', () => {
     expect(screen.getByText('Old provider history')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'New chat' })).toHaveProperty('disabled', false)
   })
+})
+
+it('labels Codex replies and progress from the selected provider and shows live folder access', async () => {
+  const { pushChat, user, api } = await renderApp({
+    provider: { provider: 'codex-subscription', state: 'ready', message: 'Signed in' },
+  })
+  expect(screen.getByRole('combobox', { name: 'Active provider' })).toHaveProperty(
+    'value',
+    'codex-subscription',
+  )
+  expect(screen.getByText('1 folder granted')).toBeTruthy()
+  expect(screen.getByText('C:\\Users\\me\\Projects')).toBeTruthy()
+  act(() => {
+    pushChat({ type: 'run_started', runId: 'codex-run', text: 'Scan Downloads' })
+  })
+  expect(screen.getByText('Codex · ChatGPT is working…')).toBeTruthy()
+  expect(screen.queryByText('Claude is working…')).toBeNull()
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Active provider' }),
+    'claude-subscription',
+  )
+  expect(api.provider.set).toHaveBeenCalledWith('claude-subscription')
 })

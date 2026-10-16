@@ -5,6 +5,8 @@ import { Markdown } from './Markdown'
 import { ToolCard } from './ToolCard'
 
 export interface ChatViewProps {
+  providerName: string
+  grantedFolders: number
   state: ChatViewState
   onSend: (text: string) => Promise<boolean>
   onStop: () => Promise<void>
@@ -18,6 +20,8 @@ export interface ChatViewProps {
 
 export function ChatView({
   state,
+  providerName,
+  grantedFolders,
   onSend,
   onStop,
   onNewChat,
@@ -49,15 +53,10 @@ export function ChatView({
   return (
     <div className="chat">
       <div className="chat-toolbar">
-        <button
-          type="button"
-          disabled={state.switching}
-          onClick={() => {
-            void onNewChat()
-          }}
-        >
-          New chat
-        </button>
+        <span className="provider-badge">{providerName}</span>
+        <span className="folder-count">
+          {grantedFolders} {grantedFolders === 1 ? 'folder' : 'folders'} granted
+        </span>
       </div>
 
       {state.storageWarning && (
@@ -88,7 +87,30 @@ export function ChatView({
           </li>
         )}
         {state.items.length === 0 && !state.switching && (
-          <li className="messages-empty">Ask Claude to look at or change files in your folders.</li>
+          <li className="messages-empty welcome">
+            <span className="welcome-eyebrow">YOUR FILES, WITH YOUR PERMISSION</span>
+            <h2>What would you like to work on?</h2>
+            <p>
+              Explore a folder, find a document, or make a change.
+              <br />
+              You approve every write and command.
+            </p>
+            <div className="starter-prompts">
+              {['Show my granted folders', 'Scan my Downloads folder', 'Help me find a file'].map(
+                (text) => (
+                  <button
+                    type="button"
+                    key={text}
+                    onClick={() => {
+                      setDraft(text)
+                    }}
+                  >
+                    {text} ↗
+                  </button>
+                ),
+              )}
+            </div>
+          </li>
         )}
         {state.items.map((item) => {
           if (item.kind === 'tool') {
@@ -107,6 +129,7 @@ export function ChatView({
           }
           return (
             <li key={item.id} className="message message-assistant">
+              <span className="message-author">{providerName}</span>
               <Markdown text={item.text} />
               {item.stopped && <p className="message-note">Stopped. This reply was not saved.</p>}
             </li>
@@ -114,7 +137,7 @@ export function ChatView({
         })}
         {state.running && (
           <li className="message-progress" role="status" aria-live="polite">
-            Claude is working…
+            {providerName} is working…
           </li>
         )}
         <li ref={listEnd} aria-hidden="true" />
@@ -132,47 +155,52 @@ export function ChatView({
       )}
       {notice}
 
-      <form
-        className="composer"
-        onSubmit={(event) => {
-          void send(event)
-        }}
-      >
-        <textarea
-          aria-label="Message"
-          placeholder="Type a message…"
-          rows={2}
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.target.value)
+      <div className="composer-dock">
+        <form
+          className="composer"
+          onSubmit={(event) => {
+            void send(event)
           }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              event.currentTarget.form?.requestSubmit()
-            }
-          }}
-        />
-        {state.running ? (
-          <button
-            type="button"
-            className="button-danger"
-            onClick={() => {
-              void onStop()
+        >
+          <textarea
+            aria-label="Message"
+            placeholder="Ask about your files…"
+            rows={2}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value)
             }}
-          >
-            Stop
-          </button>
-        ) : (
-          <button
-            type="submit"
-            className="button-primary"
-            disabled={!draft.trim() || sending || state.switching}
-          >
-            Send
-          </button>
-        )}
-      </form>
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                event.currentTarget.form?.requestSubmit()
+              }
+            }}
+          />
+          {state.running ? (
+            <button
+              type="button"
+              className="button-danger"
+              onClick={() => {
+                void onStop()
+              }}
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="button-primary"
+              disabled={!draft.trim() || sending || state.switching}
+            >
+              Send
+            </button>
+          )}
+        </form>
+        <p className="composer-hint">
+          Enter to send · Shift + Enter for a new line · {providerName}
+        </p>
+      </div>
     </div>
   )
 }

@@ -109,6 +109,7 @@ it('pinned native Codex accepts isolated dynamic tools without API keys or sign-
       sandbox: 'read-only',
       dynamicTools: [
         {
+          type: 'function',
           name: 'guarded_read',
           description: 'Desktop guard',
           inputSchema: { type: 'object', properties: {} },

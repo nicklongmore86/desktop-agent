@@ -17,6 +17,7 @@ export interface FakeApiOptions {
   key?: ApiKeyStatus
   grants?: GrantsState
   chat?: ChatState
+  provider?: ProviderStatus
   audit?: AuditStatus
 }
 
@@ -48,7 +49,11 @@ export function fakeApi(options: FakeApiOptions = {}) {
       }
     }
 
-  let provider: ProviderStatus = { provider: 'anthropic-api', state: 'ready', message: 'API mode' }
+  let provider: ProviderStatus = options.provider ?? {
+    provider: 'anthropic-api',
+    state: 'ready',
+    message: 'API mode',
+  }
   const api = {
     provider: {
       get: vi.fn(() => Promise.resolve(provider)),

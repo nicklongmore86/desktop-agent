@@ -74,6 +74,11 @@ export class PathGuard {
     this.fs = options.fs ?? nodeGuardFs
   }
 
+  /** A fresh copy for discovery; callers must still resolve every path before access. */
+  grantedRoots(): readonly string[] {
+    return [...this.roots()]
+  }
+
   async resolve(input: string, options: ResolveOptions = {}): Promise<Resolution> {
     const P = this.path
     const syntax = checkPathSyntax(input, this.platform)
