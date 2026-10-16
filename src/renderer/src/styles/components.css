@@ -162,9 +162,10 @@
   align-items: center;
   gap: var(--space-3);
   margin: var(--space-2) var(--space-4) 0;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-sm);
 }
 
 .banner-error {
@@ -183,6 +184,18 @@
 
 .banner-text {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.banner-icon {
+  display: flex;
+  flex: none;
+  color: var(--color-danger-text);
+}
+
+.banner-actions button {
+  font-size: var(--font-size-sm);
 }
 
 .banner-actions {
@@ -243,7 +256,12 @@
   line-height: var(--line-height-body);
 }
 
+.messages > li {
+  flex-shrink: 0;
+}
+
 .message {
+  position: relative;
   max-width: 100%;
   overflow-wrap: anywhere;
 }
@@ -251,11 +269,46 @@
 .message-user {
   align-self: flex-end;
   max-width: 85%;
+}
+
+.message-user .message-body {
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-lg);
   background: var(--color-surface-2);
   color: var(--color-text);
   white-space: pre-wrap;
+}
+
+/* Copy and Retry: shown on hover and while focus is inside the message. */
+.message-actions {
+  display: flex;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease);
+}
+
+.message-user .message-actions {
+  justify-content: flex-end;
+}
+
+.message:hover .message-actions,
+.message:focus-within .message-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .message-actions {
+    opacity: 1;
+  }
+}
+
+.message-actions button {
+  padding: 2px var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .message-assistant {
@@ -275,10 +328,52 @@
   font-weight: 600;
 }
 
-.messages-empty,
-.message-progress {
+.messages-empty {
   align-self: center;
   color: var(--color-text-muted);
+}
+
+.message-progress {
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
 }
 
 .message-note {
@@ -365,6 +460,146 @@
   background: var(--color-code-bg);
 }
 
+.code-block {
+  margin: var(--space-3) 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-code-bg);
+}
+
+.markdown .code-block pre {
+  margin: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.code-block-copy {
+  padding: 2px var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.md-table {
+  margin: var(--space-3) 0;
+  overflow-x: auto;
+}
+
+.md-table table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-base);
+}
+
+.md-table th,
+.md-table td {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+
+.md-table th {
+  background: var(--color-surface-1);
+  font-weight: 600;
+}
+
+.markdown ul.contains-task-list {
+  padding-left: var(--space-2);
+  list-style: none;
+}
+
+.markdown .task-list-item input {
+  margin: 0 var(--space-2) 0 0;
+}
+
+.markdown blockquote {
+  margin: var(--space-3) 0;
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+/* Syntax highlighting (rehype-highlight classes; colours are tokens). */
+.hljs-comment,
+.hljs-quote {
+  color: var(--color-hl-comment);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type,
+.hljs-built_in {
+  color: var(--color-hl-keyword);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--color-hl-string);
+}
+
+.hljs-number {
+  color: var(--color-hl-number);
+}
+
+.hljs-title,
+.hljs-section {
+  color: var(--color-hl-title);
+}
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-name,
+.hljs-tag,
+.hljs-property,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--color-hl-attr);
+}
+
+.hljs-meta,
+.hljs-doctag {
+  color: var(--color-hl-meta);
+}
+
+.hljs-addition {
+  background: var(--color-diff-add-bg);
+  color: var(--color-diff-add-text);
+}
+
+.hljs-deletion {
+  background: var(--color-diff-del-bg);
+  color: var(--color-diff-del-text);
+}
+
+.hljs-strong {
+  font-weight: 700;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
 .markdown :not(pre) > code {
   padding: 1px var(--space-1);
   border-radius: var(--radius-sm);
@@ -390,7 +625,7 @@
 
 .tool-card summary {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
@@ -440,6 +675,78 @@
   white-space: pre;
 }
 
+/* Activity: consecutive tool calls in one collapsible block */
+
+.activity-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.activity-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--duration-fast) var(--ease);
+}
+
+.activity-toggle[aria-expanded='true'] .activity-chevron {
+  transform: rotate(45deg);
+}
+
+.activity-errors {
+  color: var(--color-danger-text);
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0 var(--space-3);
+  padding: 0 0 0 var(--space-3);
+  border-left: 2px solid var(--color-border);
+  list-style: none;
+}
+
+.activity-list[hidden] {
+  display: none;
+}
+
+.status-icon {
+  flex: none;
+  stroke: currentColor;
+}
+
+.status-icon-running {
+  color: var(--color-accent-text);
+  animation: status-spin 0.9s linear infinite;
+}
+
+.status-icon-done {
+  color: var(--color-success-text);
+}
+
+.status-icon-error {
+  color: var(--color-danger-text);
+}
+
+.status-icon-no-result {
+  color: var(--color-text-muted);
+}
+
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Composer */
 
 .composer-dock {
@@ -449,27 +756,93 @@
 
 .composer {
   display: flex;
-  align-items: flex-end;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-control);
   border-radius: var(--radius-lg);
   background: var(--color-surface-1);
   box-shadow: var(--shadow-raised);
 }
 
+.composer:focus-within {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
 .composer textarea {
-  flex: 1;
+  width: 100%;
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-1);
   border: none;
   background: transparent;
   resize: none;
 }
 
-.composer button {
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-md);
+/* The composer shows the focus ring for its textarea. */
+.composer textarea:focus-visible {
+  outline: none;
+}
+
+.composer-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* Pickers wrap onto a second line on narrow windows instead of disappearing. */
+.composer-pickers {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.composer-select {
+  max-width: 100%;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+}
+
+.composer-note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.usage-chip {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.usage-warning {
+  border-color: var(--color-warning);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.usage-limited {
+  border-color: var(--color-danger);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.composer-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: var(--radius-pill);
 }
 
 .composer-hint {
@@ -477,6 +850,35 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   text-align: center;
+}
+
+/* Toast: a short confirmation ("Copied") */
+
+.toast-region {
+  position: fixed;
+  right: 0;
+  bottom: var(--space-8);
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.toast {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--color-text);
+  color: var(--color-surface-0);
+  font-size: var(--font-size-sm);
+  box-shadow: var(--shadow-raised);
+  animation: toast-in var(--duration-base) var(--ease);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 /* Approvals */
@@ -789,6 +1191,10 @@
     max-width: 94%;
   }
 
+  .composer {
+    padding: var(--space-2);
+  }
+
   .composer-hint {
     font-size: var(--font-size-xs);
   }
@@ -805,5 +1211,36 @@
 
   .approval {
     padding: var(--space-3);
+  }
+}
+
+/*
+ * Windows High Contrast: author colours are replaced by the user's palette, so
+ * the things that carry meaning without colour need system colours here.
+ * Flagged characters in approval text stay solid and outlined; the focus ring
+ * stays visible on every surface.
+ */
+@media (forced-colors: active) {
+  .unsafe-char {
+    border: 1px solid CanvasText;
+    background: Highlight;
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
+
+  :focus-visible,
+  .composer:focus-within {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+
+  .status-icon {
+    forced-color-adjust: none;
+    stroke: CanvasText;
+  }
+
+  .usage-warning,
+  .usage-limited {
+    border: 2px solid CanvasText;
   }
 }

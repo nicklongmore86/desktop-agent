@@ -14,7 +14,11 @@ const resolve = (value) => () => Promise.resolve(value)
 let provider = { provider: 'anthropic-api', state: 'ready', message: 'API mode' }
 let loginState = { provider: null, active: false, url: null, result: null }
 let theme = 'system'
+let stopCalls = 0
 const loginCalls = { open: 0, copy: 0, codes: [] }
+let allowance = { plan: null, state: 'unknown', resetsAt: null, windows: [], lastError: null }
+let codexModels = []
+let savedCodexModel = null
 const chatState = { items: [], running: false, loadError: null }
 const model = {
   model: 'claude-sonnet-5-5',
@@ -22,8 +26,30 @@ const model = {
   options: [{ id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }],
 }
 
+const modelsResult = () => {
+  const options = provider.provider === 'codex-subscription' ? codexModels : []
+  return {
+    ok: true,
+    value: {
+      provider: provider.provider,
+      options,
+      selectedModel: savedCodexModel ?? options[0]?.id ?? null,
+      savedModel: savedCodexModel,
+      defaultModel: options[0]?.id ?? null,
+      resolvedModel: options[0]?.id ?? null,
+    },
+  }
+}
+
 contextBridge.exposeInMainWorld('desktopApi', {
   provider: {
+    models: () => Promise.resolve(modelsResult()),
+    setModel: (next) => {
+      savedCodexModel = next
+      return Promise.resolve(modelsResult())
+    },
+    allowance: () =>
+      Promise.resolve({ ok: true, value: { provider: provider.provider, ...allowance } }),
     get: () => Promise.resolve(provider),
     set: (next) => {
       provider = { provider: next, state: 'ready', message: 'Ready.' }
@@ -67,7 +93,10 @@ contextBridge.exposeInMainWorld('desktopApi', {
   chat: {
     load: resolve(chatState),
     send: resolve({ ok: true }),
-    stop: resolve(undefined),
+    stop: () => {
+      stopCalls += 1
+      return Promise.resolve()
+    },
     newChat: resolve(chatState),
   },
   approvals: {
@@ -100,6 +129,13 @@ contextBridge.exposeInMainWorld('e2e', {
   setProvider: (next) => {
     provider = next
   },
+  // What provider.allowance() answers (without `provider`), and the Codex model list.
+  setAllowance: (next) => {
+    allowance = next
+  },
+  setCodexModels: (options) => {
+    codexModels = options
+  },
   // Set what provider.loginState() answers, and push it like main does.
   pushLoginState: (state) => {
     loginState = state
@@ -107,5 +143,6 @@ contextBridge.exposeInMainWorld('e2e', {
   },
   loginCalls: () => ({ ...loginCalls, codes: loginCalls.codes.slice() }),
   responses: () => responses.slice(),
+  stopCalls: () => stopCalls,
   listenerCount: () => listeners.chat.size + listeners.approval.size,
 })

@@ -1,5 +1,6 @@
 import type { ChatItem } from '../../../shared/ipc'
 import { SafeLines, SafeText } from './reveal'
+import { StatusIcon, type ToolStatus } from './StatusIcon'
 
 const MAX_SUMMARY = 80
 /** Tool output can be large; the card shows the start of it. */
@@ -34,25 +35,27 @@ function stringify(input: unknown): string {
   }
 }
 
+type ToolItem = Extract<ChatItem, { kind: 'tool' }>
+
+export function toolStatus(item: ToolItem, running: boolean): ToolStatus {
+  if (item.result) return item.result.isError ? 'error' : 'done'
+  return running ? 'running' : 'no result'
+}
+
 /** A collapsible card for one tool call: name, input summary, status, and full input/result. */
 export function ToolCard({
   item,
   running,
 }: {
-  item: Extract<ChatItem, { kind: 'tool' }>
+  item: ToolItem
   running: boolean
 }): React.JSX.Element {
-  const status = item.result
-    ? item.result.isError
-      ? 'error'
-      : 'done'
-    : running
-      ? 'running'
-      : 'no result'
+  const status = toolStatus(item, running)
   const content = item.result?.content ?? ''
   return (
     <details className={`tool-card tool-${status.replace(' ', '-')}`}>
       <summary>
+        <StatusIcon status={status} />
         <span className="tool-name">
           <SafeText text={item.name} />
         </span>

@@ -18,6 +18,7 @@
  *                     solid fill (+ on-*), readable text colour (*-text) and a
  *                     tinted background (*-bg); text sits on surface-0 or *-bg
  *   diff-*            diff additions and deletions
+ *   hl-*              syntax highlighting in code blocks (>= 4.5:1 on surface-0/1/2)
  *
  * Theme: light by default. Dark applies when the OS prefers it (theme "system")
  * or when <html data-theme="dark"> is set. data-theme="light" forces light.
@@ -55,6 +56,13 @@
   --color-diff-add-text: #116329;
   --color-diff-del-bg: #ffebe9;
   --color-diff-del-text: #82071e;
+  --color-hl-comment: #5f6368;
+  --color-hl-keyword: #8a24a8;
+  --color-hl-string: #0b6b3a;
+  --color-hl-number: #9a4100;
+  --color-hl-title: #1f55c9;
+  --color-hl-attr: #0b6a73;
+  --color-hl-meta: #6b4e00;
   --color-code-bg: var(--color-surface-1);
   --color-overlay: rgb(0 0 0 / 45%);
   --color-focus-ring: var(--color-accent);
@@ -129,6 +137,13 @@
     --color-diff-add-text: #7ee787;
     --color-diff-del-bg: #2d1214;
     --color-diff-del-text: #ffa198;
+    --color-hl-comment: #a1a1a6;
+    --color-hl-keyword: #d29bff;
+    --color-hl-string: #7ee0a0;
+    --color-hl-number: #ffb26b;
+    --color-hl-title: #8ab0ff;
+    --color-hl-attr: #6fd3df;
+    --color-hl-meta: #e8b95a;
     --color-overlay: rgb(0 0 0 / 60%);
     --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
   }
@@ -163,6 +178,13 @@
   --color-diff-add-text: #7ee787;
   --color-diff-del-bg: #2d1214;
   --color-diff-del-text: #ffa198;
+  --color-hl-comment: #a1a1a6;
+  --color-hl-keyword: #d29bff;
+  --color-hl-string: #7ee0a0;
+  --color-hl-number: #ffb26b;
+  --color-hl-title: #8ab0ff;
+  --color-hl-attr: #6fd3df;
+  --color-hl-meta: #e8b95a;
   --color-overlay: rgb(0 0 0 / 60%);
   --shadow-raised: 0 4px 24px rgb(0 0 0 / 30%);
 }

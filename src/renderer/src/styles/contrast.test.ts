@@ -59,6 +59,10 @@ const PAIRS: [string, string, number][] = [
   ['--color-success-text', '--color-success-bg', 4.5],
   ['--color-diff-add-text', '--color-diff-add-bg', 4.5],
   ['--color-diff-del-text', '--color-diff-del-bg', 4.5],
+  ...['comment', 'keyword', 'string', 'number', 'title', 'attr', 'meta'].flatMap(
+    (name): [string, string, number][] =>
+      SURFACES.map((surface): [string, string, number] => [`--color-hl-${name}`, surface, 4.5]),
+  ),
   ['--color-border-control', '--color-surface-0', 3],
   ['--color-border-control', '--color-surface-1', 3],
   ['--color-accent', '--color-surface-0', 3],
