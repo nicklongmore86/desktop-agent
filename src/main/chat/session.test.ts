@@ -47,6 +47,7 @@ function setup(
   return { session, events, prompts, store, history, createRunner }
 }
 
+const OTHER_CHAT = '6f1c2a4e-8b3d-4c5e-9f7a-1b2c3d4e5f60'
 const reply = (text: string): MessageParam => ({ role: 'assistant', content: text })
 
 /** Waits until `predicate` holds, flushing microtasks and timers in between. */
@@ -716,6 +717,32 @@ describe('provider switching', () => {
       false,
     )
     expect(commit).toHaveBeenCalledOnce()
+  })
+  it("opens a chosen chat of the other provider, denying the old run's approvals first", async () => {
+    const runner = scriptedRunner(async (history, options) => {
+      await options.requestApproval({ tool: 'write_file', kind: 'write', summary: 'write' })
+      return [...history, reply('stopped')]
+    })
+    const { session, store } = setup(runner)
+    await session.init()
+    await session.send('old provider')
+    await until(() => session.pendingApprovals.length === 1)
+    const chosen = memoryStore([{ role: 'user', content: 'the chosen chat' }])
+    const other = memoryHistory(memoryStore([{ role: 'user', content: 'its last chat' }]))
+    other.add(OTHER_CHAT, chosen)
+    const commit = vi.fn(() => Promise.resolve())
+    const switching = session.switchHistory(other, commit, OTHER_CHAT)
+    expect(session.pendingApprovals).toEqual([])
+    await switching
+    expect(session.state().items[0]).toMatchObject({ text: 'the chosen chat' })
+    expect(commit).toHaveBeenCalledOnce()
+    expect(other.setActive).toHaveBeenCalledWith(OTHER_CHAT)
+    expect(store.saved()[0]?.content).toBe('old provider')
+    // An unknown chat leaves the current one open.
+    await expect(session.switchHistory(memoryHistory(), commit, OTHER_CHAT)).rejects.toThrow(
+      'That chat no longer exists.',
+    )
+    expect(session.state().items[0]).toMatchObject({ text: 'the chosen chat' })
   })
   it('never lets a slow initial load overwrite a switch, and refuses sends until loaded', async () => {
     const old = memoryStore()

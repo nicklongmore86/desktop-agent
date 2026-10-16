@@ -4,9 +4,11 @@
  */
 import type { FeatureApis } from '../shared/ipc-features'
 import { layoutApi } from './layout'
+import { projectsApi } from './projects'
 
 export type Invoke = <T>(channel: string, ...args: unknown[]) => Promise<T>
 
 export const featureApis = (invoke: Invoke): FeatureApis => ({
   ...layoutApi(invoke),
+  ...projectsApi(invoke),
 })

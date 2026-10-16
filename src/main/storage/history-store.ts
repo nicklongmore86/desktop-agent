@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import { z } from 'zod'
 import type { ConversationSummary, HistoryState } from '../../shared/ipc'
-import { createConversationStore, type ConversationStore } from './conversation-store'
+import { createConversationStore, isWellFormed, type ConversationStore } from './conversation-store'
 import { readJsonFile, removeFile, writeJsonFile } from './json-file'
 
 /**
@@ -71,16 +71,54 @@ export interface ConversationHistory {
   setActive: (id: string | null) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
   remove: (id: string) => Promise<void>
+  /** Sets a chat's pin, archive or project. Throws for an unknown id. */
+  organize: (id: string, change: Organize) => Promise<void>
+  /** Takes every chat out of a project (the project was deleted). */
+  unfile: (projectId: string) => Promise<void>
+  /**
+   * Copies a saved chat into a new one titled "Fork of …" and returns its id.
+   * `prompts`: keep only the first that many prompts and their replies (null: all).
+   */
+  fork: (id: string, prompts: number | null) => Promise<string>
+}
+
+/** What `organize` changes; a field left out stays as it is. */
+export interface Organize {
+  pinned?: boolean
+  archived?: boolean
+  projectId?: string | null
 }
 
 const idSchema = z.string().regex(CONVERSATION_ID)
 const timeSchema = z.number().nonnegative()
+/**
+ * Index format 2 adds pin, archive, project and fork fields to each chat. It
+ * keeps `version: 1` on disk because the previous build accepts only that and
+ * would otherwise rebuild its list from the chat files, losing renamed titles;
+ * that build's parser drops the new fields and reads the rest unchanged. A
+ * format-1 index (no `format`) reads as format 2 with every new field unset,
+ * and is written as format 2 on the next change. A new field that is not
+ * valid reads as unset; it never makes the whole index unreadable.
+ */
+export const INDEX_FORMAT = 2
+const lenient = <T extends z.ZodType>(schema: T) => schema.nullable().optional().catch(null)
+const entrySchema = z.object({
+  id: idSchema,
+  title: z.string(),
+  createdAt: timeSchema,
+  updatedAt: timeSchema,
+  pinnedAt: lenient(timeSchema),
+  archivedAt: lenient(timeSchema),
+  projectId: lenient(idSchema),
+  forkedFrom: lenient(
+    z.object({ id: idSchema, atMessageIndex: z.number().int().positive().nullable() }),
+  ),
+})
 const indexSchema = z.object({
   version: z.literal(1),
+  format: z.number().optional(),
   activeId: idSchema.nullable(),
-  conversations: z.array(
-    z.object({ id: idSchema, title: z.string(), createdAt: timeSchema, updatedAt: timeSchema }),
-  ),
+  conversations: z.array(entrySchema),
 })
 type IndexFile = z.infer<typeof indexSchema>
 
@@ -91,6 +129,36 @@ export interface HistoryOptions {
   now?: () => number
   /** Index writes that fail where nobody is waiting for them (setActive). */
   onError?: (error: unknown) => void
+}
+
+/** A summary without its unset optional fields, as the renderer and the index hold it. */
+function withoutUnset(entry: z.infer<typeof entrySchema>): ConversationSummary {
+  const { pinnedAt, archivedAt, projectId, forkedFrom, ...summary } = entry
+  return {
+    ...summary,
+    ...(pinnedAt != null ? { pinnedAt } : {}),
+    ...(archivedAt != null ? { archivedAt } : {}),
+    ...(projectId != null ? { projectId } : {}),
+    ...(forkedFrom != null ? { forkedFrom } : {}),
+  }
+}
+
+/** The first `prompts` prompts and their replies: everything before the next prompt. */
+export function keepPrompts(messages: MessageParam[], prompts: number): MessageParam[] | null {
+  let seen = 0
+  for (const [index, message] of messages.entries()) {
+    if (!isPrompt(message)) continue
+    seen += 1
+    if (seen > prompts) return messages.slice(0, index)
+  }
+  return seen === prompts ? messages : null
+}
+
+/** A user message the user typed, not one that carries tool results back. */
+function isPrompt(message: MessageParam): boolean {
+  if (message.role !== 'user') return false
+  if (typeof message.content === 'string') return true
+  return message.content.every((block) => block.type !== 'tool_result')
 }
 
 const byRecent = (a: ConversationSummary, b: ConversationSummary): number =>
@@ -115,7 +183,7 @@ class FileHistory implements ConversationHistory {
     for (const entry of index.conversations) {
       if (this.entries.has(entry.id)) continue
       this.entries.set(entry.id, {
-        ...entry,
+        ...withoutUnset(entry),
         // The index is a file on disk: never trust that its titles are still plain text.
         title: sanitizeTitle(entry.title) || 'Untitled chat',
       })
@@ -235,11 +303,94 @@ class FileHistory implements ConversationHistory {
     await removeFile(this.file(id))
   }
 
+  async organize(id: string, change: Organize): Promise<void> {
+    const entry = this.entries.get(id)
+    if (!entry) throw new Error('That chat no longer exists.')
+    const now = this.now()
+    const { pinnedAt, archivedAt, projectId, ...rest } = entry
+    const toggle = (on: boolean | undefined, at: number | undefined) =>
+      on === undefined ? at : on ? (at ?? now) : undefined
+    // Pinning keeps an existing pin's place; only a new pin goes to the end.
+    const pin = toggle(change.pinned, pinnedAt)
+    const archive = toggle(change.archived, archivedAt)
+    const project = change.projectId === undefined ? projectId : (change.projectId ?? undefined)
+    const next: ConversationSummary = {
+      ...rest,
+      ...(pin !== undefined ? { pinnedAt: pin } : {}),
+      ...(archive !== undefined ? { archivedAt: archive } : {}),
+      ...(project !== undefined ? { projectId: project } : {}),
+    }
+    await this.change([[id, entry, next]])
+  }
+
+  async unfile(projectId: string): Promise<void> {
+    const changes: [string, ConversationSummary, ConversationSummary][] = []
+    for (const [id, entry] of this.entries) {
+      if (entry.projectId !== projectId) continue
+      const { projectId: _unfiled, ...next } = entry
+      changes.push([id, entry, next])
+    }
+    if (changes.length > 0) await this.change(changes)
+  }
+
+  /**
+   * Applies entry changes and writes the index. If the write fails, each entry
+   * goes back to how it was unless something else has changed it since.
+   */
+  private async change(changes: [string, ConversationSummary, ConversationSummary][]) {
+    for (const [id, , next] of changes) this.entries.set(id, next)
+    try {
+      await this.writeIndex()
+    } catch (error) {
+      for (const [id, before, next] of changes) {
+        if (this.entries.get(id) === next) this.entries.set(id, before)
+      }
+      throw error
+    }
+  }
+
+  async fork(id: string, prompts: number | null): Promise<string> {
+    const source = this.entries.get(id)
+    if (!source) throw new Error('That chat no longer exists.')
+    const loaded = await createConversationStore(this.file(id)).load()
+    if (loaded.error || loaded.messages.length === 0)
+      throw new Error('That chat could not be read, so it was not forked.')
+    const messages = prompts === null ? loaded.messages : keepPrompts(loaded.messages, prompts)
+    // Never a cut that separates a tool call from its result (or leaves nothing).
+    if (!messages || messages.length === 0 || !isWellFormed(messages))
+      throw new Error('The chat cannot be forked at that point.')
+    const forkId = this.newId()
+    const file = this.file(forkId)
+    if (this.entries.has(forkId)) throw new Error('Could not fork the chat.')
+    await createConversationStore(file).save(structuredClone(messages))
+    const now = this.now()
+    this.entries.set(forkId, {
+      id: forkId,
+      title: sanitizeTitle(`Fork of ${source.title}`),
+      createdAt: now,
+      updatedAt: now,
+      ...(source.projectId ? { projectId: source.projectId } : {}),
+      forkedFrom: {
+        id,
+        atMessageIndex: messages.length < loaded.messages.length ? messages.length : null,
+      },
+    })
+    try {
+      await this.writeIndex()
+    } catch (error) {
+      this.entries.delete(forkId)
+      await removeFile(file).catch(() => {})
+      throw error
+    }
+    return forkId
+  }
+
   /** Writes the index as it is when the write starts; writes never overlap. */
   writeIndex(): Promise<void> {
     const write = this.writes.then(() =>
       writeJsonFile(join(this.dir, 'index.json'), {
         version: 1,
+        format: INDEX_FORMAT,
         activeId: this.active,
         conversations: [...this.entries.values()],
       } satisfies IndexFile),
