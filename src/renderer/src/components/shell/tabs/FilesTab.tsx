@@ -1,11 +1,13 @@
 import type { GrantsState } from '../../../../../shared/ipc'
 import type { OpenSettings } from '../../../open-settings'
+import { FileTree } from '../../files/FileTree'
+import { useFileTree } from '../../files/use-file-tree'
 import { useGrantActions } from '../../settings/use-grant-actions'
 
 /**
- * The Workspace panel's Files tab. For now it holds the folder-access list that used
- * to sit in the left sidebar, fully working (add, remove, refusal reasons). The file
- * tree replaces this component; keep the props or extend them.
+ * The Workspace panel's Files tab: the granted folders as a file tree, plus adding
+ * and removing folders (shared with Settings, with the same refusal reasons).
+ * Everything the tree shows comes from main's guarded listing.
  */
 export function FilesTab({
   grants,
@@ -17,12 +19,34 @@ export function FilesTab({
   onOpenSettings: OpenSettings
 }): React.JSX.Element {
   const { message, busy, add, remove } = useGrantActions(onGrants)
-  const roots = grants?.roots ?? []
+  const tree = useFileTree(grants)
+  const granted = (grants?.roots.length ?? 0) > 0
   return (
-    <section className="files-tab sidebar-folders" aria-labelledby="folder-access-title">
-      <h2 id="folder-access-title" className="sidebar-label">
-        Folder access
-      </h2>
+    <section className="files-tab" aria-labelledby="folder-access-title">
+      <div className="files-header">
+        <h2 id="folder-access-title" className="sidebar-label">
+          Folder access
+        </h2>
+        <div className="files-header-actions">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void add()
+            }}
+          >
+            Add folder…
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onOpenSettings('folders')
+            }}
+          >
+            Manage folders
+          </button>
+        </div>
+      </div>
       {grants?.loadError && (
         <p className="sidebar-error" role="alert">
           {grants.loadError}
@@ -33,47 +57,24 @@ export function FilesTab({
           {message}
         </p>
       )}
-      {roots.length ? (
-        <ul aria-label="Granted folders">
-          {roots.map((root) => (
-            <li key={root}>
-              <span aria-hidden="true">▱</span>
-              <span className="folder-path">{root}</span>
-              <button
-                type="button"
-                className="folder-remove"
-                aria-label={`Remove ${root}`}
-                onClick={() => {
-                  void remove(root)
-                }}
-              >
-                Remove
-              </button>
-            </li>
-          ))}
-        </ul>
+      {granted ? (
+        <FileTree
+          rows={tree.rows}
+          setOpen={tree.setOpen}
+          refresh={tree.refresh}
+          unwatched={tree.unwatched}
+          onRemoveRoot={(root) => {
+            void remove(root)
+          }}
+        />
       ) : (
-        <p className="sidebar-hint">No folders granted</p>
+        <div className="files-empty">
+          <p className="sidebar-hint">No folders granted</p>
+          <p className="sidebar-hint">
+            Add a folder to browse its files here and let the agent work with them.
+          </p>
+        </div>
       )}
-      <div className="folder-actions">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            void add()
-          }}
-        >
-          Add folder…
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onOpenSettings('folders')
-          }}
-        >
-          Manage folders
-        </button>
-      </div>
     </section>
   )
 }
