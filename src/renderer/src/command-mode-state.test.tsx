@@ -1,7 +1,8 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ChatEvent } from '../../shared/ipc'
-import { chatReducer, initialChatState, type ChatViewState } from './chat-state'
+import { chatReducer, initialChatState, type ChatViewState, type ViewItem } from './chat-state'
+import { splitTurns } from './turns'
 import { useChatView } from './use-chat-view'
 
 const run = (events: ChatEvent[], state: ChatViewState = initialChatState): ChatViewState =>
@@ -25,6 +26,7 @@ describe('chatReducer: commands from the command bar', () => {
         input: { command: 'dir', cwd: 'C:\\work' },
         result: null,
         origin: 'user-terminal',
+        startedAt: expect.any(Number) as number,
       },
     ])
     const done = run(
@@ -35,7 +37,10 @@ describe('chatReducer: commands from the command bar', () => {
       started,
     )
     expect(done).toMatchObject({ running: false, runId: null })
-    expect(done.items[0]).toMatchObject({ result: { content: 'exit code: 0', isError: false } })
+    expect(done.items[0]).toMatchObject({
+      result: { content: 'exit code: 0', isError: false },
+      endedAt: expect.any(Number) as number,
+    })
   })
 
   it('ignores a command started during a switch', () => {
@@ -85,5 +90,37 @@ describe('useChatView', () => {
     expect(renderHook(() => useChatView(B, false)).result.current[0]).toBe('chat')
     localStorage.setItem('desktop-agent.chat-views', '{not json')
     expect(renderHook(() => useChatView(A, false)).result.current[0]).toBe('chat')
+  })
+})
+
+describe('splitTurns: commands from the command bar', () => {
+  const tool = (id: string): ViewItem => ({
+    kind: 'tool',
+    id,
+    name: 'list_dir',
+    input: {},
+    result: null,
+  })
+  const command = (id: string): ViewItem => ({
+    kind: 'tool',
+    id,
+    name: 'run_shell',
+    input: { command: 'dir', cwd: 'C:\\work' },
+    result: null,
+    origin: 'user-terminal',
+  })
+
+  it('keeps a command in the current turn as its own entry, splitting the tool group', () => {
+    const turns = splitTurns([
+      command('c0'),
+      { kind: 'user', id: 'u1', text: 'one' },
+      tool('a'),
+      command('c1'),
+      tool('b'),
+    ])
+    // A command never starts a turn: only the prompt does.
+    expect(turns.map((turn) => turn.user?.id ?? null)).toEqual([null, 'u1'])
+    expect(turns[0]?.entries.map((entry) => entry.kind)).toEqual(['command'])
+    expect(turns[1]?.entries.map((entry) => entry.kind)).toEqual(['tools', 'command', 'tools'])
   })
 })

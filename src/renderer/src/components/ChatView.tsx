@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProviderId, ProviderStatus } from '../../../shared/ipc'
-import type { ChatViewState, ViewItem } from '../chat-state'
+import type { ChatViewState } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
 import { useProviderModels } from '../provider-models'
+import { splitTurns } from '../turns'
 import { useProviderUsage } from '../usage'
 import { ActivityGroup } from './ActivityGroup'
 import { CommandCard } from './CommandCard'
@@ -10,6 +11,8 @@ import { Composer } from './Composer'
 import { ErrorBanner } from './ErrorBanner'
 import { Markdown } from './Markdown'
 import { MessageActions } from './MessageActions'
+import { PromptRail } from './PromptRail'
+import { WorkFold } from './WorkFold'
 
 export interface ChatViewProps {
   providerName: string
@@ -37,31 +40,6 @@ export interface ChatViewProps {
   platform?: string | undefined
 }
 
-type ToolItem = Extract<ViewItem, { kind: 'tool' }>
-type Entry =
-  | { kind: 'item'; item: Exclude<ViewItem, { kind: 'tool' }> }
-  | { kind: 'tools'; tools: ToolItem[] }
-  | { kind: 'command'; item: ToolItem }
-
-/** Consecutive tool calls become one activity group; a command the user ran stands alone. */
-function groupItems(items: ViewItem[]): Entry[] {
-  const entries: Entry[] = []
-  for (const item of items) {
-    if (item.kind === 'tool' && item.origin === 'user-terminal') {
-      entries.push({ kind: 'command', item })
-      continue
-    }
-    if (item.kind !== 'tool') {
-      entries.push({ kind: 'item', item })
-      continue
-    }
-    const last = entries.at(-1)
-    if (last?.kind === 'tools') last.tools.push(item)
-    else entries.push({ kind: 'tools', tools: [item] })
-  }
-  return entries
-}
-
 export function ChatView({
   state,
   providerName,
@@ -83,6 +61,7 @@ export function ChatView({
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const listEnd = useRef<HTMLLIElement>(null)
+  const messagesRef = useRef<HTMLOListElement>(null)
   const ownInput = useRef<HTMLTextAreaElement>(null)
   const inputRef = composerRef ?? ownInput
 
@@ -138,13 +117,32 @@ export function ChatView({
     }
   }
 
+  const retryFor = (text: string): { onRetry: () => void; retryDisabled: boolean } => ({
+    onRetry: () => {
+      void submit(text, false)
+    },
+    retryDisabled: busy,
+  })
+
   const lastUser = state.items.findLast((item) => item.kind === 'user')
   // Retry sits on the last message of the conversation (a reply, or the question without one).
   const lastMessage = state.items.findLast((item) => item.kind !== 'tool')
-  const entries = groupItems(state.items)
+  const turns = useMemo(() => splitTurns(state.items), [state.items])
+  const prompts = useMemo(
+    () => state.items.filter((item) => item.kind === 'user').map(({ id, text }) => ({ id, text })),
+    [state.items],
+  )
+  const waitingIds = useMemo(
+    () =>
+      new Set(
+        state.approvals.flatMap((prompt) => (prompt.toolUseId === null ? [] : [prompt.toolUseId])),
+      ),
+    [state.approvals],
+  )
 
   return (
     <div className="chat">
+      <PromptRail prompts={prompts} scrollRef={messagesRef} disabled={approvalOpen} />
       <div className="chat-toolbar">
         <span className="provider-badge">{providerName}</span>
         <span className="folder-count">
@@ -173,7 +171,7 @@ export function ChatView({
         </div>
       )}
 
-      <ol className="messages" aria-label="Messages">
+      <ol className="messages" aria-label="Messages" ref={messagesRef}>
         {state.switching && (
           <li className="messages-empty" role="status">
             Switching provider…
@@ -206,46 +204,66 @@ export function ChatView({
             </div>
           </li>
         )}
-        {entries.map((entry) => {
-          if (entry.kind === 'command') {
-            return (
-              <li key={entry.item.id} className="message message-command">
-                <CommandCard item={entry.item} running={state.running} platform={platform} />
-              </li>
-            )
-          }
-          if (entry.kind === 'tools') {
-            return (
-              <li key={`tools:${entry.tools[0]?.id ?? ''}`} className="message message-tool">
-                <ActivityGroup tools={entry.tools} running={state.running} />
-              </li>
-            )
-          }
-          const { item } = entry
-          const retry =
-            item === lastMessage && lastUser
-              ? {
-                  onRetry: () => {
-                    void submit(lastUser.text, false)
-                  },
-                  retryDisabled: busy,
-                }
-              : {}
-          if (item.kind === 'user') {
-            return (
-              <li key={item.id} className="message message-user">
-                <div className="message-body">{item.text}</div>
-                <MessageActions text={item.text} {...retry} />
-              </li>
-            )
-          }
+        {turns.map((turn, turnIndex) => {
+          const lastTurn = turnIndex === turns.length - 1
           return (
-            <li key={item.id} className="message message-assistant">
-              <span className="message-author">{providerName}</span>
-              <Markdown text={item.text} />
-              {item.stopped && <p className="message-note">Stopped. This reply was not saved.</p>}
-              <MessageActions text={item.text} {...retry} />
-            </li>
+            <Fragment key={turn.user?.id ?? 'preamble'}>
+              {turn.user && (
+                <li className="message message-user" data-prompt-id={turn.user.id}>
+                  <div className="message-body">{turn.user.text}</div>
+                  <MessageActions
+                    text={turn.user.text}
+                    {...(turn.user === lastMessage && lastUser ? retryFor(lastUser.text) : {})}
+                  />
+                </li>
+              )}
+              {turn.entries.map((entry, entryIndex) => {
+                // A command the user typed: its own card, never folded into the agent's work.
+                if (entry.kind === 'command') {
+                  return (
+                    <li key={entry.item.id} className="message message-command">
+                      <CommandCard
+                        item={entry.item}
+                        running={state.running}
+                        queued={waitingIds.has(entry.item.id)}
+                        platform={platform}
+                      />
+                    </li>
+                  )
+                }
+                if (entry.kind === 'tools') {
+                  const live = state.running && lastTurn && entryIndex === turn.entries.length - 1
+                  return (
+                    <li key={`tools:${entry.tools[0]?.id ?? ''}`} className="message message-tool">
+                      {lastTurn ? (
+                        <ActivityGroup
+                          tools={entry.tools}
+                          running={state.running}
+                          live={live}
+                          waitingIds={waitingIds}
+                        />
+                      ) : (
+                        <WorkFold tools={entry.tools} running={state.running} />
+                      )}
+                    </li>
+                  )
+                }
+                const { item } = entry
+                return (
+                  <li key={item.id} className="message message-assistant">
+                    <span className="message-author">{providerName}</span>
+                    <Markdown text={item.text} />
+                    {item.stopped && (
+                      <p className="message-note">Stopped. This reply was not saved.</p>
+                    )}
+                    <MessageActions
+                      text={item.text}
+                      {...(item === lastMessage && lastUser ? retryFor(lastUser.text) : {})}
+                    />
+                  </li>
+                )
+              })}
+            </Fragment>
           )
         })}
         {state.running && (

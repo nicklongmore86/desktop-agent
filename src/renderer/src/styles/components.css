@@ -621,6 +621,7 @@
 /* Chat */
 
 .chat {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -1108,6 +1109,137 @@
   color: var(--color-danger-text);
 }
 
+.activity-denied {
+  color: var(--color-warning-text);
+}
+
+.tool-elapsed {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-denied .tool-status,
+.tool-queued .tool-status {
+  color: var(--color-warning-text);
+}
+
+.activity-earlier button {
+  padding: 0 var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-accent-text);
+  font-size: var(--font-size-sm);
+}
+
+.work-fold-body[hidden] {
+  display: none;
+}
+
+/* Prompt navigator: a strip of ticks on the chat's left edge, one per prompt. */
+
+.prompt-rail {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 2;
+  width: 24px;
+  transform: translateY(-50%);
+}
+
+.prompt-rail ol {
+  max-height: 288px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: none;
+}
+
+.prompt-rail ol::-webkit-scrollbar {
+  display: none;
+}
+
+.prompt-tick {
+  position: relative;
+  display: block;
+  width: 24px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.prompt-tick::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 8px;
+  width: 7px;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--color-border-control);
+  transition: width var(--duration-fast) var(--ease);
+}
+
+.prompt-tick:hover::before,
+.prompt-tick:focus-visible::before {
+  width: 16px;
+}
+
+.prompt-tick[aria-current='location']::before {
+  height: 3px;
+  top: 2.5px;
+  background: var(--color-accent);
+}
+
+.prompt-preview {
+  position: absolute;
+  left: 100%;
+  width: 280px;
+  max-width: 60vw;
+  padding: var(--space-2) var(--space-3);
+  transform: translateY(-50%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-0);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.prompt-preview .untrusted {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+/* The prompt a tick jumped to flashes briefly (never under reduced motion). */
+.message[data-flash] .message-body {
+  animation: prompt-flash 1.5s ease-out;
+}
+
+@keyframes prompt-flash {
+  0%,
+  60% {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  100% {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message[data-flash] .message-body {
+    animation: none;
+  }
+}
+
 .activity-list {
   display: flex;
   flex-direction: column;
@@ -1138,6 +1270,11 @@
 
 .status-icon-error {
   color: var(--color-danger-text);
+}
+
+.status-icon-queued,
+.status-icon-denied {
+  color: var(--color-warning-text);
 }
 
 .status-icon-no-result {
@@ -1961,6 +2098,22 @@
   .status-icon {
     forced-color-adjust: none;
     stroke: CanvasText;
+  }
+
+  .prompt-tick::before {
+    background: CanvasText;
+  }
+
+  .prompt-tick[aria-current='location']::before {
+    background: Highlight;
+  }
+
+  .prompt-preview {
+    border-color: CanvasText;
+  }
+
+  .message[data-flash] .message-body {
+    outline: 2px solid Highlight;
   }
 
   .usage-warning,

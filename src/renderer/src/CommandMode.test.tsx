@@ -6,6 +6,7 @@ import { ApiContext } from './api'
 import { App } from './App'
 import { ApprovalCard } from './components/ApprovalCard'
 import { fakeApi, type FakeApiOptions } from './test/fake-api'
+import { setViewport } from './test/viewport'
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -225,7 +226,7 @@ describe('command bar', () => {
     expect(within(card).getByLabelText('Command error').textContent).toContain(
       'Cancelled; the process tree was killed.',
     )
-    expect(within(card).getByText('error')).toBeTruthy()
+    expect(within(card).getByText('failed')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Run' })).toBeTruthy()
   })
 
@@ -271,5 +272,66 @@ describe('approval prompt origin', () => {
       />,
     )
     expect(screen.getByText('Requested by the agent.')).toBeTruthy()
+  })
+})
+
+describe('command cards and the conversation model', () => {
+  const started = (id: string, command = 'dir') =>
+    ({ type: 'command_started', runId: `run-${id}`, id, command, cwd: ROOT }) as const
+
+  it('is queued while its approval is open, then denied if the user declines, with its time', async () => {
+    const { pushChat, pushApproval } = await renderApp()
+    act(() => {
+      pushChat(started('cmd-1'))
+      pushApproval(shellPrompt({ runId: 'run-cmd-1', toolUseId: 'cmd-1' }))
+    })
+    const card = screen.getByRole('region', { name: 'Command you ran' })
+    expect(within(card).getByText('queued')).toBeTruthy()
+    act(() => {
+      pushChat({ type: 'approval_closed', approvalId: 'ap-1', approved: false })
+      pushChat({
+        type: 'tool_result',
+        runId: 'run-cmd-1',
+        id: 'cmd-1',
+        content: 'The user declined to run the command. Nothing was run.',
+        isError: true,
+      })
+      pushChat({ type: 'run_finished', runId: 'run-cmd-1', stopReason: 'error' })
+    })
+    expect(within(card).getByText('denied')).toBeTruthy()
+    expect(card.querySelector('.tool-elapsed')?.textContent).toMatch(/^\d+ms$|s$/)
+  })
+
+  it('is not a prompt in the rail, and stays out of the folded work of earlier turns', async () => {
+    setViewport(1280)
+    const { pushChat } = await renderApp()
+    act(() => {
+      pushChat({ type: 'run_started', runId: 'r1', text: 'First question' })
+      pushChat({ type: 'tool_use', runId: 'r1', turn: 1, id: 't1', name: 'list_dir', input: {} })
+      pushChat({ type: 'tool_result', runId: 'r1', id: 't1', content: 'a', isError: false })
+      pushChat({ type: 'run_finished', runId: 'r1', stopReason: 'end_turn' })
+      pushChat(started('cmd-1', 'git status'))
+      pushChat({
+        type: 'tool_result',
+        runId: 'run-cmd-1',
+        id: 'cmd-1',
+        content: 'clean',
+        isError: false,
+      })
+      pushChat({ type: 'run_finished', runId: 'run-cmd-1', stopReason: 'end_turn' })
+      pushChat({ type: 'run_started', runId: 'r2', text: 'Second question' })
+      pushChat({ type: 'run_finished', runId: 'r2', stopReason: 'end_turn' })
+    })
+    expect(
+      screen
+        .getAllByRole('button', { name: /^Jump to prompt/ })
+        .map((button) => button.getAttribute('aria-label')),
+    ).toEqual(['Jump to prompt 1 of 2: First question', 'Jump to prompt 2 of 2: Second question'])
+    // The first turn's agent work is folded; the command the user ran is not.
+    const work = screen.getByRole('region', { name: 'Work' })
+    expect(within(work).getByRole('button', { expanded: false })).toBeTruthy()
+    const card = screen.getByRole('region', { name: 'Command you ran' })
+    expect(work.contains(card)).toBe(false)
+    expect(within(card).getByLabelText('Command output').textContent).toContain('clean')
   })
 })
