@@ -146,7 +146,10 @@ export function registerIpcHandlers(
       model !== null &&
       (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model))
     )
-      throw new Error('Unknown model.')
+      return {
+        ok: false,
+        failure: { code: 'model_unavailable', message: 'Choose an available model.' },
+      }
     return services.provider.setModel(model)
   })
   handle(IpcChannels.providerGet, () => services.provider.get())

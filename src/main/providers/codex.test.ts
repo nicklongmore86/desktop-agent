@@ -14,9 +14,19 @@ const context = {
 }
 let respond: (value: unknown) => void
 let frames: Record<string, unknown>[]
-let mode: 'normal' | 'signed-out' | 'inherited' | 'bad-isolation' | 'usage' | 'hang'
+let mode:
+  | 'normal'
+  | 'signed-out'
+  | 'inherited'
+  | 'bad-isolation'
+  | 'usage'
+  | 'hang'
+  | 'model-error'
+  | 'model-timeout'
+  | 'retry'
 beforeEach(() => {
   frames = []
+  vi.mocked(launch).mockClear()
   mode = 'normal'
   vi.mocked(launch).mockImplementation(() => {
     const child = Object.assign(new EventEmitter(), {
@@ -57,6 +67,13 @@ beforeEach(() => {
           result({ account: mode === 'signed-out' ? { type: 'apiKey' } : { type: 'chatgpt' } })
           break
         case 'model/list':
+          if (mode === 'model-timeout') break
+          if (mode === 'model-error') {
+            queueMicrotask(() => {
+              respond({ id, error: { code: -32000, message: 'Catalog unavailable' } })
+            })
+            break
+          }
           result({
             data: [
               {
@@ -80,6 +97,18 @@ beforeEach(() => {
           })
           break
         case 'turn/start':
+          if (mode === 'retry')
+            queueMicrotask(() => {
+              respond({
+                method: 'error',
+                params: {
+                  threadId: 'thread',
+                  turnId: 'turn',
+                  willRetry: true,
+                  error: { codexErrorInfo: 'serverOverloaded' },
+                },
+              })
+            })
           result({ turn: { id: 'turn' } })
           if (mode !== 'hang')
             setImmediate(() => {
@@ -241,4 +270,25 @@ it('does not mutate returned history when a cancelled tool settles late', async 
   release({ content: 'late result' })
   await new Promise((resolve) => setImmediate(resolve))
   expect(result.conversation).toEqual(snapshot)
+})
+
+it.each(['model-error', 'model-timeout'] as const)(
+  'uses the runtime default and sends once after %s',
+  async (state) => {
+    mode = state
+    const { run } = setup()
+    expect((await run()).stopReason).toBe('end_turn')
+    const params = frames.find((frame) => frame['method'] === 'thread/start')?.['params']
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('config')
+    expect(frames.filter((frame) => frame['method'] === 'turn/start')).toHaveLength(1)
+    expect(launch).toHaveBeenCalledOnce()
+  },
+)
+it('ignores retryable error notifications and accepts the successful runtime completion', async () => {
+  mode = 'retry'
+  const { run, events } = setup()
+  expect((await run()).stopReason).toBe('end_turn')
+  expect(events.some((event) => event.type === 'error')).toBe(false)
+  expect(frames.filter((frame) => frame['method'] === 'turn/start')).toHaveLength(1)
 })

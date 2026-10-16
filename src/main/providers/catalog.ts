@@ -1,5 +1,5 @@
 import type { ProviderAllowance, ProviderModel, ProviderModels } from '../../shared/ipc'
-import { SubscriptionError } from './errors'
+import { SubscriptionError, plausibleReset } from './errors'
 import { object, type RpcPeer } from './rpc'
 
 /** Documented Free/Go compatible fallback; never invent access when a catalog excludes it. */
@@ -14,8 +14,14 @@ export async function codexModels(
   const options: ProviderModel[] = []
   const cursors = new Set<string>()
   let cursor: string | null = null
+  const deadline = performance.now() + 1500
   do {
-    const result = await peer.request('model/list', { includeHidden: false, cursor, limit: 100 })
+    if (performance.now() >= deadline) throw new Error('Runtime model catalog timed out.')
+    const result = await peer.request(
+      'model/list',
+      { includeHidden: false, cursor, limit: 100 },
+      { timeoutMs: Math.max(1, deadline - performance.now()), closeOnTimeout: false },
+    )
     if (!Array.isArray(result['data'])) throw new Error('Invalid runtime model catalog.')
     for (const value of result['data']) {
       const model = object(value)
@@ -65,11 +71,12 @@ export async function codexModels(
   }
 }
 
-export async function codexAllowance(
-  peer: RpcPeer,
-  selectedModel?: string | null,
-): Promise<ProviderAllowance> {
-  const result = await peer.request('account/rateLimits/read', { excludeResetCreditDetails: true })
+export async function codexAllowance(peer: RpcPeer): Promise<ProviderAllowance> {
+  const result = await peer.request(
+    'account/rateLimits/read',
+    { excludeResetCreditDetails: true },
+    { timeoutMs: 1500, closeOnTimeout: false },
+  )
   const current = object(result['rateLimits'])
   const buckets =
     result['rateLimitsByLimitId'] && typeof result['rateLimitsByLimitId'] === 'object'
@@ -79,38 +86,16 @@ export async function codexAllowance(
     ? buckets
     : [[identifier(current['limitId']) ? current['limitId'] : 'codex', current] as const]
   const windows: ProviderAllowance['windows'] = []
-  const matching = selectedModel
-    ? snapshots.filter(([, value]) => object(value)['normalModelSlug'] === selectedModel)
-    : []
-  const relevant = matching.length
-    ? matching.map(([, value]) => object(value))
-    : !selectedModel || !current['normalModelSlug'] || current['normalModelSlug'] === selectedModel
-      ? [current]
-      : []
-  let blocked = false
-  let known = false
-  let unknownReset = false
-  const blockingResets: string[] = []
-  for (const snapshot of relevant) {
-    if (snapshot['spendControlReached'] === true) {
-      blocked = true
-      unknownReset = true
-    }
-    if (snapshot['rateLimitReachedType']) blocked = true
-    for (const name of ['primary', 'secondary']) {
-      if (!snapshot[name]) continue
-      const used = object(snapshot[name])['usedPercent']
-      if (typeof used !== 'number' || !Number.isFinite(used)) continue
-      known = true
-      if (used >= 100) {
-        blocked = true
-        const reset = object(snapshot[name])['resetsAt']
-        if (typeof reset === 'number' && reset > 0 && reset < 8.64e12)
-          blockingResets.push(new Date(reset * 1000).toISOString())
-        else unknownReset = true
-      }
-    }
-  }
+  // Only backend permission determines ordinary usage. Percentages/reset dates are display data.
+  const credits =
+    current['credits'] && typeof current['credits'] === 'object' ? object(current['credits']) : {}
+  const hasCredits = credits['hasCredits'] === true || credits['unlimited'] === true
+  const state =
+    hasCredits || result['ordinaryUsageAllowed'] === true
+      ? 'available'
+      : result['ordinaryUsageAllowed'] === false
+        ? 'limited'
+        : 'unknown'
   for (const [id, value] of snapshots) {
     const snapshot = object(value)
     for (const name of ['primary', 'secondary']) {
@@ -122,18 +107,22 @@ export async function codexAllowance(
       windows.push({
         limitId: `${identifier(id) ? id : 'codex'}:${name}`,
         remainingPercent: Math.max(0, Math.min(100, 100 - used)),
-        resetsAt:
-          typeof reset === 'number' && reset > 0 && reset < 8.64e12
-            ? new Date(reset * 1000).toISOString()
-            : null,
+        resetsAt: plausibleReset(reset) ?? null,
       })
     }
   }
   return {
     provider: 'codex-subscription',
     plan: identifier(current['planType']) ? current['planType'] : null,
-    state: blocked ? 'limited' : known ? 'available' : 'unknown',
-    resetsAt: blocked && !unknownReset ? (blockingResets.sort().at(-1) ?? null) : null,
+    state,
+    resetsAt:
+      state === 'limited'
+        ? (windows
+            .map((window) => window.resetsAt)
+            .filter((reset): reset is string => reset !== null)
+            .sort()
+            .at(-1) ?? null)
+        : null,
     windows,
     lastError: null,
   }

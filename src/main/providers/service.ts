@@ -1,7 +1,7 @@
 import { lstat, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { codexModels, codexAllowance } from './catalog'
-import { SubscriptionError, subscriptionFailure } from './errors'
+import { SubscriptionError, subscriptionFailure, plausibleReset } from './errors'
 import type { SettingsStore } from '../storage/settings-store'
 import type {
   ProviderAllowance,
@@ -46,6 +46,9 @@ interface ActiveLogin {
 }
 
 export class SubscriptionProviders {
+  private catalogCache: { value: ProviderModels; expiresAt: number } | undefined
+  private catalogGeneration = 0
+  private readonly claudeLimits = new Map<ProviderId, string>()
   private readonly resolved = new Map<ProviderId, string>()
   private readonly failures = new Map<ProviderId, ProviderFailure>()
   private readonly plans = new Map<ProviderId, string>()
@@ -146,10 +149,35 @@ export class SubscriptionProviders {
         defaultModel: null,
         resolvedModel: null,
       }
-    return this.codexMetadata(async (peer) => ({
-      ...(await codexModels(peer, savedModel)),
-      resolvedModel: this.resolved.get(provider) ?? null,
-    }))
+    const cached = this.cachedCatalog()
+    return cached ?? this.codexMetadata((peer) => this.readCatalog(peer))
+  }
+
+  /** Invalidate on provider switch, sign-in and selection changes. */
+  invalidateMetadata(): void {
+    this.catalogGeneration++
+    this.catalogCache = undefined
+  }
+
+  private cachedCatalog(): ProviderModels | undefined {
+    if (!this.catalogCache || this.catalogCache.expiresAt <= Date.now()) return undefined
+    return {
+      ...this.catalogCache.value,
+      resolvedModel: this.resolved.get('codex-subscription') ?? null,
+    }
+  }
+
+  private async readCatalog(peer: RpcPeer): Promise<ProviderModels> {
+    const cached = this.cachedCatalog()
+    if (cached) return cached
+    const generation = this.catalogGeneration
+    const value = await codexModels(
+      peer,
+      this.options.settings?.selection('codex-subscription') ?? null,
+    )
+    if (generation === this.catalogGeneration)
+      this.catalogCache = { value, expiresAt: Date.now() + 60000 }
+    return { ...value, resolvedModel: this.resolved.get('codex-subscription') ?? null }
   }
 
   /** Metadata failures use the same safe error contract as chat failures. */
@@ -168,6 +196,7 @@ export class SubscriptionProviders {
   }
 
   async setModel(provider: ProviderId, model: string | null): Promise<ProviderModels> {
+    this.invalidateMetadata()
     const catalog = await this.models(provider)
     if (
       provider !== 'codex-subscription' ||
@@ -175,6 +204,7 @@ export class SubscriptionProviders {
     )
       throw new SubscriptionError('model_unavailable', 'Choose an available Codex model.')
     await this.options.settings?.setSelection(provider, model)
+    this.invalidateMetadata()
     this.resolved.delete(provider)
     this.failures.delete(provider)
     return {
@@ -211,9 +241,8 @@ export class SubscriptionProviders {
       }
     }
     return this.codexMetadata(async (peer) => {
-      const catalog = await codexModels(peer, this.options.settings?.selection(provider) ?? null)
       return {
-        ...(await codexAllowance(peer, catalog.selectedModel)),
+        ...(await codexAllowance(peer)),
         lastError: lastError
           ? {
               code: lastError.code,
@@ -247,11 +276,11 @@ export class SubscriptionProviders {
           ready = await codexAccount(peer)
           signedIn = ready
           if (ready) {
-            const catalog = await codexModels(
-              peer,
-              this.options.settings?.selection(provider) ?? null,
-            )
-            allowance = await codexAllowance(peer, catalog.selectedModel)
+            try {
+              allowance = await codexAllowance(peer)
+            } catch {
+              /* Allowance is advisory; signed-in chat remains usable. */
+            }
           }
         } finally {
           peer.close()
@@ -301,18 +330,15 @@ export class SubscriptionProviders {
             message: "Your Claude plan doesn't include Claude Code. Claude Pro or Max is required.",
           },
         }
-      const lastFailure = this.failures.get(provider)
-      if (ready && lastFailure?.code === 'plan_not_entitled')
-        return {
-          provider,
-          signedIn: true,
-          availability: 'blocked',
-          state: 'not-entitled',
-          message: lastFailure.message,
-          failure: { code: lastFailure.code, message: lastFailure.message },
-        }
-      if (ready && allowance?.state === 'limited') {
-        const resetsAt = allowance.resetsAt ?? undefined
+      const trustedClaudeReset = this.claudeLimit(provider)
+      if (
+        ready &&
+        (provider === 'codex-subscription' ? allowance?.state === 'limited' : trustedClaudeReset)
+      ) {
+        const resetsAt =
+          provider === 'claude-subscription'
+            ? trustedClaudeReset
+            : (allowance?.resetsAt ?? undefined)
         const failure = subscriptionFailure(
           { code: 'usage_limit', resetsAt },
           provider === 'codex-subscription' ? 'codex' : 'claude',
@@ -381,6 +407,7 @@ export class SubscriptionProviders {
     // Two runtimes signing in to the same config directory would race; refuse the second.
     if (this.active)
       return { provider, state: 'error', message: 'A sign-in is already in progress.' }
+    this.invalidateMetadata()
     const active: ActiveLogin = { provider, controller: new AbortController() }
     this.active = active
     this.options.onLoginState?.(this.loginState())
@@ -418,7 +445,9 @@ export class SubscriptionProviders {
         await login.done
       }
       this.failures.delete(provider)
+      this.claudeLimits.delete(provider)
       this.plans.delete(provider)
+      this.invalidateMetadata()
       return await this.status(provider)
     } catch (error) {
       return {
@@ -433,27 +462,41 @@ export class SubscriptionProviders {
     }
   }
 
+  private claudeLimit(provider: ProviderId): string | undefined {
+    const reset = this.claudeLimits.get(provider)
+    return reset && plausibleReset(reset) && Date.parse(reset) > Date.now() ? reset : undefined
+  }
+
   async runner(provider: ProviderId, tools: AgentTool[], signal?: AbortSignal) {
-    const status = await this.status(provider, signal)
-    // A limit without a reset time is last-known state, not an indefinite lockout.
-    // Only a new explicit Send may probe recovery; there is no automatic retry.
-    const manualProbe =
-      provider === 'claude-subscription' && status.state === 'limited' && !status.failure?.resetsAt
-    if (status.state !== 'ready' && !manualProbe)
-      throw new SubscriptionError(
-        (status.failure?.code as AgentErrorCode | undefined) ??
-          (status.state === 'signed-out' ? 'authentication' : 'runtime_unavailable'),
-        status.message,
-        status.failure?.resetsAt,
-      )
+    if (provider === 'claude-subscription') {
+      const status = await this.status(provider, signal)
+      const reset = this.claudeLimit(provider)
+      const trustedLimit = reset !== undefined
+      // Remembered free-text errors are display-only. Only structured plan/limit signals gate Send.
+      if (!['ready', 'limited'].includes(status.state) || trustedLimit)
+        throw new SubscriptionError(
+          trustedLimit
+            ? 'usage_limit'
+            : ((status.failure?.code as AgentErrorCode | undefined) ??
+                (status.state === 'signed-out' ? 'authentication' : 'runtime_unavailable')),
+          status.message,
+          trustedLimit ? reset : undefined,
+        )
+    }
+    // Codex checks auth and authoritative entitlement/usage errors inside the single run process.
     const context = await this.context(provider, signal)
     return provider === 'claude-subscription'
       ? createClaudeSubscriptionRunner(context, tools, {
           onAccount: (plan) => {
             if (/^[\w -]{1,60}$/.test(plan)) this.plans.set(provider, plan)
           },
+          onLimit: (reset) => {
+            if (reset && plausibleReset(reset)) this.claudeLimits.set(provider, reset)
+            else this.claudeLimits.delete(provider)
+          },
           onAvailable: () => {
             this.failures.delete(provider)
+            this.claudeLimits.delete(provider)
           },
           onFailure: (failure) => {
             this.failures.set(provider, failure)
@@ -461,6 +504,7 @@ export class SubscriptionProviders {
         })
       : createCodexRunner(context, tools, {
           model: this.options.settings?.selection(provider) ?? null,
+          catalog: (peer) => this.readCatalog(peer),
           onResolvedModel: (model) => {
             this.resolved.set(provider, model)
           },

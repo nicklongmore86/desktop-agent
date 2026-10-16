@@ -14,6 +14,7 @@ export class RpcPeer {
   private buffer = ''
   private nextId = 0
   private closed = false
+  private readonly expired = new Set<number>()
   private readonly abort = (): void => {
     this.close(new Error('Runtime cancelled.'))
   }
@@ -54,13 +55,23 @@ export class RpcPeer {
   notify(method: string, params: RpcObject = {}): void {
     this.write({ method, params })
   }
-  request(method: string, params: RpcObject = {}): Promise<RpcObject> {
+  request(
+    method: string,
+    params: RpcObject = {},
+    options: { timeoutMs?: number; closeOnTimeout?: boolean } = {},
+  ): Promise<RpcObject> {
     if (this.closed) return Promise.reject(new Error('Runtime is closed.'))
     const id = ++this.nextId
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.close(new Error('Runtime request timed out.'))
-      }, this.timeout)
+        const error = new Error('Runtime request timed out.')
+        if (options.closeOnTimeout !== false) this.close(error)
+        else {
+          this.pending.delete(id)
+          this.expired.add(id)
+          reject(error)
+        }
+      }, options.timeoutMs ?? this.timeout)
       this.pending.set(id, { resolve, reject, timer })
       try {
         this.write({ id, method, params })
@@ -107,6 +118,7 @@ export class RpcPeer {
               })
           } else this.onNotification(msg['method'], params)
         } else {
+          if (typeof msg['id'] === 'number' && this.expired.delete(msg['id'])) continue
           const entry = typeof msg['id'] === 'number' ? this.pending.get(msg['id']) : undefined
           if (!entry) throw new Error('Unexpected runtime response.')
           this.pending.delete(msg['id'] as number)
@@ -129,6 +141,7 @@ export class RpcPeer {
       entry.reject(error)
     }
     this.pending.clear()
+    this.expired.clear()
     void killRuntime(this.child)
     this.onClose(error)
   }

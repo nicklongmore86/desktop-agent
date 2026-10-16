@@ -12,7 +12,7 @@ import type { AgentTool, RunResult } from '../agent'
 import { DEFAULT_SYSTEM_PROMPT } from '../agent'
 import type { AgentRunner } from '../chat/session'
 import { ToolBridge, transcriptPrompt } from './bridge'
-import { SubscriptionError, subscriptionFailure } from './errors'
+import { SubscriptionError, subscriptionFailure, plausibleReset } from './errors'
 import type { ProviderFailure } from '../../shared/ipc'
 import type { RuntimeContext } from './codex'
 
@@ -54,6 +54,7 @@ export function createClaudeSubscriptionRunner(
   context: RuntimeContext,
   tools: AgentTool[],
   observe: {
+    onLimit?: (resetsAt: string | undefined) => void
     onAvailable?: () => void
     onAccount?: (plan: string) => void
     onFailure?: (failure: ProviderFailure) => void
@@ -165,11 +166,16 @@ export function createClaudeSubscriptionRunner(
             bridge.delta(message.event.delta.text)
           if (message.type === 'rate_limit_event' && message.rate_limit_info.status !== 'rejected')
             observe.onAvailable?.()
-          if (message.type === 'rate_limit_event' && message.rate_limit_info.status === 'rejected')
+          if (
+            message.type === 'rate_limit_event' &&
+            message.rate_limit_info.status === 'rejected'
+          ) {
+            observe.onLimit?.(plausibleReset(message.rate_limit_info.resetsAt))
             throw subscriptionFailure(
               { code: 'usage_limit', resetsAt: message.rate_limit_info.resetsAt },
               'claude',
             )
+          }
           if (message.type === 'assistant' && message.error)
             throw subscriptionFailure({ code: message.error, message: message.message }, 'claude')
           if (message.type === 'result') {

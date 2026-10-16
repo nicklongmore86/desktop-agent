@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest'
+import { expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { codexAllowance, codexModels } from './catalog'
 import type { RpcPeer } from './rpc'
 
@@ -32,11 +32,16 @@ it('paginates and prefers the account server default over the Free fallback', as
     { data: [sol], nextCursor: null },
   )
   expect(await codexModels(peer, null)).toMatchObject({ selectedModel: sol.model })
-  expect(request).toHaveBeenNthCalledWith(2, 'model/list', {
-    cursor: 'page2',
-    includeHidden: false,
-    limit: 100,
-  })
+  expect(request).toHaveBeenNthCalledWith(
+    2,
+    'model/list',
+    {
+      cursor: 'page2',
+      includeHidden: false,
+      limit: 100,
+    },
+    { timeoutMs: expect.any(Number) as unknown, closeOnTimeout: false },
+  )
 })
 it('uses a valid saved model over the account default', async () => {
   const { peer } = peerWith({ data: [terra, sol], nextCursor: null })
@@ -68,6 +73,7 @@ it('fails closed on an empty catalog and cyclic pagination', async () => {
 })
 it('normalizes remaining quota and Unix second reset timestamps without forwarding account details', async () => {
   const { peer, request } = peerWith({
+    ordinaryUsageAllowed: false,
     rateLimits: {
       planType: 'free',
       primary: { usedPercent: 100, resetsAt: 1800000000 },
@@ -88,9 +94,13 @@ it('normalizes remaining quota and Unix second reset timestamps without forwardi
       { limitId: 'codex:secondary', remainingPercent: 75, resetsAt: null },
     ],
   })
-  expect(request).toHaveBeenCalledWith('account/rateLimits/read', {
-    excludeResetCreditDetails: true,
-  })
+  expect(request).toHaveBeenCalledWith(
+    'account/rateLimits/read',
+    {
+      excludeResetCreditDetails: true,
+    },
+    { timeoutMs: 1500, closeOnTimeout: false },
+  )
 })
 it('reports unavailable allowance as unknown rather than unlimited', async () => {
   const { peer } = peerWith({
@@ -105,13 +115,14 @@ it('does not block Terra when a separate Sol bucket is exhausted', async () => {
     primary: { usedPercent: 100, resetsAt: 1800000000 },
   }
   const { peer } = peerWith({
+    ordinaryUsageAllowed: true,
     rateLimits: current,
     rateLimitsByLimitId: {
       sol: current,
       terra: { normalModelSlug: terra.model, primary: { usedPercent: 20, resetsAt: 1800000000 } },
     },
   })
-  expect(await codexAllowance(peer, terra.model)).toMatchObject({
+  expect(await codexAllowance(peer)).toMatchObject({
     state: 'available',
     windows: [{ remainingPercent: 0 }, { remainingPercent: 80 }],
   })
@@ -120,3 +131,32 @@ it('prefers listed Terra over catalog order when the server supplies no default'
   const { peer } = peerWith({ data: [{ ...sol, isDefault: false }, terra], nextCursor: null })
   expect(await codexModels(peer, null)).toMatchObject({ selectedModel: terra.model })
 })
+
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2027-01-15T00:00:00Z'))
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+it.each([
+  [true, null, 'available'],
+  [false, { hasCredits: true, unlimited: false }, 'available'],
+  [false, { hasCredits: false, unlimited: true }, 'available'],
+  [false, null, 'limited'],
+  [null, null, 'unknown'],
+] as const)(
+  'uses ordinaryUsageAllowed=%s and credits=%j at 100 percent',
+  async (ordinaryUsageAllowed, credits, state) => {
+    const { peer } = peerWith({
+      ordinaryUsageAllowed,
+      rateLimits: {
+        primary: { usedPercent: 100 },
+        spendControlReached: true,
+        rateLimitReachedType: 'rate_limit_reached',
+        credits,
+      },
+    })
+    expect(await codexAllowance(peer)).toMatchObject({ state, windows: [{ remainingPercent: 0 }] })
+  },
+)

@@ -405,9 +405,10 @@ it('validates subscription model IPC and keeps all metadata channels behind the 
   expect(services.provider.setModel).toHaveBeenNthCalledWith(1, 'gpt-5.6-terra')
   expect(services.provider.setModel).toHaveBeenNthCalledWith(2, null)
   for (const value of [{ model: 'gpt-5.6-terra' }, 42, 'bad\nmodel', 'C:/private']) {
-    await expect(invoke(IpcChannels.providerSetModel, appFrame, value)).rejects.toThrow(
-      'Unknown model',
-    )
+    expect(await invoke(IpcChannels.providerSetModel, appFrame, value)).toMatchObject({
+      ok: false,
+      failure: { code: 'model_unavailable' },
+    })
   }
   for (const channel of [
     IpcChannels.providerModels,

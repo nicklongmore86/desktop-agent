@@ -8,8 +8,29 @@ export class SubscriptionError extends Error {
     resetsAt?: string,
   ) {
     super(message)
-    if (resetsAt) this.resetsAt = resetsAt
+    const reset = plausibleReset(resetsAt)
+    if (reset) this.resetsAt = reset
   }
+}
+
+/** Runtime timestamps are Unix seconds or ISO strings, never an indefinite local lock. */
+export function plausibleReset(value: unknown): string | undefined {
+  const time =
+    typeof value === 'number' ? value * 1000 : typeof value === 'string' ? Date.parse(value) : NaN
+  const now = Date.now()
+  return Number.isFinite(time) && time >= now - 3600000 && time <= now + 8 * 86400000
+    ? new Date(time).toISOString()
+    : undefined
+}
+
+export function resetDescription(iso: string): string {
+  const reset = new Date(iso)
+  const today = reset.toDateString() === new Date(Date.now()).toDateString()
+  return reset.toLocaleString([], {
+    ...(today ? {} : { year: 'numeric', month: 'short', day: 'numeric' }),
+    hour: 'numeric',
+    minute: '2-digit',
+  })
 }
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -35,7 +56,7 @@ export function subscriptionFailure(
     rate_limit: 'usage_limit',
     rate_limit_exceeded: 'usage_limit',
     quota_exceeded: 'usage_limit',
-    billing_error: 'usage_limit',
+    billing_error: 'api',
     credits_required: 'usage_limit',
     unauthorized: 'auth_expired',
     authentication_failed: 'auth_expired',
@@ -82,9 +103,7 @@ export function subscriptionFailure(
         if (typeof item === 'number') structuredCode ??= httpCodes[item]
       }
       if (['resetsAt', 'resets_at', 'reset_at'].includes(key)) {
-        const time = typeof item === 'number' ? item * 1000 : Date.parse(String(item))
-        if (Number.isFinite(time) && time > 0 && time < 8.64e15)
-          resetsAt = new Date(time).toISOString()
+        resetsAt = plausibleReset(item)
       } else if (
         [
           'error',
@@ -119,7 +138,7 @@ export function subscriptionFailure(
   let message =
     'Subscription request failed. Check your connection and provider status in Settings.'
   if (
-    /auth_expired|unauthorized|authentication_failed|auth.*expir|sign.in.*expir|401|token.*expir/i.test(
+    /auth_expired|unauthorized|authentication_failed|auth.*expir|sign.in.*expir|\b401\b|token.*expir/i.test(
       text,
     )
   ) {
@@ -143,7 +162,7 @@ export function subscriptionFailure(
     code = 'model_unavailable'
     message = 'This model is unavailable. Choose another model in Settings.'
   } else if (
-    /usageLimitExceeded|rateLimitExceeded|sessionBudgetExceeded|usage.limit|rate.limit|quota|429|credits_required|billing_error|error_max_budget/i.test(
+    /usageLimitExceeded|rateLimitExceeded|sessionBudgetExceeded|usage.limit|rate.limit|quota|\b429\b|credits_required|error_max_budget/i.test(
       text,
     )
   ) {
@@ -152,13 +171,12 @@ export function subscriptionFailure(
       provider === 'codex'
         ? "You've reached your ChatGPT plan's Codex limit."
         : "You've reached your Claude plan's Claude Code limit."
-    if (resetsAt)
-      message += ` It resets at ${new Date(resetsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`
+    if (resetsAt) message += ` It resets at ${resetDescription(resetsAt)}.`
     else message += ' Check your allowance in Settings or wait for it to reset.'
   } else if (/context_limit|contextWindowExceeded|context.*window.*exceed/i.test(text)) {
     code = 'context_limit'
     message = 'This conversation exceeds the model context window. Start a new chat.'
-  } else if (/serverOverloaded|overloaded|503/i.test(text)) {
+  } else if (/serverOverloaded|overloaded|\b503\b/i.test(text)) {
     code = 'overloaded'
     message = 'The provider is overloaded. Try again later.'
   } else if (
@@ -168,7 +186,7 @@ export function subscriptionFailure(
   ) {
     code = 'network'
     message = 'The provider connection failed. Check your connection and try again.'
-  } else if (/badRequest|invalid_request|400/i.test(text)) {
+  } else if (/badRequest|invalid_request|\b400\b/i.test(text)) {
     code = 'invalid_request'
     message = 'The provider rejected this request. Check the selected model in Settings.'
   } else if (/max_turns|error_max_turns/i.test(text)) {

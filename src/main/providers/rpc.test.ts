@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { RpcPeer } from './rpc'
 import { runtimeEnv } from './runtime'
 
@@ -107,3 +107,22 @@ it.each([
     peer.close()
   },
 )
+
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2027-01-15T00:00:00Z'))
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+it('times out advisory metadata without closing a usable peer and ignores its late reply', async () => {
+  const { peer, child } = fixture()
+  await expect(
+    peer.request('model/list', {}, { timeoutMs: 10, closeOnTimeout: false }),
+  ).rejects.toThrow('timed out')
+  const turn = peer.request('turn/start')
+  child.stdout.write(JSON.stringify({ id: 1, result: { data: [] } }) + '\n')
+  child.stdout.write(JSON.stringify({ id: 2, result: { turn: { id: 't' } } }) + '\n')
+  expect(await turn).toEqual({ turn: { id: 't' } })
+  peer.close()
+})

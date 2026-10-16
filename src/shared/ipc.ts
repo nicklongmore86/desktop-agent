@@ -102,6 +102,9 @@ export interface ProviderFailure {
   resetsAt?: string
 }
 
+/** Serializable metadata outcome: Electron invoke rejections drop custom Error fields. */
+export type ProviderResult<T> = { ok: true; value: T } | { ok: false; failure: ProviderFailure }
+
 export interface ProviderModel extends ModelOption {
   defaultReasoningEffort: string | null
   supportedReasoningEfforts: string[]
@@ -125,7 +128,7 @@ export interface ProviderAllowance {
   provider: ProviderId
   plan: string | null
   state: 'available' | 'limited' | 'unknown'
-  /** Latest known reset of blocking windows for the effective model; null if unknown. */
+  /** Advisory reset time when limited; never proof of recovered usage permission. */
   resetsAt: string | null
   windows: AllowanceWindow[]
   lastError: ProviderFailure | null
@@ -240,9 +243,9 @@ type Unsubscribe = () => void
 /** The API the preload script exposes to the renderer as `window.desktopApi`. */
 export interface DesktopApi {
   provider: {
-    models: () => Promise<ProviderModels>
-    setModel: (model: string | null) => Promise<ProviderModels>
-    allowance: () => Promise<ProviderAllowance>
+    models: () => Promise<ProviderResult<ProviderModels>>
+    setModel: (model: string | null) => Promise<ProviderResult<ProviderModels>>
+    allowance: () => Promise<ProviderResult<ProviderAllowance>>
     get: () => Promise<ProviderStatus>
     set: (provider: ProviderId) => Promise<ProviderStatus>
     login: () => Promise<ProviderStatus>

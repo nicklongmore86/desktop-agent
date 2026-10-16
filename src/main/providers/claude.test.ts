@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi, afterEach } from 'vitest'
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeSubscriptionRunner } from './claude'
 import type { AgentEvent, AgentTool } from '../agent'
@@ -222,4 +222,11 @@ it.each([
   if (state === 'limit')
     expect(events.at(-1)).toMatchObject({ resetsAt: '2027-01-15T08:00:00.000Z' })
   expect(query).toHaveBeenCalledTimes(1)
+})
+
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2027-01-15T00:00:00Z'))
+})
+afterEach(() => {
+  vi.restoreAllMocks()
 })

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { subscriptionFailure } from './providers/errors'
 import { SubscriptionProviders } from './providers/service'
-import { PROVIDERS, type ProviderId } from '../shared/ipc'
+import { PROVIDERS, type ProviderId, type ProviderResult } from '../shared/ipc'
 import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import { createAgent, createClaudeClient } from './agent'
@@ -125,14 +125,35 @@ export async function createAppServices(deps: AppServiceDeps) {
   })
   await chat.init()
 
+  const metadataResult = async <T>(operation: () => Promise<T>): Promise<ProviderResult<T>> => {
+    const selectedProvider = settings.provider
+    try {
+      return { ok: true, value: await operation() }
+    } catch (error) {
+      const failure = subscriptionFailure(
+        error,
+        selectedProvider === 'codex-subscription' ? 'codex' : 'claude',
+      )
+      return {
+        ok: false,
+        failure: {
+          code: failure.code,
+          message: failure.message,
+          ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
+        },
+      }
+    }
+  }
   const provider = {
-    models: () => subscriptions.models(settings.provider),
-    setModel: (model: string | null) => subscriptions.setModel(settings.provider, model),
-    allowance: () => subscriptions.allowance(settings.provider),
+    models: () => metadataResult(() => subscriptions.models(settings.provider)),
+    setModel: (model: string | null) =>
+      metadataResult(() => subscriptions.setModel(settings.provider, model)),
+    allowance: () => metadataResult(() => subscriptions.allowance(settings.provider)),
     get: () => subscriptions.status(settings.provider),
     async set(next: ProviderId) {
       if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
       subscriptions.cancelLogin()
+      subscriptions.invalidateMetadata()
       await chat.switchStore(storeFor(next), () => settings.setProvider(next))
       return subscriptions.status(settings.provider)
     },

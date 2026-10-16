@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { subscriptionFailure } from './errors'
 
 it.each([
@@ -65,3 +65,38 @@ it.each([null, 'badRequest'] as const)(
     ).toBe('plan_not_entitled')
   },
 )
+
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2027-01-15T00:00:00Z'))
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+it.each([1800000000 + 9 * 86400, 1800000000 - 2 * 86400, '2099-01-01', Infinity, null])(
+  'drops implausible reset %s even inside provider result JSON',
+  (resetsAt) => {
+    const failure = subscriptionFailure(
+      { result: JSON.stringify({ code: 'usage_limit', resetsAt }) },
+      'claude',
+    )
+    expect(failure.code).toBe('usage_limit')
+    expect(failure.resetsAt).toBeUndefined()
+  },
+)
+it.each(['request 14001', 'request 14291', 'request 15031', 'request 14001 model details'])(
+  'does not interpret arbitrary digits in %s as HTTP status',
+  (message) => {
+    expect(subscriptionFailure({ message }, 'codex').code).toBe('api')
+  },
+)
+it('includes a date for a reset beyond today', () => {
+  const failure = subscriptionFailure(
+    { code: 'usage_limit', resetsAt: 1800000000 + 86400 },
+    'codex',
+  )
+  expect(failure.message).toContain('2027')
+})
+it('uses a neutral message for ambiguous Claude billing errors', () => {
+  expect(subscriptionFailure({ code: 'billing_error' }, 'claude')).toMatchObject({ code: 'api' })
+})
