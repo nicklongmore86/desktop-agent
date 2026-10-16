@@ -151,7 +151,198 @@
   margin-left: auto;
 }
 
-.mobile-new {
+.mobile-new,
+.mobile-history {
+  display: none;
+}
+
+/* Chat history (sidebar, and the drawer on narrow windows) */
+
+.sidebar-history {
+  flex: 1 1 auto;
+  /* Shrinks and scrolls on its own, so the folders and footer stay in view. */
+  min-height: 96px;
+}
+
+.history-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  overflow-y: auto;
+  /* Room for the focus ring of the first and last item. */
+  padding: var(--space-1);
+  margin: calc(-1 * var(--space-1));
+}
+
+.history-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-group-label {
+  margin: 0 0 var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.history-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.history-item:hover {
+  background: var(--color-surface-2);
+}
+
+.history-item[data-active] {
+  background: var(--color-accent-bg);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.history-open {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  text-align: left;
+}
+
+.history-open:hover:not(:disabled),
+.history-more:hover:not(:disabled) {
+  background: transparent;
+}
+
+.history-item[data-active] .history-open {
+  font-weight: 600;
+}
+
+.history-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Titles are untrusted text: lay them out on their own, never reordering what is around them. */
+  unicode-bidi: isolate;
+}
+
+.history-more {
+  flex: none;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  line-height: 1;
+}
+
+.history-rename {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.history-menu {
+  /* Fixed, so the list's scroll box cannot clip it; placed under its button in script. */
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-0);
+  box-shadow: var(--shadow-raised);
+}
+
+.history-menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+
+.history-menu button:hover,
+.history-menu button:focus-visible {
+  background: var(--color-surface-2);
+}
+
+.history-menu .danger {
+  color: var(--color-danger-text);
+}
+
+.history-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--color-overlay);
+}
+
+.history-drawer-backdrop[hidden] {
+  display: none;
+}
+
+.history-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(320px, 86vw);
+  height: 100%;
+  padding: var(--space-4);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+  box-shadow: var(--shadow-raised);
+}
+
+.history-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.history-drawer-header h2 {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.confirm-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: min(420px, 100%);
+  padding: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-0);
+  box-shadow: var(--shadow-raised);
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.confirm-dialog p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.confirm-title {
+  font-weight: 600;
+  unicode-bidi: isolate;
+}
+
+.modal-backdrop[hidden] {
   display: none;
 }
 
@@ -1199,7 +1390,8 @@
     font-size: var(--font-size-xs);
   }
 
-  .mobile-new {
+  .mobile-new,
+  .mobile-history {
     display: inline-block;
   }
 }
@@ -1397,5 +1589,10 @@
   .usage-warning,
   .usage-limited {
     border: 2px solid CanvasText;
+  }
+
+  /* The open chat is marked by more than its background. */
+  .history-item[data-active] {
+    outline: 2px solid CanvasText;
   }
 }

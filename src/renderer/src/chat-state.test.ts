@@ -118,6 +118,7 @@ describe('chatReducer', () => {
         ...initialChatState,
         storageWarning: 'disk full',
         switching: true,
+        switchKind: 'provider',
       })
     })
 

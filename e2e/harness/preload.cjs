@@ -19,7 +19,12 @@ const loginCalls = { open: 0, copy: 0, codes: [] }
 let allowance = { plan: null, state: 'unknown', resetsAt: null, windows: [], lastError: null }
 let codexModels = []
 let savedCodexModel = null
-const chatState = { items: [], running: false, loadError: null }
+let history = { conversations: [], activeId: null }
+const historyCalls = { open: [], rename: [], remove: [] }
+const chatState = () => ({ items: [], running: false, loadError: null, history })
+const pushHistory = () => {
+  for (const listener of listeners.chat) listener({ type: 'history_changed', history })
+}
 const model = {
   model: 'claude-sonnet-5-5',
   defaultModel: 'claude-sonnet-5-5',
@@ -91,13 +96,38 @@ contextBridge.exposeInMainWorld('desktopApi', {
   },
   model: { get: resolve(model), set: resolve(model) },
   chat: {
-    load: resolve(chatState),
+    load: () => Promise.resolve(chatState()),
     send: resolve({ ok: true }),
     stop: () => {
       stopCalls += 1
       return Promise.resolve()
     },
-    newChat: resolve(chatState),
+    newChat: () => {
+      history = { ...history, activeId: null }
+      return Promise.resolve(chatState())
+    },
+    history: () => Promise.resolve(history),
+    open: (id) => {
+      historyCalls.open.push(id)
+      history = { ...history, activeId: id }
+      return Promise.resolve(chatState())
+    },
+    rename: (id, title) => {
+      historyCalls.rename.push([id, title])
+      history = {
+        ...history,
+        conversations: history.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
+      }
+      return Promise.resolve(history)
+    },
+    remove: (id) => {
+      historyCalls.remove.push(id)
+      history = {
+        activeId: history.activeId === id ? null : history.activeId,
+        conversations: history.conversations.filter((c) => c.id !== id),
+      }
+      return Promise.resolve(history)
+    },
   },
   approvals: {
     respond: (id, approved) => {
@@ -145,6 +175,12 @@ contextBridge.exposeInMainWorld('e2e', {
     for (const listener of listeners.login) listener(state)
   },
   loginCalls: () => ({ ...loginCalls, codes: loginCalls.codes.slice() }),
+  // Replace the saved chats and push them like main does after a save.
+  setHistory: (next) => {
+    history = next
+    pushHistory()
+  },
+  historyCalls: () => JSON.parse(JSON.stringify(historyCalls)),
   responses: () => responses.slice(),
   stopCalls: () => stopCalls,
   listenerCount: () => listeners.chat.size + listeners.approval.size,
