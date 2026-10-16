@@ -153,12 +153,14 @@ function runKiller(
       resolve({ ok: false, reason: `${name} could not start: ${(error as Error).message}` })
       return
     }
-    killer.stdout?.resume()
-    killer.stderr?.resume()
+    const diag: string[] = []
+    killer.stdout?.on('data', (c: Buffer) => diag.push(c.toString()))
+    killer.stderr?.on('data', (c: Buffer) => diag.push(c.toString()))
     killer.once('error', (error) => {
       resolve({ ok: false, reason: `${name} could not start: ${error.message}` })
     })
     killer.once('close', (code) => {
+      console.error(`TEMPDIAG ${name} code=${String(code)} ${diag.join('').slice(0, 4000)}`)
       resolve(
         code === 0
           ? { ok: true }

@@ -688,7 +688,21 @@ describe('run_shell with a real shell', () => {
           ? /^Cancelled; the process tree was killed/
           : /^Timed out after 15 s; the process tree was killed/,
     })
-    expect(await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)).toBe(true)
+    const gone = await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)
+    if (!gone && process.platform === 'win32') {
+      const { execFileSync } = await import('node:child_process')
+      console.error(
+        'TEMPDIAG survivors',
+        child,
+        grandchild,
+        execFileSync('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -in ${String(child)},${String(grandchild)} -or $_.ParentProcessId -in ${String(child)},${String(grandchild)} } | Format-List ProcessId,ParentProcessId,CreationDate,CommandLine`,
+        ]).toString(),
+      )
+    }
+    expect(gone).toBe(true)
   }
 
   for (const stop of ['cancel', 'timeout'] as const) {
