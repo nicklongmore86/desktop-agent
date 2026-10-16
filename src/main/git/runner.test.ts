@@ -3,15 +3,26 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ShellSpawnOptions } from '../tools/run-shell'
 import { configInvocation, filtersFromKeys, parseConfigKeys } from './repo-config'
-import { createGitRunner, gitEnv, gitInvocation } from './runner'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  createGitRunner,
+  DEVICE_EMPTY,
+  ensureEmptyPaths,
+  gitEnv,
+  gitInvocation,
+  type EmptyPaths,
+} from './runner'
 
 const target = { root: '/granted/repo', gitDir: '/granted/repo/.git' }
 
-const NEUTRAL = [
+/** The neutralising -c settings, naming `empty` wherever a setting must point at nothing. */
+const neutral = (empty: EmptyPaths) => [
   '-c',
   'core.fsmonitor=false',
   '-c',
-  'core.hooksPath=/dev/null',
+  `core.hooksPath=${empty.hooks}`,
   '-c',
   'diff.external=',
   '-c',
@@ -31,13 +42,13 @@ const NEUTRAL = [
   '-c',
   'status.submoduleSummary=false',
   '-c',
-  'core.excludesFile=/dev/null',
+  `core.excludesFile=${empty.file}`,
   '-c',
-  'core.attributesFile=/dev/null',
+  `core.attributesFile=${empty.file}`,
   '-c',
-  'diff.orderFile=/dev/null',
+  `diff.orderFile=${empty.file}`,
   '-c',
-  'mailmap.file=/dev/null',
+  `mailmap.file=${empty.file}`,
   '-c',
   'mailmap.blob=',
   '-c',
@@ -61,10 +72,16 @@ const NEUTRAL = [
   '-c',
   'diff.relative=false',
 ]
+const NEUTRAL = neutral(DEVICE_EMPTY)
+/** What Windows uses: the app's own empty file and hooks folder, never /dev/null. */
+const WINDOWS_EMPTY: EmptyPaths = {
+  file: 'C:\\Users\\me\\AppData\\Roaming\\Desktop Agent\\git-empty\\empty',
+  hooks: 'C:\\Users\\me\\AppData\\Roaming\\Desktop Agent\\git-empty\\no-hooks',
+}
 
 describe('gitInvocation', () => {
   it('is the fixed flags, explicit git dir and work tree, every neutralising setting, then the subcommand', () => {
-    expect(gitInvocation(target, [], ['status', '-z'])).toEqual([
+    expect(gitInvocation(target, [], ['status', '-z'], DEVICE_EMPTY)).toEqual([
       '--no-pager',
       '--no-optional-locks',
       '--literal-pathspecs',
@@ -77,8 +94,16 @@ describe('gitInvocation', () => {
     ])
   })
 
+  it('on Windows names the app’s empty file and hooks folder, never /dev/null', () => {
+    const args = gitInvocation(target, ['lfs'], ['status'], WINDOWS_EMPTY)
+    expect(args.slice(6, 6 + NEUTRAL.length)).toEqual(neutral(WINDOWS_EMPTY))
+    expect(args.join('\n')).not.toContain('/dev/null')
+    expect(args).toContain(`core.hooksPath=${WINDOWS_EMPTY.hooks}`)
+    expect(args).toContain(`core.excludesFile=${WINDOWS_EMPTY.file}`)
+  })
+
   it("switches off every one of the repository's filter drivers", () => {
-    const args = gitInvocation(target, ['lfs', 'Evil.Dotted'], ['diff'])
+    const args = gitInvocation(target, ['lfs', 'Evil.Dotted'], ['diff'], DEVICE_EMPTY)
     expect(args.slice(6 + NEUTRAL.length, -1)).toEqual([
       '-c',
       'filter.lfs.clean=',
@@ -100,7 +125,7 @@ describe('gitInvocation', () => {
   })
 
   it('reads the config with includes off', () => {
-    expect(configInvocation(target).slice(-5)).toEqual([
+    expect(configInvocation(target, DEVICE_EMPTY).slice(-5)).toEqual([
       'config',
       '--no-includes',
       '-z',
@@ -130,6 +155,16 @@ describe('repository config', () => {
 })
 
 describe('gitEnv', () => {
+  it('on Windows points the global config at the app’s empty file, not /dev/null', () => {
+    const env = gitEnv(
+      { Path: 'C:\\Windows', GIT_CONFIG_GLOBAL: 'C:\\dev\\null' },
+      'win32',
+      WINDOWS_EMPTY,
+    )
+    expect(env['GIT_CONFIG_GLOBAL']).toBe(WINDOWS_EMPTY.file)
+    expect(Object.values(env)).not.toContain('/dev/null')
+  })
+
   it('keeps only the allow-listed variables and adds the git safety variables', () => {
     const env = gitEnv(
       {
@@ -145,6 +180,7 @@ describe('gitEnv', () => {
         NODE_OPTIONS: '--require evil',
       },
       'linux',
+      DEVICE_EMPTY,
     )
     expect(env).toEqual({
       PATH: '/usr/bin',
@@ -193,13 +229,14 @@ describe('createGitRunner', () => {
       platform,
       env: { PATH: '/usr/bin', SECRET_TOKEN: 'x' },
       spawn,
+      empty: platform === 'win32' ? WINDOWS_EMPTY : DEVICE_EMPTY,
     })
     return { child, calls, run, git }
   }
 
   it('spawns the absolute git with exactly the given arguments, no shell, the minimal env', async () => {
     const { child, calls, run, git } = setup('win32')
-    const args = gitInvocation(target, [], ['log'])
+    const args = gitInvocation(target, [], ['log'], WINDOWS_EMPTY)
     const done = run(args, '/granted/repo', { maxBytes: 100 })
     child.stdout.end('out')
     child.emit('close', 0, null)
@@ -210,13 +247,14 @@ describe('createGitRunner', () => {
     expect(call?.args).toEqual(args)
     expect(call?.options).toEqual({
       cwd: '/granted/repo',
-      env: gitEnv({ PATH: '/usr/bin' }, 'win32'),
+      env: gitEnv({ PATH: '/usr/bin' }, 'win32', WINDOWS_EMPTY),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       detached: false,
     })
     expect(call?.options).not.toHaveProperty('shell')
     expect(call?.options.env).not.toHaveProperty('SECRET_TOKEN')
+    expect(call?.options.env['GIT_CONFIG_GLOBAL']).toBe(WINDOWS_EMPTY.file)
   })
 
   it('stops git once its output passes the cap', async () => {
@@ -256,5 +294,27 @@ describe('createGitRunner', () => {
     const done = run(['x'], '/r', { maxBytes: 4 })
     child.emit('error', new Error('spawn ENOENT'))
     expect(await done).toMatchObject({ code: null, stderr: 'spawn ENOENT' })
+  })
+})
+
+describe('ensureEmptyPaths', () => {
+  it('creates an empty file and an empty hooks folder, and rebuilds them if anything is added', async () => {
+    const base = join(mkdtempSync(join(tmpdir(), 'git-empty-')), 'git-empty')
+    try {
+      const paths = await ensureEmptyPaths(base)
+      expect(paths).toEqual({ file: join(base, 'empty'), hooks: join(base, 'no-hooks') })
+      expect(readdirSync(paths.hooks)).toEqual([])
+      // A planted hook, config text and an extra file are all gone on the next use.
+      writeFileSync(join(paths.hooks, 'pre-commit'), '#!/bin/sh\n')
+      writeFileSync(paths.file, '[core]\n\tfsmonitor = evil\n')
+      mkdirSync(join(base, 'extra'))
+      const again = await ensureEmptyPaths(base)
+      expect(again).toEqual(paths)
+      expect(readdirSync(paths.hooks)).toEqual([])
+      expect(readdirSync(base).sort()).toEqual(['empty', 'no-hooks'])
+      expect(statSync(paths.file).size).toBe(0)
+    } finally {
+      rmSync(join(base, '..'), { recursive: true, force: true })
+    }
   })
 })

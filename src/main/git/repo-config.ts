@@ -4,7 +4,13 @@
 // incomplete) and the names of its filter drivers (each one's programs are then
 // disabled on the command line, see gitInvocation).
 import { CONTROL_CHARS } from '../files/location'
-import { gitInvocation, type FilterNames, type GitRunner, type GitTarget } from './runner'
+import {
+  gitInvocation,
+  type EmptyPaths,
+  type FilterNames,
+  type GitRunner,
+  type GitTarget,
+} from './runner'
 
 /** Most filter drivers a repository may define. */
 const MAX_FILTERS = 64
@@ -13,11 +19,12 @@ export type RepoConfig =
   { ok: true; filters: FilterNames } | { ok: false; reason: string; refused: boolean }
 
 /** The argument list of the config read: includes off, so it reads the repository's files only. */
-export function configInvocation(target: GitTarget): string[] {
+export function configInvocation(target: GitTarget, empty: EmptyPaths): string[] {
   return gitInvocation(
     target,
     [],
     ['config', '--no-includes', '-z', '--get-regexp', '^(include|includeif|filter)\\.'],
+    empty,
   )
 }
 
@@ -60,8 +67,12 @@ export function filtersFromKeys(keys: readonly string[]): RepoConfig {
   return { ok: true, filters: [...filters] }
 }
 
-export async function readRepoConfig(run: GitRunner, target: GitTarget): Promise<RepoConfig> {
-  const result = await run(configInvocation(target), target.root, { maxBytes: 262_144 })
+export async function readRepoConfig(
+  run: GitRunner,
+  target: GitTarget,
+  empty: EmptyPaths,
+): Promise<RepoConfig> {
+  const result = await run(configInvocation(target, empty), target.root, { maxBytes: 262_144 })
   if (result.truncated)
     return { ok: false, refused: true, reason: "This repository's settings are too large." }
   // Exit 1: no key matched.

@@ -86,6 +86,7 @@ export async function createAppServices(deps: AppServiceDeps) {
 
   const git = createGitService({
     guard,
+    emptyDir: join(userData, 'git-empty'),
     emit: (change) => deps.onGitChanged?.(change),
     openUrl: deps.openUrl ?? (() => Promise.reject(new Error('Opening links is unavailable.'))),
   })

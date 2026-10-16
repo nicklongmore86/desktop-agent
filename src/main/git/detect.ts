@@ -1,7 +1,9 @@
 // Finds an installed git. Nothing is bundled: when git is missing the panel says so
 // and offers the Git for Windows download page. Only absolute paths are considered,
 // in the standard install folders first and then PATH, and never a git inside a
-// granted folder or a relative PATH entry (a downloaded folder could plant one).
+// granted folder or a relative PATH entry (a downloaded folder could plant one). A
+// candidate is resolved to its real path first (symbolic links, junctions), checked
+// again there, and that real path is what runs.
 import { promises as fs } from 'node:fs'
 import { checkPathSyntax, isInside, pathApi } from '../permissions/paths'
 import type { GitRunner } from './runner'
@@ -14,8 +16,10 @@ export interface DetectDeps {
   env: NodeJS.ProcessEnv
   /** The granted folders: a git inside one is never used. */
   grantedRoots: () => readonly string[]
-  /** True when `path` is a regular file (follows links, like running it would). */
+  /** True when `path` (already a real path) is a regular file. */
   isFile?: (path: string) => Promise<boolean>
+  /** Like fs.promises.realpath: links and junctions resolved; rejects when it cannot. */
+  realpath?: (path: string) => Promise<string>
 }
 
 const nodeIsFile = async (path: string): Promise<boolean> => {
@@ -41,10 +45,15 @@ export function gitCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv)
       get('ProgramFiles(x86)'),
       'C:\\Program Files',
     ]) {
-      if (absolute(base)) candidates.push(P.join(base, 'Git', 'cmd', 'git.exe'))
+      if (!absolute(base)) continue
+      candidates.push(P.join(base, 'Git', 'cmd', 'git.exe'), P.join(base, 'Git', 'bin', 'git.exe'))
     }
     const local = get('LOCALAPPDATA')
-    if (absolute(local)) candidates.push(P.join(local, 'Programs', 'Git', 'cmd', 'git.exe'))
+    if (absolute(local))
+      candidates.push(
+        P.join(local, 'Programs', 'Git', 'cmd', 'git.exe'),
+        P.join(local, 'Programs', 'Git', 'bin', 'git.exe'),
+      )
     for (const dir of (get('PATH') ?? '').split(';')) {
       const trimmed = dir.trim().replace(/^"(.*)"$/, '$1')
       if (absolute(trimmed)) candidates.push(P.join(trimmed, 'git.exe'))
@@ -58,13 +67,30 @@ export function gitCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv)
   return [...new Set(candidates)]
 }
 
-/** The first candidate that exists and is outside the granted folders, or null. */
+/**
+ * The real path of the first candidate that exists and is outside the granted folders,
+ * or null. A candidate reached through a link or junction is judged (and run) by where
+ * it really is; one that cannot be resolved is skipped.
+ */
 export async function findGit(deps: DetectDeps): Promise<string | null> {
   const isFile = deps.isFile ?? nodeIsFile
+  const realpath = deps.realpath ?? ((path: string) => fs.realpath(path))
+  const { platform } = deps
   const roots = deps.grantedRoots()
-  for (const candidate of gitCandidates(deps.platform, deps.env)) {
-    if (roots.some((root) => isInside(candidate, root, deps.platform))) continue
-    if (await isFile(candidate)) return candidate
+  // Granted folders are stored as real paths; resolve them again in case one changed.
+  const realRoots = await Promise.all(roots.map((root) => realpath(root).catch(() => root)))
+  const inGrant = (path: string): boolean =>
+    [...roots, ...realRoots].some((root) => isInside(path, root, platform))
+  for (const candidate of gitCandidates(platform, deps.env)) {
+    if (inGrant(candidate)) continue
+    let real: string
+    try {
+      real = await realpath(candidate)
+    } catch {
+      continue
+    }
+    if (checkPathSyntax(real, platform) !== null || inGrant(real)) continue
+    if (await isFile(real)) return real
   }
   return null
 }

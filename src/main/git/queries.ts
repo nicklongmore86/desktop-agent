@@ -21,20 +21,29 @@ import { openVerified, readBounded } from '../tools/safe-fs'
 import { hiddenReason, repoPath } from './hidden'
 import { redactDiff } from './redact'
 import { gitFailure } from './repo-config'
-import { gitInvocation, type FilterNames, type GitRunner, type GitTarget } from './runner'
+import {
+  gitInvocation,
+  type EmptyPaths,
+  type FilterNames,
+  type GitRunner,
+  type GitTarget,
+} from './runner'
 
 export interface QueryContext {
   run: GitRunner
   target: GitTarget
   filters: FilterNames
   guard: PathGuard
+  empty: EmptyPaths
 }
 
 const STATUS_MAX_BYTES = 8 * 1024 * 1024
 const LOG_MAX_BYTES = 1024 * 1024
 
 function invoke(ctx: QueryContext, subcommand: string[], maxBytes: number) {
-  return ctx.run(gitInvocation(ctx.target, ctx.filters, subcommand), ctx.target.root, { maxBytes })
+  return ctx.run(gitInvocation(ctx.target, ctx.filters, subcommand, ctx.empty), ctx.target.root, {
+    maxBytes,
+  })
 }
 
 const failed = (reason: string) => ({ ok: false as const, code: 'failed' as const, reason })

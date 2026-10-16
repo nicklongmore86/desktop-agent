@@ -95,7 +95,8 @@ export async function checkRepo(guard: PathGuard, root: string): Promise<RepoChe
     // A worktree or submodule: `.git` is a file that says `gitdir: <path>`.
     const text = await readPointer(dotGit)
     const match = text ? /^gitdir: ?(.+?)\r?\n?$/.exec(text) : null
-    gitDir = match?.[1] ? await pointerTarget(guard, root, match[1]) : null
+    const pointer = match?.[1]?.trim()
+    gitDir = pointer ? await pointerTarget(guard, root, pointer) : null
   } else {
     return { ok: false, reason: 'Its .git is not a file or folder.' }
   }
@@ -137,6 +138,16 @@ async function entryFor(
   if (check.ok) return { ...ref, name, path, kind: 'repo' }
   if (check.notRepo) return null
   return { ...ref, name, path, kind: 'refused', reason: check.reason }
+}
+
+/** Why a granted folder inside the repository at `outer` is not opened on its own. */
+function enclosingReason(guard: PathGuard, outer: string): string {
+  const P = guard.path
+  if (guard.isRoot(outer) || guard.isRoot(P.dirname(outer)))
+    return `This folder is part of the git repository at ${outer}, which is shown under its own granted folder.`
+  if (guard.isWithinGrants(outer))
+    return `This folder is part of the git repository at ${outer}. The Git panel opens a repository from a granted folder that is its top folder (or holds it directly); grant ${outer} to see it.`
+  return `This folder is inside the git repository at ${outer}, which is not granted. Grant that folder to see its changes.`
 }
 
 /** The nearest folder above `root` that has a `.git`, or null. */
@@ -196,7 +207,7 @@ export async function discoverRepos(guard: PathGuard): Promise<GitFolder[]> {
             name: folder.name,
             path: folder.path,
             kind: 'refused',
-            reason: `This folder is inside the git repository at ${outer}, which is not granted. Grant that folder to see its changes.`,
+            reason: enclosingReason(guard, outer),
           })
       }
       return result

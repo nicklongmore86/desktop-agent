@@ -12,10 +12,13 @@ it can configure is treated as hostile. Code: `src/main/git/`.
 ## Finding git (`detect.ts`)
 
 Nothing is bundled. Git is looked for by absolute path: `Program Files\Git\cmd\git.exe`
-(ProgramW6432, ProgramFiles, ProgramFiles(x86)), `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`,
+and `Git\bin\git.exe` (ProgramW6432, ProgramFiles, ProgramFiles(x86)),
+`%LOCALAPPDATA%\Programs\Git\{cmd,bin}\git.exe`,
 then absolute `PATH` entries (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin` then
 `PATH` elsewhere). A relative or UNC entry, or a git inside a granted folder, is never
-used. `git --version` must be 2.32 or later. When none is found the panel offers
+used. Each candidate is resolved to its real path (symbolic links and junctions); one
+that cannot be resolved, resolves into a granted folder or to a network path is skipped,
+and the real path is what runs. `git --version` must be 2.32 or later. When none is found the panel offers
 "Install Git for Windows", which asks main to open a fixed address
 (`GIT_INSTALL_URL`); the renderer never sends a URL.
 
@@ -34,17 +37,24 @@ used. `git --version` must be 2.32 or later. When none is found the panel offers
 
 ## Every invocation (`runner.ts`)
 
+`<empty file>` and `<empty hooks>` below are `/dev/null` on Linux and macOS. On Windows
+they are an empty file and an empty folder in the app's own data folder
+(`userData\git-empty\empty` and `...\no-hooks`), checked before every use and rebuilt
+if anything else is there: a native Git for Windows can resolve `/dev/null` as
+`C:\dev\null`, which any user can create.
+
 `spawn(<absolute git>, argv, { cwd: <checked repo root>, env, stdio: ignore/pipe/pipe,
 windowsHide })`, never a shell, 15 s timeout (process tree killed), stdout cap per call.
 
 ```
 git --no-pager --no-optional-locks --literal-pathspecs --no-replace-objects
     --git-dir=<checked> --work-tree=<checked>
-    -c core.fsmonitor=false -c core.hooksPath=/dev/null -c diff.external=
+    -c core.fsmonitor=false -c core.hooksPath=<empty hooks> -c diff.external=
     -c core.pager=cat -c core.askPass= -c credential.helper= -c protocol.allow=never
     -c log.showSignature=false -c submodule.recurse=false -c diff.ignoreSubmodules=all
-    -c status.submoduleSummary=false -c core.excludesFile=/dev/null
-    -c core.attributesFile=/dev/null -c diff.orderFile=/dev/null -c mailmap.file=/dev/null
+    -c status.submoduleSummary=false -c core.excludesFile=<empty file>
+    -c core.attributesFile=<empty file> -c diff.orderFile=<empty file>
+    -c mailmap.file=<empty file>
     -c mailmap.blob= -c log.mailmap=false -c core.untrackedCache=false
     -c core.splitIndex=false -c gc.auto=0 -c maintenance.auto=false -c color.ui=false
     -c core.quotePath=false -c diff.noprefix=false -c diff.mnemonicPrefix=false
@@ -55,7 +65,7 @@ git --no-pager --no-optional-locks --literal-pathspecs --no-replace-objects
 ```
 
 Environment: the shell tool's allow-list (`shellEnv`) plus `GIT_TERMINAL_PROMPT=0`,
-`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`,
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=<empty file>`, `GIT_ATTR_NOSYSTEM=1`,
 `GIT_OPTIONAL_LOCKS=0`, `GIT_NO_LAZY_FETCH=1`, `GIT_NO_REPLACE_OBJECTS=1`,
 `GIT_PROTOCOL_FROM_USER=0`, `GIT_PAGER=cat`, `PAGER=cat`, `GIT_ASKPASS=`, `SSH_ASKPASS=`,
 `GIT_ADVICE=0`, `LC_ALL=C`, `LANGUAGE=C`. No other `GIT_*` variable is passed on.
@@ -92,4 +102,5 @@ never under the panel.
   as tokens, never HTML.
 
 Refresh: a watcher per shown repository (recursive on Windows/macOS, top folder and
-`.git` on Linux; object store and lock files ignored), window focus, and Refresh.
+the git folder on Linux, a worktree's checked git folder included; object store and
+lock files ignored), window focus, and Refresh.

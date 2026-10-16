@@ -1,3 +1,14 @@
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { gitCandidates, findGit, parseGitVersion } from './detect'
 import { parseLog, parseNumstat, parseStatus } from './queries'
@@ -120,8 +131,11 @@ describe('git detection', () => {
   it('looks in the standard Git for Windows folders, then absolute PATH entries only', () => {
     expect(gitCandidates('win32', env)).toEqual([
       'C:\\Program Files\\Git\\cmd\\git.exe',
+      'C:\\Program Files\\Git\\bin\\git.exe',
       'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+      'C:\\Program Files (x86)\\Git\\bin\\git.exe',
       'C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe',
+      'C:\\Users\\me\\AppData\\Local\\Programs\\Git\\bin\\git.exe',
       'C:\\Tools\\git.exe',
       'C:\\Users\\me\\Downloads\\repo\\git.exe',
     ])
@@ -132,10 +146,82 @@ describe('git detection', () => {
       platform: 'win32',
       env: { Path: 'C:\\Users\\me\\Downloads\\repo;C:\\Tools' },
       grantedRoots: () => ['C:\\Users\\me\\Downloads'],
-      isFile: (path) => Promise.resolve(path !== 'C:\\Program Files\\Git\\cmd\\git.exe'),
+      isFile: (path) => Promise.resolve(!path.startsWith('C:\\Program Files')),
+      realpath: (path) => Promise.resolve(path),
     })
     expect(found).toBe('C:\\Tools\\git.exe')
   })
+
+  it('judges a candidate by its real path: a junction into a granted folder is skipped', async () => {
+    const found = await findGit({
+      platform: 'win32',
+      env: { Path: 'C:\\Tools;C:\\Broken;C:\\Other' },
+      grantedRoots: () => ['C:\\Users\\me\\Downloads'],
+      isFile: (path) => Promise.resolve(!path.startsWith('C:\\Program Files')),
+      realpath: (path) => {
+        // C:\Tools is a junction to a downloaded folder; C:\Broken cannot be resolved;
+        // C:\Other is a link to a real install, which is what runs.
+        if (path.startsWith('C:\\Tools\\'))
+          return Promise.resolve('C:\\Users\\me\\Downloads\\repo\\git.exe')
+        if (path.startsWith('C:\\Broken\\')) return Promise.reject(new Error('ENOENT'))
+        if (path === 'C:\\Other\\git.exe') return Promise.resolve('D:\\Apps\\Git\\cmd\\git.exe')
+        return Promise.resolve(path)
+      },
+    })
+    expect(found).toBe('D:\\Apps\\Git\\cmd\\git.exe')
+  })
+
+  it('skips a candidate that resolves to a network path', async () => {
+    const found = await findGit({
+      platform: 'win32',
+      env: { Path: 'C:\\Tools' },
+      grantedRoots: () => [],
+      isFile: (path) => Promise.resolve(!path.startsWith('C:\\Program Files')),
+      realpath: (path) =>
+        Promise.resolve(path.startsWith('C:\\Tools') ? '\\\\server\\share\\git.exe' : path),
+    })
+    expect(found).toBeNull()
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'skips symbolic links (file or folder) into a granted folder on the real file system',
+    async () => {
+      const base = realpathSync(mkdtempSync(join(tmpdir(), 'git-detect-')))
+      try {
+        const grant = join(base, 'grant')
+        const outside = join(base, 'outside')
+        mkdirSync(join(grant, 'bin'), { recursive: true })
+        mkdirSync(join(outside, 'bin'), { recursive: true })
+        mkdirSync(join(outside, 'real'), { recursive: true })
+        writeFileSync(join(grant, 'bin', 'git'), '#!/bin/sh\n')
+        writeFileSync(join(outside, 'real', 'git'), '#!/bin/sh\n')
+        chmodSync(join(grant, 'bin', 'git'), 0o755)
+        symlinkSync(join(grant, 'bin', 'git'), join(outside, 'bin', 'git'))
+        symlinkSync(join(grant, 'bin'), join(outside, 'linkdir'))
+        symlinkSync(join(outside, 'real'), join(outside, 'goodlink'))
+        const deps = {
+          platform: process.platform,
+          grantedRoots: () => [grant],
+          // Only this test's folders count (the machine's own git is not looked at).
+          isFile: (path: string) => Promise.resolve(path.startsWith(base)),
+        }
+        expect(
+          await findGit({
+            ...deps,
+            env: { PATH: `${join(outside, 'bin')}:${join(outside, 'linkdir')}` },
+          }),
+        ).toBeNull()
+        expect(
+          await findGit({
+            ...deps,
+            env: { PATH: `${join(outside, 'linkdir')}:${join(outside, 'goodlink')}` },
+          }),
+        ).toBe(join(outside, 'real', 'git'))
+      } finally {
+        rmSync(base, { recursive: true, force: true })
+      }
+    },
+  )
 
   it('reports git missing when nothing is found', async () => {
     expect(

@@ -9,6 +9,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -85,7 +86,12 @@ describe.runIf(gitPath)('git panel with the real git', () => {
     markers = join(base, 'markers')
     for (const dir of [grant, outside, markers, join(base, 'scripts')]) mkdirSync(dir)
     const guard = new PathGuard({ roots: () => [grant] })
-    service = createGitService({ guard, emit: () => undefined, openUrl: () => Promise.resolve() })
+    service = createGitService({
+      guard,
+      emit: () => undefined,
+      openUrl: () => Promise.resolve(),
+      emptyDir: join(base, 'git-empty'),
+    })
 
     // hostile: a normal history, then everything a downloaded repository could configure.
     const hostile = join(grant, 'hostile')
@@ -375,6 +381,7 @@ describe.runIf(gitPath)('git panel with the real git', () => {
       guard,
       emit: () => undefined,
       openUrl: () => Promise.resolve(),
+      emptyDir: join(base, 'git-empty-inner'),
     })
     const overview = await inner.overview()
     if (overview.git !== 'found') throw new Error('git missing')
@@ -386,6 +393,106 @@ describe.runIf(gitPath)('git panel with the real git', () => {
     ])
     expect(existsSync(join(outer, '.git', 'index'))).toBe(false)
   })
+
+  it('says so when the enclosing repository is itself granted', async () => {
+    const outer = join(grant, 'nested-outer')
+    mkdirSync(join(outer, 'src'), { recursive: true })
+    git(outer, 'init', '-q')
+    const guard = new PathGuard({ roots: () => [outer, join(outer, 'src')] })
+    const nested = createGitService({
+      guard,
+      emit: () => undefined,
+      openUrl: () => Promise.resolve(),
+      emptyDir: join(base, 'git-empty-nested'),
+    })
+    const overview = await nested.overview()
+    if (overview.git !== 'found') throw new Error('git missing')
+    expect(overview.folders[0]?.repos[0]).toMatchObject({ kind: 'repo', rel: '' })
+    expect(overview.folders[1]?.repos).toEqual([
+      expect.objectContaining({
+        kind: 'refused',
+        reason: expect.stringMatching(/shown under its own granted folder/) as unknown,
+      }),
+    ])
+  })
+
+  it('uses the app’s own empty file and hooks folder (Windows’ mode) with the hostile repository', async () => {
+    const guard = new PathGuard({ roots: () => [grant] })
+    const emptyDir = join(base, 'app-empty')
+    const app = createGitService({
+      guard,
+      emit: () => undefined,
+      openUrl: () => Promise.resolve(),
+      emptyMode: 'app',
+      emptyDir,
+    })
+    // A planted hook in the hooks folder is cleared before git runs.
+    mkdirSync(join(emptyDir, 'no-hooks'), { recursive: true })
+    writeFileSync(join(emptyDir, 'no-hooks', 'post-index-change'), '#!/bin/sh\nexit 0\n')
+    const status = okStatus(await app.status(ref('hostile')))
+    expect(status.changes.find((c) => c.path === 'a.txt')).toBeDefined()
+    expect(readdirSync(join(emptyDir, 'no-hooks'))).toEqual([])
+    text(await app.diff({ repo: ref('hostile'), area: 'unstaged', path: 'a.txt' }))
+    expect(await app.log({ repo: ref('hostile'), skip: 0 })).toMatchObject({ ok: true })
+    expect(marked()).toEqual([])
+  })
+
+  it('accepts a worktree whose .git pointer has trailing spaces, and watches its git folder', async () => {
+    const main = join(grant, 'wt-main')
+    mkdirSync(main)
+    git(main, 'init', '-q')
+    writeFileSync(join(main, 'f.txt'), '1\n')
+    git(main, 'add', '.')
+    git(main, 'commit', '-q', '-m', 'one')
+    git(main, 'worktree', 'add', '-q', join(grant, 'wt'))
+    const pointer = join(grant, 'wt', '.git')
+    const original = readFileSync(pointer, 'utf8')
+    writeFileSync(pointer, `${original.trimEnd()}   \n`)
+    expect(await service.status(ref('wt'))).toMatchObject({ ok: true, branch: { head: 'wt' } })
+    writeFileSync(pointer, original)
+
+    const guard = new PathGuard({ roots: () => [grant] })
+    const changes: string[] = []
+    const watching = createGitService({
+      guard,
+      emit: (change) => changes.push(change.rel),
+      openUrl: () => Promise.resolve(),
+      emptyDir: join(base, 'git-empty-watch'),
+    })
+    try {
+      await watching.watch([ref('wt')])
+      // Staging changes only the worktree's git folder (outside the top folder on Linux).
+      writeFileSync(join(main, 'unrelated.txt'), 'x\n')
+      mkdirSync(join(grant, 'wt', 'sub'))
+      writeFileSync(join(grant, 'wt', 'sub', 'g.txt'), 'x\n')
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      changes.length = 0
+      git(join(grant, 'wt'), 'add', 'sub/g.txt')
+      await expect.poll(() => changes, { timeout: 5000 }).toContain('wt')
+    } finally {
+      watching.close()
+    }
+  })
+
+  // The reviewer's scenario: any Windows user can create C:\dev\null. A config planted
+  // there must never be read. Only on CI, where the machine is thrown away.
+  it.runIf(platform === 'win32' && process.env['CI'] && !existsSync('C:\\dev'))(
+    'ignores a config planted at C:\\dev\\null',
+    async () => {
+      const fsmonitor = writeScript(
+        'planted.sh',
+        `echo hit > "${slash(join(markers, 'planted'))}"\nexit 1`,
+      )
+      mkdirSync('C:\\dev')
+      try {
+        writeFileSync('C:\\dev\\null', `[core]\n\tfsmonitor = ${fsmonitor}\n`)
+        okStatus(await service.status(ref('hostile')))
+        expect(marked()).toEqual([])
+      } finally {
+        rmSync('C:\\dev', { recursive: true, force: true })
+      }
+    },
+  )
 
   it('never created a marker', () => {
     expect(marked()).toEqual([])
