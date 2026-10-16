@@ -65,3 +65,37 @@ it('preserves legacy API history and starts both subscriptions without reading t
   await services.provider.set('anthropic-api')
   expect(services.chat.state().items[0]).toMatchObject({ text: 'legacy API history' })
 })
+
+it.each([
+  ['Missing runtime: codex', 'runtime_unavailable'],
+  ['Sign-in expired.', 'auth_expired'],
+  ['This model is not available on your plan', 'plan_not_entitled'],
+  ['quota exceeded', 'usage_limit'],
+] as const)(
+  'preserves setup classification for %s without starting or retrying a run',
+  async (message, code) => {
+    const userData = await mkdtemp(join(tmpdir(), 'setup-failure-'))
+    dirs.push(userData)
+    await writeFile(
+      join(userData, 'settings.json'),
+      JSON.stringify({ version: 2, provider: 'codex-subscription' }),
+    )
+    const runner = vi
+      .spyOn(SubscriptionProviders.prototype, 'runner')
+      .mockRejectedValue(new Error(message))
+    const services = await createAppServices({
+      userData,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (text) => Buffer.from(text),
+        decryptString: (value) => value.toString(),
+      },
+      trash: () => Promise.resolve(),
+      emit: vi.fn(),
+      promptApproval: vi.fn(),
+      onAuditStatus: vi.fn(),
+    })
+    expect(await services.chat.send('hello')).toMatchObject({ ok: false, code })
+    expect(runner).toHaveBeenCalledOnce()
+  },
+)

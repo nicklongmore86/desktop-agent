@@ -17,7 +17,8 @@ export interface AgentRunner {
 }
 
 export type RunnerResult =
-  { ok: true; runner: AgentRunner } | { ok: false; code: ChatErrorCode; message: string }
+  | { ok: true; runner: AgentRunner }
+  | { ok: false; code: ChatErrorCode; message: string; resetsAt?: string }
 
 export interface ChatSessionDeps {
   store: ConversationStore
@@ -141,7 +142,12 @@ export class ChatSession {
       release()
       return built.ok
         ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
-        : { ok: false, code: built.code, message: built.message }
+        : {
+            ok: false,
+            code: built.code,
+            message: built.message,
+            ...(built.resetsAt ? { resetsAt: built.resetsAt } : {}),
+          }
     }
 
     this.conversation = [...this.conversation, { role: 'user', content: text }]
@@ -236,6 +242,7 @@ export class ChatSession {
           runId,
           code: toChatCode(event.code),
           message: event.message,
+          ...(event.resetsAt ? { resetsAt: event.resetsAt } : {}),
         })
         break
       default:

@@ -1,4 +1,5 @@
 import { homedir } from 'node:os'
+import { subscriptionFailure } from './providers/errors'
 import { SubscriptionProviders } from './providers/service'
 import { PROVIDERS, type ProviderId } from '../shared/ipc'
 import { join } from 'node:path'
@@ -67,7 +68,7 @@ export async function createAppServices(deps: AppServiceDeps) {
   const subscriptions = new SubscriptionProviders(
     userData,
     deps.openUrl ?? (() => Promise.reject(new Error('Browser sign-in is unavailable.'))),
-    { onLoginState: (state) => deps.onProviderLoginState?.(state) },
+    { settings, onLoginState: (state) => deps.onProviderLoginState?.(state) },
   )
   const storeFor = (provider: ProviderId) =>
     createConversationStore(
@@ -83,10 +84,15 @@ export async function createAppServices(deps: AppServiceDeps) {
         try {
           return { ok: true, runner: await subscriptions.runner(settings.provider, tools, signal) }
         } catch (error) {
+          const failure = subscriptionFailure(
+            error,
+            settings.provider === 'codex-subscription' ? 'codex' : 'claude',
+          )
           return {
             ok: false,
-            code: 'authentication',
-            message: error instanceof Error ? error.message : 'Subscription unavailable.',
+            code: failure.code,
+            message: failure.message,
+            ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
           }
         }
       }
@@ -120,6 +126,9 @@ export async function createAppServices(deps: AppServiceDeps) {
   await chat.init()
 
   const provider = {
+    models: () => subscriptions.models(settings.provider),
+    setModel: (model: string | null) => subscriptions.setModel(settings.provider, model),
+    allowance: () => subscriptions.allowance(settings.provider),
     get: () => subscriptions.status(settings.provider),
     async set(next: ProviderId) {
       if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')

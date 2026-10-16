@@ -31,7 +31,7 @@ it('reports missing runtimes with pinned install guidance', async () => {
   vi.mocked(discoverRuntime).mockResolvedValue(null)
   expect(await provider.status('claude-subscription')).toMatchObject({
     state: 'missing-runtime',
-    message: expect.stringContaining('2.1.299') as unknown,
+    failure: expect.objectContaining({ code: 'runtime_unavailable' }) as unknown,
   })
 })
 it.each(['api_key', 'oauth_token', 'third_party', 'none'])(
@@ -73,4 +73,29 @@ it('discovers Windows native npm binaries without cmd shims', () => {
     candidates.some((path) => path.includes('codex-win32-x64') && path.endsWith('codex.exe')),
   ).toBe(true)
   expect(candidates.every((path) => !path.endsWith('.cmd'))).toBe(true)
+})
+
+it('distinguishes a signed-in Claude Free account from an entitled subscription', async () => {
+  vi.mocked(capture).mockResolvedValue(
+    JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'Free' }),
+  )
+  expect(await provider.status('claude-subscription')).toMatchObject({
+    state: 'not-entitled',
+    signedIn: true,
+    availability: 'blocked',
+    failure: { code: 'plan_not_entitled' },
+  })
+  await expect(provider.runner('claude-subscription', [])).rejects.toMatchObject({
+    code: 'plan_not_entitled',
+  })
+})
+it('classifies an auth-status transport failure as runtime failure rather than signed-out', async () => {
+  vi.mocked(capture).mockRejectedValue(new Error('Runtime exited. /private/path'))
+  expect(await provider.status('claude-subscription')).toMatchObject({
+    state: 'error',
+    failure: { code: 'runtime_unavailable' },
+  })
+  expect(JSON.stringify(await provider.status('claude-subscription'))).not.toContain(
+    '/private/path',
+  )
 })

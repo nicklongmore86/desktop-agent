@@ -277,3 +277,18 @@ it('pinned native Claude reads the subscription sign-in from the isolated direct
     stream.close()
   }
 }, 30000)
+
+it('reads signed-out native Claude auth status without treating exit 1 as a broken runtime', async () => {
+  const f = await fixture()
+  const resourcesPath = process.env['DESKTOP_TEST_RESOURCES']
+  const file = await discoverRuntime(
+    'claude',
+    {},
+    { home: f.home, cwd: f.cwd, env: f.env, ...(resourcesPath ? { resourcesPath } : {}) },
+  )
+  if (!file) throw new Error('Missing pinned Claude runtime')
+  const auth = object(
+    JSON.parse(await capture(file, ['auth', 'status'], f.cwd, f.env, undefined, 10000, [0, 1])),
+  )
+  expect(auth['loggedIn']).toBe(false)
+})

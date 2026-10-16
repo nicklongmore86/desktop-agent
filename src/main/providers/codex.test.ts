@@ -56,8 +56,24 @@ beforeEach(() => {
         case 'account/read':
           result({ account: mode === 'signed-out' ? { type: 'apiKey' } : { type: 'chatgpt' } })
           break
+        case 'model/list':
+          result({
+            data: [
+              {
+                id: 'terra',
+                model: 'gpt-5.6-terra',
+                displayName: 'Terra',
+                isDefault: true,
+                defaultReasoningEffort: 'medium',
+                supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+              },
+            ],
+            nextCursor: null,
+          })
+          break
         case 'thread/start':
           result({
+            model: 'gpt-5.6-terra',
             thread: { id: 'thread', environments: mode === 'bad-isolation' ? [{}] : [] },
             runtimeWorkspaceRoots: [],
             instructionSources: [],
@@ -139,6 +155,8 @@ describe('Codex app-server adapter', () => {
     expect(frames.find((f) => f['method'] === 'thread/start')?.['params']).toMatchObject({
       environments: [],
       ephemeral: true,
+      model: 'gpt-5.6-terra',
+      config: { model_reasoning_effort: 'medium' },
       dynamicTools: [{ type: 'function', name: 'read_file' }],
     })
     expect(frames.find((f) => f['id'] === 'tool-request')?.['result']).toEqual({
@@ -157,7 +175,9 @@ describe('Codex app-server adapter', () => {
     async (state) => {
       mode = state
       const { run, execute } = setup()
-      expect((await run()).stopReason).toBe('api')
+      expect((await run()).stopReason).toBe(
+        state === 'signed-out' ? 'authentication' : 'runtime_unavailable',
+      )
       expect(execute).not.toHaveBeenCalled()
       expect(frames.some((f) => f['method'] === 'turn/start')).toBe(false)
     },
@@ -165,11 +185,12 @@ describe('Codex app-server adapter', () => {
   it('reports subscription allowance exhaustion', async () => {
     mode = 'usage'
     const { run, events } = setup()
-    expect((await run()).stopReason).toBe('api')
+    expect((await run()).stopReason).toBe('usage_limit')
+    expect(frames.filter((frame) => frame['method'] === 'turn/start')).toHaveLength(1)
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'error',
-        message: expect.stringContaining('usage limit') as unknown,
+        message: expect.stringContaining('Codex limit') as unknown,
       }),
     )
   })

@@ -79,3 +79,31 @@ describe('provider transport', () => {
     ).toEqual({ PATH: '/bin', HOME: '/home/test' })
   })
 })
+
+it.each([
+  [
+    {
+      code: -32000,
+      message: 'quota',
+      data: { code: 'usage_limit_reached', resets_at: 1800000000 },
+    },
+    'usage_limit',
+  ],
+  [
+    { code: -32000, data: { httpStatusCode: 401 }, message: 'private-token /home/private' },
+    'auth_expired',
+  ],
+  [{ code: -32000, message: 'model not available on your plan' }, 'plan_not_entitled'],
+] as const)(
+  'preserves structured JSON-RPC error %# without leaking raw detail',
+  async (error, code) => {
+    const { peer, child } = fixture()
+    const pending = peer.request('turn/start')
+    child.stdout.write(JSON.stringify({ id: 1, error }) + '\n')
+    await expect(pending).rejects.toMatchObject({ code })
+    if (code === 'usage_limit')
+      await expect(pending).rejects.toMatchObject({ resetsAt: '2027-01-15T08:00:00.000Z' })
+    await expect(pending).rejects.not.toThrow(/private/)
+    peer.close()
+  },
+)
