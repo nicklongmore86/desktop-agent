@@ -119,6 +119,21 @@ const NAMED_COLORS = new Set(
   ).split(' '),
 )
 
+/**
+ * CSS system colour keywords (current and deprecated). They follow the user's
+ * OS palette, so they are only right in a forced-colors (High Contrast) block.
+ */
+const SYSTEM_COLORS = new Set(
+  (
+    'accentcolor accentcolortext activetext buttonborder buttonface buttontext canvas canvastext ' +
+    'field fieldtext graytext highlight highlighttext linktext mark marktext selecteditem ' +
+    'selecteditemtext visitedtext activeborder activecaption appworkspace background ' +
+    'buttonhighlight buttonshadow captiontext inactiveborder inactivecaption inactivecaptiontext ' +
+    'infobackground infotext menu menutext scrollbar threeddarkshadow threedface threedhighlight ' +
+    'threedlightshadow threedshadow window windowframe windowtext'
+  ).split(' '),
+)
+
 const COLOR_FUNCTIONS =
   /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\s*\(/i
 
@@ -126,9 +141,13 @@ const COLOR_FUNCTIONS =
  * The `property: value` declarations of a stylesheet, comments removed (so they
  * neither hide nor trigger a match). Selectors and at-rule preludes are skipped.
  */
-function declarations(source: string): { property: string; value: string }[] {
+function declarations(
+  source: string,
+): { property: string; value: string; forcedColors: boolean }[] {
   const css = source.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ')
-  const found: { property: string; value: string }[] = []
+  const found: { property: string; value: string; forcedColors: boolean }[] = []
+  /** The preludes of the blocks around the current position. */
+  const blocks: string[] = []
   let buffer = ''
   let parens = 0
   const flush = (): void => {
@@ -137,15 +156,22 @@ function declarations(source: string): { property: string; value: string }[] {
       found.push({
         property: buffer.slice(0, colon).trim().toLowerCase(),
         value: buffer.slice(colon + 1).trim(),
+        forcedColors: blocks.some((prelude) =>
+          /@media[^{]*forced-colors\s*:\s*active/i.test(prelude),
+        ),
       })
     buffer = ''
   }
   for (const char of css) {
     if (char === '(') parens += 1
     if (char === ')') parens = Math.max(0, parens - 1)
-    if (parens === 0 && char === '{') buffer = ''
-    else if (parens === 0 && (char === ';' || char === '}')) flush()
-    else buffer += char
+    if (parens === 0 && char === '{') {
+      blocks.push(buffer)
+      buffer = ''
+    } else if (parens === 0 && (char === ';' || char === '}')) {
+      flush()
+      if (char === '}') blocks.pop()
+    } else buffer += char
   }
   flush()
   return found
@@ -154,7 +180,7 @@ function declarations(source: string): { property: string; value: string }[] {
 /** What is wrong with how a stylesheet uses tokens: literals, fallbacks, undefined names. */
 function tokenProblems(source: string, defined: ReadonlySet<string>): string[] {
   const problems: string[] = []
-  for (const { property, value } of declarations(source)) {
+  for (const { property, value, forcedColors } of declarations(source)) {
     if (property.startsWith('--')) continue
     const where = `${property}: ${value}`
     // Every var() is exactly var(--name): no fallback, and the name is declared in tokens.css.
@@ -170,8 +196,12 @@ function tokenProblems(source: string, defined: ReadonlySet<string>): string[] {
       .replace(/url\([^)]*\)|'[^']*'|"[^"]*"/gi, ' ')
     if (/#[0-9a-f]{3,8}\b/i.test(rest)) problems.push(`${where}: hex colour literal`)
     if (COLOR_FUNCTIONS.test(rest)) problems.push(`${where}: colour function literal`)
-    for (const word of rest.toLowerCase().match(/[a-z]+/g) ?? [])
+    // Whole keywords: `background-color` in a transition list is not the `Background` colour.
+    for (const word of rest.toLowerCase().match(/[a-z][a-z-]*/g) ?? []) {
       if (NAMED_COLORS.has(word)) problems.push(`${where}: named colour ${word}`)
+      if (SYSTEM_COLORS.has(word) && !forcedColors)
+        problems.push(`${where}: system colour ${word} outside @media (forced-colors: active)`)
+    }
     // Every border-radius part is a --radius-* token (shorthand included).
     if (/^border(?:-[a-z]+)*-radius$/.test(property)) {
       const parts = value.split(/\s*\/\s*|\s+(?![^(]*\))/).filter(Boolean)
@@ -218,6 +248,17 @@ describe('stylesheets use tokens', () => {
     ['an uppercase BORDER-RADIUS literal', 'a { BORDER-RADIUS: 3px; }'],
     ['an uppercase longhand radius literal', 'a { Border-Top-Left-Radius: 3px; }'],
     ['a named colour', 'a { color: red; }'],
+    ['a system colour', 'a { color: CanvasText; }'],
+    ['a lowercase system colour', 'a { background: buttonface; }'],
+    ['a deprecated system colour', 'a { color: WindowText; }'],
+    [
+      'a system colour in a non-forced-colors media block',
+      '@media (min-width: 1px) { a { color: LinkText; } }',
+    ],
+    [
+      'a system colour in a light-only forced-colors query',
+      '@media (forced-colors: none) { a { color: Canvas; } }',
+    ],
     ['a named colour in a shorthand', 'a { border: 1px solid White; }'],
     ['a named colour after a comment', 'a { color: /* var(--color-text) */ red; }'],
     ['an oklch() colour', 'a { color: oklch(60% 0.2 250); }'],
@@ -242,6 +283,27 @@ describe('stylesheets use tokens', () => {
         DEFINED,
       ),
     ).toEqual([])
+  })
+
+  it('allows system colours inside @media (forced-colors: active), at any depth', () => {
+    expect(
+      tokenProblems(
+        `@media (forced-colors: active) {
+          .unsafe-char { background: Highlight; color: HighlightText; }
+          :focus-visible { outline-color: CanvasText; }
+        }
+        @media screen and (FORCED-COLORS : ACTIVE) { @supports (color: red) { a { color: LinkText; } } }
+        a { color: var(--color-text); }`,
+        DEFINED,
+      ),
+    ).toEqual([])
+    // ...but only there: the same rule after the block is rejected again.
+    expect(
+      tokenProblems(
+        '@media (forced-colors: active) { a { color: Canvas; } } b { color: Canvas; }',
+        DEFINED,
+      ),
+    ).not.toEqual([])
   })
 
   it('accepts a radius shorthand made only of defined tokens', () => {
