@@ -2,7 +2,7 @@
 // main -> renderer events and read back the renderer's approval answers.
 const { contextBridge } = require('electron')
 
-const listeners = { chat: new Set(), approval: new Set(), audit: new Set() }
+const listeners = { chat: new Set(), approval: new Set(), audit: new Set(), login: new Set() }
 const responses = []
 const subscribe = (set) => (listener) => {
   set.add(listener)
@@ -12,6 +12,9 @@ const subscribe = (set) => (listener) => {
 }
 const resolve = (value) => () => Promise.resolve(value)
 let provider = { provider: 'anthropic-api', state: 'ready', message: 'API mode' }
+let loginState = { provider: null, active: false, url: null, result: null }
+let theme = 'system'
+const loginCalls = { open: 0, copy: 0, codes: [] }
 const chatState = { items: [], running: false, loadError: null }
 const model = {
   model: 'claude-sonnet-5-5',
@@ -28,6 +31,26 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
     login: () => Promise.resolve(provider),
     cancelLogin: resolve(undefined),
+    loginState: () => Promise.resolve(loginState),
+    openLoginUrl: () => {
+      loginCalls.open += 1
+      return Promise.resolve()
+    },
+    copyLoginUrl: () => {
+      loginCalls.copy += 1
+      return Promise.resolve()
+    },
+    submitLoginCode: (code) => {
+      loginCalls.codes.push(code)
+      return Promise.resolve({ ok: true })
+    },
+  },
+  theme: {
+    get: () => Promise.resolve(theme),
+    set: (next) => {
+      theme = next
+      return Promise.resolve(theme)
+    },
   },
   getAppInfo: resolve({ name: 'desktop-agent', version: '0.0.0-e2e', platform: process.platform }),
   apiKey: {
@@ -63,6 +86,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   onChatEvent: subscribe(listeners.chat),
   onApprovalRequest: subscribe(listeners.approval),
   onAuditStatus: subscribe(listeners.audit),
+  onProviderLoginState: subscribe(listeners.login),
 })
 
 contextBridge.exposeInMainWorld('e2e', {
@@ -72,6 +96,16 @@ contextBridge.exposeInMainWorld('e2e', {
   pushChat: (event) => {
     for (const listener of listeners.chat) listener(event)
   },
+  // Choose the provider the app reports (before or after it has loaded).
+  setProvider: (next) => {
+    provider = next
+  },
+  // Set what provider.loginState() answers, and push it like main does.
+  pushLoginState: (state) => {
+    loginState = state
+    for (const listener of listeners.login) listener(state)
+  },
+  loginCalls: () => ({ ...loginCalls, codes: loginCalls.codes.slice() }),
   responses: () => responses.slice(),
   listenerCount: () => listeners.chat.size + listeners.approval.size,
 })
