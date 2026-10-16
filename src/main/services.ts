@@ -118,6 +118,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     }
     return history
   }
+  const userShell = tools.find((tool) => tool.name === 'run_shell')
   const chat = new ChatSession({
     history: await historyFor(settings.provider),
     async createRunner(signal) {
@@ -160,6 +161,8 @@ export async function createAppServices(deps: AppServiceDeps) {
       if (event.type === 'run_finished') reportAudit()
     },
     promptApproval: deps.promptApproval,
+    // Commands typed in the command bar go through this same tool (no other spawn path).
+    ...(userShell ? { userShell } : {}),
     onSaveError: (error) => {
       console.error('could not save the conversation', error)
     },

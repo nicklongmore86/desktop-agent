@@ -141,6 +141,7 @@ void app.whenReady().then(async () => {
     projects: services.projects,
     provider: services.provider,
     chat,
+    command: { run: (command, cwd) => chat.runCommand(command, cwd) },
     audit: services.auditStatus,
     revealAudit: () => {
       shell.showItemInFolder(services.auditStatus().path)

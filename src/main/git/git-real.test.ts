@@ -504,14 +504,6 @@ describe.runIf(gitPath)('git panel with the real git', () => {
       mkdirSync('C:\\dev')
       try {
         writeFileSync('C:\\dev\\null', `[core]\n\tfsmonitor = ${fsmonitor}\n`)
-        // Not asserted, reported: does plain git read the planted file as /dev/null?
-        let plain = ''
-        try {
-          plain = git(grant, 'config', '--global', '--get', 'core.fsmonitor').trim()
-        } catch {
-          plain = '(not read)'
-        }
-        console.info(`Plain git with GIT_CONFIG_GLOBAL=/dev/null read C:\\dev\\null: ${plain}`)
         okStatus(await service.status(ref('hostile')))
         expect(marked()).toEqual([])
       } finally {

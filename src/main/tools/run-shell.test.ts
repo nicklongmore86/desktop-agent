@@ -24,6 +24,10 @@ import {
   treeKillScript,
   UTF8_PREAMBLE,
 } from './shell-windows'
+import type { ApprovalPrompt, ChatEvent } from '../../shared/ipc'
+import { ChatSession } from '../chat/session'
+import { memoryHistory, memoryStore } from '../chat/test-support'
+import { toTranscript } from '../chat/transcript'
 import { toolHarness } from './test-support'
 
 class FakeProcess extends EventEmitter implements ShellProcess {
@@ -109,6 +113,8 @@ describe('run_shell', () => {
       // The approved action itself is the core of the audit: exact command and cwd.
       args: { command: 'echo hello', cwd: sb.root },
       approval: 'approved',
+      // The agent asked for it: only the command bar's runs are 'user-terminal'.
+      origin: 'agent',
       outcome: 'ok',
     })
   })
@@ -939,3 +945,235 @@ function pinProcesses(pids: number[], ms: number): Promise<Pinned> {
     })
   })
 }
+
+/**
+ * The command bar: ChatSession.runCommand over the real run_shell tool, with the same
+ * fakes. A typed command is the same approval-gated call as the agent's, audited as
+ * `user-terminal`.
+ */
+describe('run_shell from the command bar', () => {
+  function commandSession(
+    overrides: Parameters<typeof toolHarness>[1],
+    answer: (prompt: ApprovalPrompt) => boolean | null = () => true,
+    /** What a chat reply waits for before it ends. */
+    reply: Promise<void> = Promise.resolve(),
+  ) {
+    const h = toolHarness(sb, overrides)
+    const events: ChatEvent[] = []
+    const prompts: ApprovalPrompt[] = []
+    const store = memoryStore()
+    let n = 0
+    const session: ChatSession = new ChatSession({
+      history: memoryHistory(store),
+      createRunner: () =>
+        Promise.resolve({
+          ok: true,
+          runner: {
+            run: async (conversation) => {
+              await reply
+              return { conversation, stopReason: 'end_turn' }
+            },
+          },
+        }),
+      emit: (event) => events.push(event),
+      promptApproval: (prompt) => {
+        prompts.push(prompt)
+        const approved = answer(prompt)
+        if (approved !== null) setImmediate(() => session.respondApproval(prompt.id, approved))
+      },
+      newId: () => `id-${String(++n)}`,
+      userShell: h.tool('run_shell'),
+    })
+    return { h, session, events, prompts, store }
+  }
+
+  /** Waits (up to 10 s: folder checks are slow on Windows runners) until `done` holds. */
+  async function until(done: () => boolean): Promise<void> {
+    for (const start = Date.now(); !done() && Date.now() - start < 10_000;) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+
+  const commandResult = (events: ChatEvent[]) =>
+    events.find((event) => event.type === 'tool_result')
+
+  async function settled(session: ChatSession): Promise<void> {
+    await session.idle()
+  }
+
+  it('asks with the exact shell, cwd and command, runs it hardened, and audits it as user-terminal', async () => {
+    const { spawn, calls } = fakeSpawner((child) => {
+      child.stdout.write('hello\n')
+      child.exit(0)
+    })
+    const { h, session, events, prompts, store } = commandSession({
+      spawn,
+      killTree: vi.fn(okKill),
+    })
+    const command = process.platform === 'win32' ? 'Write-Output hello' : 'echo hello'
+
+    expect(await session.runCommand(command, sb.root)).toEqual({ ok: true })
+    await settled(session)
+
+    const { file, args } = shellInvocation(command, process.platform, process.env)
+    expect(prompts).toEqual([
+      {
+        id: 'id-3',
+        runId: 'id-1',
+        toolUseId: 'id-2',
+        tool: 'run_shell',
+        kind: 'shell',
+        summary: `Run a command in ${sb.root}`,
+        detail: `cwd: ${sb.root}\nshell: ${[file, ...args.slice(0, -1)].join(' ')}\n\n${command}`,
+        origin: 'user-terminal',
+      },
+    ])
+    // The same launch as the agent's: absolute shell, hidden window, filtered environment.
+    expect(path.isAbsolute(file)).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      file,
+      args,
+      options: { cwd: sb.root, windowsHide: true, env: shellEnv(process.env) },
+    })
+    if (process.platform === 'win32') {
+      expect(file.toLowerCase()).toMatch(/\\system32\\windowspowershell\\v1\.0\\powershell\.exe$/)
+      expect(args).toEqual([
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+        encodePowerShell(powerShellScript(command)),
+      ])
+    }
+    expect(h.audit.entries).toEqual([
+      expect.objectContaining({
+        tool: 'run_shell',
+        args: { command, cwd: sb.root, timeoutMs: 60_000 },
+        approval: 'approved',
+        origin: 'user-terminal',
+        outcome: 'ok',
+      }),
+    ])
+    const output = `exit code: 0\ncwd: ${sb.root}\n--- stdout ---\nhello\n\n--- stderr ---\n`
+    expect(events).toEqual([
+      { type: 'command_started', runId: 'id-1', id: 'id-2', command, cwd: sb.root },
+      { type: 'approval_closed', approvalId: 'id-3', approved: true },
+      expect.objectContaining({ type: 'history_changed' }),
+      { type: 'tool_result', runId: 'id-1', id: 'id-2', content: output, isError: false },
+      { type: 'run_finished', runId: 'id-1', stopReason: 'end_turn' },
+    ])
+    // Saved in the conversation, and shown as a card when it is opened again.
+    expect(toTranscript(store.saved())).toEqual([
+      {
+        kind: 'tool',
+        id: 'id-2',
+        name: 'run_shell',
+        input: { command, cwd: sb.root },
+        result: { content: output, isError: false },
+        origin: 'user-terminal',
+      },
+    ])
+  })
+
+  it('runs nothing when the user denies it, and audits the denial', async () => {
+    const { spawn, calls } = fakeSpawner((child) => {
+      child.exit(0)
+    })
+    const { h, session, events } = commandSession({ spawn }, () => false)
+    await session.runCommand('echo nope', sb.root)
+    await settled(session)
+    expect(calls).toHaveLength(0)
+    expect(h.audit.entries).toEqual([
+      expect.objectContaining({ approval: 'denied', origin: 'user-terminal', error: 'declined' }),
+    ])
+    expect(commandResult(events)).toMatchObject({ isError: true })
+    expect(commandResult(events)?.content).toMatch(/Nothing was run/)
+  })
+
+  it('refuses a cwd outside the grants without asking or running anything', async () => {
+    const { spawn, calls } = fakeSpawner((child) => {
+      child.exit(0)
+    })
+    const { h, session, prompts, events } = commandSession({ spawn })
+    await session.runCommand('echo hi', sb.outside)
+    await settled(session)
+    expect(prompts).toEqual([])
+    expect(calls).toHaveLength(0)
+    expect(h.audit.entries).toEqual([
+      expect.objectContaining({ error: 'access-denied', origin: 'user-terminal' }),
+    ])
+    expect(commandResult(events)).toMatchObject({ isError: true })
+    expect(commandResult(events)?.content).toMatch(/Access denied/)
+  })
+
+  it('is refused while an approval is pending, and refuses replies meanwhile', async () => {
+    const { spawn, calls } = fakeSpawner((child) => {
+      child.exit(0)
+    })
+    const { session, prompts } = commandSession({ spawn }, () => null)
+    await session.runCommand('echo one', sb.root)
+    await until(() => prompts.length > 0)
+    expect(prompts).toHaveLength(1)
+    expect(await session.runCommand('echo two', sb.root)).toMatchObject({ ok: false, code: 'busy' })
+    expect(await session.send('hello')).toMatchObject({ ok: false, code: 'busy' })
+    expect(prompts).toHaveLength(1)
+    await session.stop()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('is refused while a reply is running', async () => {
+    let finish: () => void = () => {}
+    const blocked = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const { session } = commandSession({}, () => true, blocked)
+    expect(await session.send('hello')).toEqual({ ok: true })
+    expect(await session.runCommand('echo hi', sb.root)).toMatchObject({ ok: false, code: 'busy' })
+    finish()
+    await settled(session)
+  })
+
+  it('stop() cancels a running command and kills its process tree', async () => {
+    const { spawn, calls } = fakeSpawner(() => {
+      // Runs until killed.
+    })
+    const killTree = vi.fn((child: ShellProcess) => {
+      ;(child as FakeProcess).exit(null, 'SIGKILL')
+      return okKill()
+    })
+    const { h, session, events } = commandSession({ spawn, killTree })
+    await session.runCommand('sleep 60', sb.root)
+    await until(() => calls.length > 0)
+    expect(calls).toHaveLength(1)
+    await session.stop()
+    expect(killTree).toHaveBeenCalledWith(calls[0]?.child)
+    expect(commandResult(events)).toMatchObject({ isError: true })
+    expect(commandResult(events)?.content).toMatch(/Cancelled; the process tree was killed/)
+    expect(h.audit.entries).toEqual([
+      expect.objectContaining({ origin: 'user-terminal', error: 'cancelled' }),
+    ])
+  })
+
+  it('rejects empty commands and folders without running anything', async () => {
+    const { session, prompts } = commandSession({})
+    expect(await session.runCommand('  ', sb.root)).toMatchObject({ code: 'invalid_request' })
+    expect(await session.runCommand('echo', '')).toMatchObject({ code: 'invalid_request' })
+    expect(await session.runCommand(42, sb.root)).toMatchObject({ code: 'invalid_request' })
+    expect(prompts).toEqual([])
+  })
+
+  it(
+    'runs through the real shell (Windows PowerShell on Windows)',
+    { timeout: 120_000 },
+    async () => {
+      const { session, events, h } = commandSession({})
+      const command = process.platform === 'win32' ? 'Write-Output "typed-$(1+1)"' : 'echo typed-2'
+      await session.runCommand(command, sb.root)
+      await settled(session)
+      expect(commandResult(events)).toMatchObject({ isError: false })
+      expect(commandResult(events)?.content).toMatch(/^exit code: 0[\s\S]*typed-2/)
+      expect(h.audit.entries[0]).toMatchObject({ origin: 'user-terminal', outcome: 'ok' })
+      await fs.rm(sb.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    },
+  )
+})

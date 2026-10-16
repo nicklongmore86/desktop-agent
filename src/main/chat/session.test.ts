@@ -222,6 +222,7 @@ describe('ChatSession', () => {
         kind: 'write',
         summary: 'Write a.txt',
         detail: '+hi',
+        origin: 'agent',
       })
       // Unknown ids, wrong types and the run id itself are all ignored.
       expect(session.respondApproval('id-999', true)).toBe(false)
