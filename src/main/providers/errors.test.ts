@@ -49,3 +49,19 @@ it('prefers a structured code over ambiguous provider prose', () => {
     ).code,
   ).toBe('usage_limit')
 })
+
+it.each([null, 'badRequest'] as const)(
+  'recognizes model denial for ChatGPT accounts through wrapper %s',
+  (codexErrorInfo) => {
+    expect(
+      subscriptionFailure(
+        {
+          codexErrorInfo,
+          message:
+            "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+        },
+        'codex',
+      ).code,
+    ).toBe('plan_not_entitled')
+  },
+)

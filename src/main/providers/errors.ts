@@ -112,7 +112,9 @@ export function subscriptionFailure(
   }
   if (value instanceof Error) visit(value.message)
   else visit(value)
-  const text = structuredCode ?? fields.join(' ')
+  // A generic badRequest wrapper must not hide a more specific entitlement explanation.
+  const text =
+    structuredCode && structuredCode !== 'invalid_request' ? structuredCode : fields.join(' ')
   let code: AgentErrorCode = 'api'
   let message =
     'Subscription request failed. Check your connection and provider status in Settings.'
@@ -124,7 +126,7 @@ export function subscriptionFailure(
     code = 'auth_expired'
     message = 'Sign-in expired. Sign in again in Settings.'
   } else if (
-    /not.entitled|model.*(?:not.*access|access.*not)|not.*(?:included|available).*plan|plan.*(?:not.*support|doesn.t include)|subscription.*required|free.*(?:claude|code)|model.*(?:access|permission).*denied/i.test(
+    /not.entitled|model.*not.supported.*(?:plan|account)|model.*(?:not.*access|access.*not)|not.*(?:included|available).*plan|plan.*(?:not.*support|doesn.t include)|subscription.*required|free.*(?:claude|code)|model.*(?:access|permission).*denied/i.test(
       text,
     )
   ) {
