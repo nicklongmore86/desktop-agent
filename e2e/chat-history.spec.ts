@@ -117,6 +117,9 @@ for (const width of [1280, 400]) {
         await nav
           .getByRole('button', { name: 'Options for Rename the holiday photos by date' })
           .click()
+        await expect(page.getByRole('menuitem', { name: 'Pin' })).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowDown')
         await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeFocused()
         await shot('history-menu')
         await page.keyboard.press('Enter')

@@ -213,6 +213,14 @@ export interface ConversationSummary {
   title: string
   createdAt: number
   updatedAt: number
+  /** Pinned chats list first, oldest pin at the top. Unset: not pinned. */
+  pinnedAt?: number
+  /** Archived chats are hidden from the list until restored. Unset: not archived. */
+  archivedAt?: number
+  /** The project (src/shared/ipc-projects.ts) the chat is filed in. Unset: none. */
+  projectId?: string
+  /** Set on a fork: the chat it was copied from, and how many messages it kept (null: all). */
+  forkedFrom?: { id: string; atMessageIndex: number | null }
 }
 
 /** The current provider's saved conversations, newest first, and the one that is open. */

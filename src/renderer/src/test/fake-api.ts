@@ -5,6 +5,7 @@ import type {
   AuditStatus,
   ChatEvent,
   ChatState,
+  ConversationSummary,
   DesktopApi,
   GrantsState,
   HistoryState,
@@ -15,6 +16,14 @@ import type {
   ThemePreference,
 } from '../../../shared/ipc'
 import { DEFAULT_LAYOUT, type LayoutPrefs } from '../../../shared/ipc-layout'
+import type {
+  ChatRef,
+  Project,
+  ProjectIcon,
+  ProjectMove,
+  ProjectsState,
+  ProviderChat,
+} from '../../../shared/ipc-projects'
 
 export interface FakeApiOptions {
   key?: ApiKeyStatus
@@ -25,7 +34,13 @@ export interface FakeApiOptions {
   theme?: ThemePreference
   history?: HistoryState
   layout?: LayoutPrefs
+  projects?: Project[]
+  /** Other providers' chats that are pinned or filed. */
+  others?: ProviderChat[]
 }
+
+const FORK_ID = 'f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0'
+const NEW_PROJECT_ID = 'abababab-abab-4bab-8bab-abababababab'
 
 /** A DesktopApi double: spies for every call, plus `push*` to simulate main's events. */
 export function fakeApi(options: FakeApiOptions = {}) {
@@ -66,7 +81,130 @@ export function fakeApi(options: FakeApiOptions = {}) {
     state: 'ready',
     message: 'API mode',
   }
+  let projects: Project[] = options.projects ?? []
+  let others: ProviderChat[] = options.others ?? []
+  const projectsState = (): ProjectsState => ({
+    provider: provider.provider,
+    projects,
+    others,
+  })
+  const pushHistory = (): void => {
+    for (const listener of chatListeners) listener({ type: 'history_changed', history })
+  }
+  /** Changes a chat like main: the open provider's in `history` (and pushes it), others in `others`. */
+  const organize = (chat: ChatRef, change: (c: ConversationSummary) => ConversationSummary) => {
+    if (chat.provider === provider.provider) {
+      if (!history.conversations.some((c) => c.id === chat.id))
+        return Promise.reject(new Error('That chat no longer exists.'))
+      history = {
+        ...history,
+        conversations: history.conversations.map((c) => (c.id === chat.id ? change(c) : c)),
+      }
+      pushHistory()
+    } else {
+      others = others.map((c) => (c.id === chat.id ? { ...change(c), provider: c.provider } : c))
+    }
+    return Promise.resolve(projectsState())
+  }
+  const set =
+    <K extends 'pinnedAt' | 'archivedAt' | 'projectId'>(key: K, value: ConversationSummary[K]) =>
+    (c: ConversationSummary): ConversationSummary => {
+      const next: ConversationSummary = {
+        id: c.id,
+        title: c.title,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+      }
+      for (const field of ['pinnedAt', 'archivedAt', 'projectId', 'forkedFrom'] as const) {
+        const kept = field === key ? value : c[field]
+        if (kept !== undefined) Object.assign(next, { [field]: kept })
+      }
+      return next
+    }
+  const moveProject = (id: string, to: ProjectMove): void => {
+    const index = projects.findIndex((p) => p.id === id)
+    const project = projects[index]
+    if (!project) return
+    const rest = projects.filter((p) => p.id !== id)
+    const target = to === 'top' ? 0 : to === 'bottom' ? rest.length : index + (to === 'up' ? -1 : 1)
+    rest.splice(Math.max(0, Math.min(rest.length, target)), 0, project)
+    projects = rest
+  }
   const api = {
+    projects: {
+      state: vi.fn(() => Promise.resolve(projectsState())),
+      create: vi.fn((name: string, icon: ProjectIcon | null) => {
+        const project = { id: NEW_PROJECT_ID, name, icon }
+        projects = [...projects, project]
+        return Promise.resolve({ project, state: projectsState() })
+      }),
+      rename: vi.fn((id: string, name: string, icon: ProjectIcon | null) => {
+        projects = projects.map((p) => (p.id === id ? { ...p, name, icon } : p))
+        return Promise.resolve(projectsState())
+      }),
+      remove: vi.fn((id: string) => {
+        projects = projects.filter((p) => p.id !== id)
+        const unfile = (c: ConversationSummary) =>
+          c.projectId === id ? set('projectId', undefined)(c) : c
+        history = { ...history, conversations: history.conversations.map(unfile) }
+        others = others.map((c) => ({ ...unfile(c), provider: c.provider }))
+        pushHistory()
+        return Promise.resolve(projectsState())
+      }),
+      move: vi.fn((id: string, to: ProjectMove) => {
+        moveProject(id, to)
+        return Promise.resolve(projectsState())
+      }),
+    },
+    chats: {
+      pin: vi.fn((chat: ChatRef, pinned: boolean) =>
+        organize(chat, set('pinnedAt', pinned ? Date.now() : undefined)),
+      ),
+      archive: vi.fn((chat: ChatRef, archived: boolean) =>
+        organize(chat, set('archivedAt', archived ? Date.now() : undefined)),
+      ),
+      move: vi.fn((chat: ChatRef, projectId: string | null) =>
+        organize(chat, set('projectId', projectId ?? undefined)),
+      ),
+      fork: vi.fn((chat: ChatRef, _prompts: number | null) => {
+        const source =
+          history.conversations.find((c) => c.id === chat.id) ??
+          others.find((c) => c.id === chat.id)
+        if (!source) return Promise.reject(new Error('That chat no longer exists.'))
+        const copy: ConversationSummary = {
+          id: FORK_ID,
+          title: `Fork of ${source.title}`,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          forkedFrom: { id: chat.id, atMessageIndex: null },
+        }
+        if (chat.provider === provider.provider) {
+          history = { ...history, conversations: [copy, ...history.conversations] }
+          pushHistory()
+        }
+        return Promise.resolve({
+          chat: { provider: chat.provider, id: FORK_ID },
+          state: projectsState(),
+        })
+      }),
+      rename: vi.fn((chat: ChatRef, title: string) => organize(chat, (c) => ({ ...c, title }))),
+      remove: vi.fn((chat: ChatRef) => {
+        others = others.filter((c) => c.id !== chat.id)
+        return Promise.resolve(projectsState())
+      }),
+      open: vi.fn((chat: ChatRef) => {
+        // Like main: switch provider, then that chat is open with the provider's list.
+        provider = { provider: chat.provider, state: 'ready', message: 'Ready.' }
+        const opened = others.find((c) => c.id === chat.id)
+        others = []
+        history = {
+          activeId: chat.id,
+          conversations: opened ? [{ ...opened }] : history.conversations,
+        }
+        current = { items: [], running: false, loadError: null }
+        return Promise.resolve(provider)
+      }),
+    },
     provider: {
       models: vi.fn<DesktopApi['provider']['models']>(() =>
         Promise.resolve({

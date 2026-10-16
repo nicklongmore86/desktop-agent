@@ -8,6 +8,7 @@ import {
 } from '../shared/ipc'
 import { FEATURE_CHANNELS } from '../shared/ipc-features'
 import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
+import { projectsChannels, type ProjectsState } from '../shared/ipc-projects'
 import type { RunOptions } from './agent'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { ChatSession } from './chat/session'
@@ -39,6 +40,34 @@ function fakeIpc() {
       return handler(event, ...args)
     })
   return { ipc, handlers, invoke }
+}
+
+const PROJECT = '4e5f6a7b-8c9d-4e0f-9a1b-3c4d5e6f7a8b'
+const projectsState: ProjectsState = { provider: 'anthropic-api', projects: [], others: [] }
+function fakeProjects(): IpcServices['projects'] {
+  const state = () => Promise.resolve(projectsState)
+  const status = { provider: 'codex-subscription' as const, state: 'ready' as const, message: '' }
+  return {
+    state: vi.fn(state),
+    create: vi.fn(() =>
+      Promise.resolve({ project: { id: PROJECT, name: 'P', icon: null }, state: projectsState }),
+    ),
+    rename: vi.fn(state),
+    remove: vi.fn(state),
+    move: vi.fn(state),
+    pin: vi.fn(state),
+    archive: vi.fn(state),
+    moveChat: vi.fn(state),
+    fork: vi.fn(() =>
+      Promise.resolve({
+        chat: { provider: 'anthropic-api' as const, id: OTHER_CHAT },
+        state: projectsState,
+      }),
+    ),
+    renameChat: vi.fn(state),
+    removeChat: vi.fn(state),
+    open: vi.fn(() => Promise.resolve(status)),
+  }
 }
 
 function fakeServices(overrides: Partial<IpcServices> = {}) {
@@ -102,6 +131,7 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       get: vi.fn(() => ({ ...DEFAULT_LAYOUT })),
       set: vi.fn((layout: unknown) => Promise.resolve(layout as LayoutPrefs)),
     },
+    projects: fakeProjects(),
     revealAudit: vi.fn(),
     audit: () => ({ healthy: true, path: '/data/audit.jsonl' }),
     ...overrides,
@@ -175,6 +205,87 @@ describe('registerIpcHandlers', () => {
     })
   })
 
+  describe('projects', () => {
+    const chat = { provider: 'codex-subscription', id: OTHER_CHAT }
+    const c = projectsChannels
+
+    it('passes valid calls through', async () => {
+      const { invoke, services } = setup()
+      const p = services.projects
+      await invoke(c.projectsState, appFrame)
+      await invoke(c.projectsCreate, appFrame, 'Taxes', '📊')
+      expect(p.create).toHaveBeenCalledWith('Taxes', '📊')
+      await invoke(c.projectsRename, appFrame, PROJECT, 'Tax', null)
+      expect(p.rename).toHaveBeenCalledWith(PROJECT, 'Tax', null)
+      await invoke(c.projectsMove, appFrame, PROJECT, 'top')
+      expect(p.move).toHaveBeenCalledWith(PROJECT, 'top')
+      await invoke(c.projectsDelete, appFrame, PROJECT)
+      expect(p.remove).toHaveBeenCalledWith(PROJECT)
+      await invoke(c.chatPin, appFrame, chat, true)
+      expect(p.pin).toHaveBeenCalledWith(chat, true)
+      await invoke(c.chatArchive, appFrame, chat, false)
+      expect(p.archive).toHaveBeenCalledWith(chat, false)
+      await invoke(c.chatMove, appFrame, chat, PROJECT)
+      await invoke(c.chatMove, appFrame, chat, null)
+      expect(p.moveChat).toHaveBeenLastCalledWith(chat, null)
+      await invoke(c.chatFork, appFrame, chat, 2)
+      await invoke(c.chatFork, appFrame, chat, null)
+      expect(p.fork).toHaveBeenLastCalledWith(chat, null)
+      await invoke(c.chatRename, appFrame, chat, 'Name')
+      expect(p.renameChat).toHaveBeenCalledWith(chat, 'Name')
+      await invoke(c.chatDelete, appFrame, chat)
+      expect(p.removeChat).toHaveBeenCalledWith(chat)
+      expect(await invoke(c.chatOpen, appFrame, chat)).toMatchObject({
+        provider: 'codex-subscription',
+      })
+    })
+
+    it('refuses bad ids, providers, names, icons and flags before reaching a store', async () => {
+      const { invoke, services } = setup()
+      const badChats = [
+        undefined,
+        null,
+        OTHER_CHAT,
+        { provider: 'codex-subscription', id: '../../settings' },
+        { provider: 'codex-subscription', id: 'C:\\Users\\me\\x.json' },
+        { provider: 'evil', id: OTHER_CHAT },
+        { provider: 'codex-subscription', id: OTHER_CHAT, path: '/etc/passwd' },
+        [OTHER_CHAT],
+      ]
+      for (const bad of badChats) {
+        for (const [channel, ...args] of [
+          [c.chatPin, bad, true],
+          [c.chatArchive, bad, true],
+          [c.chatMove, bad, null],
+          [c.chatFork, bad, null],
+          [c.chatRename, bad, 'x'],
+          [c.chatDelete, bad],
+          [c.chatOpen, bad],
+        ] as const)
+          await expect(invoke(channel, appFrame, ...args)).rejects.toThrow('Unknown chat.')
+      }
+      for (const bad of ['../x', 'P1', 7, null, undefined]) {
+        await expect(invoke(c.projectsDelete, appFrame, bad)).rejects.toThrow('Unknown project.')
+        await expect(invoke(c.chatMove, appFrame, chat, bad === null ? 'x' : bad)).rejects.toThrow(
+          'Unknown project.',
+        )
+      }
+      await expect(invoke(c.projectsCreate, appFrame, 'x'.repeat(1001), null)).rejects.toThrow(
+        'Enter a shorter name.',
+      )
+      await expect(invoke(c.projectsCreate, appFrame, 'x', '💣')).rejects.toThrow('Unknown icon.')
+      await expect(invoke(c.projectsCreate, appFrame, 5, null)).rejects.toThrow()
+      await expect(invoke(c.projectsMove, appFrame, PROJECT, 'sideways')).rejects.toThrow(
+        'Invalid move.',
+      )
+      await expect(invoke(c.chatPin, appFrame, chat, 'yes')).rejects.toThrow('Invalid choice.')
+      for (const bad of [0, -1, 1.5, '2', Infinity])
+        await expect(invoke(c.chatFork, appFrame, chat, bad)).rejects.toThrow('Invalid fork point.')
+      for (const fn of Object.values(services.projects))
+        if (fn !== services.projects.state) expect(fn).not.toHaveBeenCalled()
+    })
+  })
+
   const untrusted: IpcSenderEvent[] = [
     { senderFrame: { url: 'https://evil.example/', parent: null } },
     { senderFrame: { url: APP_URL, parent: { url: APP_URL } } },
@@ -208,6 +319,7 @@ describe('registerIpcHandlers', () => {
     expect(services.chat.respondApproval).not.toHaveBeenCalled()
     expect(services.apiKey.set).not.toHaveBeenCalled()
     expect(services.grants.remove).not.toHaveBeenCalled()
+    for (const fn of Object.values(services.projects)) expect(fn).not.toHaveBeenCalled()
   })
 
   describe('API key', () => {

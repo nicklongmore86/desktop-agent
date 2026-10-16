@@ -103,7 +103,7 @@ const sameSet = (a: string[], b: string[]): boolean =>
  * every assistant tool call is answered, exactly, by the next user message.
  * Consecutive user (a failed run) or assistant (pause_turn) messages are allowed.
  */
-function isWellFormed(messages: MessageParam[]): boolean {
+export function isWellFormed(messages: MessageParam[]): boolean {
   if (messages.length > 0 && messages[0]?.role !== 'user') return false
   return messages.every((message, index) => {
     const previous = messages[index - 1]

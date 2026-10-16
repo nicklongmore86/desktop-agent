@@ -213,6 +213,8 @@ describe('chat history in the sidebar', () => {
 
     await user.click(within(sidebar()).getByRole('button', { name: 'Options for Old notes' }))
     const menu = within(sidebar()).getByRole('menu', { name: 'Options for Old notes' })
+    expect(document.activeElement).toBe(within(menu).getByRole('menuitem', { name: 'Pin' }))
+    await user.keyboard('{ArrowDown}{ArrowDown}')
     expect(document.activeElement).toBe(within(menu).getByRole('menuitem', { name: 'Rename' }))
     await user.keyboard('{Enter}')
     const rename = within(sidebar()).getByRole('textbox', { name: 'Chat name' })
@@ -229,7 +231,7 @@ describe('chat history in the sidebar', () => {
     })
     const more = within(sidebar()).getByRole('button', { name: 'Options for Old notes' })
     await user.click(more)
-    await user.keyboard('{ArrowDown}')
+    await user.keyboard('{ArrowUp}')
     expect(document.activeElement?.textContent).toBe('Delete…')
     await user.keyboard('{Escape}')
     expect(within(sidebar()).queryByRole('menu')).toBeNull()

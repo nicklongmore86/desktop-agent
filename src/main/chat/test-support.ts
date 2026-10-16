@@ -74,5 +74,8 @@ export function memoryHistory(current: ConversationStore = memoryStore()): Memor
       if (activeId === id) activeId = null
       return Promise.resolve()
     }),
+    organize: vi.fn(() => Promise.resolve()),
+    unfile: vi.fn(() => Promise.resolve()),
+    fork: vi.fn(() => Promise.reject(new Error('Forking is not supported here.'))),
   }
 }

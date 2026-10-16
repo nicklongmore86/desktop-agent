@@ -125,6 +125,7 @@ void app.whenReady().then(async () => {
       get: () => services.settings.layout,
       set: (layout) => services.settings.setLayout(layout),
     },
+    projects: services.projects,
     provider: services.provider,
     chat,
     audit: services.auditStatus,
