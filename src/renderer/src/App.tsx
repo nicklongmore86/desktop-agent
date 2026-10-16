@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   ApiKeyStatus,
   AppInfo,
@@ -13,8 +13,10 @@ import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SettingsPanel } from './components/SettingsPanel'
+import type { OpenSettings } from './open-settings'
 import { useTheme } from './theme'
 import { useChat } from './use-chat'
+import { useShortcuts } from './use-shortcuts'
 
 const PROVIDER_NAMES: Record<ProviderId, string> = {
   'codex-subscription': 'Codex · ChatGPT',
@@ -79,7 +81,30 @@ export function App(): React.JSX.Element {
   const openSettings = (): void => {
     setView('settings')
   }
+  // The chat passes the section to open; the current panel has none yet.
+  const openSettingsAt: OpenSettings = (_section) => {
+    openSettings()
+  }
+  const composerRef = useRef<HTMLTextAreaElement>(null)
   const [approval, ...queued] = chat.state.approvals
+  useShortcuts(
+    {
+      newChat: () => {
+        if (chat.state.switching) return
+        setView('chat')
+        void chat.newChat()
+      },
+      openSettings: () => {
+        openSettings()
+      },
+      focusComposer: () => {
+        setView('chat')
+        // The message box mounts when the chat view is showing.
+        requestAnimationFrame(() => composerRef.current?.focus())
+      },
+    },
+    approval !== undefined,
+  )
   const providerName = provider ? PROVIDER_NAMES[provider.provider] : 'Loading provider…'
   const switchProvider = async (next: ProviderId): Promise<void> => {
     try {
@@ -117,31 +142,6 @@ export function App(): React.JSX.Element {
         >
           New chat
         </button>
-        <div className="sidebar-section">
-          <label htmlFor="chat-provider">Active provider</label>
-          <select
-            id="chat-provider"
-            value={provider?.provider ?? ''}
-            disabled={!provider || chat.state.switching}
-            onChange={(event) => {
-              void switchProvider(event.target.value as ProviderId)
-            }}
-          >
-            {!provider && <option value="">Loading…</option>}
-            {Object.entries(PROVIDER_NAMES).map(([id, label]) => (
-              <option key={id} value={id}>
-                {label}
-              </option>
-            ))}
-          </select>
-          <p className="sidebar-hint">
-            {chat.state.switching
-              ? 'Switching provider…'
-              : provider?.state === 'ready'
-                ? 'Connected'
-                : (provider?.message ?? 'Checking connection…')}
-          </p>
-        </div>
         <div className="sidebar-section sidebar-folders">
           <span className="sidebar-label">Folder access</span>
           {grants?.roots.length ? (
@@ -237,7 +237,11 @@ export function App(): React.JSX.Element {
               onNewChat={chat.newChat}
               onDismissBanner={chat.dismissBanner}
               onDismissStorageWarning={chat.dismissStorageWarning}
-              onOpenSettings={openSettings}
+              onOpenSettings={openSettingsAt}
+              provider={provider}
+              providerNames={PROVIDER_NAMES}
+              onSwitchProvider={switchProvider}
+              composerRef={composerRef}
               notice={
                 loaded && provider?.provider === 'anthropic-api' && (!keySaved || !hasGrants) ? (
                   <SetupGuide

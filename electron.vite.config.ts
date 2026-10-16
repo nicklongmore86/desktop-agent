@@ -1,5 +1,6 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
+import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { buildCsp } from './src/shared/csp'
 
@@ -28,5 +29,20 @@ export default defineConfig({
   preload: {},
   renderer: {
     plugins: [react(), cspPlugin()],
+    resolve: {
+      alias: [
+        // Keep lowlight's 37-language default set out of the bundle (see the shim).
+        {
+          find: /^lowlight$/,
+          replacement: fileURLToPath(new URL('./src/renderer/lowlight-slim.mjs', import.meta.url)),
+        },
+        {
+          find: 'lowlight-lib',
+          replacement: fileURLToPath(
+            new URL('./node_modules/lowlight/lib/index.js', import.meta.url),
+          ),
+        },
+      ],
+    },
   },
 })

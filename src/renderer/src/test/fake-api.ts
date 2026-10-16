@@ -59,9 +59,38 @@ export function fakeApi(options: FakeApiOptions = {}) {
   }
   const api = {
     provider: {
-      models: vi.fn<DesktopApi['provider']['models']>(),
-      setModel: vi.fn<DesktopApi['provider']['setModel']>(),
-      allowance: vi.fn<DesktopApi['provider']['allowance']>(),
+      models: vi.fn<DesktopApi['provider']['models']>(() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            provider: provider.provider,
+            options: [],
+            selectedModel: null,
+            savedModel: null,
+            defaultModel: null,
+            resolvedModel: null,
+          },
+        }),
+      ),
+      setModel: vi.fn<DesktopApi['provider']['setModel']>(() =>
+        Promise.resolve({
+          ok: false,
+          failure: { code: 'invalid_request', message: 'Not supported.' },
+        }),
+      ),
+      allowance: vi.fn<DesktopApi['provider']['allowance']>(() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            provider: provider.provider,
+            plan: null,
+            state: 'unknown',
+            resetsAt: null,
+            windows: [],
+            lastError: null,
+          },
+        }),
+      ),
       get: vi.fn(() => Promise.resolve(provider)),
       set: vi.fn((next: ProviderId) => {
         provider = {

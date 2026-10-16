@@ -1,5 +1,7 @@
 import type { ChatErrorCode } from '../../../shared/ipc'
 import type { Banner } from '../chat-state'
+import type { OpenSettings } from '../open-settings'
+import { StatusIcon } from './StatusIcon'
 
 const TITLES: Record<ChatErrorCode, string> = {
   usage_limit: 'Plan limit reached',
@@ -46,7 +48,7 @@ export function ErrorBanner({
 }: {
   banner: Banner
   onDismiss: () => void
-  onOpenSettings: () => void
+  onOpenSettings: OpenSettings
   onNewChat: () => void
 }): React.JSX.Element {
   const info = banner.code === 'aborted'
@@ -56,12 +58,22 @@ export function ErrorBanner({
       role={info ? 'status' : 'alert'}
       data-code={banner.code}
     >
+      {!info && (
+        <span className="banner-icon">
+          <StatusIcon status="error" />
+        </span>
+      )}
       <div className="banner-text">
         <strong>{TITLES[banner.code]}.</strong> {banner.message}
       </div>
       <div className="banner-actions">
         {SETTINGS_CODES.has(banner.code) && (
-          <button type="button" onClick={onOpenSettings}>
+          <button
+            type="button"
+            onClick={() => {
+              onOpenSettings('accounts')
+            }}
+          >
             Open Settings
           </button>
         )}
