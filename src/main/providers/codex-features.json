@@ -112,7 +112,7 @@
   "recommended_plugins": false,
   "remote_compaction_v2": false,
   "remote_control": false,
-  "remote_models": false,
+  "remote_models": true,
   "remote_plugin": false,
   "request_permissions": false,
   "request_permissions_tool": false,

@@ -18,6 +18,9 @@ export const IpcChannels = {
   providerOpenLoginUrl: 'provider:open-login-url',
   providerCopyLoginUrl: 'provider:copy-login-url',
   providerSubmitLoginCode: 'provider:submit-login-code',
+  providerModels: 'provider:models',
+  providerSetModel: 'provider:set-model',
+  providerAllowance: 'provider:allowance',
   modelGet: 'model:get',
   modelSet: 'model:set',
 
@@ -40,7 +43,18 @@ export const PROVIDERS = ['anthropic-api', 'claude-subscription', 'codex-subscri
 export type ProviderId = (typeof PROVIDERS)[number]
 export interface ProviderStatus {
   provider: ProviderId
-  state: 'ready' | 'missing-runtime' | 'signed-out' | 'unsupported' | 'error'
+  state:
+    | 'ready'
+    | 'missing-runtime'
+    | 'signed-out'
+    | 'unsupported'
+    | 'error'
+    | 'limited'
+    | 'not-entitled'
+  /** Independent of entitlement/allowance; present when auth state can be determined. */
+  signedIn?: boolean
+  availability?: 'available' | 'blocked' | 'unknown'
+  failure?: ProviderFailure
   message: string
 }
 
@@ -81,6 +95,45 @@ export type GrantAddResult =
   | { status: 'cancelled'; grants: GrantsState }
   | { status: 'refused'; reason: string; grants: GrantsState }
 
+export interface ProviderFailure {
+  code: ChatErrorCode
+  message: string
+  /** ISO 8601 UTC, when the runtime supplies a reset time. */
+  resetsAt?: string
+}
+
+/** Serializable metadata outcome: Electron invoke rejections drop custom Error fields. */
+export type ProviderResult<T> = { ok: true; value: T } | { ok: false; failure: ProviderFailure }
+
+export interface ProviderModel extends ModelOption {
+  defaultReasoningEffort: string | null
+  supportedReasoningEfforts: string[]
+  isDefault: boolean
+}
+export interface ProviderModels {
+  provider: ProviderId
+  options: ProviderModel[]
+  /** Effective choice after validating the saved preference against the catalog. */
+  selectedModel: string | null
+  savedModel: string | null
+  defaultModel: string | null
+  resolvedModel: string | null
+}
+export interface AllowanceWindow {
+  limitId: string
+  remainingPercent: number
+  resetsAt: string | null
+}
+export interface ProviderAllowance {
+  provider: ProviderId
+  plan: string | null
+  state: 'available' | 'limited' | 'unknown'
+  /** Advisory reset time when limited; never proof of recovered usage permission. */
+  resetsAt: string | null
+  windows: AllowanceWindow[]
+  lastError: ProviderFailure | null
+}
+
 export interface ModelOption {
   id: string
   label: string
@@ -100,6 +153,11 @@ export interface AuditStatus {
 
 /** Agent error codes, plus the session's own (no key, already running, ...). */
 export type ChatErrorCode =
+  | 'usage_limit'
+  | 'plan_not_entitled'
+  | 'model_unavailable'
+  | 'auth_expired'
+  | 'runtime_unavailable'
   | 'authentication'
   | 'invalid_request'
   | 'permission'
@@ -137,7 +195,8 @@ export interface ChatState {
   loadError: string | null
 }
 
-export type SendResult = { ok: true } | { ok: false; code: ChatErrorCode; message: string }
+export type SendResult =
+  { ok: true } | { ok: false; code: ChatErrorCode; message: string; resetsAt?: string }
 
 /** Streamed main -> renderer while a run is in flight. */
 export type ChatEvent =
@@ -148,7 +207,7 @@ export type ChatEvent =
   | { type: 'tool_use'; runId: string; turn: number; id: string; name: string; input: unknown }
   | { type: 'tool_result'; runId: string; id: string; content: string; isError: boolean }
   | { type: 'approval_closed'; approvalId: string; approved: boolean }
-  | { type: 'error'; runId: string; code: ChatErrorCode; message: string }
+  | { type: 'error'; runId: string; code: ChatErrorCode; message: string; resetsAt?: string }
   | { type: 'run_finished'; runId: string; stopReason: string }
   /** New chat: the conversation is now empty. */
   | { type: 'conversation_reset'; state?: ChatState }
@@ -184,6 +243,9 @@ type Unsubscribe = () => void
 /** The API the preload script exposes to the renderer as `window.desktopApi`. */
 export interface DesktopApi {
   provider: {
+    models: () => Promise<ProviderResult<ProviderModels>>
+    setModel: (model: string | null) => Promise<ProviderResult<ProviderModels>>
+    allowance: () => Promise<ProviderResult<ProviderAllowance>>
     get: () => Promise<ProviderStatus>
     set: (provider: ProviderId) => Promise<ProviderStatus>
     login: () => Promise<ProviderStatus>

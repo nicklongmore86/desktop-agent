@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createAppServices } from './services'
+import { SubscriptionError } from './providers/errors'
 import { SubscriptionProviders } from './providers/service'
 
 const dirs: string[] = []
@@ -21,6 +22,7 @@ it('preserves legacy API history and starts both subscriptions without reading t
     join(userData, 'conversation.json'),
     JSON.stringify({ version: 1, messages: [{ role: 'user', content: 'legacy API history' }] }),
   )
+  const invalidate = vi.spyOn(SubscriptionProviders.prototype, 'invalidateMetadata')
   vi.spyOn(SubscriptionProviders.prototype, 'status').mockImplementation((provider) =>
     Promise.resolve({ provider, state: 'ready', message: 'ready' }),
   )
@@ -64,4 +66,97 @@ it('preserves legacy API history and starts both subscriptions without reading t
   expect(services.chat.state().items[0]).toMatchObject({ text: 'claude-subscription' })
   await services.provider.set('anthropic-api')
   expect(services.chat.state().items[0]).toMatchObject({ text: 'legacy API history' })
+  expect(invalidate).toHaveBeenCalledTimes(4)
+})
+
+it.each([
+  ['Missing runtime: codex', 'runtime_unavailable'],
+  ['Sign-in expired.', 'auth_expired'],
+  ['This model is not available on your plan', 'plan_not_entitled'],
+  ['quota exceeded', 'usage_limit'],
+] as const)(
+  'preserves setup classification for %s without starting or retrying a run',
+  async (message, code) => {
+    const userData = await mkdtemp(join(tmpdir(), 'setup-failure-'))
+    dirs.push(userData)
+    await writeFile(
+      join(userData, 'settings.json'),
+      JSON.stringify({ version: 2, provider: 'codex-subscription' }),
+    )
+    const runner = vi
+      .spyOn(SubscriptionProviders.prototype, 'runner')
+      .mockRejectedValue(new Error(message))
+    const services = await createAppServices({
+      userData,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (text) => Buffer.from(text),
+        decryptString: (value) => value.toString(),
+      },
+      trash: () => Promise.resolve(),
+      emit: vi.fn(),
+      promptApproval: vi.fn(),
+      onAuditStatus: vi.fn(),
+    })
+    expect(await services.chat.send('hello')).toMatchObject({ ok: false, code })
+    expect(runner).toHaveBeenCalledOnce()
+  },
+)
+
+it.each(['models', 'allowance', 'setModel'] as const)(
+  'returns serializable metadata failure fields for %s',
+  async (method) => {
+    const userData = await mkdtemp(join(tmpdir(), 'metadata-result-'))
+    dirs.push(userData)
+    const reset = new Date(Date.now() + 3600000).toISOString()
+    vi.spyOn(SubscriptionProviders.prototype, method).mockRejectedValue(
+      new SubscriptionError('usage_limit', 'Safe quota explanation.', reset),
+    )
+    const services = await createAppServices({
+      userData,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (text) => Buffer.from(text),
+        decryptString: (value) => value.toString(),
+      },
+      trash: () => Promise.resolve(),
+      emit: vi.fn(),
+      promptApproval: vi.fn(),
+      onAuditStatus: vi.fn(),
+    })
+    const result =
+      method === 'setModel'
+        ? await services.provider.setModel('gpt-5.6-terra')
+        : await services.provider[method]()
+    expect(JSON.parse(JSON.stringify(result))).toEqual({
+      ok: false,
+      failure: { code: 'usage_limit', message: 'Safe quota explanation.', resetsAt: reset },
+    })
+  },
+)
+it('returns a serializable metadata success value', async () => {
+  const userData = await mkdtemp(join(tmpdir(), 'metadata-success-'))
+  dirs.push(userData)
+  const value = {
+    provider: 'codex-subscription' as const,
+    options: [],
+    selectedModel: null,
+    savedModel: null,
+    defaultModel: null,
+    resolvedModel: null,
+  }
+  vi.spyOn(SubscriptionProviders.prototype, 'models').mockResolvedValue(value)
+  const services = await createAppServices({
+    userData,
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      encryptString: (text) => Buffer.from(text),
+      decryptString: (value) => value.toString(),
+    },
+    trash: () => Promise.resolve(),
+    emit: vi.fn(),
+    promptApproval: vi.fn(),
+    onAuditStatus: vi.fn(),
+  })
+  expect(await services.provider.models()).toEqual({ ok: true, value })
 })

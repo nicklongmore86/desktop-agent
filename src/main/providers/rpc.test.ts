@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { RpcPeer } from './rpc'
 import { runtimeEnv } from './runtime'
 
@@ -78,4 +78,51 @@ describe('provider transport', () => {
       }),
     ).toEqual({ PATH: '/bin', HOME: '/home/test' })
   })
+})
+
+it.each([
+  [
+    {
+      code: -32000,
+      message: 'quota',
+      data: { code: 'usage_limit_reached', resets_at: 1800000000 },
+    },
+    'usage_limit',
+  ],
+  [
+    { code: -32000, data: { httpStatusCode: 401 }, message: 'private-token /home/private' },
+    'auth_expired',
+  ],
+  [{ code: -32000, message: 'model not available on your plan' }, 'plan_not_entitled'],
+] as const)(
+  'preserves structured JSON-RPC error %# without leaking raw detail',
+  async (error, code) => {
+    const { peer, child } = fixture()
+    const pending = peer.request('turn/start')
+    child.stdout.write(JSON.stringify({ id: 1, error }) + '\n')
+    await expect(pending).rejects.toMatchObject({ code })
+    if (code === 'usage_limit')
+      await expect(pending).rejects.toMatchObject({ resetsAt: '2027-01-15T08:00:00.000Z' })
+    await expect(pending).rejects.not.toThrow(/private/)
+    peer.close()
+  },
+)
+
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2027-01-15T00:00:00Z'))
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+it('times out advisory metadata without closing a usable peer and ignores its late reply', async () => {
+  const { peer, child } = fixture()
+  await expect(
+    peer.request('model/list', {}, { timeoutMs: 10, closeOnTimeout: false }),
+  ).rejects.toThrow('timed out')
+  const turn = peer.request('turn/start')
+  child.stdout.write(JSON.stringify({ id: 1, result: { data: [] } }) + '\n')
+  child.stdout.write(JSON.stringify({ id: 2, result: { turn: { id: 't' } } }) + '\n')
+  expect(await turn).toEqual({ turn: { id: 't' } })
+  peer.close()
 })

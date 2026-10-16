@@ -133,7 +133,9 @@ it('native Codex discovers grants and lists a folder through the guarded tool br
   try {
     const started = await peer.request('thread/start', {
       ...codexThreadOptions({ file, cwd, env }, tools),
+      model: 'gpt-5.6-terra',
       config: {
+        model_reasoning_effort: 'medium',
         model_provider: 'local_test',
         model_providers: {
           local_test: {
@@ -145,6 +147,8 @@ it('native Codex discovers grants and lists a folder through the guarded tool br
         },
       },
     })
+    expect(started['model']).toBe('gpt-5.6-terra')
+    expect(started['reasoningEffort']).toBe('medium')
     await peer.request('turn/start', {
       threadId: (started['thread'] as { id: string }).id,
       input: [{ type: 'text', text: 'Find the RFI folder in my Downloads.', text_elements: [] }],

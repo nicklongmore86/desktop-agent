@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi, afterEach } from 'vitest'
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeSubscriptionRunner } from './claude'
 import type { AgentEvent, AgentTool } from '../agent'
@@ -19,7 +19,19 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   },
   createSdkMcpServer: () => ({ type: 'sdk', name: 'desktop', instance: {} }),
 }))
-let mode: 'normal' | 'api' | 'bare' | 'cloud' | 'builtin' | 'expired' | 'hang'
+let mode:
+  | 'normal'
+  | 'api'
+  | 'bare'
+  | 'cloud'
+  | 'builtin'
+  | 'expired'
+  | 'hang'
+  | 'free'
+  | 'limit'
+  | 'result-error'
+  | 'result-success-error'
+  | 'max-turns'
 let sentInput: boolean
 const close = vi.fn()
 beforeEach(() => {
@@ -27,6 +39,7 @@ beforeEach(() => {
   sentInput = false
   sdk.handlers.clear()
   close.mockClear()
+  vi.mocked(query).mockClear()
   vi.mocked(query).mockImplementation(
     (request) =>
       ({
@@ -44,7 +57,10 @@ beforeEach(() => {
                   }
                 : mode === 'cloud'
                   ? { apiProvider: 'bedrock', subscriptionType: 'Claude Max' }
-                  : { apiProvider: 'firstParty', subscriptionType: 'Claude Max' },
+                  : {
+                      apiProvider: 'firstParty',
+                      subscriptionType: mode === 'free' ? 'Free' : 'Claude Max',
+                    },
           ),
         async *[Symbol.asyncIterator]() {
           if (typeof request.prompt === 'string') throw new Error('Expected gated input.')
@@ -59,6 +75,28 @@ beforeEach(() => {
           } as SDKMessage
           if (mode === 'expired') {
             yield { type: 'assistant', error: 'authentication_failed' } as SDKMessage
+            return
+          }
+          if (mode === 'limit') {
+            yield {
+              type: 'rate_limit_event',
+              rate_limit_info: { status: 'rejected', resetsAt: 1800000000 },
+            } as SDKMessage
+            return
+          }
+          if (mode === 'result-error' || mode === 'max-turns' || mode === 'result-success-error') {
+            yield {
+              type: 'result',
+              subtype:
+                mode === 'max-turns'
+                  ? 'error_max_turns'
+                  : mode === 'result-success-error'
+                    ? 'success'
+                    : 'error_during_execution',
+              is_error: true,
+              errors: [mode === 'max-turns' ? 'Maximum turns reached' : 'rate_limit reached'],
+              result: mode === 'max-turns' ? '' : 'usage limit reached',
+            } as unknown as SDKMessage
             return
           }
           if (mode === 'hang') {
@@ -136,22 +174,23 @@ it('gates input on subscription auth and bridges only app tools', async () => {
   expect(options?.extraArgs).not.toHaveProperty('bare')
   expect(close).toHaveBeenCalledOnce()
 })
-it.each([
-  ['api', 'Claude subscription sign-in required. API credentials are not accepted.'],
-  ['cloud', 'Claude subscription sign-in required. Cloud API providers are not accepted.'],
-  ['bare', "Claude isn't signed in with a subscription. Sign in again in Settings."],
-] as const)('refuses %s authentication before sending any prompt', async (state, message) => {
-  mode = state
-  const { run, execute, events } = setup()
-  expect((await run()).stopReason).toBe('api')
-  expect(sentInput).toBe(false)
-  expect(execute).not.toHaveBeenCalled()
-  expect(events.at(-1)).toEqual({ type: 'error', code: 'api', message })
-})
+it.each(['api', 'cloud', 'bare'] as const)(
+  'refuses %s authentication before sending any prompt',
+  async (state) => {
+    mode = state
+    const { run, execute, events } = setup()
+    expect((await run()).stopReason).toBe('authentication')
+    expect(sentInput).toBe(false)
+    expect(execute).not.toHaveBeenCalled()
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'authentication' })
+  },
+)
 it.each(['builtin', 'expired'] as const)('fails closed on %s', async (state) => {
   mode = state
   const { run, execute, events } = setup()
-  expect((await run()).stopReason).toBe('api')
+  expect((await run()).stopReason).toBe(
+    state === 'expired' ? 'auth_expired' : 'runtime_unavailable',
+  )
   expect(execute).not.toHaveBeenCalled()
   expect(events.at(-1)).toMatchObject({ type: 'error' })
 })
@@ -165,4 +204,29 @@ it('aborts and closes a streaming SDK session', async () => {
   controller.abort()
   expect((await done).stopReason).toBe('aborted')
   expect(close).toHaveBeenCalledOnce()
+})
+
+it.each([
+  ['free', 'plan_not_entitled'],
+  ['limit', 'usage_limit'],
+  ['result-error', 'usage_limit'],
+  ['result-success-error', 'usage_limit'],
+  ['max-turns', 'max_turns'],
+] as const)('preserves structured %s failure', async (state, code) => {
+  mode = state
+  const { run, events, execute } = setup()
+  expect((await run()).stopReason).toBe(code)
+  expect(execute).not.toHaveBeenCalled()
+  expect(events.at(-1)).toMatchObject({ type: 'error', code })
+  if (state === 'free') expect(sentInput).toBe(false)
+  if (state === 'limit')
+    expect(events.at(-1)).toMatchObject({ resetsAt: '2027-01-15T08:00:00.000Z' })
+  expect(query).toHaveBeenCalledTimes(1)
+})
+
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2027-01-15T00:00:00Z'))
+})
+afterEach(() => {
+  vi.restoreAllMocks()
 })

@@ -328,6 +328,7 @@ export async function capture(
   env: NodeJS.ProcessEnv,
   signal?: AbortSignal,
   timeout = 10000,
+  acceptedExitCodes: readonly number[] = [0],
 ): Promise<string> {
   signal?.throwIfAborted()
   const child = launch(file, args, cwd, env)
@@ -361,7 +362,7 @@ export async function capture(
     })
     child.once('close', (code) => {
       finish(
-        code === 0
+        code !== null && acceptedExitCodes.includes(code)
           ? undefined
           : new Error('Runtime command failed. Check installation and sign-in.'),
       )

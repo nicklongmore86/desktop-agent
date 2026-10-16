@@ -37,6 +37,9 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
   const status = { provider: 'anthropic-api' as const, state: 'ready' as const, message: 'API' }
   const services: IpcServices = {
     provider: {
+      models: vi.fn(),
+      setModel: vi.fn(),
+      allowance: vi.fn(),
       get: vi.fn(() => Promise.resolve(status)),
       set: vi.fn(() => Promise.resolve(status)),
       login: vi.fn(() => Promise.resolve(status)),
@@ -389,4 +392,36 @@ describe('provider IPC', () => {
     })
     expect(services.provider.submitLoginCode).not.toHaveBeenCalled()
   })
+})
+
+it('validates subscription model IPC and keeps all metadata channels behind the sender gate', async () => {
+  const { invoke, services } = setup()
+  await invoke(IpcChannels.providerModels, appFrame)
+  await invoke(IpcChannels.providerAllowance, appFrame)
+  await invoke(IpcChannels.providerSetModel, appFrame, 'gpt-5.6-terra')
+  await invoke(IpcChannels.providerSetModel, appFrame, null)
+  expect(services.provider.models).toHaveBeenCalledOnce()
+  expect(services.provider.allowance).toHaveBeenCalledOnce()
+  expect(services.provider.setModel).toHaveBeenNthCalledWith(1, 'gpt-5.6-terra')
+  expect(services.provider.setModel).toHaveBeenNthCalledWith(2, null)
+  for (const value of [{ model: 'gpt-5.6-terra' }, 42, 'bad\nmodel', 'C:/private']) {
+    expect(await invoke(IpcChannels.providerSetModel, appFrame, value)).toMatchObject({
+      ok: false,
+      failure: { code: 'model_unavailable' },
+    })
+  }
+  for (const channel of [
+    IpcChannels.providerModels,
+    IpcChannels.providerAllowance,
+    IpcChannels.providerSetModel,
+  ]) {
+    await expect(
+      invoke(
+        channel,
+        { senderFrame: { url: 'https://evil.example', parent: null } },
+        'gpt-5.6-terra',
+      ),
+    ).rejects.toThrow()
+  }
+  expect(services.provider.setModel).toHaveBeenCalledTimes(2)
 })

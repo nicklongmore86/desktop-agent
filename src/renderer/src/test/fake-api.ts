@@ -56,6 +56,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
   }
   const api = {
     provider: {
+      models: vi.fn<DesktopApi['provider']['models']>(),
+      setModel: vi.fn<DesktopApi['provider']['setModel']>(),
+      allowance: vi.fn<DesktopApi['provider']['allowance']>(),
       get: vi.fn(() => Promise.resolve(provider)),
       set: vi.fn((next: ProviderId) => {
         provider = {

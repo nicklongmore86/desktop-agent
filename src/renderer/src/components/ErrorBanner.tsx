@@ -2,6 +2,11 @@ import type { ChatErrorCode } from '../../../shared/ipc'
 import type { Banner } from '../chat-state'
 
 const TITLES: Record<ChatErrorCode, string> = {
+  usage_limit: 'Plan limit reached',
+  plan_not_entitled: 'Plan upgrade required',
+  model_unavailable: 'Model unavailable',
+  auth_expired: 'Sign-in expired',
+  runtime_unavailable: 'Runtime unavailable',
   authentication: 'Authentication failed',
   permission: 'Access denied',
   invalid_request: 'Request rejected',
@@ -22,6 +27,11 @@ const TITLES: Record<ChatErrorCode, string> = {
 }
 
 const SETTINGS_CODES = new Set<ChatErrorCode>([
+  'usage_limit',
+  'plan_not_entitled',
+  'model_unavailable',
+  'auth_expired',
+  'runtime_unavailable',
   'authentication',
   'permission',
   'no_api_key',

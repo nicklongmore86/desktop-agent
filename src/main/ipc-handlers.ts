@@ -139,6 +139,19 @@ export function registerIpcHandlers(
     return grantsState()
   })
 
+  handle(IpcChannels.providerModels, () => services.provider.models())
+  handle(IpcChannels.providerAllowance, () => services.provider.allowance())
+  handle(IpcChannels.providerSetModel, (model) => {
+    if (
+      model !== null &&
+      (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model))
+    )
+      return {
+        ok: false,
+        failure: { code: 'model_unavailable', message: 'Choose an available model.' },
+      }
+    return services.provider.setModel(model)
+  })
   handle(IpcChannels.providerGet, () => services.provider.get())
   handle(IpcChannels.providerSet, (provider) => {
     if (!PROVIDERS.includes(provider as ProviderId)) throw new Error('Unknown provider.')
