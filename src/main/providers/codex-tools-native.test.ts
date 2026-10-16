@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -12,7 +12,7 @@ import { discoverRuntime, runtimeEnv } from './runtime'
 // Exercise the pinned native runtime's model-facing tool declarations and dispatch,
 // rather than a fake app-server that accepts arbitrary thread/start arguments.
 it('native Codex discovers grants and lists a folder through the guarded tool bridge', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'Desktop tool roundtrip '))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'Desktop tool roundtrip ')))
   const cwd = join(root, 'workspace')
   const home = join(root, 'auth')
   const granted = join(root, 'Downloads')
