@@ -27,8 +27,9 @@ async function renderApp(options: FakeApiOptions = {}) {
   )
   await screen.findByText('v0.1.0')
   // The picker lists what is ready, once the connection checks are in.
-  if (!options.configured || options.configured.includes('codex-subscription'))
-    await screen.findByRole('option', { name: 'Codex · ChatGPT' })
+  if (!options.configured && !options.statuses)
+    for (const name of ['Claude · Subscription', 'Codex · ChatGPT', 'Claude · API'])
+      await screen.findByRole('option', { name })
   return { ...fake, user, writeText }
 }
 
