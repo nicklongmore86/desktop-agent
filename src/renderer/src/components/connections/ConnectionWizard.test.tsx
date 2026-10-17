@@ -316,6 +316,163 @@ describe('local models', () => {
   })
 })
 
+describe('text a server supplies', () => {
+  it('shows model names and status messages without bidi or invisible characters', async () => {
+    const RLO = String.fromCharCode(0x202e)
+    const ZWSP = String.fromCharCode(0x200b)
+    const { user, api } = await renderApp(NOTHING_READY)
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^Local models/)
+    dialog = await wizard('How do you want to use Local models?')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Which one do you use?')
+    api.provider.set.mockResolvedValueOnce({
+      provider: 'ollama',
+      state: 'error',
+      message: `Ollama${RLO} is not${ZWSP} running.\nStart it, then check again.`,
+    })
+    await choose(user, dialog, /^Ollama/)
+    dialog = await wizard('Find Ollama')
+    const note = await within(dialog).findByText(/is not running/)
+    expect(note.textContent).toBe('Ollama is not running. Start it, then check again.')
+
+    api.provider.models.mockResolvedValue({
+      ok: true,
+      value: {
+        provider: 'ollama',
+        options: [
+          {
+            id: 'qwen',
+            label: `qwen${RLO}3:8b${ZWSP}`,
+            defaultReasoningEffort: null,
+            supportedReasoningEfforts: [],
+            isDefault: true,
+          },
+        ],
+        selectedModel: null,
+        savedModel: null,
+        defaultModel: 'qwen',
+        resolvedModel: 'qwen',
+        warning: `Ollama${RLO} doesn’t say which models use tools.`,
+      },
+    })
+    api.provider.get.mockResolvedValueOnce({
+      provider: 'ollama',
+      state: 'ready',
+      message: 'Ready.',
+    })
+    await user.click(within(dialog).getByRole('button', { name: 'Check again' }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Pick a model')
+    expect(await within(dialog).findByText('qwen3:8b')).toBeTruthy()
+    expect(within(dialog).getByText('Ollama doesn’t say which models use tools.')).toBeTruthy()
+    expect(dialog.textContent).not.toContain(RLO)
+    expect(dialog.textContent).not.toContain(ZWSP)
+  })
+})
+
+describe('cancelling while the connect step is still getting ready', () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+  const ready = (provider: string): ProviderStatus => ({
+    provider,
+    state: 'ready',
+    message: 'Ready.',
+  })
+
+  async function toOllama() {
+    const result = await renderApp(NOTHING_READY)
+    const { user } = result
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^Local models/)
+    dialog = await wizard('How do you want to use Local models?')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Which one do you use?')
+    return { ...result, dialog }
+  }
+  const settle = async () => {
+    await act(async () => {
+      await new Promise((done) => setTimeout(done, 20))
+    })
+  }
+
+  it('never switches after the wizard is closed while provider.get() is pending', async () => {
+    const { user, api, dialog } = await toOllama()
+    const get = deferred<ProviderStatus>()
+    api.provider.get.mockImplementationOnce(() => get.promise)
+    api.provider.set.mockClear()
+    await choose(user, dialog, /^Ollama/)
+    await wizard('Find Ollama')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    // The read finishes after the wizard was closed.
+    act(() => {
+      get.resolve(ready('anthropic-api'))
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: /Ollama|Which/ })).toBeNull()
+    })
+    await settle()
+    expect(api.provider.set).not.toHaveBeenCalled()
+    expect(api.connections.remove).not.toHaveBeenCalled()
+  })
+
+  it('finishes a switch that was already started, then restores the previous connection', async () => {
+    const { user, api, dialog } = await toOllama()
+    const toOllamaSwitch = deferred<ProviderStatus>()
+    api.provider.set.mockClear()
+    api.provider.set.mockImplementationOnce(() => toOllamaSwitch.promise)
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    // Nothing is put back until the switch that is in flight has landed.
+    await settle()
+    expect(api.provider.set).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('dialog', { name: 'Find Ollama' })).toBeTruthy()
+    act(() => {
+      toOllamaSwitch.resolve(ready('ollama'))
+    })
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenLastCalledWith('anthropic-api')
+    })
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama', 'anthropic-api'])
+    // The half-added connection is dropped again.
+    expect(api.connections.remove).toHaveBeenCalledWith('ollama')
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull()
+    })
+    await settle()
+    expect(api.provider.set).toHaveBeenCalledTimes(2)
+  })
+
+  it('puts the previous connection back when Back is pressed mid-switch', async () => {
+    const { user, api, dialog } = await toOllama()
+    const slow = deferred<ProviderStatus>()
+    api.provider.set.mockClear()
+    api.provider.set.mockImplementationOnce(() => slow.promise)
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    await user.keyboard('{Escape}')
+    act(() => {
+      slow.resolve(ready('ollama'))
+    })
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenLastCalledWith('anthropic-api')
+    })
+    // Back at the previous step, with the previous connection in place.
+    expect(await wizard('How do you want to use Local models?')).toBeTruthy()
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama', 'anthropic-api'])
+  })
+})
+
 describe('the local server address (Advanced)', () => {
   async function toFindOllama() {
     const result = await renderApp(NOTHING_READY)

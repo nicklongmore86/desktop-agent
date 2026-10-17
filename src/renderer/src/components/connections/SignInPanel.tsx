@@ -3,6 +3,7 @@ import type { ProviderLoginState, ProviderStatus } from '../../../../shared/ipc'
 import type { ConnectionInfo } from '../../../../shared/ipc-connections'
 import { BaseUrlField } from './BaseUrlField'
 import { useMounted } from './use-mounted'
+import { plainText } from '../../plain-text'
 import { useApi } from '../../api'
 import { isConnected } from './flow'
 
@@ -214,7 +215,7 @@ export function ProviderPanel({
         </p>
       ) : status?.state === 'error' && authKind !== 'local' ? (
         <p className="settings-error" role="alert">
-          {status.message}
+          {plainText(status.message)}
         </p>
       ) : (
         <p role="status">
@@ -222,12 +223,12 @@ export function ProviderPanel({
             ? 'Connected'
             : authKind === 'local'
               ? // A local server's own wording ("not running … check again") is the status.
-                (status?.message ?? 'Not checked yet')
+                plainText(status?.message ?? 'Not checked yet')
               : status?.state === 'missing-runtime'
                 ? `Can’t start ${connection.runtimeLabel ?? 'the runtime'}`
                 : status?.state === 'signed-out'
                   ? 'Not signed in'
-                  : (status?.message ?? 'Loading provider…')}
+                  : plainText(status?.message ?? 'Loading provider…')}
         </p>
       )}
       {error && (

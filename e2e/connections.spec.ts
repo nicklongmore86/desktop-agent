@@ -43,7 +43,19 @@ test('Settings adds an API-key connection through the wizard and saves its key b
         (window as unknown as { e2e: { keyCalls: () => string[] } }).e2e.keyCalls(),
       ),
     ).toEqual(['openai-api', 'openai-api'])
-    expect(await page.content()).not.toContain('sk-good')
+    // Not in any field's value, rendered text, or attribute.
+    expect(
+      await page.evaluate(() => {
+        const fields = [...document.querySelectorAll<HTMLInputElement>('input, textarea')]
+        return (
+          fields.some(
+            (field) => field.value.includes('sk-good') || field.value.includes('bad-key'),
+          ) ||
+          document.body.innerText.includes('sk-good') ||
+          document.documentElement.outerHTML.includes('sk-good')
+        )
+      }),
+    ).toBe(false)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   } finally {
     await app.close()

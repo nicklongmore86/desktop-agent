@@ -2,6 +2,7 @@ import { useId, useState, type SubmitEvent } from 'react'
 import { KEY_HELP } from '../../../../shared/access-matrix'
 import type { ApiKeyStatus } from '../../../../shared/ipc'
 import type { ConnectionId } from '../../../../shared/ipc-connections'
+import { plainText } from '../../plain-text'
 import { useApi } from '../../api'
 import { useMounted } from './use-mounted'
 
@@ -45,7 +46,7 @@ export function ApiKeyForm({
         if (!mounted.current) return
         setBusy(false)
         if (status.error || !status.saved) {
-          setError(status.error ?? 'That key was not accepted.')
+          setError(plainText(status.error ?? 'That key was not accepted.'))
           return
         }
         setDraft('')

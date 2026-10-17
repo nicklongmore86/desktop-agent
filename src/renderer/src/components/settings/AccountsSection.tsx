@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type SubmitEvent } from 'react'
+import { useEffect, useId, useRef, useState, type SubmitEvent } from 'react'
 import { KEY_HELP } from '../../../../shared/access-matrix'
 import type { ApiKeyStatus } from '../../../../shared/ipc'
 import {
@@ -9,6 +9,7 @@ import {
 } from '../../../../shared/ipc-connections'
 import { useApi } from '../../api'
 import { useConnectionOverview, type ConnectionRow } from '../../connections'
+import { plainText } from '../../plain-text'
 import { useProviderModels } from '../../provider-models'
 import { ProviderPanel } from '../connections/SignInPanel'
 import { useMounted } from '../connections/use-mounted'
@@ -153,11 +154,11 @@ function ModelSection({ connection }: { connection: ConnectionId }): React.JSX.E
       >
         {choice.options.map((option) => (
           <option key={option.id} value={option.id}>
-            {option.label}
+            {plainText(option.label)}
           </option>
         ))}
       </select>
-      {choice.warning && <p className="settings-hint">{choice.warning}</p>}
+      {choice.warning && <p className="settings-hint">{plainText(choice.warning)}</p>}
       {error && (
         <p className="settings-error" role="alert">
           {error}
@@ -228,9 +229,20 @@ function ConfirmRemove({
 }): React.JSX.Element {
   const titleId = useId()
   const textId = useId()
+  const dialog = useRef<HTMLDivElement>(null)
+  // Focus goes back to the button that opened this when it closes.
+  // Read while rendering, before Cancel takes focus.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null)
+  useEffect(
+    () => () => {
+      if (opener?.isConnected) opener.focus()
+    },
+    [opener],
+  )
   return (
     <div className="modal-backdrop">
       <div
+        ref={dialog}
         className="confirm-dialog"
         role="alertdialog"
         aria-modal="true"
@@ -241,6 +253,21 @@ function ConfirmRemove({
             event.preventDefault()
             event.stopPropagation()
             onCancel()
+            return
+          }
+          if (event.key !== 'Tab') return
+          // Tab stays inside the dialog.
+          const items = [
+            ...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? []),
+          ]
+          const first = items[0]
+          const last = items.at(-1)
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault()
+            last?.focus()
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault()
+            first?.focus()
           }
         }}
       >
@@ -353,7 +380,17 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
     setRemoveError(null)
     try {
       // Its key goes with it; chat history is never touched.
-      if (row.keySaved) await api.apiKey.clear(row.info.id)
+      // Whatever the cached status says: main answers a failed delete with a status, not a throw.
+      if (row.info.capabilities.authKind === 'api-key') {
+        const cleared = await api.apiKey.clear(row.info.id)
+        if (cleared.error || cleared.saved) {
+          if (mounted.current)
+            setRemoveError(
+              plainText(cleared.error ?? 'The saved key could not be deleted, so it was kept.'),
+            )
+          return
+        }
+      }
       overview.applyState(await api.connections.remove(row.info.id))
       overview.refresh()
       if (mounted.current) setRemoving(null)
@@ -492,7 +529,7 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
       {removing && (
         <ConfirmRemove
           info={removing.info}
-          hasKey={Boolean(removing.keySaved)}
+          hasKey={removing.info.capabilities.authKind === 'api-key' && removing.keySaved !== false}
           busy={busy !== null}
           error={removeError}
           onCancel={() => {

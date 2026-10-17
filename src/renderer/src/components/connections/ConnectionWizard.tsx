@@ -11,6 +11,7 @@ import type { GrantsState, ProviderStatus } from '../../../../shared/ipc'
 import type { ConnectionId, ConnectionInfo } from '../../../../shared/ipc-connections'
 import { useApi } from '../../api'
 import { useConnectionOverview } from '../../connections'
+import { plainText } from '../../plain-text'
 import { useProviderModels } from '../../provider-models'
 import { useGrantActions } from '../settings/use-grant-actions'
 import { ApiKeyForm } from './ApiKeyForm'
@@ -97,28 +98,55 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
   useEffect(() => {
     if (!suspended) heading.current?.focus()
   }, [flow.step, suspended])
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null
-    return () => {
+  // Read while rendering, before the heading takes focus.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null)
+  useEffect(
+    () => () => {
       if (opener?.isConnected) opener.focus()
-    }
-  }, [])
+    },
+    [opener],
+  )
 
   // The connect step works on the connection chats go to, so make it the current one.
   const connectionId = flow.step === 'connect' ? flow.connection : null
+  /**
+   * The latest preparation: `live` goes false when it is cancelled (another connection, Back,
+   * Close), and `done` settles once it has stopped touching the provider. Each run waits for
+   * the one before it, and abandoning waits for the last, so a switch that was already started
+   * is finished and then undone, and nothing starts after cancelling.
+   */
+  const lastRun = useRef<{ live: boolean; done: Promise<void> }>({
+    live: false,
+    done: Promise.resolve(),
+  })
+  /** The undo in progress, which a new preparation waits for. */
+  const abandoning = useRef<Promise<void> | null>(null)
   useEffect(() => {
     if (!connectionId) return
-    const run = { live: true }
-    void (async () => {
+    const earlier = lastRun.current
+    const undoing = abandoning.current
+    earlier.live = false
+    const run: { live: boolean; done: Promise<void> } = { live: true, done: Promise.resolve() }
+    lastRun.current = run
+    // A function, so each check reads the flag as it is now (it can change across an await).
+    const cancelled = (): boolean => !run.live
+    run.done = (async () => {
+      await Promise.all([earlier.done, undoing])
+      if (cancelled()) return
       let found: { status: ProviderStatus | null; keySaved: boolean; error: string | null }
       try {
         const now = await api.provider.get()
+        if (cancelled()) return
         if (previous.current === null) {
           previous.current = now.provider
           added.current = !overview.rows.find((row) => row.info.id === connectionId)?.configured
         }
-        const next =
-          now.provider === connectionId ? now : await props.onSwitchProvider(connectionId)
+        let next = now
+        if (now.provider !== connectionId) {
+          // Past this point the switch happens whatever the user does; abandon puts it back.
+          next = await props.onSwitchProvider(connectionId)
+          if (cancelled()) return
+        }
         const key = await api.apiKey.status(connectionId).catch(() => null)
         found = { status: next, keySaved: key?.saved ?? false, error: null }
       } catch {
@@ -128,7 +156,7 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
           error: 'Could not switch to this connection. Try again.',
         }
       }
-      if (run.live) setPrep({ connection: connectionId, attempt, ...found })
+      if (!cancelled()) setPrep({ connection: connectionId, attempt, ...found })
     })()
     return () => {
       run.live = false
@@ -146,22 +174,31 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
   }
 
   /** Puts back what the wizard changed for a connection the user did not finish setting up. */
-  const abandon = async (): Promise<void> => {
-    const target = flow.connection
-    if (!target || connectedOnce.current) return
-    try {
-      await api.provider.cancelLogin()
-      const back = previous.current
-      if (back && back !== target) {
-        props.onProvider(await props.onSwitchProvider(back))
-        if (added.current) await api.connections.remove(target)
+  const abandon = (): Promise<void> => {
+    abandoning.current ??= (async () => {
+      // Stop the preparation and wait for any switch it had already started.
+      lastRun.current.live = false
+      await lastRun.current.done
+      const target = flow.connection
+      if (target && !connectedOnce.current) {
+        try {
+          await api.provider.cancelLogin()
+          const back = previous.current
+          if (back && back !== target) {
+            props.onProvider(await props.onSwitchProvider(back))
+            if (added.current) await api.connections.remove(target)
+          }
+        } catch {
+          // The connection stays listed as not set up; Settings can remove it.
+        }
       }
-    } catch {
-      // The connection stays listed as not set up; Settings can remove it.
-    }
-    previous.current = null
-    added.current = false
-    overview.refresh()
+      previous.current = null
+      added.current = false
+      overview.refresh()
+    })().finally(() => {
+      abandoning.current = null
+    })
+    return abandoning.current
   }
 
   const close = (): void => {
@@ -613,7 +650,8 @@ function ModelStep({
   const [error, setError] = useState<string | null>(null)
   const { choice, loaded } = models
   const picked = choice ? (choice.selected ?? choice.recommended ?? choice.options[0]?.id) : null
-  const pickedLabel = choice?.options.find((option) => option.id === picked)?.label ?? null
+  const rawLabel = choice?.options.find((option) => option.id === picked)?.label
+  const pickedLabel = rawLabel === undefined ? null : plainText(rawLabel)
   useEffect(() => {
     onLabel(pickedLabel)
   }, [pickedLabel, onLabel])
@@ -624,7 +662,7 @@ function ModelStep({
         Smaller local models may not use file tools reliably.
       </p>
       {/* The server's own caveat, as main words it (plain text). */}
-      {choice?.warning && <p className="settings-hint">{choice.warning}</p>}
+      {choice?.warning && <p className="settings-hint">{plainText(choice.warning)}</p>}
     </>
   )
   if (!choice) {
@@ -633,8 +671,8 @@ function ModelStep({
         {info.capabilities.listsModels ? (
           <>
             <p>
-              {models.failure?.message ?? `No models found for ${info.title} yet.`} Add one there,
-              then check again.
+              {plainText(models.failure?.message ?? `No models found for ${info.title} yet.`)} Add
+              one there, then check again.
             </p>
             {localWarning}
             <div className="wizard-actions">
@@ -677,7 +715,7 @@ function ModelStep({
                 })
               }}
             />
-            <span className="wizard-model-name">{option.label}</span>
+            <span className="wizard-model-name">{plainText(option.label)}</span>
             {choice.recommended === option.id && <span className="chip chip-ok">Recommended</span>}
           </label>
         ))}

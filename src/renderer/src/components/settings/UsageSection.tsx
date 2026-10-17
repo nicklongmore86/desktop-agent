@@ -1,6 +1,7 @@
 import { useId, useState } from 'react'
 import type { ConnectionId } from '../../../../shared/ipc-connections'
 import { connectionOf, useConnections } from '../../connections'
+import { plainText } from '../../plain-text'
 import { useProviderModels } from '../../provider-models'
 import {
   describeFailure,
@@ -105,7 +106,7 @@ export function UsageSection({ provider }: { provider: ConnectionId }): React.JS
             <option value="">Account default</option>
             {choice?.options.map((model) => (
               <option key={model.id} value={model.id}>
-                {model.label}
+                {plainText(model.label)}
               </option>
             ))}
           </select>
@@ -115,7 +116,7 @@ export function UsageSection({ provider }: { provider: ConnectionId }): React.JS
             </p>
           )}
           {choice?.note && <p className="settings-hint">{choice.note}</p>}
-          {choice?.warning && <p className="settings-hint">{choice.warning}</p>}
+          {choice?.warning && <p className="settings-hint">{plainText(choice.warning)}</p>}
         </>
       )}
     </section>

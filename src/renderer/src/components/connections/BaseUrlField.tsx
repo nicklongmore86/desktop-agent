@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type SubmitEvent } from 'react'
 import type { ConnectionBaseUrl, ConnectionInfo } from '../../../../shared/ipc-connections'
+import { plainText } from '../../plain-text'
 import { useApi } from '../../api'
 import { useMounted } from './use-mounted'
 
@@ -51,7 +52,7 @@ export function BaseUrlField({
         if (!mounted.current) return
         setBusy(false)
         if (value.error) {
-          setError(value.error)
+          setError(plainText(value.error))
           return
         }
         setSaved(value)

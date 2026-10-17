@@ -154,6 +154,68 @@ describe('Accounts & providers cards', () => {
       expect(api.chat.remove).not.toHaveBeenCalled()
     })
 
+    it('keeps the connection and says why when its key could not be deleted', async () => {
+      const { user, api } = await renderApp(options)
+      // Main answers a failed delete with a status, not an error.
+      api.apiKey.clear.mockResolvedValueOnce({ saved: true, error: 'The key store is locked.' })
+      const list = await openAccounts(user)
+      await user.click(
+        await within(await waitForCard(list, 'OpenAI API')).findByRole('button', {
+          name: 'Remove OpenAI API',
+        }),
+      )
+      await user.click(
+        within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Remove connection' }),
+      )
+      expect((await screen.findByRole('alert')).textContent).toBe('The key store is locked.')
+      expect(api.connections.remove).not.toHaveBeenCalled()
+      expect(within(list).getByText('OpenAI API')).toBeTruthy()
+      // Still open, so it can be tried again or cancelled.
+      expect(screen.getByRole('alertdialog')).toBeTruthy()
+    })
+
+    it('clears an API-key connection’s key even when no key was known to be saved', async () => {
+      const { user, api } = await renderApp({
+        configured: ['anthropic-api', 'codex-subscription', 'openai-api'],
+      })
+      api.apiKey.status.mockRejectedValue(new Error('unreadable'))
+      const list = await openAccounts(user)
+      await user.click(
+        await within(await waitForCard(list, 'OpenAI API')).findByRole('button', {
+          name: 'Remove OpenAI API',
+        }),
+      )
+      await user.click(
+        within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Remove connection' }),
+      )
+      await waitFor(() => {
+        expect(api.connections.remove).toHaveBeenCalledWith('openai-api')
+      })
+      expect(api.apiKey.clear).toHaveBeenCalledWith('openai-api')
+    })
+
+    it('keeps Tab inside the confirmation and returns focus to the Remove button', async () => {
+      const { user } = await renderApp(options)
+      const list = await openAccounts(user)
+      const opener = await within(await waitForCard(list, 'OpenAI API')).findByRole('button', {
+        name: 'Remove OpenAI API',
+      })
+      await user.click(opener)
+      const confirm = screen.getByRole('alertdialog')
+      const cancel = within(confirm).getByRole('button', { name: 'Cancel' })
+      const remove = within(confirm).getByRole('button', { name: 'Remove connection' })
+      expect(document.activeElement).toBe(cancel)
+      await user.tab()
+      expect(document.activeElement).toBe(remove)
+      await user.tab()
+      expect(document.activeElement).toBe(cancel)
+      await user.tab({ shift: true })
+      expect(document.activeElement).toBe(remove)
+      await user.keyboard('{Escape}')
+      expect(screen.queryByRole('alertdialog')).toBeNull()
+      expect(document.activeElement).toBe(opener)
+    })
+
     it('does not let the connection in use be removed, and says why', async () => {
       const { user } = await renderApp(options)
       const list = await openAccounts(user)
