@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import css from './components.css?raw'
 import filesCss from './files.css?raw'
+import gitCss from './git.css?raw'
 
 /** The text of the first `@media (forced-colors: active) { ... }` block. */
 function forcedColorsBlock(sheet: string = css): string {
@@ -87,5 +88,18 @@ describe('forced colors: the Files tree', () => {
       /\.tree-badge,\s*\.file-menu,\s*\.mention-menu\s*\{[^}]*border-color:\s*CanvasText/,
     )
     expect(block).toMatch(/aria-disabled='true'\][^{]*\{[^}]*color:\s*GrayText/)
+  })
+})
+
+describe('forced colors: the Git tab', () => {
+  const block = forcedColorsBlock(gitCss)
+
+  it('marks the selected view and keeps status letters and +/- counts solid', () => {
+    expect(block).toMatch(
+      /\.git-views \[role='tab'\]\[aria-selected='true'\]\s*\{[^}]*border-bottom-color:\s*Highlight/,
+    )
+    const rule = /\.git-status,\s*\.git-plus,\s*\.git-minus\s*\{([^}]*)\}/.exec(block)?.[1] ?? ''
+    expect(rule).toContain('forced-color-adjust: none')
+    expect(rule).toMatch(/color:\s*CanvasText/)
   })
 })

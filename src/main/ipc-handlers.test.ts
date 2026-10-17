@@ -9,6 +9,7 @@ import {
 import { commandChannels } from '../shared/ipc-command'
 import { FEATURE_CHANNELS } from '../shared/ipc-features'
 import { filesChannels, filesPushChannels } from '../shared/ipc-files'
+import { gitChannels } from '../shared/ipc-git'
 import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
 import { projectsChannels, type ProjectsState } from '../shared/ipc-projects'
 import type { RunOptions } from './agent'
@@ -142,6 +143,16 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       copyPath: vi.fn(() => Promise.resolve({ ok: true as const })),
       reference: vi.fn(() => Promise.resolve({ ok: true as const, text: '@"/granted/a"' })),
     },
+    git: {
+      overview: vi.fn(() => Promise.resolve({ git: 'missing' as const })),
+      status: vi.fn(() =>
+        Promise.resolve({ ok: false as const, code: 'refused' as const, reason: 'no' }),
+      ),
+      diff: vi.fn(() => Promise.resolve({ ok: true as const, kind: 'empty' as const })),
+      log: vi.fn(() => Promise.resolve({ ok: true as const, commits: [], more: false })),
+      watch: vi.fn(() => Promise.resolve()),
+      openInstallPage: vi.fn(() => Promise.resolve()),
+    },
     layout: {
       get: vi.fn(() => ({ ...DEFAULT_LAYOUT })),
       set: vi.fn((layout: unknown) => Promise.resolve(layout as LayoutPrefs)),
@@ -217,6 +228,75 @@ describe('registerIpcHandlers', () => {
           'Invalid layout.',
         )
       expect(services.layout.set).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('git', () => {
+    const repo = { rootId: ROOT_ID, rel: '' }
+    const badRepos = [
+      undefined,
+      null,
+      'C:\\Users\\me\\repo',
+      { rootId: ROOT_ID },
+      { rootId: 'C:\\repo', rel: '' },
+      { rootId: ROOT_ID, rel: 7 },
+      { rootId: ROOT_ID, rel: '', path: '/etc' },
+    ]
+
+    it('passes valid requests on', async () => {
+      const { invoke, services } = setup()
+      expect(await invoke(gitChannels.gitOverview, appFrame)).toEqual({ git: 'missing' })
+      await invoke(gitChannels.gitStatus, appFrame, repo)
+      expect(services.git.status).toHaveBeenCalledWith(repo)
+      const diff = { repo, area: 'staged', path: 'src/new.ts', oldPath: 'src/old.ts' }
+      await invoke(gitChannels.gitDiff, appFrame, diff)
+      expect(services.git.diff).toHaveBeenCalledWith(diff)
+      await invoke(gitChannels.gitLog, appFrame, { repo, skip: 50 })
+      expect(services.git.log).toHaveBeenCalledWith({ repo, skip: 50 })
+      await invoke(gitChannels.gitWatch, appFrame, [repo])
+      expect(services.git.watch).toHaveBeenCalledWith([repo])
+      await invoke(gitChannels.gitOpenInstallPage, appFrame, 'https://evil.example/')
+      // The renderer cannot choose the address: the service takes no argument.
+      expect(services.git.openInstallPage).toHaveBeenCalledWith()
+    })
+
+    it('refuses anything that is not a repository location or a plain request', async () => {
+      const { invoke, services } = setup()
+      for (const bad of badRepos) {
+        await expect(invoke(gitChannels.gitStatus, appFrame, bad)).rejects.toThrow(
+          'Unknown repository.',
+        )
+        await expect(
+          invoke(gitChannels.gitDiff, appFrame, { repo: bad, area: 'staged', path: 'a' }),
+        ).rejects.toThrow('Invalid diff request.')
+        await expect(invoke(gitChannels.gitLog, appFrame, { repo: bad, skip: 0 })).rejects.toThrow(
+          'Invalid history request.',
+        )
+      }
+      for (const bad of [
+        { repo, area: 'all', path: 'a' },
+        { repo, area: 'staged', path: '' },
+        { repo, area: 'staged', path: 'x'.repeat(5000) },
+        { repo, area: 'staged', path: 'a', args: ['--output=/tmp/x'] },
+      ])
+        await expect(invoke(gitChannels.gitDiff, appFrame, bad)).rejects.toThrow(
+          'Invalid diff request.',
+        )
+      for (const skip of [-1, 1.5, 10_000_000, '0'])
+        await expect(invoke(gitChannels.gitLog, appFrame, { repo, skip })).rejects.toThrow(
+          'Invalid history request.',
+        )
+      await expect(
+        invoke(
+          gitChannels.gitWatch,
+          appFrame,
+          Array.from({ length: 100 }, () => repo),
+        ),
+      ).rejects.toThrow('Invalid repositories to watch.')
+      expect(services.git.status).not.toHaveBeenCalled()
+      expect(services.git.diff).not.toHaveBeenCalled()
+      expect(services.git.log).not.toHaveBeenCalled()
+      expect(services.git.watch).not.toHaveBeenCalled()
     })
   })
 

@@ -222,7 +222,7 @@ export function App(): React.JSX.Element {
               files: (
                 <FilesTab grants={grants} onGrants={setGrants} onOpenSettings={openSettings} />
               ),
-              git: <GitTab />,
+              git: <GitTab grants={grants} />,
             }}
           />
         )}

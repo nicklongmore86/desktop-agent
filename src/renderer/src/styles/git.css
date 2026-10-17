@@ -1,0 +1,336 @@
+/*
+ * The Workspace panel's Git tab: branch line, Changes / Commits views, changed-file
+ * rows and the diff viewer. Tokens only (styles/contrast.test.ts checks this sheet);
+ * status colours are the --color-git-* roles, and every status also has its letter.
+ */
+
+.git-tab {
+  height: 100%;
+  min-height: 0;
+  font-size: var(--font-size-sm);
+}
+
+.git-repo-select {
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.git-state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.git-state-title {
+  margin: 0;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.git-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.git-branch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.git-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-ahead-behind {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.git-refresh {
+  margin-inline-start: auto;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.git-views {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.git-views [role='tab'] {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: -1px;
+  padding: var(--space-1) var(--space-2);
+  border-color: transparent;
+  border-top-left-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.git-views [role='tab'][aria-selected='true'] {
+  border-bottom: 2px solid var(--color-accent);
+  color: var(--color-text);
+}
+
+.git-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.git-count {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+}
+
+.git-area {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.git-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.git-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.git-row-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--space-1);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  text-align: start;
+}
+
+.git-row-main:hover {
+  background: var(--color-surface-2);
+}
+
+.git-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-row-deleted .git-name {
+  text-decoration: line-through;
+}
+
+.git-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-row-end {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+  margin-inline-start: auto;
+}
+
+.git-counts {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.git-plus {
+  color: var(--color-git-added);
+}
+
+.git-minus {
+  color: var(--color-git-deleted);
+}
+
+.git-status {
+  flex: 0 0 auto;
+  width: 1.5em;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-align: center;
+}
+
+.git-added {
+  color: var(--color-git-added);
+}
+
+.git-modified {
+  color: var(--color-git-modified);
+}
+
+.git-deleted {
+  color: var(--color-git-deleted);
+}
+
+.git-renamed {
+  color: var(--color-git-renamed);
+}
+
+.git-untracked {
+  color: var(--color-git-untracked);
+}
+
+.git-ref {
+  width: 28px;
+  height: 28px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.git-ref[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.git-diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.git-diff-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.git-diff-header button {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.git-diff-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-diff .diff {
+  margin: 0;
+  font-size: var(--font-size-xs);
+}
+
+.git-hidden {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.git-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.git-commit-subject {
+  overflow: hidden;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.git-hash {
+  font-family: var(--font-mono);
+}
+
+.git-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-more {
+  align-self: flex-start;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+@media (forced-colors: active) {
+  /* The selected view and the status letters show without colour alone. */
+  .git-views [role='tab'][aria-selected='true'] {
+    border-bottom-color: Highlight;
+  }
+
+  .git-status,
+  .git-plus,
+  .git-minus {
+    forced-color-adjust: none;
+    color: CanvasText;
+  }
+
+  .git-hidden {
+    border-color: CanvasText;
+  }
+
+  .git-ref[aria-disabled='true'] {
+    color: GrayText;
+  }
+}

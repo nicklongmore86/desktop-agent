@@ -23,6 +23,16 @@ import type {
   FileSearchHit,
   FilesRoot,
 } from '../../../shared/ipc-files'
+import type {
+  GitChanged,
+  GitDiffRequest,
+  GitDiffResult,
+  GitLogRequest,
+  GitLogResult,
+  GitOverview,
+  GitRepoRef,
+  GitStatusResult,
+} from '../../../shared/ipc-git'
 import { DEFAULT_LAYOUT, type LayoutPrefs } from '../../../shared/ipc-layout'
 import type {
   ChatRef,
@@ -38,6 +48,62 @@ export function fakeRootId(root: string): string {
   let hash = 0
   for (const char of root) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
   return `r${hash.toString(16).padStart(16, '0')}`
+}
+
+/** The Git tab's fake repository: the granted folder itself, with every kind of change. */
+export const FAKE_GIT_STATUS: GitStatusResult = {
+  ok: true,
+  branch: {
+    head: 'main',
+    oid: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+    upstream: 'origin/main',
+    ahead: 2,
+    behind: 1,
+  },
+  changes: [
+    { area: 'staged', status: 'added', path: 'src/new.ts', additions: 12, deletions: 0 },
+    {
+      area: 'staged',
+      status: 'renamed',
+      path: 'docs/guide.md',
+      oldPath: 'docs/old.md',
+      additions: 1,
+      deletions: 1,
+    },
+    { area: 'unstaged', status: 'modified', path: 'src/App.tsx', additions: 3, deletions: 1 },
+    { area: 'unstaged', status: 'deleted', path: 'old.txt', additions: 0, deletions: 4 },
+    {
+      area: 'unstaged',
+      status: 'modified',
+      path: '.env',
+      hidden: 'A secrets file: its contents stay hidden here.',
+    },
+    { area: 'untracked', status: 'untracked', path: 'notes/todo.md' },
+  ],
+  more: 0,
+}
+
+export const FAKE_GIT_LOG: GitLogResult = {
+  ok: true,
+  commits: [
+    {
+      hash: 'c1',
+      short: 'c1c1c1c',
+      author: 'Ada',
+      date: Date.UTC(2026, 9, 14),
+      subject: 'Add the Git panel',
+      merge: false,
+    },
+    {
+      hash: 'c2',
+      short: 'c2c2c2c',
+      author: 'Bob',
+      date: Date.UTC(2026, 9, 1),
+      subject: 'Merge branch fix',
+      merge: true,
+    },
+  ],
+  more: true,
 }
 
 /** The folder listings the fake answers with, keyed `<granted folder>\n<relative path>`. */
@@ -72,6 +138,13 @@ export interface FakeApiOptions {
   projects?: Project[]
   /** Other providers' chats that are pinned or filed. */
   others?: ProviderChat[]
+  /** The Git tab's answers; by default one repository (the first granted folder). */
+  git?: {
+    overview?: GitOverview
+    status?: GitStatusResult
+    diff?: (request: GitDiffRequest) => GitDiffResult
+    log?: GitLogResult
+  }
 }
 
 const FORK_ID = 'f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0'
@@ -84,6 +157,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
   const auditListeners = new Set<(status: AuditStatus) => void>()
   const loginListeners = new Set<(state: ProviderLoginState) => void>()
   const filesListeners = new Set<(change: FilesChanged) => void>()
+  const gitListeners = new Set<(change: GitChanged) => void>()
   const files = options.files ?? FAKE_FILES
   let key: ApiKeyStatus = options.key ?? { saved: true, error: null }
   let grants: GrantsState = options.grants ?? {
@@ -223,6 +297,45 @@ export function fakeApi(options: FakeApiOptions = {}) {
         return Promise.resolve({ ok: true as const, text: `@"${path}"` })
       }),
       onChanged: vi.fn(subscribe(filesListeners)),
+    },
+    git: {
+      overview: vi.fn((): Promise<GitOverview> =>
+        Promise.resolve(
+          options.git?.overview ?? {
+            git: 'found',
+            version: '2.45.0',
+            folders: fileRoots().map((root) => ({
+              rootId: root.id,
+              name: root.name,
+              path: root.path,
+              repos: [
+                {
+                  rootId: root.id,
+                  rel: '',
+                  name: root.name,
+                  path: root.path,
+                  kind: 'repo' as const,
+                },
+              ],
+            })),
+          },
+        ),
+      ),
+      status: vi.fn((_repo: GitRepoRef) => Promise.resolve(options.git?.status ?? FAKE_GIT_STATUS)),
+      diff: vi.fn((request: GitDiffRequest) =>
+        Promise.resolve(
+          options.git?.diff?.(request) ?? {
+            ok: true as const,
+            kind: 'text' as const,
+            diff: `--- a/${request.path}\n+++ b/${request.path}\n@@ -1 +1 @@\n-old\n+new`,
+            redacted: false,
+          },
+        ),
+      ),
+      log: vi.fn((_request: GitLogRequest) => Promise.resolve(options.git?.log ?? FAKE_GIT_LOG)),
+      watch: vi.fn((_repos: GitRepoRef[]) => Promise.resolve()),
+      openInstallPage: vi.fn(() => Promise.resolve()),
+      onChanged: vi.fn(subscribe(gitListeners)),
     },
     projects: {
       state: vi.fn(() => Promise.resolve(projectsState())),
@@ -470,6 +583,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
     },
     pushFilesChanged: (change: FilesChanged) => {
       for (const listener of filesListeners) listener(change)
+    },
+    pushGitChanged: (change: GitChanged) => {
+      for (const listener of gitListeners) listener(change)
     },
     pushLoginState: (state: ProviderLoginState) => {
       for (const listener of loginListeners) listener(state)

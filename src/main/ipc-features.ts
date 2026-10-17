@@ -4,6 +4,7 @@
  */
 import { registerCommandHandlers, type CommandService } from './ipc-command'
 import { registerFilesHandlers, type FilesService } from './ipc-files'
+import { registerGitHandlers, type GitService } from './ipc-git'
 import { registerLayoutHandlers, type LayoutService } from './ipc-layout'
 import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 
@@ -13,6 +14,7 @@ export type IpcHandle = (channel: string, handler: (...args: unknown[]) => unkno
 export interface FeatureServices {
   command: CommandService
   files: FilesService
+  git: GitService
   layout: LayoutService
   projects: ProjectsService
 }
@@ -20,6 +22,7 @@ export interface FeatureServices {
 export function registerFeatureHandlers(handle: IpcHandle, services: FeatureServices): void {
   registerCommandHandlers(handle, services.command)
   registerFilesHandlers(handle, services.files)
+  registerGitHandlers(handle, services.git)
   registerLayoutHandlers(handle, services.layout)
   registerProjectsHandlers(handle, services.projects)
 }
