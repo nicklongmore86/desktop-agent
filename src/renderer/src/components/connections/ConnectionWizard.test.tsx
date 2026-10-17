@@ -432,10 +432,10 @@ describe('closing never hangs on main', () => {
     expect(api.connections.remove).toHaveBeenCalledWith('ollama')
   })
 
-  it('waits for the undo when a connection is picked again, and never switches late', async () => {
-    // Long enough that the wait is over only because the switch answered.
-    timing.ms = 10_000
-    const { user, api, dialog } = await toOllama()
+  /** Ollama chosen, its switch left pending, then Back to the local-app list. */
+  async function backOutMidSwitch() {
+    const result = await toOllama()
+    const { user, api, dialog } = result
     const first = deferred<ProviderStatus>()
     api.provider.set.mockClear()
     api.provider.set.mockImplementationOnce(() => first.promise)
@@ -443,28 +443,100 @@ describe('closing never hangs on main', () => {
     await waitFor(() => {
       expect(api.provider.set).toHaveBeenCalledWith('ollama')
     })
-    // Back while the switch is in flight, then pick Ollama again straight away.
     await user.keyboard('{Escape}')
-    let access = await wizard('How do you want to use Local models?')
+    const access = await wizard('How do you want to use Local models?')
     await user.click(within(access).getByRole('button', { name: 'Continue' }))
-    access = await wizard('Which one do you use?')
-    await choose(user, access, /^Ollama/)
-    await new Promise((done) => setTimeout(done, 30))
-    // Nothing else is switched while the first switch and its undo are still pending.
+    return { ...result, first, apps: await wizard('Which one do you use?') }
+  }
+  const pastTheBound = () => new Promise((done) => setTimeout(done, 200))
+
+  it('keeps a re-pick waiting past the bound, with no second switch, until the first settles', async () => {
+    const { user, api, first, apps } = await backOutMidSwitch()
+    await choose(user, apps, /^LM Studio/)
+    const waiting = await wizard('Find LM Studio')
+    expect(await within(waiting).findByText('Finishing the previous connection…')).toBeTruthy()
+    // Well past the wait Close would give: still exactly one switch in flight.
+    await pastTheBound()
     expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama'])
+    expect(within(waiting).getByText('Finishing the previous connection…')).toBeTruthy()
+    // Back and Close still answer while it waits.
+    expect(within(waiting).getByRole('button', { name: 'Close' })).toBeTruthy()
+
     api.provider.get.mockResolvedValue(ready('ollama'))
     act(() => {
       first.resolve(ready('ollama'))
     })
+    // Only now does the second pick switch, and the abandoned run restores nothing.
     await waitFor(() => {
-      expect(api.provider.set).toHaveBeenCalledWith('anthropic-api')
+      expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama', 'lmstudio'])
+    })
+    await pastTheBound()
+    expect(api.provider.set).not.toHaveBeenCalledWith('anthropic-api')
+    expect(api.connections.remove).not.toHaveBeenCalled()
+  })
+
+  it('re-picking the same connection finds it switched and does not restore the old one', async () => {
+    const { user, api, first, apps } = await backOutMidSwitch()
+    await choose(user, apps, /^Ollama/)
+    const waiting = await wizard('Find Ollama')
+    await pastTheBound()
+    expect(api.provider.set).toHaveBeenCalledTimes(1)
+    api.provider.get.mockResolvedValue(ready('ollama'))
+    act(() => {
+      first.resolve(ready('ollama'))
+    })
+    expect(await within(waiting).findByText('Connected')).toBeTruthy()
+    await pastTheBound()
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama'])
+    expect(api.connections.remove).not.toHaveBeenCalled()
+  })
+
+  it('does not put the old connection back over a choice made in the picker meanwhile', async () => {
+    // Connections are ready, so the wizard is opened from the composer's picker.
+    const { user, api } = await renderApp(SET_UP)
+    const picker = await screen.findByRole('combobox', { name: 'Active provider' })
+    await within(picker).findByRole('option', { name: 'Codex · ChatGPT' })
+    await user.selectOptions(picker, 'Add or manage connections…')
+    api.provider.set.mockClear()
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^Local models/)
+    dialog = await wizard('How do you want to use Local models?')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Which one do you use?')
+    const first = deferred<ProviderStatus>()
+    api.provider.set.mockImplementationOnce(() => first.promise)
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await gone()
+    // The undo is queued behind the switch. The picker is locked while a switch runs; once it
+    // lands, the undo checks where chats are (held open here) and the user picks Codex.
+    const check = deferred<ProviderStatus>()
+    api.provider.get.mockImplementationOnce(() => check.promise)
+    act(() => {
+      first.resolve(ready('ollama'))
     })
     await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: 'Find Ollama' })).toBeTruthy()
+      expect(api.provider.get).toHaveBeenCalled()
     })
-    // Undo comes strictly before the second pick's own switch.
-    const order = api.provider.set.mock.calls.map(([id]) => id)
-    expect(order.indexOf('anthropic-api')).toBe(1)
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Active provider' }),
+      'codex-subscription',
+    )
+    // The check finishes: chats are on Ollama, but the user has chosen since, so it is left alone.
+    act(() => {
+      check.resolve(ready('ollama'))
+    })
+    await waitFor(() => {
+      expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual([
+        'ollama',
+        'codex-subscription',
+      ])
+    })
+    await pastTheBound()
+    expect(api.connections.remove).not.toHaveBeenCalled()
   })
 })
 
@@ -587,6 +659,8 @@ describe('cancelling while the connect step is still getting ready', () => {
     await settle()
     expect(api.provider.set).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('dialog', { name: 'Find Ollama' })).toBeTruthy()
+    // Once it lands, chats are on Ollama.
+    api.provider.get.mockResolvedValue(ready('ollama'))
     act(() => {
       toOllamaSwitch.resolve(ready('ollama'))
     })
@@ -613,6 +687,7 @@ describe('cancelling while the connect step is still getting ready', () => {
       expect(api.provider.set).toHaveBeenCalledWith('ollama')
     })
     await user.keyboard('{Escape}')
+    api.provider.get.mockResolvedValue(ready('ollama'))
     act(() => {
       slow.resolve(ready('ollama'))
     })

@@ -66,40 +66,33 @@ const noSidewaysScroll = (page: Page): Promise<boolean> =>
 
 /**
  * Where a key the user typed shows up: any field's value, any rendered text, any attribute.
- * A refused key may still sit in the field being typed in, so that case leaves values out.
+ * A refused key may still sit in the API-key field being typed in, so that one field (named by
+ * its id) is left out; every other input, textarea and attribute is still searched.
  */
-const keyShownAnywhere = (page: Page, secret: string, includingFields: boolean): Promise<boolean> =>
+const keyShownAnywhere = (
+  page: Page,
+  secret: string,
+  activeFieldId: string | null,
+): Promise<boolean> =>
   page.evaluate(
-    ([key, fields]) => {
+    ([key, active]) => {
       const needle = key ?? ''
-      const withFields = fields === 'yes'
-      const inFields =
-        withFields &&
-        [
-          ...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea'),
-        ].some((field) => field.value.includes(needle))
-      // Every attribute (title, aria-*, data-*, ...). React mirrors a field's value into its own
-      // value attribute, so that one is left out unless the field is meant to be gone.
-      const inAttributes = [...document.querySelectorAll('*')].some((element) =>
-        [...element.attributes].some(
-          (attribute) =>
-            attribute.value.includes(needle) &&
-            (withFields ||
-              !(
-                attribute.name === 'value' &&
-                (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA')
-              )),
-        ),
+      const isActive = (element: Element): boolean => active !== null && element.id === active
+      const inFields = [
+        ...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea'),
+      ].some((field) => !isActive(field) && field.value.includes(needle))
+      // Every attribute (title, aria-*, data-*, value, ...) of everything but the active field.
+      const inAttributes = [...document.querySelectorAll('*')].some(
+        (element) =>
+          !isActive(element) &&
+          [...element.attributes].some((attribute) => attribute.value.includes(needle)),
       )
-      return (
-        inFields ||
-        inAttributes ||
-        document.body.innerText.includes(needle) ||
-        document.body.textContent.includes(needle) ||
-        (withFields && document.documentElement.outerHTML.includes(needle))
-      )
+      // Rendered text; a field's own value is not text.
+      const inText =
+        document.body.innerText.includes(needle) || document.body.textContent.includes(needle)
+      return inFields || inAttributes || inText
     },
-    [secret, includingFields ? 'yes' : 'no'],
+    [secret, activeFieldId],
   )
 
 const e2e = <T>(page: Page, run: (api: E2eWindow['e2e']) => T): Promise<T> =>
@@ -175,7 +168,7 @@ test('API key: main’s refusal is shown, then a saved key never appears again',
     await expect(key.getByRole('alert')).toHaveText(
       'Gemini rejected the API key. Update it in settings.',
     )
-    expect(await keyShownAnywhere(page, 'bad-key', false)).toBe(false)
+    expect(await keyShownAnywhere(page, 'bad-key', await field.getAttribute('id'))).toBe(false)
 
     await field.fill('AIza-a-good-key')
     await key.getByRole('button', { name: 'Save key' }).click()
@@ -183,8 +176,8 @@ test('API key: main’s refusal is shown, then a saved key never appears again',
       key.getByText('Key saved and encrypted by Windows. It can’t be viewed again.').first(),
     ).toBeVisible()
     await expect(key.getByLabel('Gemini API key')).toHaveCount(0)
-    expect(await keyShownAnywhere(page, 'AIza-a-good-key', true)).toBe(false)
-    expect(await keyShownAnywhere(page, 'bad-key', true)).toBe(false)
+    expect(await keyShownAnywhere(page, 'AIza-a-good-key', null)).toBe(false)
+    expect(await keyShownAnywhere(page, 'bad-key', null)).toBe(false)
     expect(await e2e(page, (api) => api.keyCalls())).toEqual(['gemini-api', 'gemini-api'])
     await key.getByRole('button', { name: 'Continue' }).click()
     await wizardOf(page, 'Pick a model').getByRole('button', { name: 'Continue' }).click()

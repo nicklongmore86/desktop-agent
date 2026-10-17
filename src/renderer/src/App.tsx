@@ -19,6 +19,7 @@ import {
   useConnections,
 } from './connections'
 import { plainText } from './plain-text'
+import { SwitchQueue } from './switch-queue'
 import { ConnectionWizard } from './components/connections/ConnectionWizard'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { FileReferencesProvider } from './components/files/file-references'
@@ -85,6 +86,8 @@ function AppWindow(): React.JSX.Element {
   const chat = useChat()
   const connections = useConnections()
   const overview = useConnectionOverview()
+  /** Every change of connection waits in this line (see switch-queue.ts). */
+  const [switchQueue] = useState(() => new SwitchQueue())
   // Loads the saved theme and applies it; Settings reads and changes it with useTheme() too.
   useTheme()
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
@@ -214,6 +217,11 @@ function AppWindow(): React.JSX.Element {
     },
     approval !== undefined || settingsSection !== null || listDialog || wizard !== null,
   )
+  /** A choice the user made: it waits its turn behind any switch in flight, and counts as intent. */
+  const userSwitch = <T,>(task: () => Promise<T>): Promise<T> => {
+    switchQueue.choose()
+    return switchQueue.run(task)
+  }
   const switchForWizard = async (next: ConnectionId): Promise<ProviderStatus> => {
     const status = await chat.switchProvider(next)
     setProvider(status)
@@ -233,7 +241,7 @@ function AppWindow(): React.JSX.Element {
   const providerName = connectionOf(connections, provider?.provider)?.label ?? 'Loading provider…'
   const switchProvider = async (next: ConnectionId): Promise<void> => {
     try {
-      setProvider(await chat.switchProvider(next))
+      setProvider(await userSwitch(() => chat.switchProvider(next)))
     } catch {
       setProvider((current) =>
         current
@@ -277,7 +285,7 @@ function AppWindow(): React.JSX.Element {
                 void chat.openConversation(id)
               }}
               onOpenOther={(ref) => {
-                void chat.openOther(ref).then((status) => {
+                void userSwitch(() => chat.openOther(ref)).then((status) => {
                   if (status) setProvider(status)
                 })
               }}
@@ -410,7 +418,7 @@ function AppWindow(): React.JSX.Element {
           appInfo={appInfo}
           provider={provider}
           onProvider={setProvider}
-          onSwitchProvider={chat.switchProvider}
+          onSwitchProvider={(next) => userSwitch(() => chat.switchProvider(next))}
           keyStatus={keyStatus}
           onKeyStatus={setKeyStatus}
           grants={grants}
@@ -427,6 +435,7 @@ function AppWindow(): React.JSX.Element {
           grants={grants}
           onGrants={setGrants}
           onProvider={setProvider}
+          queue={switchQueue}
           onSwitchProvider={switchForWizard}
           onClose={closeWizard}
         />
