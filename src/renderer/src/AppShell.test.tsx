@@ -381,7 +381,8 @@ describe('drawers (narrow windows)', () => {
     const { user } = await renderApp(400)
     await user.click(leftToggle())
     expect(screen.getByRole('dialog', { name: 'Chats' })).toBeTruthy()
-    // Page behind the open drawer is inert; the shortcut still swaps drawers.
+    // By design the page behind the drawer is not made inert: the drawer is modal through
+    // aria-modal, its scrim and the Tab trap. The shortcut still swaps drawers.
     expect(document.querySelector('main')?.hasAttribute('inert') ?? false).toBe(false)
     ctrlAlt('BracketRight')
     expect(screen.queryByRole('dialog', { name: 'Chats' })).toBeNull()
