@@ -1,5 +1,6 @@
 import type { AuditSink } from '../permissions/audit'
 import type { PathGuard } from '../permissions/guard'
+import type { FindJobLauncher } from './job-launcher'
 import type { KillTree, ShellSpawner } from './run-shell'
 import { MAX_TREE_ENTRIES } from './walk'
 
@@ -58,6 +59,11 @@ export interface ToolDeps {
   spawn?: ShellSpawner
   /** Kills a shell process and its children. Defaults to taskkill /T on Windows, a process-group kill elsewhere. */
   killTree?: KillTree
+  /**
+   * Windows: the verified job-run.exe that contains each command in a Job Object.
+   * Defaults to the installed app's pinned helper; without one, killTree applies.
+   */
+  jobLauncher?: FindJobLauncher
   /** Environment for shell commands. Defaults to process.env minus the app's own variables. */
   env?: NodeJS.ProcessEnv
   limits?: Partial<ToolLimits>
@@ -77,6 +83,7 @@ export interface ResolvedDeps {
   trash: (path: string) => Promise<void>
   spawn: ShellSpawner
   killTree: KillTree
+  jobLauncher: FindJobLauncher
   env: NodeJS.ProcessEnv
   now: () => number
 }

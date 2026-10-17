@@ -1,9 +1,10 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
-import type { Readable } from 'node:stream'
+import type { Readable, Writable } from 'node:stream'
 import { redactSecrets } from '../permissions/audit'
 import { ToolFailure, ToolInputError, errorResult, type RunResult, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
+import { backgroundNote, type JobLauncher, jobRunInvocation, parseJobReport } from './job-launcher'
 import { sameIdentity, type Identity } from './safe-fs'
 import {
   type Cut,
@@ -20,6 +21,8 @@ export interface ShellProcess {
   readonly pid?: number | undefined
   readonly stdout: Readable | null
   readonly stderr: Readable | null
+  /** All pipes, when more than the standard three were asked for. */
+  readonly stdio?: readonly (Readable | Writable | null | undefined)[]
   once(event: 'error', listener: (error: Error) => void): unknown
   once(
     event: 'close',
@@ -31,7 +34,8 @@ export interface ShellProcess {
 export interface ShellSpawnOptions {
   cwd: string
   env: NodeJS.ProcessEnv
-  stdio: ['ignore', 'pipe', 'pipe']
+  /** A fourth pipe carries job-run.exe's report (see job-launcher.ts). */
+  stdio: ['ignore', 'pipe', 'pipe'] | ['ignore', 'pipe', 'pipe', 'pipe']
   windowsHide: true
   /** POSIX: start a new process group so the whole tree can be killed. */
   detached: boolean
@@ -415,11 +419,41 @@ export function runShellTool(deps: ResolvedDeps): ToolSpec<Input> {
           'changed',
         )
       }
+      // Verified now, right before it is used, and never skipped silently: without it the
+      // fallback tree kill applies and the result says why.
+      const launch = shellLaunch(file, args, await deps.jobLauncher(), process.pid)
       call.throwIfAborted()
 
-      return runProcess(file, args, cwd, input.timeoutMs, call.ctx.signal, deps)
+      return runProcess(cwd, input.timeoutMs, call.ctx.signal, deps, launch)
     },
   }
+}
+
+/** What runProcess starts: the shell, inside job-run.exe when there is a verified one. */
+export interface ShellLaunch {
+  file: string
+  args: string[]
+  /** Started through job-run.exe: killing it kills the job, and it reports on fd 3. */
+  job: boolean
+  /** Why there is no job, for the result; undefined when none was expected. */
+  note?: string
+}
+
+export function shellLaunch(
+  file: string,
+  args: readonly string[],
+  job: JobLauncher,
+  parentPid: number,
+): ShellLaunch {
+  if (job.ok) return { ...jobRunInvocation(job.path, parentPid, file, args), job: true }
+  return job.reason
+    ? {
+        file,
+        args: [...args],
+        job: false,
+        note: `Not run in a Job Object (${job.reason}); processes the command started may still be running.`,
+      }
+    : { file, args: [...args], job: false }
 }
 
 /** Device and inode of a real (non-link) folder, or null. */
@@ -434,14 +468,23 @@ async function folderIdentity(path: string): Promise<Identity | null> {
   }
 }
 
+/** Killing job-run.exe closes the job's only handle, and the kernel kills the whole job. */
+const killJob: KillTree = (child) =>
+  Promise.resolve(
+    child.kill('SIGKILL') ? { ok: true } : { ok: false, reason: 'job-run.exe could not be killed' },
+  )
+
+/** The longest report job-run.exe writes; anything longer is not a report. */
+const MAX_REPORT_BYTES = 256
+
 async function runProcess(
-  file: string,
-  args: readonly string[],
   cwd: string,
   timeoutMs: number,
   signal: AbortSignal,
   deps: ResolvedDeps,
+  mode: ShellLaunch,
 ): Promise<RunResult> {
+  const { file, args } = mode
   const stdout = new OutputCollector(deps.limits.maxShellOutputBytes)
   const stderr = new OutputCollector(deps.limits.maxShellOutputBytes)
   let child: ShellProcess
@@ -450,7 +493,7 @@ async function runProcess(
       cwd,
       // Filtered again here so platform-specific matching applies whatever deps.env holds.
       env: shellEnv(deps.env, deps.platform),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: mode.job ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       detached: deps.platform !== 'win32',
     })
@@ -463,6 +506,13 @@ async function runProcess(
   child.stderr?.on('data', (chunk: Buffer) => {
     stderr.push(chunk)
   })
+  // job-run.exe's report: a pipe only it holds (the command never inherits it), so
+  // nothing the command prints can be mistaken for it.
+  let report = Buffer.alloc(0)
+  child.stdio?.[3]?.on('data', (chunk: Buffer) => {
+    if (report.length <= MAX_REPORT_BYTES) report = Buffer.concat([report, chunk])
+  })
+  const killTree = mode.job ? killJob : deps.killTree
 
   const graceMs = deps.limits.killGraceMs
   const state: { stoppedBy: 'timeout' | 'cancel' | null; kill: Promise<KillResult> | null } = {
@@ -478,7 +528,7 @@ async function runProcess(
     const stop = (reason: 'timeout' | 'cancel'): void => {
       if (state.stoppedBy) return
       state.stoppedBy = reason
-      state.kill = deps.killTree(child).catch((error: unknown) => ({
+      state.kill = killTree(child).catch((error: unknown) => ({
         ok: false as const,
         reason: error instanceof Error ? error.message : String(error),
       }))
@@ -511,16 +561,30 @@ async function runProcess(
 
   // Windows PowerShell writes stderr as CLIXML when given an encoded command.
   const stderrText = stderr.text(deps.platform === 'win32' ? decodeCliXml : undefined)
-  const streams = `--- stdout ---\n${stdout.text()}\n--- stderr ---\n${stderrText}`
+  const note = mode.note ? `\n${mode.note}` : ''
+  const streams = `--- stdout ---\n${stdout.text()}\n--- stderr ---\n${stderrText}${note}`
   if (outcome.kind === 'error' && !state.stoppedBy) {
     return errorResult(`Could not run ${file}: ${outcome.error.message}`, 'spawn-failed')
   }
   if (!state.stoppedBy || !state.kill) {
+    const jobReport = mode.job ? parseJobReport(report.toString('latin1')) : null
+    if (jobReport?.kind === 'error') {
+      return errorResult(
+        `Could not run the command in a Job Object: job-run.exe failed at ${jobReport.step} ` +
+          `(Windows error ${String(jobReport.code)}). Nothing was run.\n${streams}`,
+        'spawn-failed',
+      )
+    }
     const status =
       outcome.kind === 'exit' && outcome.code !== null
         ? `exit code: ${String(outcome.code)}`
         : `killed by signal ${outcome.kind === 'exit' ? (outcome.signal ?? 'unknown') : 'unknown'}`
-    return { content: `${status}\ncwd: ${cwd}\n${streams}` }
+    const jobLine = !mode.job
+      ? null
+      : jobReport
+        ? backgroundNote(jobReport.background)
+        : 'job-run.exe did not report how the command ended; anything it started was stopped.'
+    return { content: `${status}\n${jobLine ? `${jobLine}\n` : ''}cwd: ${cwd}\n${streams}` }
   }
 
   // Report the kill honestly: only claim the tree is gone if the killer said so and the
