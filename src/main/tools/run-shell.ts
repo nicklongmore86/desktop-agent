@@ -174,11 +174,17 @@ function runKiller(
       return
     }
     killer.stdout?.resume()
-    killer.stderr?.resume()
+    // TEMP diagnostics for the repetition workflow.
+    const diagStart = Date.now()
+    let diag = ''
+    if (process.env['TREEKILL_DIAG']) killer.stderr?.on('data', (c: Buffer) => (diag += c.toString()))
+    else killer.stderr?.resume()
     killer.once('error', (error) => {
       resolve({ ok: false, reason: `${name} could not start: ${error.message}` })
     })
     killer.once('close', (code) => {
+      if (process.env['TREEKILL_DIAG'])
+        console.error(`TREEKILL-OUTCOME ${name} exited ${String(code)} after ${String(Date.now() - diagStart)} ms: ${diag.replace(/<[^>]*>|#< CLIXML/g, ' ').slice(0, 400)}`)
       const meaning = code === null ? undefined : meanings[code]
       resolve(
         code === 0
