@@ -92,8 +92,14 @@ describe('write_file', () => {
     const create = await h
       .tool('write_file')
       .execute({ path: path.join(sb.root, 'newdir', 'b.txt'), content: 'x' }, ctx)
-    expect(edit).toMatchObject({ isError: true, content: /declined/ })
-    expect(create).toMatchObject({ isError: true, content: /declined/ })
+    expect(edit).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/declined/) as unknown,
+    })
+    expect(create).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/declined/) as unknown,
+    })
     expect(await snapshot(sb.root)).toEqual(before)
     expect(h.audit.entries.map((e) => e.approval)).toEqual(['denied', 'denied'])
   })
@@ -132,7 +138,10 @@ describe('write_file', () => {
       path.join(sb.userData, 'grants.json'),
     ]) {
       const r = await h.tool('write_file').execute({ path: target, content: 'pwned' }, ctx)
-      expect(r, target).toMatchObject({ isError: true, content: /Access denied/ })
+      expect(r, target).toMatchObject({
+        isError: true,
+        content: expect.stringMatching(/Access denied/) as unknown,
+      })
     }
     expect(requests).toEqual([])
     expect(await snapshot(sb.outside)).toEqual({})
@@ -145,7 +154,10 @@ describe('write_file', () => {
     const r = await h
       .tool('write_file')
       .execute({ path: path.join(sb.root, 'out', 'x.txt'), content: 'x' }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /outside the granted/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/outside the granted/) as unknown,
+    })
     expect(requests).toEqual([])
     expect(await exists(path.join(sb.outside, 'x.txt'))).toBe(false)
   })
@@ -156,7 +168,10 @@ describe('write_file', () => {
     const r = await h
       .tool('write_file')
       .execute({ path: link, content: 'x' }, fakeContext(true).ctx)
-    expect(r).toMatchObject({ isError: true, content: /target does not exist/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/target does not exist/) as unknown,
+    })
     expect(await exists(path.join(sb.outside, 'planted.txt'))).toBe(false)
   })
 
@@ -194,7 +209,7 @@ describe('write_file', () => {
       await h
         .tool('write_file')
         .execute({ path: path.join(sb.root, 'big'), content: 'x'.repeat(11) }, ctx),
-    ).toMatchObject({ isError: true, content: /write limit/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/write limit/) as unknown })
     expect(requests).toEqual([])
   })
 
@@ -205,7 +220,9 @@ describe('write_file', () => {
     const r = await h.tool('write_file').execute({ path: file, content: big }, ctx)
     expect(r).toMatchObject({
       isError: true,
-      content: /over the 256\.0 KB the user can review.*smaller edits/s,
+      content: expect.stringMatching(
+        /over the 256\.0 KB the user can review.*smaller edits/s,
+      ) as unknown,
     })
     expect(requests).toEqual([])
     expect(await exists(file)).toBe(false)
@@ -229,7 +246,10 @@ describe('write_file', () => {
       return true
     })
     const r = await h.tool('write_file').execute({ path: file, content: 'mine\n' }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /changed after the diff was shown/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/changed after the diff was shown/) as unknown,
+    })
     expect(await fs.readFile(file, 'utf8')).toBe('edited by someone else\n')
     expect(h.audit.entries[0]).toMatchObject({ approval: 'approved', error: 'changed' })
   })
@@ -243,7 +263,7 @@ describe('write_file', () => {
       return true
     })
     const r = await h.tool('write_file').execute({ path: file, content: 'new\n' }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /changed/ })
+    expect(r).toMatchObject({ isError: true, content: expect.stringMatching(/changed/) as unknown })
     expect(await fs.readFile(file, 'utf8')).toBe('same\n')
   })
 
@@ -254,7 +274,10 @@ describe('write_file', () => {
       return true
     })
     const r = await h.tool('write_file').execute({ path: file, content: 'mine\n' }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /changed after the diff was shown/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/changed after the diff was shown/) as unknown,
+    })
     expect(await fs.readFile(file, 'utf8')).toBe('someone else\n')
   })
 
@@ -266,7 +289,7 @@ describe('write_file', () => {
       return true
     })
     const r = await h.tool('write_file').execute({ path: file, content: 'mine\n' }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /changed/ })
+    expect(r).toMatchObject({ isError: true, content: expect.stringMatching(/changed/) as unknown })
     expect(await exists(file)).toBe(false)
   })
 
@@ -277,7 +300,10 @@ describe('write_file', () => {
     const r = await h
       .tool('write_file')
       .execute({ path: path.join(sb.root, 'alias.txt'), content: 'pwned' }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /other hard links/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/other hard links/) as unknown,
+    })
     expect(requests).toEqual([])
     expect(await fs.readFile(path.join(sb.outside, 'target.txt'), 'utf8')).toBe('outside content')
   })
@@ -288,7 +314,7 @@ describe('write_file', () => {
       await h
         .tool('write_file')
         .execute({ path: path.join(sb.root, 'dir'), content: 'x' }, fakeContext().ctx),
-    ).toMatchObject({ isError: true, content: /is a folder/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/is a folder/) as unknown })
   })
 
   it('never logs the content', async () => {
@@ -329,7 +355,10 @@ describe('move_file', () => {
         { source: path.join(sb.root, 'a.txt'), destination: path.join(sb.root, 'b.txt') },
         fakeContext(false).ctx,
       )
-    expect(r).toMatchObject({ isError: true, content: /declined/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/declined/) as unknown,
+    })
     expect(await snapshot(sb.root)).toEqual(before)
   })
 
@@ -346,12 +375,17 @@ describe('move_file', () => {
         },
         fakeContext(true).ctx,
       )
-    expect(await move('a.txt', 'b.txt')).toMatchObject({ isError: true, content: /already exists/ })
+    expect(await move('a.txt', 'b.txt')).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/already exists/) as unknown,
+    })
     expect(await move('a.txt', 'dir', true)).toMatchObject({
       isError: true,
-      content: /file with a file/,
+      content: expect.stringMatching(/file with a file/) as unknown,
     })
-    expect(await move('a.txt', 'b.txt', true)).toMatchObject({ content: /^Moved/ })
+    expect(await move('a.txt', 'b.txt', true)).toMatchObject({
+      content: expect.stringMatching(/^Moved/) as unknown,
+    })
     expect(await fs.readFile(path.join(sb.root, 'b.txt'), 'utf8')).toBe('A')
   })
 
@@ -387,7 +421,7 @@ describe('move_file', () => {
           { source: path.join(sb.root, 'proj'), destination: path.join(sb.root, 'moved') },
           ctx,
         ),
-    ).toMatchObject({ isError: true, content: /protected item/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/protected item/) as unknown })
     expect(
       await h.tool('move_file').execute(
         {
@@ -396,7 +430,7 @@ describe('move_file', () => {
         },
         ctx,
       ),
-    ).toMatchObject({ isError: true, content: /into itself/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/into itself/) as unknown })
     expect(requests).toEqual([])
   })
 
@@ -416,11 +450,11 @@ describe('move_file', () => {
       )
     expect(await move('alias.txt', 'moved.txt')).toMatchObject({
       isError: true,
-      content: /hard links/,
+      content: expect.stringMatching(/hard links/) as unknown,
     })
     expect(await move('plain.txt', 'alias.txt')).toMatchObject({
       isError: true,
-      content: /hard links/,
+      content: expect.stringMatching(/hard links/) as unknown,
     })
     expect(requests).toEqual([])
   })
@@ -489,7 +523,9 @@ describe('move_file', () => {
         if (from === destination) targets.push(path.basename(String(to)))
         return realRename(from, to)
       })
-      expect(await move(true)).toMatchObject({ content: /^Moved/ })
+      expect(await move(true)).toMatchObject({
+        content: expect.stringMatching(/^Moved/) as unknown,
+      })
       const [aside] = targets
       expect(aside).toMatch(/\.replaced$/)
       expect(aside?.startsWith('.env')).toBe(false)
@@ -501,7 +537,9 @@ describe('move_file', () => {
       const taken = path.join(sb.root, '.aside-aaaaaaaaaaaa.b.txt.replaced')
       await put(taken, 'someone else')
       crypto.fixed = Buffer.from('aaaaaa', 'hex')
-      expect(await move(true)).toMatchObject({ content: /^Moved/ })
+      expect(await move(true)).toMatchObject({
+        content: expect.stringMatching(/^Moved/) as unknown,
+      })
       expect(await fs.readFile(taken, 'utf8')).toBe('someone else')
       expect(await fs.readFile(destination, 'utf8')).toBe('a')
     })
@@ -515,7 +553,9 @@ describe('move_file', () => {
       const r = await move(true)
       expect(r).toMatchObject({
         isError: true,
-        content: /replaced by something else.*left there.*could not be put back.*\.replaced/s,
+        content: expect.stringMatching(
+          /replaced by something else.*left there.*could not be put back.*\.replaced/s,
+        ) as unknown,
       })
       // Nothing was moved on top of the foreign file, and the user's old destination survives.
       expect(await fs.readFile(destination, 'utf8')).toBe('outside secret')
@@ -528,7 +568,10 @@ describe('move_file', () => {
       await put(destination, 'old')
       onRename('after', () => fs.link(destination, path.join(sb.outside, 'extra.txt')))
       const r = await move(true)
-      expect(r).toMatchObject({ isError: true, content: /it was moved back/ })
+      expect(r).toMatchObject({
+        isError: true,
+        content: expect.stringMatching(/it was moved back/) as unknown,
+      })
       expect(await fs.readFile(source, 'utf8')).toBe('a')
       expect(await fs.readFile(destination, 'utf8')).toBe('old')
       expect(await asides()).toEqual([])
@@ -543,7 +586,9 @@ describe('move_file', () => {
       const r = await move(true)
       expect(r).toMatchObject({
         isError: true,
-        content: /could not be moved back.*is taken.*could not be put back.*\.replaced/s,
+        content: expect.stringMatching(
+          /could not be moved back.*is taken.*could not be put back.*\.replaced/s,
+        ) as unknown,
       })
       expect(await fs.readFile(source, 'utf8')).toBe('new at source')
       expect(await fs.readFile(destination, 'utf8')).toBe('a')
@@ -567,7 +612,10 @@ describe('move_file', () => {
         return true
       })
       const r = await h.tool('move_file').execute({ source, destination }, ctx)
-      expect(r).toMatchObject({ isError: true, content: /nothing was moved/ })
+      expect(r).toMatchObject({
+        isError: true,
+        content: expect.stringMatching(/nothing was moved/) as unknown,
+      })
       expect(await fs.readFile(destination, 'utf8')).toBe('raced in')
       expect(await fs.readFile(source, 'utf8')).toBe('a')
     })
@@ -601,8 +649,9 @@ describe('move_file', () => {
         const r = await move(true)
         expect(r).toMatchObject({
           isError: true,
-          content:
+          content: expect.stringMatching(
             /changed while it was being copied.*original was left in place.*copy was removed/,
+          ) as unknown,
         })
         expect(await exists(source)).toBe(true)
         expect(await fs.readFile(destination, 'utf8')).toBe('old')
@@ -617,7 +666,10 @@ describe('move_file', () => {
         await put(destination, 'planted')
       })
       const r = await move()
-      expect(r).toMatchObject({ isError: true, content: /no longer the copy that was made/ })
+      expect(r).toMatchObject({
+        isError: true,
+        content: expect.stringMatching(/no longer the copy that was made/) as unknown,
+      })
       expect(await fs.readFile(destination, 'utf8')).toBe('planted')
       expect(await fs.readFile(source, 'utf8')).toBe('a changed')
     })
@@ -635,7 +687,10 @@ describe('move_file', () => {
         { source: path.join(sb.root, 'proj'), destination: path.join(sb.root, 'moved') },
         ctx,
       )
-    expect(r).toMatchObject({ isError: true, content: /hard links/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/hard links/) as unknown,
+    })
     expect(requests).toEqual([])
     expect(await exists(path.join(sb.root, 'moved'))).toBe(false)
   })
@@ -659,7 +714,10 @@ describe('move_file', () => {
       )
     vi.restoreAllMocks()
     expect(requests).toHaveLength(1)
-    expect(r).toMatchObject({ isError: true, content: /hard links/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/hard links/) as unknown,
+    })
     expect(await exists(path.join(sb.root, 'moved'))).toBe(false)
   })
 
@@ -698,7 +756,10 @@ describe('move_file', () => {
       )
     vi.restoreAllMocks()
     expect(requests).toHaveLength(1)
-    expect(r).toMatchObject({ isError: true, content: /Could not check everything/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Could not check everything/) as unknown,
+    })
     expect(await exists(path.join(sb.root, 'proj', 'sub', 'a.txt'))).toBe(true)
     expect(await exists(path.join(sb.root, 'moved'))).toBe(false)
   })
@@ -722,13 +783,13 @@ describe('move_file', () => {
         expect(await h.tool('move_file').execute(input, call), JSON.stringify(input)).toMatchObject(
           {
             isError: true,
-            content: /blocked/,
+            content: expect.stringMatching(/blocked/) as unknown,
           },
         )
       }
       expect(await h.tool('delete_path').execute({ path: alias }, call)).toMatchObject({
         isError: true,
-        content: /blocked/,
+        content: expect.stringMatching(/blocked/) as unknown,
       })
       expect(requests).toEqual([])
       expect(h.trashed).toEqual([])
@@ -769,7 +830,10 @@ describe('delete_path', () => {
     const file = path.join(sb.root, 'a.txt')
     await put(file, 'A')
     const r = await h.tool('delete_path').execute({ path: file }, fakeContext(false).ctx)
-    expect(r).toMatchObject({ isError: true, content: /declined/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/declined/) as unknown,
+    })
     expect(h.trashed).toEqual([])
   })
 
@@ -794,7 +858,10 @@ describe('delete_path', () => {
     h.trashed.length = 0
     expect(
       await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, growing.ctx),
-    ).toMatchObject({ isError: true, content: /changed while waiting for approval/ })
+    ).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/changed while waiting for approval/) as unknown,
+    })
     expect(h.trashed).toEqual([])
   })
 
@@ -823,7 +890,7 @@ describe('delete_path', () => {
     const { ctx, requests } = fakeContext(true)
     expect(
       await h.tool('delete_path').execute({ path: path.join(sb.root, 'alias.txt') }, ctx),
-    ).toMatchObject({ isError: true, content: /hard links/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/hard links/) as unknown })
     expect(requests).toEqual([])
     expect(h.trashed).toEqual([])
   })
@@ -836,7 +903,7 @@ describe('delete_path', () => {
     const before = fakeContext(true)
     expect(
       await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, before.ctx),
-    ).toMatchObject({ isError: true, content: /hard links/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/hard links/) as unknown })
     expect(before.requests).toEqual([])
 
     await put(path.join(sb.root, 'clean', 'a.txt'), 'a')
@@ -846,7 +913,7 @@ describe('delete_path', () => {
     })
     expect(
       await h.tool('delete_path').execute({ path: path.join(sb.root, 'clean') }, after.ctx),
-    ).toMatchObject({ isError: true, content: /hard links/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/hard links/) as unknown })
     expect(after.requests).toHaveLength(1)
     expect(h.trashed).toEqual([])
   })
@@ -861,7 +928,10 @@ describe('delete_path', () => {
     const { ctx, requests } = fakeContext(true)
     const r = await h.tool('delete_path').execute({ path: path.join(sb.root, 'proj') }, ctx)
     vi.restoreAllMocks()
-    expect(r).toMatchObject({ isError: true, content: /Could not check everything/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Could not check everything/) as unknown,
+    })
     expect(requests).toEqual([])
     expect(h.trashed).toEqual([])
   })
@@ -873,7 +943,10 @@ describe('delete_path', () => {
       await h
         .tool('delete_path')
         .execute({ path: path.join(sb.root, 'big') }, fakeContext(true).ctx),
-    ).toMatchObject({ isError: true, content: /more than 2 entries: too many entries/ })
+    ).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/more than 2 entries: too many entries/) as unknown,
+    })
     expect(h.trashed).toEqual([])
   })
 
@@ -884,7 +957,10 @@ describe('delete_path', () => {
     const { ctx, requests } = fakeContext(true)
     expect(
       await h.tool('delete_path').execute({ path: path.join(sb.root, 'slow') }, ctx),
-    ).toMatchObject({ isError: true, content: /stopped after 60 s/ })
+    ).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/stopped after 60 s/) as unknown,
+    })
     expect(requests).toEqual([])
     expect(h.trashed).toEqual([])
   })
@@ -896,7 +972,7 @@ describe('delete_path', () => {
       await h
         .tool('delete_path')
         .execute({ path: path.join(sb.root, 'a.txt') }, fakeContext(true).ctx),
-    ).toMatchObject({ isError: true, content: /no recycle bin/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/no recycle bin/) as unknown })
     expect(await exists(path.join(sb.root, 'a.txt'))).toBe(true)
   })
 

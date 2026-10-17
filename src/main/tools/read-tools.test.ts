@@ -70,22 +70,22 @@ describe('list_dir', () => {
   it('refuses folders outside the grants and bad input', async () => {
     expect(await run('list_dir', { path: sb.outside })).toMatchObject({
       isError: true,
-      content: /Access denied/,
+      content: expect.stringMatching(/Access denied/) as unknown,
     })
     expect(await run('list_dir', { path: path.join(sb.root, 'missing') })).toMatchObject({
       isError: true,
     })
     expect(await run('list_dir', { path: sb.root, depth: 99 })).toMatchObject({
       isError: true,
-      content: /Invalid input/,
+      content: expect.stringMatching(/Invalid input/) as unknown,
     })
     expect(await run('list_dir', {})).toMatchObject({
       isError: true,
-      content: /"path" is required/,
+      content: expect.stringMatching(/"path" is required/) as unknown,
     })
     expect(await run('list_dir', { path: sb.root, extra: 1 })).toMatchObject({
       isError: true,
-      content: /unknown property/,
+      content: expect.stringMatching(/unknown property/) as unknown,
     })
     expect(await run('list_dir', 'nope')).toMatchObject({ isError: true })
   })
@@ -114,7 +114,7 @@ describe('read_file', () => {
     expect(past.content).toMatch(/no line 10/)
     expect(
       await run('read_file', { path: path.join(sb.root, 'a.txt'), startLine: 3, endLine: 2 }),
-    ).toMatchObject({ isError: true, content: /endLine/ })
+    ).toMatchObject({ isError: true, content: expect.stringMatching(/endLine/) as unknown })
   })
 
   it('decodes UTF-16 files', async () => {
@@ -130,7 +130,7 @@ describe('read_file', () => {
     await put(path.join(sb.root, 'img.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1]))
     expect(await run('read_file', { path: path.join(sb.root, 'img.png') })).toMatchObject({
       isError: true,
-      content: /binary/,
+      content: expect.stringMatching(/binary/) as unknown,
     })
   })
 
@@ -139,7 +139,10 @@ describe('read_file', () => {
     const big = Array.from({ length: 50 }, (_, i) => `line ${String(i + 1)}`).join('\n')
     await put(path.join(sb.root, 'big.log'), big)
     const whole = await run('read_file', { path: path.join(sb.root, 'big.log') })
-    expect(whole).toMatchObject({ isError: true, content: /over the 100 B read limit/ })
+    expect(whole).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/over the 100 B read limit/) as unknown,
+    })
 
     const part = await run('read_file', {
       path: path.join(sb.root, 'big.log'),
@@ -168,7 +171,9 @@ describe('read_file', () => {
     const r = await run('read_file', { path: path.join(sb.root, 'innocent.txt') })
     expect(r).toMatchObject({
       isError: true,
-      content: /other hard links.*another name.*copy it into a granted folder/s,
+      content: expect.stringMatching(
+        /other hard links.*another name.*copy it into a granted folder/s,
+      ) as unknown,
     })
     expect(r.content).not.toContain('top secret')
     expect(h.audit.entries[0]).toMatchObject({ outcome: 'error', error: 'hard-link' })
@@ -178,18 +183,21 @@ describe('read_file', () => {
     await put(path.join(sb.root, '.env'), 'SECRET=hunter2')
     await put(path.join(sb.outside, 'x.txt'), 'x')
     const blocked = await run('read_file', { path: path.join(sb.root, '.env') })
-    expect(blocked).toMatchObject({ isError: true, content: /blocked/ })
+    expect(blocked).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/blocked/) as unknown,
+    })
     expect(blocked.content).not.toContain('hunter2')
     expect(await run('read_file', { path: path.join(sb.outside, 'x.txt') })).toMatchObject({
       isError: true,
     })
     expect(await run('read_file', { path: sb.root })).toMatchObject({
       isError: true,
-      content: /Not a file/,
+      content: expect.stringMatching(/Not a file/) as unknown,
     })
     expect(await run('read_file', { path: path.join(sb.root, 'nope.txt') })).toMatchObject({
       isError: true,
-      content: /not found/,
+      content: expect.stringMatching(/not found/) as unknown,
     })
   })
 
@@ -200,7 +208,10 @@ describe('read_file', () => {
     )
       ctx.skip()
     const r = await run('read_file', { path: path.join(sb.root, 'x.txt') })
-    expect(r).toMatchObject({ isError: true, content: /outside the granted/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/outside the granted/) as unknown,
+    })
     expect(r.content).not.toContain('top secret')
   })
 
@@ -284,7 +295,7 @@ describe('search_files', () => {
       await run('search_files', { path: sb.root, contentPattern: '(', regex: true }),
     ).toMatchObject({
       isError: true,
-      content: /invalid regex/,
+      content: expect.stringMatching(/invalid regex/) as unknown,
     })
   })
 
@@ -326,7 +337,10 @@ describe('search_files', () => {
     const r = await h
       .tool('search_files')
       .execute({ path: sb.root, contentPattern: '(a|aa)+$', regex: true }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /Cancelled/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Cancelled/) as unknown,
+    })
     expect(Date.now() - started).toBeLessThan(3000)
   })
 
@@ -377,11 +391,11 @@ describe('search_files', () => {
   it('requires a pattern and a folder inside the grants', async () => {
     expect(await run('search_files', { path: sb.root })).toMatchObject({
       isError: true,
-      content: /namePattern/,
+      content: expect.stringMatching(/namePattern/) as unknown,
     })
     expect(await run('search_files', { path: sb.outside, namePattern: '*' })).toMatchObject({
       isError: true,
-      content: /Access denied/,
+      content: expect.stringMatching(/Access denied/) as unknown,
     })
   })
 
@@ -389,7 +403,10 @@ describe('search_files', () => {
     const { ctx, controller } = fakeContext()
     controller.abort()
     const r = await h.tool('search_files').execute({ path: sb.root, namePattern: '*' }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /Cancelled/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Cancelled/) as unknown,
+    })
   })
 
   it('logs only the kind and length of patterns, never the patterns', async () => {
