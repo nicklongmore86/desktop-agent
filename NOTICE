@@ -1,0 +1,8 @@
+Desktop Agent
+Copyright 2026 Nick Longmore
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Windows installer also redistributes third-party software under its own
+licenses and terms. See THIRD-PARTY-NOTICES.md (installed as
+resources/runtimes/notices/THIRD-PARTY-NOTICES.md) and the license files beside it.
