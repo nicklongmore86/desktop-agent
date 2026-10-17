@@ -61,8 +61,6 @@ export default defineConfig([
     // toMatchObject (Vitest and Playwright) treats a RegExp as an object with no keys, so a
     // regex value matches anything. Use expect.stringMatching(re) instead.
     files: ['**/*.test.{ts,tsx}', 'e2e/**/*.ts'],
-    // TODO: drop once PR #30 converts the remaining run-shell assertions.
-    ignores: ['src/main/tools/run-shell.test.ts'],
     rules: {
       'no-restricted-syntax': [
         'error',
