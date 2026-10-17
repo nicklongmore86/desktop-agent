@@ -1,7 +1,7 @@
 # electron-builder config: https://www.electron.build/configuration
 appId: com.nicklongmore86.desktopagent
 productName: Desktop Agent
-copyright: Copyright © 2026 nicklongmore86
+copyright: Copyright © 2026 Nick Longmore
 
 directories:
   output: release/${version}
@@ -24,6 +24,11 @@ extraResources:
   - from: build/helpers
     to: helpers
     filter: ['job-run.exe']
+  # This project's own license; third-party notices are staged under runtimes/notices.
+  - from: LICENSE
+    to: LICENSE
+  - from: NOTICE
+    to: NOTICE
 
 win:
   target:

@@ -4,7 +4,7 @@
   "private": true,
   "description": "Windows-first desktop chat agent powered by Claude, with permissioned file and shell access.",
   "author": "nicklongmore86",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "main": "./out/main/index.js",
   "packageManager": "pnpm@12.4.2",
   "engines": {
