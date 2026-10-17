@@ -10,6 +10,7 @@ import {
   decodeCliXml,
   encodePowerShell,
   powerShellScript,
+  TREE_KILL_EXIT,
   treeKillScript,
 } from './shell-windows'
 import { formatBytes } from './text'
@@ -90,7 +91,8 @@ export function shellInvocation(
 /**
  * Kills a shell and everything it started: `taskkill /T /F` on Windows (by absolute
  * path, with a minimal environment, and checking its exit code), falling back to a
- * PowerShell walk of the process tree if taskkill cannot start or fails; a SIGKILL to
+ * PowerShell tree kill that succeeds only once none of the tree is running (see
+ * treeKillScript) if taskkill cannot start or fails; a SIGKILL to
  * the process group elsewhere (the shell is its group leader). Without a Job Object, a
  * Windows grandchild whose parent already exited can escape both; the result says so
  * rather than claiming success.
@@ -121,23 +123,31 @@ export function defaultKillTree(
       '/F',
     ])
     if (taskkill.ok) return taskkill
-    const fallback = await runKiller(spawn, root, 'the PowerShell fallback', powerShellPath(root), [
-      ...POWERSHELL_FLAGS,
-      encodePowerShell(treeKillScript(pid)),
-    ])
+    const fallback = await runKiller(
+      spawn,
+      root,
+      'the PowerShell fallback',
+      powerShellPath(root),
+      [...POWERSHELL_FLAGS, encodePowerShell(treeKillScript(pid))],
+      TREE_KILL_EXIT,
+    )
     // The shell itself, in case both killers failed to reach it.
     child.kill('SIGKILL')
     return fallback.ok ? fallback : { ok: false, reason: `${taskkill.reason}; ${fallback.reason}` }
   }
 }
 
-/** Runs a Windows kill helper from System32 with a minimal environment; ok if it exits 0. */
+/**
+ * Runs a Windows kill helper from System32 with a minimal environment; ok if it exits 0.
+ * `meanings` says what its other exit codes mean, for the reason.
+ */
 function runKiller(
   spawn: ShellSpawner,
   root: string,
   name: string,
   file: string,
   args: readonly string[],
+  meanings: Readonly<Record<number, string>> = {},
 ): Promise<KillResult> {
   return new Promise<KillResult>((resolve) => {
     let killer: ShellProcess
@@ -154,18 +164,27 @@ function runKiller(
       return
     }
     killer.stdout?.resume()
+    const diagStart = Date.now()
     let diag = ''
-    if (process.env['TREEKILL_DIAG']) killer.stderr?.on('data', (c: Buffer) => (diag += c.toString()))
+    if (process.env['TREEKILL_DIAG'])
+      killer.stderr?.on('data', (c: Buffer) => (diag += c.toString()))
     else killer.stderr?.resume()
     killer.once('error', (error) => {
       resolve({ ok: false, reason: `${name} could not start: ${error.message}` })
     })
     killer.once('close', (code) => {
-      if (process.env['TREEKILL_DIAG']) console.error(`[${new Date().toISOString()}] ${name} exited ${String(code)}: ${diag}`)
+      if (process.env['TREEKILL_DIAG'])
+        console.error(
+          `[${new Date().toISOString()}] ${name} exited ${String(code)} after ${String(Date.now() - diagStart)} ms: ${diag}`,
+        )
+      const meaning = code === null ? undefined : meanings[code]
       resolve(
         code === 0
           ? { ok: true }
-          : { ok: false, reason: `${name} exited with code ${String(code)}` },
+          : {
+              ok: false,
+              reason: `${name} exited with code ${String(code)}${meaning ? ` (${meaning})` : ''}`,
+            },
       )
     })
   })

@@ -24,47 +24,93 @@ export function powerShellScript(command: string): string {
   return `${UTF8_PREAMBLE}\n${command}`
 }
 
+/** How long the fallback tree kill keeps killing and re-checking before it gives up. */
+export const TREE_KILL_SECONDS = 8
+
+/** Exit codes of treeKillScript other than 0 (every process in the tree has exited). */
+export const TREE_KILL_EXIT: Readonly<Record<number, string>> = {
+  1: `processes in the tree were still running after ${String(TREE_KILL_SECONDS)} s`,
+  2: 'it could not list the running processes',
+}
+
 /**
  * Kills `pid` and every process descended from it, for when taskkill is missing or
- * fails. Walks parent ids from a single snapshot, only through children created after
- * their parent (so a reused parent id cannot pull in unrelated processes), stops every
- * process in the tree and exits 1 if any of them is still running afterwards.
+ * fails, and exits 0 only once a fresh snapshot shows that none of them is running.
+ *
+ * Each round takes a snapshot of all processes, adds to the tree every process whose
+ * parent is in it (including a parent that has exited, so a grandchild started while
+ * the tree was being killed is found too), kills the members still running and waits
+ * for them. A member is known by its id and creation time: a child created before its
+ * parent, or after another process took over its parent's id, is not part of the tree,
+ * and a process that reused a member's id is never killed. It exits 1 if members are
+ * still running after TREE_KILL_SECONDS, and 2 if the processes cannot be listed, rather
+ * than reporting a partial kill as success.
+ *
+ * It uses only WMI and .NET, no cmdlets from modules: started with the minimal
+ * environment the killer gets, PowerShell has no module cache and spends tens of
+ * seconds "preparing modules for first use" before a cmdlet like Get-CimInstance runs.
  */
 export function treeKillScript(pid: number): string {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`invalid pid ${String(pid)}`)
-  return `$ErrorActionPreference = 'SilentlyContinue'
-$diagSw = [Diagnostics.Stopwatch]::StartNew()
-$all = @(Get-CimInstance -ClassName Win32_Process)
-$diagCim = $diagSw.ElapsedMilliseconds
-$byId = @{}
-$children = @{}
-foreach ($p in $all) {
-  $byId[[int]$p.ProcessId] = $p
-  $children[[int]$p.ParentProcessId] += @($p)
-}
-$tree = [System.Collections.Generic.List[int]]::new()
-$queue = [System.Collections.Generic.Queue[int]]::new()
-$queue.Enqueue(${String(pid)})
-while ($queue.Count -gt 0) {
-  $id = $queue.Dequeue()
-  if ($tree.Contains($id)) { continue }
-  $tree.Add($id)
-  $parent = $byId[$id]
-  foreach ($c in $children[$id]) {
-    $cid = [int]$c.ProcessId
-    if ($cid -eq $id) { continue }
-    if ($parent -and $c.CreationDate -and $parent.CreationDate -and $c.CreationDate -lt $parent.CreationDate) { continue }
-    $queue.Enqueue($cid)
+  return `$ErrorActionPreference = 'Stop'
+$deadline = [DateTime]::UtcNow.AddSeconds(${String(TREE_KILL_SECONDS)})
+$root = ${String(pid)}
+# Every process found in the tree: id -> creation time ($null for a root already gone).
+$tree = @{}
+try {
+  while ($true) {
+    $searcher = [wmisearcher]'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process'
+    $searcher.Options.Timeout = [TimeSpan]::FromSeconds(${String(TREE_KILL_SECONDS)})
+    $byId = @{}
+    $children = @{}
+    foreach ($p in $searcher.Get()) {
+      $born = $null
+      if ($p.CreationDate) { $born = [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate) }
+      $entry = [pscustomobject]@{ Id = [int]$p.ProcessId; Born = $born }
+      $byId[$entry.Id] = $entry
+      $children[[int]$p.ParentProcessId] += @($entry)
+    }
+    if (-not $byId.ContainsKey($PID)) { throw 'the process list does not include this process' }
+    if ($tree.Count -eq 0) { $tree[$root] = if ($byId[$root]) { $byId[$root].Born } else { $null } }
+    $queue = [System.Collections.Generic.Queue[int]]::new()
+    foreach ($id in @($tree.Keys)) { $queue.Enqueue($id) }
+    while ($queue.Count -gt 0) {
+      $id = $queue.Dequeue()
+      $born = $tree[$id]
+      $now = $byId[$id]
+      # Children of a newer process that took over this id are not in the tree.
+      $reusedAt = $null
+      if ($now -and $now.Born -ne $born) { $reusedAt = $now.Born }
+      foreach ($c in $children[$id]) {
+        if ($c.Id -eq $id -or $tree.ContainsKey($c.Id)) { continue }
+        if ($born -and -not ($c.Born -ge $born)) { continue }
+        if ($reusedAt -and $c.Born -ge $reusedAt) { continue }
+        $tree[$c.Id] = $c.Born
+        $queue.Enqueue($c.Id)
+      }
+    }
+    $live = @(foreach ($id in @($tree.Keys)) {
+      if ($tree[$id] -and $byId[$id] -and $byId[$id].Born -eq $tree[$id]) { $id }
+    })
+    if ($live.Count -eq 0) { exit 0 }
+    $killed = @(foreach ($id in $live) {
+      try {
+        $p = [System.Diagnostics.Process]::GetProcessById($id)
+        # The process in the snapshot, not a newer one that reused its id.
+        if ([Math]::Abs(($p.StartTime - $tree[$id]).TotalMilliseconds) -lt 1) { $p.Kill(); $p }
+      } catch {}
+    })
+    if ([DateTime]::UtcNow -gt $deadline) { exit 1 }
+    foreach ($p in $killed) {
+      $left = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+      if ($left -le 0) { break }
+      try { $null = $p.WaitForExit($left) } catch {}
+    }
   }
+} catch {
+  [Console]::Error.WriteLine("tree kill failed: $_")
+  exit 2
 }
-foreach ($id in $tree) { Stop-Process -Id $id -Force }
-$alive = 0
-foreach ($id in $tree) {
-  $p = Get-Process -Id $id
-  if ($p -and -not $p.WaitForExit(2000)) { $alive++ }
-}
-[Console]::Error.WriteLine("TREEKILL-DIAG all=$($all.Count) cimMs=$diagCim totalMs=$($diagSw.ElapsedMilliseconds) tree=$($tree -join ',') alive=$alive errors=$($Error.Count): $(($Error | Select-Object -First 3 | ForEach-Object { $_.ToString() }) -join ' | ')")
-exit [int]($alive -gt 0)
 `
 }
 

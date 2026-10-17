@@ -21,6 +21,7 @@ import {
   decodeCliXml,
   encodePowerShell,
   powerShellScript,
+  TREE_KILL_SECONDS,
   treeKillScript,
   UTF8_PREAMBLE,
 } from './shell-windows'
@@ -121,7 +122,10 @@ describe('run_shell', () => {
     const r = await h
       .tool('run_shell')
       .execute({ command: 'rm -rf /', cwd: sb.root }, fakeContext(false).ctx)
-    expect(r).toMatchObject({ isError: true, content: /declined/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/declined/) as unknown,
+    })
     expect(calls).toEqual([])
     // A command that never ran is not logged verbatim, only its shape.
     expect(h.audit.entries[0]).toMatchObject({
@@ -172,13 +176,13 @@ describe('run_shell', () => {
     const ctx = fakeContext(true).ctx
     expect(await h.tool('run_shell').execute({ command: '  ', cwd: sb.root }, ctx)).toMatchObject({
       isError: true,
-      content: /empty/,
+      content: expect.stringMatching(/empty/) as unknown,
     })
     expect(
       await h.tool('run_shell').execute({ command: 'ls', cwd: sb.root, timeoutMs: 5 }, ctx),
     ).toMatchObject({
       isError: true,
-      content: /timeoutMs/,
+      content: expect.stringMatching(/timeoutMs/) as unknown,
     })
   })
 
@@ -197,7 +201,9 @@ describe('run_shell', () => {
     expect(killTree).toHaveBeenCalledOnce()
     expect(r).toMatchObject({
       isError: true,
-      content: /^Timed out after 1 s; the process tree was killed/,
+      content: expect.stringMatching(
+        /^Timed out after 1 s; the process tree was killed/,
+      ) as unknown,
     })
     expect(r.content).toContain('started')
   })
@@ -214,7 +220,10 @@ describe('run_shell', () => {
     const h = toolHarness(sb, { spawn, killTree })
     const r = await h.tool('run_shell').execute({ command: 'sleep 100', cwd: sb.root }, ctx)
     expect(killTree).toHaveBeenCalledOnce()
-    expect(r).toMatchObject({ isError: true, content: /Cancelled; the process tree was killed/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Cancelled; the process tree was killed/) as unknown,
+    })
     expect(h.audit.entries[0]).toMatchObject({ outcome: 'error', error: 'cancelled' })
   })
 
@@ -247,7 +256,9 @@ describe('run_shell', () => {
     const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
     expect(r).toMatchObject({
       isError: true,
-      content: /may still be running: the shell did not exit within 0\.05 s/,
+      content: expect.stringMatching(
+        /may still be running: the shell did not exit within 0\.05 s/,
+      ) as unknown,
     })
   })
 
@@ -264,7 +275,10 @@ describe('run_shell', () => {
       return true
     })
     const r = await h.tool('run_shell').execute({ command: 'ls', cwd }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /changed after the command was approved/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/changed after the command was approved/) as unknown,
+    })
     expect(calls).toEqual([])
   })
 
@@ -280,7 +294,10 @@ describe('run_shell', () => {
       return true
     })
     const r = await h.tool('run_shell').execute({ command: 'ls', cwd: sb.root }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /Access denied/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Access denied/) as unknown,
+    })
     expect(calls).toEqual([])
   })
 
@@ -307,7 +324,7 @@ describe('run_shell', () => {
       await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, fakeContext().ctx),
     ).toMatchObject({
       isError: true,
-      content: /ENOENT powershell\.exe/,
+      content: expect.stringMatching(/ENOENT powershell\.exe/) as unknown,
     })
   })
 
@@ -431,13 +448,46 @@ describe('defaultKillTree', () => {
     })
     expect(await defaultKillTree('win32', missing.spawn, {})(new FakeProcess())).toMatchObject({
       ok: false,
-      reason: /^taskkill could not start: ENOENT; the PowerShell fallback could not start/,
+      reason: expect.stringMatching(
+        /^taskkill could not start: ENOENT; the PowerShell fallback could not start/,
+      ) as unknown,
     })
   })
 
+  it('says why the fallback failed when it could not kill the whole tree', async () => {
+    for (const [code, meaning] of [
+      [1, `processes in the tree were still running after ${String(TREE_KILL_SECONDS)} s`],
+      [2, 'it could not list the running processes'],
+    ] as const) {
+      const { spawn } = fakeSpawner((child, call) => {
+        child.exit(call.file.endsWith('taskkill.exe') ? 1 : code)
+      })
+      expect(await defaultKillTree('win32', spawn, {})(new FakeProcess())).toEqual({
+        ok: false,
+        reason: `taskkill exited with code 1; the PowerShell fallback exited with code ${String(code)} (${meaning})`,
+      })
+    }
+  })
+
   it('only builds a tree-kill script for a real pid', () => {
-    expect(treeKillScript(77)).toContain('$queue.Enqueue(77)')
+    expect(treeKillScript(77)).toContain('$root = 77\n')
     for (const pid of [0, -1, 1.5, Number.NaN]) expect(() => treeKillScript(pid)).toThrow()
+  })
+
+  it('builds a tree-kill script that never reports a partial kill as success', () => {
+    const script = treeKillScript(77)
+    // Any error ends the script with a failure instead of being skipped.
+    expect(script).toMatch(/^\$ErrorActionPreference = 'Stop'\n/)
+    expect(script).not.toContain('SilentlyContinue')
+    expect(script).toContain('exit 2')
+    // Success only from a fresh snapshot in which no member of the tree is running.
+    expect(script).toMatch(/if \(\$live\.Count -eq 0\) \{ exit 0 \}/)
+    expect(script.match(/exit 0/g)).toHaveLength(1)
+    // No cmdlet that has to be found in a module: without a module cache that alone
+    // can take longer than the whole kill may.
+    expect(script).not.toMatch(
+      /Get-CimInstance|Get-WmiObject|Get-Process|Stop-Process|Wait-Process/,
+    )
   })
 
   it('kills the process group elsewhere, falling back to the child', async () => {
@@ -677,7 +727,10 @@ describe('run_shell with a real shell', () => {
       controller.abort()
     }, 1500)
     const r = await h.tool('run_shell').execute({ command: 'sleep 60', cwd: sb.root }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /Cancelled/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Cancelled/) as unknown,
+    })
     expect(Date.now() - started).toBeLessThan(20_000)
   })
 
@@ -715,13 +768,16 @@ describe('run_shell with a real shell', () => {
         isError: true,
         content:
           stop === 'cancel'
-            ? /^Cancelled; the process tree was killed/
-            : /^Timed out after 15 s; the process tree was killed/,
+            ? (expect.stringMatching(/^Cancelled; the process tree was killed/) as unknown)
+            : (expect.stringMatching(
+                /^Timed out after 15 s; the process tree was killed/,
+              ) as unknown),
       })
       const gone = await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)
       if (process.env['TREEKILL_DIAG']) {
         const t = Date.now()
-        const late = gone || (await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 60_000))
+        const late =
+          gone || (await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 60_000))
         console.error(
           `TEST-DIAG [${new Date().toISOString()}] child=${String(child)} grandchild=${String(grandchild)} goneIn10s=${String(gone)} ` +
             `goneLater=${String(late)} extraMs=${String(Date.now() - t)} childAlive=${String(isAlive(child))} grandchildAlive=${String(isAlive(grandchild))}`,
@@ -761,6 +817,67 @@ describe('run_shell with a real shell', () => {
         return nodeSpawn(file, args, options)
       }
       await expectTreeKilled({ spawn, limits: { killGraceMs: 20_000 } }, 'cancel')
+    },
+  )
+
+  it.runIf(process.platform === 'win32')(
+    'the PowerShell fallback also kills grandchildren started while it runs',
+    { timeout: 150_000 },
+    async () => {
+      const blockTaskkill: ShellSpawner = (file, args, options) => {
+        if (file.toLowerCase().endsWith('taskkill.exe')) throw new Error('taskkill blocked by test')
+        return nodeSpawn(file, args, options)
+      }
+      // A child that starts another long-running ping every 100 ms and writes down its pid.
+      const list = path.join(sb.root, 'spawned.pid')
+      const child = nodeSpawn(
+        WINDOWS_POWERSHELL,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'while ($true) { $g = Start-Process -FilePath "$env:SystemRoot\\System32\\PING.EXE" ' +
+            "-ArgumentList '-n','300','127.0.0.1' -PassThru -NoNewWindow; " +
+            `Add-Content -Path '${list}' -Value $g.Id; Start-Sleep -Milliseconds 100 }`,
+        ],
+        { cwd: sb.root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      )
+      child.stdout.resume()
+      child.stderr.resume()
+      const closed = new Promise((resolve) => child.once('close', resolve))
+      const spawned = (): number[] => {
+        try {
+          return readFileSync(list, 'utf8')
+            .split(/\r?\n/)
+            .map((line) => Number.parseInt(line, 10))
+            .filter((pid) => Number.isInteger(pid) && pid > 0)
+        } catch {
+          return []
+        }
+      }
+      let pinned: Pinned = { pids: [], release: () => undefined }
+      try {
+        expect(await waitUntil(() => spawned().length >= 3, 60_000)).toBe(true)
+        pinned = await pinProcesses(spawned(), 60_000)
+        const result = await defaultKillTree('win32', blockTaskkill, process.env)(child)
+        expect(result).toEqual({ ok: true })
+        // Every grandchild, including those started after the kill began, is gone.
+        const all = spawned()
+        expect(all.length).toBeGreaterThanOrEqual(pinned.pids.length)
+        expect(all.filter(isAlive)).toEqual([])
+        await closed
+      } finally {
+        child.kill('SIGKILL')
+        for (const pid of pinned.pids.filter(isAlive)) {
+          try {
+            process.kill(pid, 'SIGKILL')
+          } catch {
+            // Exited in the meantime.
+          }
+        }
+        await waitUntil(() => !pinned.pids.some(isAlive), 10_000)
+        pinned.release()
+      }
     },
   )
 
