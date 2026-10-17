@@ -13,9 +13,10 @@ import type {
   ProviderLoginState,
   ProviderStatus,
   SendResult,
-  ProviderId,
   ThemePreference,
 } from '../../../shared/ipc'
+import type { ConnectionId } from '../../../shared/ipc-connections'
+import { BUILTIN_CONNECTION_INFO } from '../../../shared/connections-fixture'
 import type {
   FileEntry,
   FileLocation,
@@ -445,7 +446,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
         }),
       ),
       get: vi.fn(() => Promise.resolve(provider)),
-      set: vi.fn((next: ProviderId) => {
+      set: vi.fn((next: ConnectionId) => {
         provider = {
           provider: next,
           state: 'signed-out',
@@ -557,6 +558,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
     },
     approvals: {
       respond: vi.fn((_id: string, _approved: boolean) => Promise.resolve()),
+    },
+    connections: {
+      list: vi.fn(() => Promise.resolve(structuredClone(BUILTIN_CONNECTION_INFO))),
     },
     audit: {
       reveal: vi.fn(async () => {}),

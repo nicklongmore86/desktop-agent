@@ -9,6 +9,7 @@ import type {
   ProviderStatus,
 } from '../../../shared/ipc'
 import { ApiContext, useApi } from '../api'
+import { ConnectionsProvider } from '../connections'
 import { fakeApi } from '../test/fake-api'
 import { SettingsPanel } from './SettingsPanel'
 
@@ -159,7 +160,7 @@ describe('Claude subscription sign-in', () => {
   }
 
   /** Plays main's part: login state, its pushes, and the pending login() reply. */
-  function renderSignIn() {
+  async function renderSignIn() {
     const fake = fakeApi()
     let state = IDLE
     let reply: (status: ProviderStatus) => void = () => {}
@@ -176,11 +177,15 @@ describe('Claude subscription sign-in', () => {
         }),
     )
     const user = userEvent.setup()
+    // As in the app: the connection list is loaded once, above Settings.
     render(
       <ApiContext value={fake.api}>
-        <ProviderHarness />
+        <ConnectionsProvider>
+          <ProviderHarness />
+        </ConnectionsProvider>
       </ApiContext>,
     )
+    await screen.findByRole('button', { name: 'Sign in' })
     return {
       ...fake,
       user,
@@ -206,7 +211,7 @@ describe('Claude subscription sign-in', () => {
   }
 
   it('shows the waiting state, the link, and asks main to copy or re-open it', async () => {
-    const { api, user, showLink, finish } = renderSignIn()
+    const { api, user, showLink, finish } = await renderSignIn()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(screen.getByText('Waiting for sign-in…').textContent).toBe('Waiting for sign-in…')
     expect(screen.getByRole('button', { name: 'Cancel sign-in' })).toBeTruthy()
@@ -233,7 +238,7 @@ describe('Claude subscription sign-in', () => {
   })
 
   it('sends a valid pasted code and rejects a malformed one locally', async () => {
-    const { api, user, showLink } = renderSignIn()
+    const { api, user, showLink } = await renderSignIn()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     const code = screen.getByLabelText('Paste code')
@@ -253,7 +258,7 @@ describe('Claude subscription sign-in', () => {
   })
 
   it('cancels and shows sign-in failures as alerts', async () => {
-    const { api, user, finish } = renderSignIn()
+    const { api, user, finish } = await renderSignIn()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     await user.click(screen.getByRole('button', { name: 'Cancel sign-in' }))
     expect(api.provider.cancelLogin).toHaveBeenCalledOnce()
@@ -268,7 +273,7 @@ describe('Claude subscription sign-in', () => {
   })
 
   it('restores the sign-in controls after Settings is closed and reopened mid-login', async () => {
-    const { api, user, showLink, finish } = renderSignIn()
+    const { api, user, showLink, finish } = await renderSignIn()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     const errors = vi.spyOn(console, 'error')
@@ -292,7 +297,7 @@ describe('Claude subscription sign-in', () => {
   })
 
   it('cancels from a reopened Settings and ignores late replies to the closed one', async () => {
-    const { api, user, showLink, finish } = renderSignIn()
+    const { api, user, showLink, finish } = await renderSignIn()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     showLink()
     await reopen(user)
@@ -310,7 +315,7 @@ describe('Claude subscription sign-in', () => {
   })
 
   it("ignores another provider's sign-in", async () => {
-    const { user, pushLoginState } = renderSignIn()
+    const { user, pushLoginState } = await renderSignIn()
     act(() => {
       pushLoginState({ provider: 'codex-subscription', active: true, url: LINK, result: null })
     })

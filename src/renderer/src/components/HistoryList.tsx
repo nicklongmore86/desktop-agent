@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import type { ConversationSummary, ProviderId } from '../../../shared/ipc'
+import type { ConversationSummary } from '../../../shared/ipc'
+import type { ConnectionId } from '../../../shared/ipc-connections'
+import { connectionOf, useConnections } from '../connections'
 import type { Project, ProjectMove, ProviderChat } from '../../../shared/ipc-projects'
 import type { Arranged } from './sidebar/arrange'
 import { resolveDrop, type DropAction, type DropTarget } from './sidebar/drop'
@@ -33,13 +35,6 @@ export function groupConversations<T extends ConversationSummary>(
   return groups.filter((group) => group.conversations.length > 0)
 }
 
-/** Short provider names, for chats of a provider that is not the open one. */
-export const PROVIDER_SHORT: Record<ProviderId, string> = {
-  'anthropic-api': 'Claude API',
-  'claude-subscription': 'Claude',
-  'codex-subscription': 'Codex',
-}
-
 export type SectionId = 'pinned' | 'projects' | 'chats'
 
 /** What the list asks the chat pane to do. */
@@ -66,7 +61,7 @@ export interface HistoryListProps {
   arranged: Arranged
   view: 'chats' | 'archived'
   /** The open provider and its open chat. */
-  provider: ProviderId | null
+  provider: ConnectionId | null
   activeId: string | null
   /** A switch is under way: opening another chat waits until it is done. */
   busy: boolean
@@ -159,6 +154,7 @@ export function HistoryList({
   actions,
   now,
 }: HistoryListProps): React.JSX.Element {
+  const connections = useConnections()
   const [menu, setMenu] = useState<OpenMenu | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [dragging, setDragging] = useState<ProviderChat | null>(null)
@@ -412,7 +408,8 @@ export function HistoryList({
     const key = keyOf(chat)
     const active = chat.provider === provider && chat.id === activeId
     const other = chat.provider !== provider
-    const otherName = PROVIDER_SHORT[chat.provider]
+    // Short connection names, for chats of a connection that is not the open one.
+    const otherName = connectionOf(connections, chat.provider)?.shortLabel ?? ''
     return (
       <li
         key={key}

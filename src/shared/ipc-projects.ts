@@ -11,7 +11,8 @@
  * can hold chats of several providers. Opening another provider's chat switches
  * to that provider first, as Settings does.
  */
-import type { ConversationSummary, ProviderId, ProviderStatus } from './ipc'
+import type { ConversationSummary, ProviderStatus } from './ipc'
+import type { ConnectionId } from './ipc-connections'
 
 export const projectsChannels = {
   projectsState: 'projects:state',
@@ -46,17 +47,17 @@ export interface Project {
 
 /** A saved chat of any provider. */
 export interface ChatRef {
-  provider: ProviderId
+  provider: ConnectionId
   id: string
 }
 
 export interface ProviderChat extends ConversationSummary {
-  provider: ProviderId
+  provider: ConnectionId
 }
 
 export interface ProjectsState {
   /** The provider that is open; its own chats come with the chat history (HistoryState). */
-  provider: ProviderId
+  provider: ConnectionId
   /** In the order the user gave them. */
   projects: Project[]
   /** Other providers' chats that are pinned or filed in a project (archived ones included). */

@@ -221,6 +221,54 @@ const organize = (chat, key, value) => {
   }
   return Promise.resolve(projectsState())
 }
+// The built-in connections as main's registry lists them (src/shared/connections-fixture.ts).
+const runtimeLogin = { authKind: 'runtime-login', reportsUsage: false, needsRuntime: true }
+const connections = [
+  {
+    id: 'claude-subscription',
+    vendor: 'anthropic',
+    access: 'subscription',
+    label: 'Claude · Subscription',
+    shortLabel: 'Claude',
+    title: 'Claude · Subscription',
+    description: 'Sign in with your Claude account. No API key needed.',
+    runtimeLabel: 'Claude Code',
+    capabilities: { ...runtimeLogin, listsModels: false },
+    personalUseOnly: true,
+    pickerOrder: 1,
+  },
+  {
+    id: 'codex-subscription',
+    vendor: 'openai',
+    access: 'subscription',
+    label: 'Codex · ChatGPT',
+    shortLabel: 'Codex',
+    title: 'Codex · ChatGPT',
+    description: 'Sign in with your ChatGPT account. No API key needed.',
+    runtimeLabel: 'Codex',
+    capabilities: { ...runtimeLogin, listsModels: true, reportsUsage: true },
+    personalUseOnly: false,
+    pickerOrder: 0,
+  },
+  {
+    id: 'anthropic-api',
+    vendor: 'anthropic',
+    access: 'api-key',
+    label: 'Claude · API',
+    shortLabel: 'Claude API',
+    title: 'Anthropic API',
+    description: 'Use your own API key.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: false,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 2,
+  },
+]
+
 const model = {
   model: 'claude-sonnet-5-5',
   defaultModel: 'claude-sonnet-5-5',
@@ -502,6 +550,9 @@ contextBridge.exposeInMainWorld('desktopApi', {
       }, 0)
       return Promise.resolve()
     },
+  },
+  connections: {
+    list: () => Promise.resolve(structuredClone(connections)),
   },
   audit: {
     reveal: resolve(undefined),

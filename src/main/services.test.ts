@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createAppServices } from './services'
 import { SubscriptionError } from './providers/errors'
-import { SubscriptionProviders } from './providers/service'
+import { ConnectionService } from './providers/service'
 
 const dirs: string[] = []
 afterEach(async () => {
@@ -22,46 +22,51 @@ it('preserves legacy API history and starts both subscriptions without reading t
     join(userData, 'conversation.json'),
     JSON.stringify({ version: 1, messages: [{ role: 'user', content: 'legacy API history' }] }),
   )
-  const invalidate = vi.spyOn(SubscriptionProviders.prototype, 'invalidateMetadata')
-  vi.spyOn(SubscriptionProviders.prototype, 'status').mockImplementation((provider) =>
+  const invalidate = vi.spyOn(ConnectionService.prototype, 'invalidateMetadata')
+  vi.spyOn(ConnectionService.prototype, 'status').mockImplementation((provider) =>
     Promise.resolve({ provider, state: 'ready', message: 'ready' }),
   )
-  const subscriptions = vi.spyOn(SubscriptionProviders.prototype, 'runner').mockImplementation(() =>
-    Promise.resolve({
-      run: (conversation) =>
-        Promise.resolve({
-          conversation: [...conversation, { role: 'assistant', content: 'subscription reply' }],
-          stopReason: 'end_turn',
-        }),
-    }),
-  )
+  // The subscriptions get a fake runner; Anthropic API goes through its real adapter.
+  const subscriptions = vi
+    .spyOn(ConnectionService.prototype, 'runner')
+    .mockImplementation(function (this: ConnectionService, provider, tools, signal) {
+      if (provider === 'anthropic-api') return this.registry.require(provider).runner(tools, signal)
+      return Promise.resolve({
+        run: (conversation) =>
+          Promise.resolve({
+            conversation: [...conversation, { role: 'assistant', content: 'subscription reply' }],
+            stopReason: 'end_turn',
+          }),
+      })
+    })
+  const decrypt = vi.fn((value: Buffer) => value.toString())
   const services = await createAppServices({
     userData,
     safeStorage: {
       isEncryptionAvailable: () => true,
       encryptString: (text) => Buffer.from(text),
-      decryptString: (value) => value.toString(),
+      decryptString: decrypt,
     },
     trash: () => Promise.resolve(),
     emit: vi.fn(),
     promptApproval: vi.fn(),
     onAuditStatus: vi.fn(),
   })
-  expect(services.settings.provider).toBe('anthropic-api')
+  expect(services.settings.connection).toBe('anthropic-api')
   expect(services.settings.model).toBe('claude-opus-5-5')
   expect(services.chat.state().items[0]).toMatchObject({ text: 'legacy API history' })
   expect(await services.chat.send('API attempt')).toMatchObject({ ok: false, code: 'no_api_key' })
-  const keyRead = vi
-    .spyOn(services.apiKey, 'get')
-    .mockRejectedValue(new Error('API key must not be read'))
+  // A saved API key is never decrypted for a subscription: no fallback to API billing.
+  await services.apiKey.set('sk-ant-saved')
+  decrypt.mockClear()
   for (const provider of ['claude-subscription', 'codex-subscription'] as const) {
     await services.provider.set(provider)
     expect(services.chat.state().items).toEqual([])
     expect(await services.chat.send(provider)).toEqual({ ok: true })
     await services.chat.idle()
   }
-  expect(keyRead).not.toHaveBeenCalled()
-  expect(subscriptions).toHaveBeenCalledTimes(2)
+  expect(decrypt).not.toHaveBeenCalled()
+  expect(subscriptions).toHaveBeenCalledTimes(3)
   await services.provider.set('claude-subscription')
   expect(services.chat.state().items[0]).toMatchObject({ text: 'claude-subscription' })
   await services.provider.set('anthropic-api')
@@ -84,7 +89,7 @@ it.each([
       JSON.stringify({ version: 2, provider: 'codex-subscription' }),
     )
     const runner = vi
-      .spyOn(SubscriptionProviders.prototype, 'runner')
+      .spyOn(ConnectionService.prototype, 'runner')
       .mockRejectedValue(new Error(message))
     const services = await createAppServices({
       userData,
@@ -109,7 +114,7 @@ it.each(['models', 'allowance', 'setModel'] as const)(
     const userData = await mkdtemp(join(tmpdir(), 'metadata-result-'))
     dirs.push(userData)
     const reset = new Date(Date.now() + 3600000).toISOString()
-    vi.spyOn(SubscriptionProviders.prototype, method).mockRejectedValue(
+    vi.spyOn(ConnectionService.prototype, method).mockRejectedValue(
       new SubscriptionError('usage_limit', 'Safe quota explanation.', reset),
     )
     const services = await createAppServices({
@@ -145,7 +150,7 @@ it('returns a serializable metadata success value', async () => {
     defaultModel: null,
     resolvedModel: null,
   }
-  vi.spyOn(SubscriptionProviders.prototype, 'models').mockResolvedValue(value)
+  vi.spyOn(ConnectionService.prototype, 'models').mockResolvedValue(value)
   const services = await createAppServices({
     userData,
     safeStorage: {
@@ -172,10 +177,10 @@ it('keeps several chats per provider: migrates, opens, renames and deletes them'
     join(userData, 'conversation-claude-subscription.json'),
     JSON.stringify({ version: 1, messages: [{ role: 'user', content: 'legacy subscription' }] }),
   )
-  vi.spyOn(SubscriptionProviders.prototype, 'status').mockImplementation((provider) =>
+  vi.spyOn(ConnectionService.prototype, 'status').mockImplementation((provider) =>
     Promise.resolve({ provider, state: 'ready', message: 'ready' }),
   )
-  vi.spyOn(SubscriptionProviders.prototype, 'runner').mockImplementation(() =>
+  vi.spyOn(ConnectionService.prototype, 'runner').mockImplementation(() =>
     Promise.resolve({
       run: (conversation) =>
         Promise.resolve({
@@ -229,4 +234,51 @@ it('keeps several chats per provider: migrates, opens, renames and deletes them'
   await chat.remove(legacy?.id ?? '')
   expect(chat.state().items).toEqual([])
   expect(chat.historyState().conversations.map((c) => c.title)).toEqual(['A brand new question'])
+})
+
+it('offers the registry’s connections, and can hide the personal-use one', async () => {
+  const userData = await mkdtemp(join(tmpdir(), 'connections-'))
+  dirs.push(userData)
+  const open = () =>
+    createAppServices({
+      userData,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (text) => Buffer.from(text),
+        decryptString: (value) => value.toString(),
+      },
+      trash: () => Promise.resolve(),
+      emit: vi.fn(),
+      promptApproval: vi.fn(),
+      onAuditStatus: vi.fn(),
+    })
+  vi.spyOn(ConnectionService.prototype, 'status').mockImplementation((provider) =>
+    Promise.resolve({ provider, state: 'ready', message: 'ready' }),
+  )
+  const shown = await open()
+  // Nothing changes by default: all three, Claude subscription included.
+  expect(shown.connections.list().map(({ id, label }) => [id, label])).toEqual([
+    ['claude-subscription', 'Claude · Subscription'],
+    ['codex-subscription', 'Codex · ChatGPT'],
+    ['anthropic-api', 'Claude · API'],
+  ])
+  await shown.provider.set('claude-subscription')
+  // Only an API-key connection has a key; the key calls refuse any other.
+  await expect(shown.apiKey.hasKey('claude-subscription')).rejects.toThrow('Unknown provider.')
+  await expect(shown.apiKey.hasKey('openai-api')).rejects.toThrow('Unknown provider.')
+  expect(await shown.apiKey.hasKey()).toBe(false)
+  await shown.settings.setShowPersonalUseConnections(false)
+
+  // A shared build: the saved personal-use connection falls back to the default.
+  const hidden = await open()
+  expect(hidden.settings.connection).toBe('anthropic-api')
+  expect(hidden.connections.list().map(({ id }) => id)).toEqual([
+    'codex-subscription',
+    'anthropic-api',
+  ])
+  expect(hidden.connections.available('claude-subscription')).toBe(false)
+  await expect(hidden.provider.set('claude-subscription')).rejects.toThrow('Unknown provider.')
+  await expect(
+    hidden.projects.open({ provider: 'openai-api', id: '00000000-0000-4000-8000-000000000000' }),
+  ).rejects.toThrow()
 })

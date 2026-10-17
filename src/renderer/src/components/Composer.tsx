@@ -1,4 +1,9 @@
-import type { ProviderId, ProviderStatus } from '../../../shared/ipc'
+import type { ProviderStatus } from '../../../shared/ipc'
+import {
+  ANTHROPIC_API,
+  type ConnectionId,
+  type ConnectionInfo,
+} from '../../../shared/ipc-connections'
 import type { OpenSettings } from '../open-settings'
 import type { ProviderModelPicker } from '../provider-models'
 import { summarizeUsage, type ProviderUsage } from '../usage'
@@ -15,8 +20,8 @@ export interface ComposerProps {
   onSubmit: () => void
   onStop: () => void
   provider: ProviderStatus | null
-  providerNames: Record<ProviderId, string>
-  onSwitchProvider: (provider: ProviderId) => void
+  connections: ConnectionInfo[]
+  onSwitchProvider: (provider: ConnectionId) => void
   models: ProviderModelPicker
   usage: ProviderUsage
   onOpenSettings: OpenSettings
@@ -35,7 +40,7 @@ export function Composer({
   onSubmit,
   onStop,
   provider,
-  providerNames,
+  connections,
   onSwitchProvider,
   models,
   usage,
@@ -83,15 +88,17 @@ export function Composer({
             value={provider?.provider ?? ''}
             disabled={!provider || switching}
             onChange={(event) => {
-              onSwitchProvider(event.target.value as ProviderId)
+              onSwitchProvider(event.target.value)
             }}
           >
             {!provider && <option value="">Loading…</option>}
-            {Object.entries(providerNames).map(([id, label]) => (
-              <option key={id} value={id}>
-                {label}
-              </option>
-            ))}
+            {connections
+              .toSorted((a, b) => a.pickerOrder - b.pickerOrder)
+              .map(({ id, label }) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
           </select>
           {choice && (
             <select
@@ -105,7 +112,7 @@ export function Composer({
                 })
               }}
             >
-              {choice.provider !== 'anthropic-api' && (
+              {choice.provider !== ANTHROPIC_API && (
                 <option value={DEFAULT_MODEL}>Default model</option>
               )}
               {choice.options.map((option) => (

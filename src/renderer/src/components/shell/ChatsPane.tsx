@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { HistoryState, ProviderId } from '../../../../shared/ipc'
+import type { HistoryState } from '../../../../shared/ipc'
+import type { ConnectionId } from '../../../../shared/ipc-connections'
 import type { ChatRef, Project, ProviderChat } from '../../../../shared/ipc-projects'
 import { useApi } from '../../api'
 import { ConfirmDeleteDialog } from '../ConfirmDeleteDialog'
@@ -83,7 +84,7 @@ export function ChatsPane({
   /** A reply is running in the open chat. */
   running: boolean
   /** The open provider, once known. */
-  provider: ProviderId | null
+  provider: ConnectionId | null
   /** The open chat's prompts, oldest first (to fork from one of them). */
   prompts: string[]
   /** An approval is open: dialogs here hide until it is answered. */

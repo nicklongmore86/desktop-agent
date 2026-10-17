@@ -12,7 +12,7 @@ import {
 } from './claude-login'
 import { capture, discoverRuntime, launch } from './runtime'
 import type { ProviderLoginState } from '../../shared/ipc'
-import { SubscriptionProviders } from './service'
+import { ConnectionService } from './service'
 
 vi.mock('./runtime', async (original) => {
   const actual = await original<typeof import('./runtime')>()
@@ -83,13 +83,13 @@ function useFake(mode: string, url = URL) {
 }
 
 function providers(loginTimeout?: number) {
-  return new SubscriptionProviders(dir, openUrl, {
+  return new ConnectionService(dir, openUrl, {
     onLoginState,
     ...(loginTimeout ? { loginTimeout } : {}),
   })
 }
 
-async function waitForUrl(provider: SubscriptionProviders) {
+async function waitForUrl(provider: ConnectionService) {
   await vi.waitFor(
     () => {
       expect(provider.loginUrl).toBeDefined()

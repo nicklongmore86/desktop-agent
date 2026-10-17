@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import type { ProviderId, ProviderStatus } from '../../../shared/ipc'
+import type { ProviderStatus } from '../../../shared/ipc'
+import type { ConnectionId, ConnectionInfo } from '../../../shared/ipc-connections'
 import type { ChatViewState } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
 import { useProviderModels } from '../provider-models'
@@ -27,9 +28,10 @@ export interface ChatViewProps {
   /** The selected provider, or null until it has loaded. */
   provider: ProviderStatus | null
   /** Display names of every provider, for the composer's picker. */
-  providerNames: Record<ProviderId, string>
+  /** The connections to offer, from main's registry. */
+  connections: ConnectionInfo[]
   /** Switches provider through the same path as Settings (clears the conversation). */
-  onSwitchProvider: (provider: ProviderId) => Promise<void>
+  onSwitchProvider: (provider: ConnectionId) => Promise<void>
   /** Lets the app focus the message box (Ctrl/Cmd+K). */
   composerRef?: React.RefObject<HTMLTextAreaElement | null>
   /** Shown above the composer when setup is incomplete. */
@@ -51,7 +53,7 @@ export function ChatView({
   onDismissStorageWarning,
   onOpenSettings,
   provider,
-  providerNames,
+  connections,
   onSwitchProvider,
   composerRef,
   notice,
@@ -315,7 +317,7 @@ export function ChatView({
             void onStop()
           }}
           provider={provider}
-          providerNames={providerNames}
+          connections={connections}
           onSwitchProvider={(next) => {
             void onSwitchProvider(next)
           }}

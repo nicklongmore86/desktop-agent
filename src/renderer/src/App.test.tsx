@@ -424,3 +424,57 @@ it('labels Codex replies and progress from the selected provider and shows live 
   )
   expect(api.provider.set).toHaveBeenCalledWith('claude-subscription')
 })
+
+describe('connections from main', () => {
+  it('keeps the picker order and labels, read from one connections.list() call', async () => {
+    setViewport(1280)
+    const { api, user } = await renderApp()
+    const picker = screen.getByRole('combobox', { name: 'Active provider' })
+    expect(
+      within(picker)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Codex · ChatGPT', 'Claude · Subscription', 'Claude · API'])
+    await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
+    const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
+    expect(
+      within(cards)
+        .getAllByRole('radio')
+        .map((radio) => radio.getAttribute('value')),
+    ).toEqual(['claude-subscription', 'codex-subscription', 'anthropic-api'])
+    expect(within(cards).getByText('Anthropic API')).toBeTruthy()
+    expect(api.connections.list).toHaveBeenCalledOnce()
+  })
+
+  it('shows the labels main sends, and leaves out a connection it hides', async () => {
+    setViewport(1280)
+    const fake = fakeApi({
+      provider: { provider: 'codex-subscription', state: 'ready', message: 'Signed in' },
+    })
+    fake.api.connections.list.mockImplementation(async () =>
+      (await fakeApi().api.connections.list())
+        .filter((connection) => !connection.personalUseOnly)
+        .map((connection) =>
+          connection.id === 'codex-subscription'
+            ? { ...connection, label: 'Renamed Codex' }
+            : connection,
+        ),
+    )
+    const user = userEvent.setup()
+    render(
+      <ApiContext value={fake.api}>
+        <App />
+      </ApiContext>,
+    )
+    await screen.findByText('v0.1.0')
+    const picker = screen.getByRole('combobox', { name: 'Active provider' })
+    expect(
+      within(picker)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Renamed Codex', 'Claude · API'])
+    await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
+    const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
+    expect(within(cards).queryByText('Claude · Subscription')).toBeNull()
+  })
+})

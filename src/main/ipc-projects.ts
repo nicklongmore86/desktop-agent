@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { PROVIDERS, type ProviderStatus } from '../shared/ipc'
+import type { ProviderStatus } from '../shared/ipc'
 import {
   PROJECT_ICONS,
   projectsChannels,
@@ -9,6 +9,7 @@ import {
   type ProjectMove,
   type ProjectsState,
 } from '../shared/ipc-projects'
+import { connectionIdSchema, type ConnectionsService } from './ipc-connections'
 import type { IpcHandle } from './ipc-features'
 import { CONVERSATION_ID } from './storage/history-store'
 import { PROJECT_ID } from './storage/projects-schema'
@@ -32,9 +33,10 @@ export interface ProjectsService {
 }
 
 // Ids are main's own random UUIDs; anything else, a path fragment included, is
-// refused here, before it reaches a store. Objects are strict: no extra keys.
+// refused here, before it reaches a store. Objects are strict: no extra keys. The
+// connection must also be one the registry offers (checked in the handlers).
 const chatSchema = z.strictObject({
-  provider: z.enum(PROVIDERS),
+  provider: connectionIdSchema,
   id: z.string().regex(CONVERSATION_ID),
 })
 const projectIdSchema = z.string().regex(PROJECT_ID)
@@ -48,13 +50,21 @@ function parse<T>(schema: z.ZodType<T>, value: unknown, message: string): T {
   if (!parsed.success) throw new Error(message)
   return parsed.data
 }
-const chat = (value: unknown): ChatRef => parse(chatSchema, value, 'Unknown chat.')
 const projectId = (value: unknown): string => parse(projectIdSchema, value, 'Unknown project.')
 const flag = (value: unknown): boolean => parse(z.boolean(), value, 'Invalid choice.')
 const name = (value: unknown): string => parse(nameSchema, value, 'Enter a shorter name.')
 const icon = (value: unknown): ProjectIcon | null => parse(iconSchema, value, 'Unknown icon.')
 
-export function registerProjectsHandlers(handle: IpcHandle, projects: ProjectsService): void {
+export function registerProjectsHandlers(
+  handle: IpcHandle,
+  projects: ProjectsService,
+  connections: Pick<ConnectionsService, 'available'>,
+): void {
+  const chat = (value: unknown): ChatRef => {
+    const ref = parse(chatSchema, value, 'Unknown chat.')
+    if (!connections.available(ref.provider)) throw new Error('Unknown chat.')
+    return ref
+  }
   const c = projectsChannels
   handle(c.projectsState, () => projects.state())
   handle(c.projectsCreate, (n, i) => projects.create(name(n), icon(i)))

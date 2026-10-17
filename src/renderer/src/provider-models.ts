@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ModelOption, ProviderFailure, ProviderId } from '../../shared/ipc'
+import type { ModelOption, ProviderFailure } from '../../shared/ipc'
+import { ANTHROPIC_API, type ConnectionId } from '../../shared/ipc-connections'
 import { useApi } from './api'
 
 export interface ModelChoice {
-  provider: ProviderId
+  provider: ConnectionId
   options: ModelOption[]
   /** The saved choice that is still offered; null means the account default. */
   selected: string | null
@@ -26,7 +27,7 @@ export interface ProviderModelPicker {
  * (Codex lists models; Claude returns none, so no picker) and the existing
  * model API for Anthropic API mode.
  */
-export function useProviderModels(provider: ProviderId | undefined): ProviderModelPicker {
+export function useProviderModels(provider: ConnectionId | undefined): ProviderModelPicker {
   const api = useApi()
   const [choice, setChoice] = useState<ModelChoice | null>(null)
   const [readFailure, setReadFailure] = useState<ProviderFailure | null>(null)
@@ -40,7 +41,7 @@ export function useProviderModels(provider: ProviderId | undefined): ProviderMod
       let next: ModelChoice | null = null
       let failed: ProviderFailure | null = null
       try {
-        if (provider === 'anthropic-api') {
+        if (provider === ANTHROPIC_API) {
           const model = await api.model.get()
           if (model.options.length > 0)
             next = { provider, options: model.options, selected: model.model, note: null }
@@ -85,7 +86,7 @@ export function useProviderModels(provider: ProviderId | undefined): ProviderMod
     async (model: string | null): Promise<boolean> => {
       setSaveFailure(null)
       try {
-        if (provider === 'anthropic-api') {
+        if (provider === ANTHROPIC_API) {
           if (model === null) return false
           await api.model.set(model)
         } else {

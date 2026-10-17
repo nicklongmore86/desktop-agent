@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import type {
-  AllowanceWindow,
-  ProviderAllowance,
-  ProviderFailure,
-  ProviderId,
-} from '../../shared/ipc'
+import type { AllowanceWindow, ProviderAllowance, ProviderFailure } from '../../shared/ipc'
+import type { ConnectionId } from '../../shared/ipc-connections'
 import { useApi } from './api'
 
 /** At or above this share of any window used, the indicator turns amber. */
@@ -112,7 +108,7 @@ export function describeFailure(
 }
 
 interface Loaded {
-  provider: ProviderId
+  provider: ConnectionId
   allowance: ProviderAllowance | null
   failure: ProviderFailure | null
 }
@@ -131,7 +127,7 @@ export interface ProviderUsage {
  * `refresh` is called (after a turn, or a usage-limit error). Never polls.
  * It is advisory: nothing here gates sending.
  */
-export function useProviderUsage(provider: ProviderId | undefined): ProviderUsage {
+export function useProviderUsage(provider: ConnectionId | undefined): ProviderUsage {
   const api = useApi()
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [tick, setTick] = useState(0)

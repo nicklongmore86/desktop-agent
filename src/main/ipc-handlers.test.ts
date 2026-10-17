@@ -7,6 +7,7 @@ import {
   type ThemePreference,
 } from '../shared/ipc'
 import { commandChannels } from '../shared/ipc-command'
+import { BUILTIN_CONNECTIONS, connectionsChannels } from '../shared/ipc-connections'
 import { FEATURE_CHANNELS } from '../shared/ipc-features'
 import { filesChannels, filesPushChannels } from '../shared/ipc-files'
 import { gitChannels } from '../shared/ipc-git'
@@ -94,6 +95,10 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       submitLoginCode: vi.fn(() => Promise.resolve({ ok: true as const })),
     },
     appInfo: () => ({ name: 'desktop-agent', version: '0.1.0', platform: 'win32' }),
+    connections: {
+      list: vi.fn(() => []),
+      available: vi.fn((id: string) => BUILTIN_CONNECTIONS.includes(id)),
+    },
     apiKey: {
       hasKey: vi.fn(() => Promise.resolve(false)),
       set: vi.fn(() => Promise.resolve()),
@@ -532,7 +537,7 @@ describe('registerIpcHandlers', () => {
       const { invoke, services } = setup()
       services.apiKey.hasKey = hasKey
       const result = await invoke(IpcChannels.apiKeySet, appFrame, '  sk-ant-secret  ')
-      expect(services.apiKey.set).toHaveBeenCalledWith('sk-ant-secret')
+      expect(services.apiKey.set).toHaveBeenCalledWith('sk-ant-secret', undefined)
       expect(result).toEqual({ saved: true, error: null })
       expect(JSON.stringify(result)).not.toContain('sk-ant')
       expect(await invoke(IpcChannels.apiKeyStatus, appFrame)).toEqual({ saved: true, error: null })
@@ -549,6 +554,27 @@ describe('registerIpcHandlers', () => {
         expect(services.apiKey.set).not.toHaveBeenCalled()
       },
     )
+
+    it('passes a named connection through only when the registry offers it', async () => {
+      const { invoke, services } = setup()
+      await invoke(IpcChannels.apiKeySet, appFrame, 'sk', 'anthropic-api')
+      expect(services.apiKey.set).toHaveBeenCalledWith('sk', 'anthropic-api')
+      await invoke(IpcChannels.apiKeyStatus, appFrame, 'anthropic-api')
+      expect(services.apiKey.hasKey).toHaveBeenLastCalledWith('anthropic-api')
+      for (const bad of ['../anthropic-api', 'openai-api', 7, null, '__proto__']) {
+        await expect(invoke(IpcChannels.apiKeySet, appFrame, 'sk', bad)).rejects.toThrow(
+          'Unknown provider.',
+        )
+        await expect(invoke(IpcChannels.apiKeyStatus, appFrame, bad)).rejects.toThrow(
+          'Unknown provider.',
+        )
+        await expect(invoke(IpcChannels.apiKeyClear, appFrame, bad)).rejects.toThrow(
+          'Unknown provider.',
+        )
+      }
+      expect(services.apiKey.set).toHaveBeenCalledOnce()
+      expect(services.apiKey.clear).not.toHaveBeenCalled()
+    })
 
     it('surfaces store errors as status, not exceptions', async () => {
       const { invoke, services } = setup()
@@ -810,6 +836,24 @@ describe('provider IPC', () => {
       expect(services.provider.set).not.toHaveBeenCalled()
     },
   )
+  it('refuses a well-formed id the registry does not offer (unknown, or hidden)', async () => {
+    const { invoke, services } = setup()
+    for (const value of ['openai-api', 'claude-subscription']) {
+      vi.mocked(services.connections.available).mockReturnValueOnce(false)
+      await expect(invoke(IpcChannels.providerSet, appFrame, value)).rejects.toThrow(
+        'Unknown provider',
+      )
+    }
+    expect(services.provider.set).not.toHaveBeenCalled()
+  })
+  it('lists the connections main offers, taking no arguments', async () => {
+    const { invoke, services } = setup()
+    expect(await invoke(connectionsChannels.connectionsList, appFrame)).toEqual([])
+    await expect(invoke(connectionsChannels.connectionsList, appFrame, true)).rejects.toThrow(
+      'takes no arguments',
+    )
+    expect(services.connections.list).toHaveBeenCalledOnce()
+  })
   it('accepts explicit provider selection only through trusted IPC', async () => {
     const { invoke, services } = setup()
     await invoke(IpcChannels.providerSet, appFrame, 'codex-subscription')

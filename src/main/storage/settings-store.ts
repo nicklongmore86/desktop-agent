@@ -1,12 +1,16 @@
 import { z } from 'zod'
 import {
-  PROVIDERS,
   THEMES,
-  type ProviderId,
   type ModelOption,
   type ModelSettings,
   type ThemePreference,
 } from '../../shared/ipc'
+import {
+  BUILTIN_CONNECTIONS,
+  CONNECTION_ID,
+  DEFAULT_CONNECTION,
+  type ConnectionId,
+} from '../../shared/ipc-connections'
 import { DEFAULT_LAYOUT, type LayoutPrefs } from '../../shared/ipc-layout'
 import { DEFAULT_MODEL } from '../agent'
 import { readJsonFile, writeJsonFile } from './json-file'
@@ -20,11 +24,27 @@ export const MODEL_OPTIONS: readonly ModelOption[] = [
   { id: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
 ]
 
+/** A connection the user has set up. Room for per-connection settings (an endpoint, a name). */
+export interface ConfiguredConnection {
+  id: ConnectionId
+}
+
+/**
+ * settings.json. Version 3 replaced v2's `provider` and `providerModels` with
+ * `connection` and `connectionModels` (the ids did not change) and added
+ * `connections` and `showPersonalUseConnections`. Older files are read and
+ * migrated in memory; the first write saves version 3.
+ */
 interface SettingsFile {
-  version: 2
+  version: 3
   model: string
-  provider: ProviderId
-  providerModels: Partial<Record<ProviderId, string>>
+  /** The connection chats go to. Main checks it against the registry when it opens. */
+  connection: ConnectionId
+  /** Each connection's saved model choice. */
+  connectionModels: Partial<Record<ConnectionId, string>>
+  connections: ConfiguredConnection[]
+  /** Offer connections that are for personal use only (see docs/connections.md). */
+  showPersonalUseConnections: boolean
   /** Added later without a version bump: a missing or unknown value means 'system'. */
   theme?: ThemePreference
   /** Added later without a version bump: has its own version, and a missing or invalid one means the defaults. */
@@ -32,10 +52,14 @@ interface SettingsFile {
 }
 
 export interface SettingsStore {
-  selection: (provider: ProviderId) => string | null
-  setSelection: (provider: ProviderId, model: string | null) => Promise<void>
-  readonly provider: ProviderId
-  setProvider: (provider: ProviderId) => Promise<void>
+  selection: (connection: ConnectionId) => string | null
+  setSelection: (connection: ConnectionId, model: string | null) => Promise<void>
+  readonly connection: ConnectionId
+  /** Also adds it to the configured connections when it is not there yet. */
+  setConnection: (connection: ConnectionId) => Promise<void>
+  readonly connections: readonly ConfiguredConnection[]
+  readonly showPersonalUseConnections: boolean
+  setShowPersonalUseConnections: (show: boolean) => Promise<void>
   readonly model: string
   view: () => ModelSettings
   readonly theme: ThemePreference
@@ -51,26 +75,59 @@ export interface SettingsStore {
 const isOffered = (model: unknown): model is string =>
   typeof model === 'string' && MODEL_OPTIONS.some((option) => option.id === model)
 
+const connectionIdSchema = z.string().regex(CONNECTION_ID)
+const selectionSchema = z.partialRecord(
+  connectionIdSchema,
+  z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/),
+)
+const connectionsSchema = z.array(z.object({ id: connectionIdSchema })).max(64)
+/** v2's provider ids: the built-in connection ids, unchanged. */
+const V2_PROVIDERS: readonly string[] = BUILTIN_CONNECTIONS
+
+const defaultConnections = (): ConfiguredConnection[] => BUILTIN_CONNECTIONS.map((id) => ({ id }))
+
+/** Unique ids, the current connection included. */
+function withConnection(
+  list: readonly ConfiguredConnection[],
+  id: ConnectionId,
+): ConfiguredConnection[] {
+  const seen = new Set<ConnectionId>()
+  const unique = list.filter((entry) => !seen.has(entry.id) && seen.add(entry.id))
+  return seen.has(id) ? unique : [...unique, { id }]
+}
+
 /** Settings JSON in userData. A missing, unreadable or unknown value falls back to the default. */
 export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let model = DEFAULT_MODEL
-  let provider: ProviderId = 'anthropic-api'
+  let connection: ConnectionId = DEFAULT_CONNECTION
+  let connections = defaultConnections()
+  let showPersonalUseConnections = true
   let theme: ThemePreference = 'system'
   let layout: LayoutPrefs = { ...DEFAULT_LAYOUT }
-  const selectionSchema = z.partialRecord(
-    z.enum(PROVIDERS),
-    z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/),
-  )
-  let providerModels: Partial<Record<ProviderId, string>> = {}
+  let connectionModels: Partial<Record<ConnectionId, string>> = {}
   try {
-    const parsed = (await readJsonFile(file)) as Partial<SettingsFile> | undefined
-    if (parsed?.version === 2 && PROVIDERS.includes(parsed.provider as ProviderId))
-      provider = parsed.provider as ProviderId
-    const selections = selectionSchema.safeParse(parsed?.providerModels ?? {})
-    if (selections.success) providerModels = selections.data
-    if (isOffered(parsed?.model)) model = parsed.model
-    if (THEMES.includes(parsed?.theme as ThemePreference)) theme = parsed?.theme as ThemePreference
-    layout = parseLayout(parsed?.layout)
+    const parsed = (await readJsonFile(file)) as Record<string, unknown> | undefined
+    if (parsed?.['version'] === 3) {
+      const saved = connectionIdSchema.safeParse(parsed['connection'])
+      if (saved.success) connection = saved.data
+      const list = connectionsSchema.safeParse(parsed['connections'])
+      if (list.success) connections = list.data.map(({ id }) => ({ id }))
+      if (typeof parsed['showPersonalUseConnections'] === 'boolean')
+        showPersonalUseConnections = parsed['showPersonalUseConnections']
+      const selections = selectionSchema.safeParse(parsed['connectionModels'] ?? {})
+      if (selections.success) connectionModels = selections.data
+    } else {
+      // v2 (and v1, which had no provider): the old provider ids are the connection ids.
+      if (parsed?.['version'] === 2 && V2_PROVIDERS.includes(parsed['provider'] as string))
+        connection = parsed['provider'] as ConnectionId
+      const selections = selectionSchema.safeParse(parsed?.['providerModels'] ?? {})
+      if (selections.success) connectionModels = selections.data
+    }
+    connections = withConnection(connections, connection)
+    if (isOffered(parsed?.['model'])) model = parsed['model']
+    if (THEMES.includes(parsed?.['theme'] as ThemePreference))
+      theme = parsed?.['theme'] as ThemePreference
+    layout = parseLayout(parsed?.['layout'])
   } catch {
     // Keep the default.
   }
@@ -82,10 +139,12 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   }
   /** The whole file with some fields changed: every write keeps the fields it does not touch. */
   const snapshot = (changes: Partial<SettingsFile>): SettingsFile => ({
-    version: 2,
+    version: 3,
     model,
-    provider,
-    providerModels,
+    connection,
+    connectionModels,
+    connections,
+    showPersonalUseConnections,
     theme,
     layout,
     ...changes,
@@ -96,27 +155,42 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     options: MODEL_OPTIONS.map((option) => ({ ...option })),
   })
   return {
-    selection: (id) => providerModels[id] ?? null,
+    selection: (id) => connectionModels[id] ?? null,
     async setSelection(id, next) {
-      if (!PROVIDERS.includes(id)) throw new Error('Unknown provider.')
+      if (!CONNECTION_ID.test(id)) throw new Error('Unknown provider.')
       await serial(async () => {
         const selections = Object.fromEntries(
-          Object.entries(providerModels).filter(([key]) => key !== id),
+          Object.entries(connectionModels).filter(([key]) => key !== id),
         )
         if (next !== null) selections[id] = next
         const validated = selectionSchema.parse(selections)
-        await writeJsonFile(file, snapshot({ providerModels: validated }))
-        providerModels = validated
+        await writeJsonFile(file, snapshot({ connectionModels: validated }))
+        connectionModels = validated
       })
     },
-    get provider() {
-      return provider
+    get connection() {
+      return connection
     },
-    async setProvider(next) {
-      if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
+    async setConnection(next) {
+      if (!CONNECTION_ID.test(next)) throw new Error('Unknown provider.')
       await serial(async () => {
-        await writeJsonFile(file, snapshot({ provider: next }))
-        provider = next
+        const list = withConnection(connections, next)
+        await writeJsonFile(file, snapshot({ connection: next, connections: list }))
+        connection = next
+        connections = list
+      })
+    },
+    get connections() {
+      return connections
+    },
+    get showPersonalUseConnections() {
+      return showPersonalUseConnections
+    },
+    async setShowPersonalUseConnections(show) {
+      if (typeof show !== 'boolean') throw new Error('Invalid choice.')
+      await serial(async () => {
+        await writeJsonFile(file, snapshot({ showPersonalUseConnections: show }))
+        showPersonalUseConnections = show
       })
     },
     get model() {

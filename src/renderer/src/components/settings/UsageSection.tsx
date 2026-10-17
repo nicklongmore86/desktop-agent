@@ -1,5 +1,6 @@
 import { useId, useState } from 'react'
-import type { ProviderId } from '../../../../shared/ipc'
+import type { ConnectionId } from '../../../../shared/ipc-connections'
+import { connectionOf, useConnections } from '../../connections'
 import { useProviderModels } from '../../provider-models'
 import {
   describeFailure,
@@ -13,8 +14,9 @@ import {
 
 const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
 
-/** Plan, limits and (for Codex) the model; reads through the same hooks as the chat indicator. */
-export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.Element {
+/** Plan, limits and (where it lists them) the model; reads through the same hooks as the chat indicator. */
+export function UsageSection({ provider }: { provider: ConnectionId }): React.JSX.Element {
+  const connection = connectionOf(useConnections(), provider)
   const modelId = useId()
   const [saveFailed, setSaveFailed] = useState(false)
   const usage = useProviderUsage(provider)
@@ -59,9 +61,9 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
               : 'No credits available'}
         </p>
       )}
-      {provider === 'claude-subscription' ? (
+      {!connection ? null : !connection.capabilities.reportsUsage ? (
         <p className="settings-hint">
-          Last known limit state. Claude does not report usage percentages.
+          {`Last known limit state. ${connection.shortLabel} does not report usage percentages.`}
         </p>
       ) : (
         <>
@@ -86,9 +88,9 @@ export function UsageSection({ provider }: { provider: ProviderId }): React.JSX.
           })}
         </>
       )}
-      {provider === 'codex-subscription' && (
+      {connection?.capabilities.listsModels && (
         <>
-          <label htmlFor={modelId}>Codex model</label>
+          <label htmlFor={modelId}>{connection.shortLabel} model</label>
           <select
             id={modelId}
             disabled={!choice}

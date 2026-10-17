@@ -12,7 +12,7 @@ import type { AgentTool, RunResult } from '../agent'
 import { DEFAULT_SYSTEM_PROMPT } from '../agent'
 import type { AgentRunner } from '../chat/session'
 import { ToolBridge, transcriptPrompt } from './bridge'
-import { SubscriptionError, subscriptionFailure, plausibleReset } from './errors'
+import { CLAUDE_FAILURES, SubscriptionError, mapFailure, plausibleReset } from './errors'
 import type { ProviderFailure } from '../../shared/ipc'
 import type { RuntimeContext } from './codex'
 
@@ -171,22 +171,22 @@ export function createClaudeSubscriptionRunner(
             message.rate_limit_info.status === 'rejected'
           ) {
             observe.onLimit?.(plausibleReset(message.rate_limit_info.resetsAt))
-            throw subscriptionFailure(
+            throw mapFailure(
               { code: 'usage_limit', resetsAt: message.rate_limit_info.resetsAt },
-              'claude',
+              CLAUDE_FAILURES,
             )
           }
           if (message.type === 'assistant' && message.error)
-            throw subscriptionFailure({ code: message.error, message: message.message }, 'claude')
+            throw mapFailure({ code: message.error, message: message.message }, CLAUDE_FAILURES)
           if (message.type === 'result') {
             if (message.subtype !== 'success' || message.is_error)
-              throw subscriptionFailure(
+              throw mapFailure(
                 {
                   ...message,
                   errors: 'errors' in message ? message.errors : [],
                   result: 'result' in message ? message.result : '',
                 },
-                'claude',
+                CLAUDE_FAILURES,
               )
             completed = true
           }
@@ -196,7 +196,7 @@ export function createClaudeSubscriptionRunner(
         bridge.flush()
         return { conversation: structuredClone(bridge.history), stopReason: 'end_turn' }
       } catch (error) {
-        const failure = subscriptionFailure(error, 'claude')
+        const failure = mapFailure(error, CLAUDE_FAILURES)
         const code = options.signal.aborted ? 'aborted' : failure.code
         if (!options.signal.aborted) observe.onFailure?.(failure)
         options.onEvent({

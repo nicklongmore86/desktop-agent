@@ -1,5 +1,7 @@
+import type { ChatErrorCode } from '../../shared/ipc'
 import type { AgentErrorCode } from '../agent/types'
 
+/** A failure whose message is safe to show: written here, never copied from a provider. */
 export class SubscriptionError extends Error {
   readonly resetsAt?: string
   constructor(
@@ -33,16 +35,48 @@ export function resetDescription(iso: string): string {
   })
 }
 
+/**
+ * A connection could not start before any provider was contacted (no key saved,
+ * the key unreadable). Its message is written for users and never holds the key.
+ */
+export class SetupError extends Error {
+  constructor(
+    readonly code: ChatErrorCode,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {}
 
+/**
+ * The failure messages that depend on whose plan it is. Every adapter maps errors
+ * with its own wording (ConnectionAdapter.failure); the rest of the text is shared.
+ */
+export interface FailureWording {
+  /** The plan does not include this product or model. */
+  planNotEntitled: string
+  /** The plan's limit is reached; the reset time or a hint is appended. */
+  usageLimit: string
+}
+
+export const CLAUDE_FAILURES: FailureWording = {
+  planNotEntitled: "Your Claude plan doesn't include Claude Code. Claude Pro or Max is required.",
+  usageLimit: "You've reached your Claude plan's Claude Code limit.",
+}
+
+export const CODEX_FAILURES: FailureWording = {
+  planNotEntitled:
+    "Your ChatGPT plan doesn't include this model. Choose an available model in Settings.",
+  usageLimit: "You've reached your ChatGPT plan's Codex limit.",
+}
+
 /** Only extract known scalar fields; never forward raw runtime text, paths or credentials. */
-export function subscriptionFailure(
-  value: unknown,
-  provider: 'codex' | 'claude',
-): SubscriptionError {
+export function mapFailure(value: unknown, wording: FailureWording): SubscriptionError {
   if (value instanceof SubscriptionError) return value
   const fields: string[] = []
   let resetsAt: string | undefined
@@ -150,10 +184,7 @@ export function subscriptionFailure(
     )
   ) {
     code = 'plan_not_entitled'
-    message =
-      provider === 'claude'
-        ? "Your Claude plan doesn't include Claude Code. Claude Pro or Max is required."
-        : "Your ChatGPT plan doesn't include this model. Choose an available model in Settings."
+    message = wording.planNotEntitled
   } else if (
     /model_unavailable|model.*(?:not.found|unavailable|does.not.exist|not.supported)|model_not_found/i.test(
       text,
@@ -167,10 +198,7 @@ export function subscriptionFailure(
     )
   ) {
     code = 'usage_limit'
-    message =
-      provider === 'codex'
-        ? "You've reached your ChatGPT plan's Codex limit."
-        : "You've reached your Claude plan's Claude Code limit."
+    message = wording.usageLimit
     if (resetsAt) message += ` It resets at ${resetDescription(resetsAt)}.`
     else message += ' Check your allowance in Settings or wait for it to reset.'
   } else if (/context_limit|contextWindowExceeded|context.*window.*exceed/i.test(text)) {

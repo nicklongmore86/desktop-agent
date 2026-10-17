@@ -1,5 +1,5 @@
 import { expect, it, beforeEach, afterEach, vi } from 'vitest'
-import { subscriptionFailure } from './errors'
+import { CLAUDE_FAILURES, CODEX_FAILURES, mapFailure } from './errors'
 
 it.each([
   [{ codexErrorInfo: 'usageLimitExceeded' }, 'usage_limit'],
@@ -13,17 +13,17 @@ it.each([
   [new Error('Runtime could not start.'), 'runtime_unavailable'],
   [{ message: 'unrecognized provider error' }, 'api'],
 ] as const)('classifies structured runtime failure %#', (input, code) => {
-  expect(subscriptionFailure(input, 'codex').code).toBe(code)
+  expect(mapFailure(input, CODEX_FAILURES).code).toBe(code)
 })
 it('preserves reset time while never forwarding raw secrets, paths or provider prose', () => {
-  const error = subscriptionFailure(
+  const error = mapFailure(
     {
       code: 'usage_limit',
       resetsAt: 1800000000,
       message: 'secret sk-private C:\\Users\\private /home/private Bearer token',
       data: { access_token: 'private' },
     },
-    'codex',
+    CODEX_FAILURES,
   )
   expect(error.resetsAt).toBe('2027-01-15T08:00:00.000Z')
   expect(error.message).toContain('resets at')
@@ -32,7 +32,7 @@ it('preserves reset time while never forwarding raw secrets, paths or provider p
 })
 it('explains Claude Free entitlement explicitly', () => {
   expect(
-    subscriptionFailure({ message: 'Claude Free plan does not include Claude Code' }, 'claude'),
+    mapFailure({ message: 'Claude Free plan does not include Claude Code' }, CLAUDE_FAILURES),
   ).toMatchObject({
     code: 'plan_not_entitled',
     message: "Your Claude plan doesn't include Claude Code. Claude Pro or Max is required.",
@@ -40,12 +40,12 @@ it('explains Claude Free entitlement explicitly', () => {
 })
 it('prefers a structured code over ambiguous provider prose', () => {
   expect(
-    subscriptionFailure(
+    mapFailure(
       {
         codexErrorInfo: 'usageLimitExceeded',
         message: 'Model unavailable or authentication failed',
       },
-      'codex',
+      CODEX_FAILURES,
     ).code,
   ).toBe('usage_limit')
 })
@@ -54,13 +54,13 @@ it.each([null, 'badRequest'] as const)(
   'recognizes model denial for ChatGPT accounts through wrapper %s',
   (codexErrorInfo) => {
     expect(
-      subscriptionFailure(
+      mapFailure(
         {
           codexErrorInfo,
           message:
             "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
         },
-        'codex',
+        CODEX_FAILURES,
       ).code,
     ).toBe('plan_not_entitled')
   },
@@ -76,9 +76,9 @@ afterEach(() => {
 it.each([1800000000 + 9 * 86400, 1800000000 - 2 * 86400, '2099-01-01', Infinity, null])(
   'drops implausible reset %s even inside provider result JSON',
   (resetsAt) => {
-    const failure = subscriptionFailure(
+    const failure = mapFailure(
       { result: JSON.stringify({ code: 'usage_limit', resetsAt }) },
-      'claude',
+      CLAUDE_FAILURES,
     )
     expect(failure.code).toBe('usage_limit')
     expect(failure.resetsAt).toBeUndefined()
@@ -87,16 +87,13 @@ it.each([1800000000 + 9 * 86400, 1800000000 - 2 * 86400, '2099-01-01', Infinity,
 it.each(['request 14001', 'request 14291', 'request 15031', 'request 14001 model details'])(
   'does not interpret arbitrary digits in %s as HTTP status',
   (message) => {
-    expect(subscriptionFailure({ message }, 'codex').code).toBe('api')
+    expect(mapFailure({ message }, CODEX_FAILURES).code).toBe('api')
   },
 )
 it('includes a date for a reset beyond today', () => {
-  const failure = subscriptionFailure(
-    { code: 'usage_limit', resetsAt: 1800000000 + 86400 },
-    'codex',
-  )
+  const failure = mapFailure({ code: 'usage_limit', resetsAt: 1800000000 + 86400 }, CODEX_FAILURES)
   expect(failure.message).toContain('2027')
 })
 it('uses a neutral message for ambiguous Claude billing errors', () => {
-  expect(subscriptionFailure({ code: 'billing_error' }, 'claude')).toMatchObject({ code: 'api' })
+  expect(mapFailure({ code: 'billing_error' }, CLAUDE_FAILURES)).toMatchObject({ code: 'api' })
 })

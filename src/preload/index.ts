@@ -37,9 +37,9 @@ const api: DesktopApi = {
   },
   getAppInfo: () => invoke(IpcChannels.getAppInfo),
   apiKey: {
-    status: () => invoke(IpcChannels.apiKeyStatus),
-    set: (key) => invoke(IpcChannels.apiKeySet, key),
-    clear: () => invoke(IpcChannels.apiKeyClear),
+    status: (connection) => invoke(IpcChannels.apiKeyStatus, connection),
+    set: (key, connection) => invoke(IpcChannels.apiKeySet, key, connection),
+    clear: (connection) => invoke(IpcChannels.apiKeyClear, connection),
   },
   grants: {
     list: () => invoke(IpcChannels.grantsList),
