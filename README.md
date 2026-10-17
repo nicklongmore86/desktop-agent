@@ -223,6 +223,8 @@ Every untrusted field in the dialog (tool name, summary, paths, shell path, cwd,
 
 Renderer tests run in jsdom with Testing Library (`src/renderer/**/*.test.tsx`, the `renderer` Vitest project); main-process tests run in Node (the `main` project).
 
+To match a string field inside `toMatchObject` or `expect.objectContaining`, use `expect.stringMatching(/re/)`, not a bare `/re/`. Under `toMatchObject` (Vitest and Playwright alike), a bare RegExp counts as an object with no keys, so it matches any value and the assertion checks nothing. Inside `objectContaining`, it only equals another RegExp. ESLint (`no-restricted-syntax` in `eslint.config.mjs`) rejects a bare RegExp literal in either place in tests and e2e specs. It can't see a regex held in a variable, so don't write that either.
+
 ### Workspace chat
 
 **Composer and shortcuts.** Provider and model pickers live in the composer. Switching provider uses the same operation as Settings (the conversation is cleared, with separate history per provider). The model picker uses `provider.models()` / `provider.setModel()` for Codex and the existing model API for Anthropic API mode; it is hidden when a provider has no model list (Claude subscription). A usage indicator next to the pickers reads `provider.allowance()` (on provider switch, after each completed turn and on usage-limit errors; never polled) and is advisory only: amber from 80% of any window used, red when limited, and it never blocks sending. Click it to open account settings.

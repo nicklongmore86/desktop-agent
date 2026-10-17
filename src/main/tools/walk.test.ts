@@ -112,7 +112,10 @@ describe('assertNoBlockedInside', () => {
     await put(path.join(sb.root, 'dirty', 'deep', '.env'))
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'dirty'), guard, 100, signal),
-    ).rejects.toMatchObject({ code: 'protected', message: /contains a protected item/ })
+    ).rejects.toMatchObject({
+      code: 'protected',
+      message: expect.stringMatching(/contains a protected item/) as unknown,
+    })
   })
 
   it('fails closed when a subfolder cannot be listed', async () => {
@@ -124,7 +127,10 @@ describe('assertNoBlockedInside', () => {
         : realReaddir(p)) as typeof fs.readdir)
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'dir'), guard, 100, signal),
-    ).rejects.toMatchObject({ code: 'protected', message: /Could not check everything.*EACCES/ })
+    ).rejects.toMatchObject({
+      code: 'protected',
+      message: expect.stringMatching(/Could not check everything.*EACCES/) as unknown,
+    })
   })
 
   it('fails closed when an entry cannot be stat-ed', async () => {
@@ -136,7 +142,7 @@ describe('assertNoBlockedInside', () => {
         : realLstat(p, o)) as typeof fs.lstat)
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'dir'), guard, 100, signal),
-    ).rejects.toMatchObject({ message: /EBUSY/ })
+    ).rejects.toMatchObject({ message: expect.stringMatching(/EBUSY/) as unknown })
   })
 
   it('refuses a folder with a hard-linked file anywhere inside', async () => {
@@ -148,14 +154,20 @@ describe('assertNoBlockedInside', () => {
     )
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'proj'), guard, 100, signal),
-    ).rejects.toMatchObject({ code: 'hard-link', message: /deep\.txt/ })
+    ).rejects.toMatchObject({
+      code: 'hard-link',
+      message: expect.stringMatching(/deep\.txt/) as unknown,
+    })
   })
 
   it('refuses folders over the entry limit, and cancelled scans', async () => {
     for (const n of ['a', 'b', 'c']) await put(path.join(sb.root, 'big', n))
     await expect(
       assertNoBlockedInside(path.join(sb.root, 'big'), guard, 2, signal),
-    ).rejects.toMatchObject({ code: 'too-large', message: /more than 2 entries/ })
+    ).rejects.toMatchObject({
+      code: 'too-large',
+      message: expect.stringMatching(/more than 2 entries/) as unknown,
+    })
     const aborted = new AbortController()
     aborted.abort()
     await expect(
@@ -220,7 +232,7 @@ describe('assertNoBlockedInside', () => {
     })
     await expect(assertNoBlockedInside(big, guard, size - 1, signal)).rejects.toMatchObject({
       code: 'too-large',
-      message: /more than 149,999 entries/,
+      message: expect.stringMatching(/more than 149,999 entries/) as unknown,
     })
   }, 30_000)
 
@@ -232,7 +244,9 @@ describe('assertNoBlockedInside', () => {
       assertNoBlockedInside(path.join(sb.root, 'slow'), guard, MAX_TREE_ENTRIES, signal, budget),
     ).rejects.toMatchObject({
       code: 'too-large',
-      message: /stopped after 60 s \(\d+ entries checked so far\).*subfolders one at a time/,
+      message: expect.stringMatching(
+        /stopped after 60 s \(\d+ entries checked so far\).*subfolders one at a time/,
+      ) as unknown,
     })
   })
 

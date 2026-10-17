@@ -57,5 +57,23 @@ export default defineConfig([
     files: ['**/*.mjs'],
     languageOptions: { globals: globals.node },
   },
+  {
+    // toMatchObject (Vitest and Playwright) treats a RegExp as an object with no keys, so a
+    // regex value matches anything. Use expect.stringMatching(re) instead.
+    files: ['**/*.test.{ts,tsx}', 'e2e/**/*.ts'],
+    // TODO: drop once PR #30 converts the remaining run-shell assertions.
+    ignores: ['src/main/tools/run-shell.test.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'CallExpression[callee.property.name=/^(toMatchObject|objectContaining)$/] > .arguments :matches(Property > Literal.value, ArrayExpression > Literal)[regex]',
+          message:
+            'A RegExp here matches any value (toMatchObject) or only another RegExp (objectContaining). Use expect.stringMatching(re).',
+        },
+      ],
+    },
+  },
   prettier,
 ])

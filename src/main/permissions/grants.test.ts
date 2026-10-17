@@ -58,20 +58,26 @@ describe('GrantStore', () => {
     const store = await GrantStore.open(file, { protectedPaths: [sb.userData] })
     expect(await store.add(path.join(sb.base, 'missing'))).toMatchObject({
       ok: false,
-      reason: /does not exist/,
+      reason: expect.stringMatching(/does not exist/) as unknown,
     })
     await put(path.join(sb.root, 'file.txt'))
     expect(await store.add(path.join(sb.root, 'file.txt'))).toMatchObject({
       ok: false,
-      reason: /not a folder/,
+      reason: expect.stringMatching(/not a folder/) as unknown,
     })
-    expect(await store.add(path.parse(sb.root).root)).toMatchObject({ ok: false, reason: /root/ })
+    expect(await store.add(path.parse(sb.root).root)).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/root/) as unknown,
+    })
     await fs.mkdir(path.join(sb.root, '.ssh'))
     expect(await store.add(path.join(sb.root, '.ssh'))).toMatchObject({
       ok: false,
-      reason: /blocked/,
+      reason: expect.stringMatching(/blocked/) as unknown,
     })
-    expect(await store.add(sb.userData)).toMatchObject({ ok: false, reason: /app's own data/ })
+    expect(await store.add(sb.userData)).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/app's own data/) as unknown,
+    })
     expect(await store.add('relative/folder')).toMatchObject({ ok: false })
     expect(store.list()).toEqual([])
   })
