@@ -92,7 +92,7 @@ jobs:
             e2e-artifacts/
             test-results/e2e/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: ${{ github.ref == 'refs/heads/main' && 5 || 3 }}
 
   installer:
     name: Windows installer
@@ -130,4 +130,4 @@ jobs:
             release/*/*.exe
             release/*/win-unpacked/resources/runtimes/integrity.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.ref == 'refs/heads/main' && 5 || 3 }}
