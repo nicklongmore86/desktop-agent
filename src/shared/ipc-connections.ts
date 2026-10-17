@@ -7,8 +7,15 @@
  * No zod here, so the renderer bundle stays small. Main validates every id
  * against its adapter registry (src/main/providers/registry.ts).
  */
+import type { ProviderStatus } from './ipc'
+
 export const connectionsChannels = {
   connectionsList: 'connections:list',
+  connectionsState: 'connections:state',
+  connectionsStatus: 'connections:status',
+  connectionsAdd: 'connections:add',
+  connectionsRemove: 'connections:remove',
+  connectionsSetShowPersonalUse: 'connections:set-show-personal-use',
 } as const
 
 /** Who serves the model. Add a vendor here before registering its first adapter. */
@@ -80,9 +87,30 @@ export interface ConnectionInfo {
   pickerOrder: number
 }
 
+/** Which of the listed connections the user has set up, and the setting that hides some. */
+export interface ConnectionsState {
+  /** Set-up connections the user can choose now, in the order they were added. */
+  configured: ConnectionId[]
+  /** The connection chats go to. */
+  current: ConnectionId
+  showPersonalUse: boolean
+}
+
 export interface ConnectionsApi {
   connections: {
     /** The connections the user can choose, in Settings order. */
     list: () => Promise<ConnectionInfo[]>
+    state: () => Promise<ConnectionsState>
+    /** Any listed connection's status, not only the current one's (needs no switch). */
+    status: (id: ConnectionId) => Promise<ProviderStatus>
+    /** Adds a listed connection to the set-up ones. Rejects an unknown id. */
+    add: (id: ConnectionId) => Promise<ConnectionsState>
+    /**
+     * Takes a connection out of the set-up ones. Chat history and keys are not touched.
+     * Rejects the connection chats go to: switch away first.
+     */
+    remove: (id: ConnectionId) => Promise<ConnectionsState>
+    /** Rejects hiding while chats go to a personal-use connection: switch away first. */
+    setShowPersonalUse: (show: boolean) => Promise<ConnectionsState>
   }
 }

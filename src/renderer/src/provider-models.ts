@@ -10,11 +10,15 @@ export interface ModelChoice {
   selected: string | null
   /** Shown when the model that will run is not the saved one. */
   note: string | null
+  /** The connection's own default, which the wizard marks "Recommended". */
+  recommended: string | null
 }
 
 export interface ProviderModelPicker {
   /** Null while loading, or when the provider has no list to choose from. */
   choice: ModelChoice | null
+  /** False until the first read has finished (with or without a list). */
+  loaded: boolean
   /** The typed reason the last read or save failed; null when it did not, or gave none. */
   failure: ProviderFailure | null
   refresh: () => void
@@ -33,6 +37,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
   const [readFailure, setReadFailure] = useState<ProviderFailure | null>(null)
   const [saveFailure, setSaveFailure] = useState<ProviderFailure | null>(null)
   const [tick, setTick] = useState(0)
+  const [loadedFor, setLoadedFor] = useState<ConnectionId | null>(null)
 
   useEffect(() => {
     if (!provider) return
@@ -44,11 +49,17 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
         if (provider === ANTHROPIC_API) {
           const model = await api.model.get()
           if (model.options.length > 0)
-            next = { provider, options: model.options, selected: model.model, note: null }
+            next = {
+              provider,
+              options: model.options,
+              selected: model.model,
+              note: null,
+              recommended: model.defaultModel,
+            }
         } else {
           const result = await api.provider.models()
           if (result.ok && result.value.provider === provider && result.value.options.length > 0) {
-            const { options, savedModel, resolvedModel } = result.value
+            const { options, savedModel, resolvedModel, defaultModel } = result.value
             const offered = options.some((option) => option.id === savedModel)
             next = {
               provider,
@@ -58,6 +69,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
                 savedModel && resolvedModel && resolvedModel !== savedModel
                   ? 'Using default model'
                   : null,
+              recommended: defaultModel,
             }
           } else if (!result.ok) {
             failed = result.failure
@@ -69,6 +81,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
       if (current) {
         setChoice(next)
         setReadFailure(failed)
+        setLoadedFor(provider)
       }
     }
     void read()
@@ -108,6 +121,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
 
   return {
     choice: choice && choice.provider === provider ? choice : null,
+    loaded: provider !== undefined && loadedFor === provider,
     failure: saveFailure ?? readFailure,
     refresh,
     select,

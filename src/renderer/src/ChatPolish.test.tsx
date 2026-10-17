@@ -310,7 +310,7 @@ describe('Settings and the composer share state', () => {
   it('switches provider from Settings through chat.switchProvider and updates the composer', async () => {
     const { api, user } = await renderApp()
     await user.keyboard('{Control>},{/Control}')
-    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await user.click(await screen.findByRole('button', { name: /Use Codex · ChatGPT/ }))
     await waitFor(() => {
       expect(api.provider.set).toHaveBeenCalledWith('codex-subscription')
     })

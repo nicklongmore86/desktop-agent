@@ -43,7 +43,7 @@ function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
 describe('SettingsPanel', () => {
   it('saves a key through a masked input and only ever shows "Key saved"', async () => {
     const { api, user } = renderSettings({ saved: false, error: null })
-    expect(screen.getByText('No key saved.')).toBeTruthy()
+    expect(await screen.findByText('No key saved.')).toBeTruthy()
     const input = screen.getByLabelText('API key')
     expect(input.getAttribute('type')).toBe('password')
     expect(input.getAttribute('autocomplete')).toBe('off')
@@ -57,7 +57,7 @@ describe('SettingsPanel', () => {
 
   it('replaces and clears a saved key', async () => {
     const { api, user } = renderSettings({ saved: true, error: null })
-    await user.click(screen.getByRole('button', { name: 'Replace key' }))
+    await user.click(await screen.findByRole('button', { name: 'Replace key' }))
     const input = screen.getByLabelText('API key')
     expect(input).toHaveProperty('value', '')
     await user.type(input, 'sk-new')
@@ -74,7 +74,7 @@ describe('SettingsPanel', () => {
       saved: false,
       error: 'OS encryption is unavailable. API key storage is disabled.',
     })
-    await user.type(screen.getByLabelText('API key'), 'sk-x')
+    await user.type(await screen.findByLabelText('API key'), 'sk-x')
     await user.click(screen.getByRole('button', { name: 'Save key' }))
     expect(screen.getByRole('alert').textContent).toContain('OS encryption is unavailable')
   })

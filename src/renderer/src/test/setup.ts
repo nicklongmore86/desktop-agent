@@ -5,6 +5,11 @@ import { setViewport } from './viewport'
 // jsdom has no layout, so it does not implement scrolling.
 Element.prototype.scrollIntoView = function scrollIntoView() {}
 
+// jsdom does not implement checkVisibility; without layout everything attached counts as visible.
+HTMLElement.prototype.checkVisibility = function checkVisibility() {
+  return this.isConnected
+}
+
 // Pointer capture (the resize handle) is not implemented by jsdom.
 Element.prototype.setPointerCapture = function setPointerCapture() {}
 Element.prototype.releasePointerCapture = function releasePointerCapture() {}

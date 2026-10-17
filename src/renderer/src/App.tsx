@@ -11,7 +11,14 @@ import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { CommandBar } from './components/CommandBar'
-import { connectionOf, ConnectionsProvider, useConnections } from './connections'
+import {
+  connectionOf,
+  ConnectionOverviewProvider,
+  ConnectionsProvider,
+  useConnectionOverview,
+  useConnections,
+} from './connections'
+import { ConnectionWizard } from './components/connections/ConnectionWizard'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { FileReferencesProvider } from './components/files/file-references'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -62,7 +69,9 @@ function SetupGuide({
 export function App(): React.JSX.Element {
   return (
     <ConnectionsProvider>
-      <AppWindow />
+      <ConnectionOverviewProvider>
+        <AppWindow />
+      </ConnectionOverviewProvider>
     </ConnectionsProvider>
   )
 }
@@ -71,6 +80,7 @@ function AppWindow(): React.JSX.Element {
   const api = useApi()
   const chat = useChat()
   const connections = useConnections()
+  const overview = useConnectionOverview()
   // Loads the saved theme and applies it; Settings reads and changes it with useTheme() too.
   useTheme()
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
@@ -79,6 +89,11 @@ function AppWindow(): React.JSX.Element {
   const [grants, setGrants] = useState<GrantsState | null>(null)
   const [provider, setProvider] = useState<ProviderStatus | null>(null)
   const [audit, setAudit] = useState<AuditStatus | null>(null)
+  /** The Add connection flow (first run, the composer picker, Settings), or null when closed. */
+  const [wizard, setWizard] = useState<{ startAt: ConnectionId | null; firstRun: boolean } | null>(
+    null,
+  )
+  const [firstRunChecked, setFirstRunChecked] = useState(false)
 
   useEffect(() => {
     const report = (what: string) => (error: unknown) => {
@@ -93,6 +108,19 @@ function AppWindow(): React.JSX.Element {
     api.audit.status().then(setAudit, report('audit.status'))
     return api.onAuditStatus(setAudit)
   }, [api])
+
+  // Nothing is ready to chat with: open the wizard once per launch, when the checks are in.
+  if (!firstRunChecked && overview.loaded) {
+    setFirstRunChecked(true)
+    if (!overview.rows.some((row) => row.ready)) setWizard({ startAt: null, firstRun: true })
+  }
+  // The checks behind the picker and the cards follow the connection chats go to.
+  const refreshOverview = overview.refresh
+  const providerId = provider?.provider
+  const providerState = provider?.state
+  useEffect(() => {
+    if (providerId) refreshOverview()
+  }, [providerId, providerState, refreshOverview])
 
   const loaded = keyStatus !== null && grants !== null
   const keySaved = keyStatus?.saved ?? false
@@ -153,14 +181,30 @@ function AppWindow(): React.JSX.Element {
         focusInput(view)
       },
     },
-    approval !== undefined || listDialog,
+    approval !== undefined || listDialog || wizard !== null,
   )
   useViewModeHotkey(
     () => {
       if (!chat.state.switching) changeView(view === 'chat' ? 'command' : 'chat')
     },
-    approval !== undefined || settingsSection !== null || listDialog,
+    approval !== undefined || settingsSection !== null || listDialog || wizard !== null,
   )
+  const switchForWizard = async (next: ConnectionId): Promise<ProviderStatus> => {
+    const status = await chat.switchProvider(next)
+    setProvider(status)
+    return status
+  }
+  const closeWizard = (): void => {
+    setWizard(null)
+    api.apiKey.status().then(setKeyStatus, () => {})
+    overview.refresh()
+  }
+  // The picker lists what is ready to use, and always the connection in use.
+  const pickerConnections = overview.loaded
+    ? overview.rows
+        .filter((row) => row.ready || row.info.id === provider?.provider)
+        .map((row) => row.info)
+    : (connections ?? [])
   const providerName = connectionOf(connections, provider?.provider)?.label ?? 'Loading provider…'
   const switchProvider = async (next: ConnectionId): Promise<void> => {
     try {
@@ -182,7 +226,7 @@ function AppWindow(): React.JSX.Element {
     <FileReferencesProvider>
       <AppShell
         shellRef={shell}
-        inert={settingsSection !== null}
+        inert={settingsSection !== null || wizard !== null}
         suspended={Boolean(approval)}
         blocked={listDialog}
         left={(variant) => (
@@ -268,8 +312,11 @@ function AppWindow(): React.JSX.Element {
             onDismissStorageWarning={chat.dismissStorageWarning}
             onOpenSettings={openSettings}
             provider={provider}
-            connections={connections ?? []}
+            connections={pickerConnections}
             onSwitchProvider={switchProvider}
+            onManageConnections={() => {
+              setWizard({ startAt: null, firstRun: false })
+            }}
             composerRef={composerRef}
             platform={appInfo?.platform}
             commandBar={
@@ -324,7 +371,10 @@ function AppWindow(): React.JSX.Element {
         <SettingsDialog
           key={settingsSection}
           initialSection={settingsSection}
-          suspended={Boolean(approval)}
+          suspended={Boolean(approval) || wizard !== null}
+          onAddConnection={(startAt) => {
+            setWizard({ startAt: startAt ?? null, firstRun: false })
+          }}
           onClose={() => {
             setSettingsSection(null)
           }}
@@ -337,6 +387,19 @@ function AppWindow(): React.JSX.Element {
           grants={grants}
           onGrants={setGrants}
           audit={audit}
+        />
+      )}
+
+      {wizard && (
+        <ConnectionWizard
+          suspended={Boolean(approval)}
+          firstRun={wizard.firstRun}
+          startAt={wizard.startAt}
+          grants={grants}
+          onGrants={setGrants}
+          onProvider={setProvider}
+          onSwitchProvider={switchForWizard}
+          onClose={closeWizard}
         />
       )}
 

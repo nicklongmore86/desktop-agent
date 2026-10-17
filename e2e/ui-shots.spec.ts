@@ -146,7 +146,7 @@ for (const width of [1280, 400]) {
         }
         if (width > 540)
           await page.getByRole('button', { name: 'Accounts & providers', exact: true }).click()
-        await page.getByRole('radio', { name: /Codex · ChatGPT/ }).check()
+        await page.getByRole('button', { name: /Use Codex · ChatGPT/ }).click()
         for (const [name, state, remaining] of [
           ['normal', 'available', 65],
           ['amber', 'available', 15],
@@ -209,7 +209,7 @@ for (const width of [1280, 400]) {
             result: null,
           })
         })
-        await page.getByRole('radio', { name: /Claude · Subscription/ }).check()
+        await page.getByRole('button', { name: /Use Claude · Subscription/ }).click()
         await expect(page.getByLabel('Sign-in link')).toBeVisible()
         await page.locator('.login-link').evaluate((element) => {
           element.scrollIntoView({ block: 'start' })

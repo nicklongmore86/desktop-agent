@@ -32,6 +32,8 @@ export interface ChatViewProps {
   connections: ConnectionInfo[]
   /** Switches provider through the same path as Settings (clears the conversation). */
   onSwitchProvider: (provider: ConnectionId) => Promise<void>
+  /** Opens the Add connection flow (the picker's last item). */
+  onManageConnections: () => void
   /** Lets the app focus the message box (Ctrl/Cmd+K). */
   composerRef?: React.RefObject<HTMLTextAreaElement | null>
   /** Shown above the composer when setup is incomplete. */
@@ -55,6 +57,7 @@ export function ChatView({
   provider,
   connections,
   onSwitchProvider,
+  onManageConnections,
   composerRef,
   notice,
   commandBar,
@@ -318,6 +321,7 @@ export function ChatView({
           }}
           provider={provider}
           connections={connections}
+          onManageConnections={onManageConnections}
           onSwitchProvider={(next) => {
             void onSwitchProvider(next)
           }}

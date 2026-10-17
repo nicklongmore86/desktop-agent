@@ -15,6 +15,8 @@ export interface SettingsPanelProps {
   onProvider?: ((status: ProviderStatus) => void) | undefined
   /** Switches provider; the chat uses it to hide the old conversation meanwhile. */
   onSwitchProvider: (provider: ConnectionId) => Promise<ProviderStatus>
+  /** Opens the Add connection flow, on a listed connection's setup when one is named. */
+  onAddConnection?: ((startAt?: ConnectionId) => void) | undefined
   keyStatus: ApiKeyStatus | null
   onKeyStatus: (status: ApiKeyStatus) => void
   grants: GrantsState | null

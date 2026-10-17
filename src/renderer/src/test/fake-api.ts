@@ -15,7 +15,12 @@ import type {
   SendResult,
   ThemePreference,
 } from '../../../shared/ipc'
-import type { ConnectionId } from '../../../shared/ipc-connections'
+import {
+  BUILTIN_CONNECTIONS,
+  type ConnectionId,
+  type ConnectionInfo,
+  type ConnectionsState,
+} from '../../../shared/ipc-connections'
 import { BUILTIN_CONNECTION_INFO } from '../../../shared/connections-fixture'
 import type {
   FileEntry,
@@ -127,7 +132,17 @@ export const FAKE_FILES: Record<string, FileEntry[]> = {
 }
 
 export interface FakeApiOptions {
+  /** Anthropic API's key, which the key calls default to. */
   key?: ApiKeyStatus
+  /** Other API-key connections' keys, by connection id. */
+  keys?: Record<ConnectionId, ApiKeyStatus>
+  /** What connections.list() offers; the built-in connections by default. */
+  connections?: ConnectionInfo[]
+  /** The set-up connections; the built-in ones by default (as in a fresh settings file). */
+  configured?: ConnectionId[]
+  /** What connections.status() answers for a connection that is not the current one (ready by default). */
+  statuses?: Record<ConnectionId, ProviderStatus>
+  showPersonalUse?: boolean
   grants?: GrantsState
   chat?: ChatState
   provider?: ProviderStatus
@@ -160,7 +175,17 @@ export function fakeApi(options: FakeApiOptions = {}) {
   const filesListeners = new Set<(change: FilesChanged) => void>()
   const gitListeners = new Set<(change: GitChanged) => void>()
   const files = options.files ?? FAKE_FILES
-  let key: ApiKeyStatus = options.key ?? { saved: true, error: null }
+  const keys: Record<ConnectionId, ApiKeyStatus> = {
+    'anthropic-api': options.key ?? { saved: true, error: null },
+    ...options.keys,
+  }
+  const keyOf = (connection: ConnectionId = 'anthropic-api'): ApiKeyStatus =>
+    keys[connection] ?? { saved: false, error: null }
+  const allConnections = options.connections ?? BUILTIN_CONNECTION_INFO
+  let configured: ConnectionId[] = options.configured ?? [...BUILTIN_CONNECTIONS]
+  let showPersonalUse = options.showPersonalUse ?? true
+  const offered = (): ConnectionInfo[] =>
+    allConnections.filter((info) => showPersonalUse || !info.personalUseOnly)
   let grants: GrantsState = options.grants ?? {
     roots: ['C:\\Users\\me\\Projects'],
     loadError: null,
@@ -193,6 +218,11 @@ export function fakeApi(options: FakeApiOptions = {}) {
     state: 'ready',
     message: 'API mode',
   }
+  const connectionsState = (): ConnectionsState => ({
+    configured: configured.filter((id) => offered().some((info) => info.id === id)),
+    current: provider.provider,
+    showPersonalUse,
+  })
   let projects: Project[] = options.projects ?? []
   let others: ProviderChat[] = options.others ?? []
   const projectsState = (): ProjectsState => ({
@@ -452,6 +482,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
           state: 'signed-out',
           message: 'Sign in with your subscription.',
         }
+        if (!configured.includes(next)) configured = [...configured, next]
         return Promise.resolve(provider)
       }),
       login: vi.fn(() => {
@@ -477,14 +508,14 @@ export function fakeApi(options: FakeApiOptions = {}) {
       Promise.resolve({ name: 'desktop-agent', version: '0.1.0', platform: 'win32' }),
     ),
     apiKey: {
-      status: vi.fn(() => Promise.resolve(key)),
-      set: vi.fn((_key: string) => {
-        key = { saved: true, error: null }
-        return Promise.resolve(key)
+      status: vi.fn((connection?: ConnectionId) => Promise.resolve(keyOf(connection))),
+      set: vi.fn((_key: string, connection: ConnectionId = 'anthropic-api') => {
+        keys[connection] = { saved: true, error: null }
+        return Promise.resolve(keyOf(connection))
       }),
-      clear: vi.fn(() => {
-        key = { saved: false, error: null }
-        return Promise.resolve(key)
+      clear: vi.fn((connection: ConnectionId = 'anthropic-api') => {
+        keys[connection] = { saved: false, error: null }
+        return Promise.resolve(keyOf(connection))
       }),
     },
     grants: {
@@ -560,7 +591,38 @@ export function fakeApi(options: FakeApiOptions = {}) {
       respond: vi.fn((_id: string, _approved: boolean) => Promise.resolve()),
     },
     connections: {
-      list: vi.fn(() => Promise.resolve(structuredClone(BUILTIN_CONNECTION_INFO))),
+      list: vi.fn(() => Promise.resolve(structuredClone(offered()))),
+      state: vi.fn(() => Promise.resolve(connectionsState())),
+      status: vi.fn((id: ConnectionId) => {
+        if (id === provider.provider) return Promise.resolve(provider)
+        // Unless a test says otherwise, the other connections are signed in and ready.
+        return Promise.resolve<ProviderStatus>(
+          options.statuses?.[id] ?? { provider: id, state: 'ready', message: 'Ready.' },
+        )
+      }),
+      add: vi.fn((id: ConnectionId) => {
+        if (!offered().some((info) => info.id === id))
+          return Promise.reject(new Error('Unknown provider.'))
+        if (!configured.includes(id)) configured = [...configured, id]
+        return Promise.resolve(connectionsState())
+      }),
+      remove: vi.fn((id: ConnectionId) => {
+        if (!offered().some((info) => info.id === id))
+          return Promise.reject(new Error('Unknown provider.'))
+        if (id === provider.provider)
+          return Promise.reject(new Error('Switch to another connection before removing this one.'))
+        configured = configured.filter((entry) => entry !== id)
+        return Promise.resolve(connectionsState())
+      }),
+      setShowPersonalUse: vi.fn((show: boolean) => {
+        const personal = allConnections.find(
+          (info) => info.id === provider.provider,
+        )?.personalUseOnly
+        if (!show && personal)
+          return Promise.reject(new Error('Switch to another connection before hiding this one.'))
+        showPersonalUse = show
+        return Promise.resolve(connectionsState())
+      }),
     },
     audit: {
       reveal: vi.fn(async () => {}),

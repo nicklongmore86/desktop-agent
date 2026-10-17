@@ -22,12 +22,16 @@ export interface ComposerProps {
   provider: ProviderStatus | null
   connections: ConnectionInfo[]
   onSwitchProvider: (provider: ConnectionId) => void
+  /** The picker's last item: opens the Add connection flow. */
+  onManageConnections: () => void
   models: ProviderModelPicker
   usage: ProviderUsage
   onOpenSettings: OpenSettings
 }
 
 const DEFAULT_MODEL = ''
+/** Not a connection id (ids never contain an underscore), so it can't be mistaken for one. */
+const MANAGE = '_manage'
 
 /** The rounded message box: text, provider and model pickers, usage, and Send/Stop. */
 export function Composer({
@@ -42,6 +46,7 @@ export function Composer({
   provider,
   connections,
   onSwitchProvider,
+  onManageConnections,
   models,
   usage,
   onOpenSettings,
@@ -88,7 +93,8 @@ export function Composer({
             value={provider?.provider ?? ''}
             disabled={!provider || switching}
             onChange={(event) => {
-              onSwitchProvider(event.target.value)
+              if (event.target.value === MANAGE) onManageConnections()
+              else onSwitchProvider(event.target.value)
             }}
           >
             {!provider && <option value="">Loading…</option>}
@@ -99,6 +105,7 @@ export function Composer({
                   {label}
                 </option>
               ))}
+            <option value={MANAGE}>Add or manage connections…</option>
           </select>
           {choice && (
             <select

@@ -271,8 +271,9 @@ it('offers both subscriptions without an API-key setup gate and keeps API mode a
   await user.click(screen.getByRole('button', { name: 'Settings' }))
   for (const provider of ['claude-subscription', 'codex-subscription']) {
     await user.click(
-      screen.getByRole('radio', {
-        name: provider === 'claude-subscription' ? /Claude · Subscription/ : /Codex · ChatGPT/,
+      await screen.findByRole('button', {
+        name:
+          provider === 'claude-subscription' ? /Use Claude · Subscription/ : /Use Codex · ChatGPT/,
       }),
     )
     expect(api.provider.set).toHaveBeenLastCalledWith(provider)
@@ -283,8 +284,10 @@ it('offers both subscriptions without an API-key setup gate and keeps API mode a
     expect(screen.queryByText(/Add your Anthropic API key/)).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Settings' }))
   }
-  await user.click(screen.getByRole('radio', { name: /Anthropic API/ }))
-  expect(screen.getByRole('heading', { name: 'Anthropic API key' })).toBeTruthy()
+  // Anthropic API has no key yet, so its card offers to set it up (the wizard's key step).
+  await user.click(await screen.findByRole('button', { name: /Set up Anthropic API/ }))
+  const wizard = screen.getByRole('dialog', { name: 'Add your Anthropic API key' })
+  expect(within(wizard).getByLabelText('Anthropic API key')).toBeTruthy()
 })
 
 it('does not let an old startup history response overwrite a provider switch', async () => {
@@ -349,7 +352,7 @@ describe('provider switch', () => {
         }),
     )
     await user.click(screen.getByRole('button', { name: 'Settings' }))
-    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await user.click(await screen.findByRole('button', { name: /Use Codex · ChatGPT/ }))
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
 
     expect(screen.queryByText('Old provider history')).toBeNull()
@@ -394,7 +397,7 @@ describe('provider switch', () => {
     const { api, user } = await renderApp({ chat: oldChat })
     api.provider.set.mockRejectedValueOnce(new Error('nope'))
     await user.click(screen.getByRole('button', { name: 'Settings' }))
-    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await user.click(await screen.findByRole('button', { name: /Use Codex · ChatGPT/ }))
     expect(await screen.findByText('Provider request failed. Try again.')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
     expect(screen.getByText('Old provider history')).toBeTruthy()
@@ -434,15 +437,19 @@ describe('connections from main', () => {
       within(picker)
         .getAllByRole('option')
         .map((option) => option.textContent),
-    ).toEqual(['Codex · ChatGPT', 'Claude · Subscription', 'Claude · API'])
+    ).toEqual([
+      'Codex · ChatGPT',
+      'Claude · Subscription',
+      'Claude · API',
+      'Add or manage connections…',
+    ])
     await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
-    const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
+    const cards = await screen.findByRole('list', { name: 'Connections' })
     expect(
       within(cards)
-        .getAllByRole('radio')
-        .map((radio) => radio.getAttribute('value')),
-    ).toEqual(['claude-subscription', 'codex-subscription', 'anthropic-api'])
-    expect(within(cards).getByText('Anthropic API')).toBeTruthy()
+        .getAllByRole('heading', { level: 4 })
+        .map((heading) => heading.textContent),
+    ).toEqual(['Claude · Subscription', 'Codex · ChatGPT', 'Anthropic API'])
     expect(api.connections.list).toHaveBeenCalledOnce()
   })
 
@@ -472,9 +479,9 @@ describe('connections from main', () => {
       within(picker)
         .getAllByRole('option')
         .map((option) => option.textContent),
-    ).toEqual(['Renamed Codex', 'Claude · API'])
+    ).toEqual(['Renamed Codex', 'Claude · API', 'Add or manage connections…'])
     await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
-    const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
+    const cards = await screen.findByRole('list', { name: 'Connections' })
     expect(within(cards).queryByText('Claude · Subscription')).toBeNull()
   })
 })
