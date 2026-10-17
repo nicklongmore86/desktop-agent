@@ -302,6 +302,22 @@ export function SafeLines({
   )
 }
 
+/**
+ * Untrusted inline text as a plain string for a `title` tooltip, which cannot hold markup:
+ * hidden and control characters become the same ⟨…⟩ tokens SafeText shows, and line
+ * breaks are marked, so a tooltip never carries a bidi override or a disguised break.
+ */
+export function plainTitle(text: string): string {
+  return revealUnsafe(text)
+    .lines.map((line) => {
+      const body = line.segments
+        .map((segment) => (segment.kind === 'text' ? segment.text : `⟨${segment.label}⟩`))
+        .join('')
+      return body + (line.end === 'lf' ? '⏎' : (END_MARKS[line.end] ?? ''))
+    })
+    .join('')
+}
+
 /** The line's leading plain text ('' if it starts with a token), e.g. for a diff's +/- prefix. */
 export const leadingText = (line: RevealedLine): string => {
   const first = line.segments[0]

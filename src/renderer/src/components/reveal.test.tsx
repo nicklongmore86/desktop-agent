@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApprovalPrompt } from '../../../shared/ipc'
 import { ApprovalCard } from './ApprovalCard'
-import { revealUnsafe } from './reveal'
+import { plainTitle, revealUnsafe } from './reveal'
 
 // Built from code points so this file itself holds no invisible characters.
 const ch = (...codes: number[]): string => String.fromCharCode(...codes)
@@ -280,6 +280,13 @@ function renderCard(prompt: ApprovalPrompt) {
   render(<ApprovalCard prompt={prompt} queued={0} onRespond={vi.fn(() => Promise.resolve())} />)
   return screen.getByRole('alertdialog')
 }
+
+describe('plainTitle', () => {
+  it('keeps a plain path, and marks hidden characters and line breaks as plain text', () => {
+    expect(plainTitle('C:\\Users\\me\\Projects')).toBe('C:\\Users\\me\\Projects')
+    expect(plainTitle('/srv/a\u202Etxt.sh\nb\rc\u200B')).toBe('/srv/a⟨U+202E⟩txt.sh⏎b⟨CR⟩c⟨U+200B⟩')
+  })
+})
 
 describe('ApprovalCard reveals spoofing characters', () => {
   it('shows no warning for clean requests', () => {

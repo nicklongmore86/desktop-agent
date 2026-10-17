@@ -197,6 +197,25 @@ describe('command bar', () => {
     expect((commandBox() as HTMLInputElement).value).toBe('dir')
   })
 
+  it("shows the whole folder in the prompt's tooltip, with hidden characters revealed", async () => {
+    const { user, pushChat } = await renderApp()
+    await user.click(commandButton())
+    expect(document.querySelector('.command-prompt')?.getAttribute('title')).toBe(ROOT)
+    act(() => {
+      pushChat({
+        type: 'command_started',
+        runId: 'run-1',
+        id: 'cmd-1',
+        command: 'dir',
+        cwd: `${ROOT}\\x\u202Etxt.exe`,
+      })
+    })
+    const card = screen.getByRole('region', { name: 'Command you ran' })
+    expect(card.querySelector('.command-card-prompt')?.getAttribute('title')).toBe(
+      `${ROOT}\\x⟨U+202E⟩txt.exe`,
+    )
+  })
+
   it('shows the running command as a card, can be stopped with Esc, and shows its output', async () => {
     const { api, user, pushChat } = await renderApp()
     await user.click(commandButton())
@@ -251,6 +270,8 @@ describe('command bar', () => {
     })
     const card = await screen.findByRole('region', { name: 'Command you ran' })
     expect(within(card).getByLabelText('Command output').textContent).toContain('file.txt')
+    // The prompt can be cut short; its tooltip names the whole folder.
+    expect(card.querySelector('.command-card-prompt')?.getAttribute('title')).toBe(ROOT)
     expect(screen.getByRole('region', { name: 'Tool activity' }).textContent).toContain(
       'Used 1 tool',
     )

@@ -1,6 +1,7 @@
 import { useId, useState } from 'react'
 import { MAX_COMMAND_LENGTH } from '../../../shared/ipc-command'
 import type { OpenSettings } from '../open-settings'
+import { plainTitle } from './reveal'
 
 /** The shell prompt for `cwd`: PowerShell's on Windows, sh's elsewhere. */
 export function commandPrompt(cwd: string, platform: string | undefined): string {
@@ -95,7 +96,8 @@ export function CommandBar({
       }}
     >
       <div className="command-line">
-        <span id={promptId} className="command-prompt" dir="ltr">
+        {/* The prompt is cut short in a narrow window; the tooltip has the whole folder. */}
+        <span id={promptId} className="command-prompt" dir="ltr" title={plainTitle(cwd)}>
           {commandPrompt(cwd, platform)}
         </span>
         <input
