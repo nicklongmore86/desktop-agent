@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events'
-import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process'
-import { readFileSync, promises as fs } from 'node:fs'
-import os from 'node:os'
+import { spawn as nodeSpawn } from 'node:child_process'
+import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -30,6 +29,17 @@ import type { ApprovalPrompt, ChatEvent } from '../../shared/ipc'
 import { ChatSession } from '../chat/session'
 import { memoryHistory, memoryStore } from '../chat/test-support'
 import { toTranscript } from '../chat/transcript'
+import {
+  cleanUp,
+  isAlive,
+  pinProcesses,
+  readPids,
+  unpinned,
+  waitForPid,
+  waitUntil,
+  WINDOWS_POWERSHELL,
+  type Pinned,
+} from './process-test-support'
 import { toolHarness } from './test-support'
 
 class FakeProcess extends EventEmitter implements ShellProcess {
@@ -845,7 +855,7 @@ describe('run_shell with a real shell', () => {
       { command: treeCommand, cwd: sb.root, timeoutMs: stop === 'timeout' ? 15_000 : 300_000 },
       ctx,
     )
-    let pinned: Pinned = { pids: [], release: () => undefined }
+    let pinned: Pinned = unpinned
     try {
       const child = await waitForPid(path.join(sb.root, 'child.pid'), 60_000)
       const grandchild = await waitForPid(path.join(sb.root, 'grandchild.pid'), 60_000)
@@ -870,15 +880,7 @@ describe('run_shell with a real shell', () => {
       controller.abort()
       await running
       // Only pinned pids are certain to still be the processes the shell started.
-      for (const pid of pinned.pids.filter(isAlive)) {
-        try {
-          process.kill(pid, 'SIGKILL')
-        } catch {
-          // Exited in the meantime.
-        }
-      }
-      await waitUntil(() => !pinned.pids.some(isAlive), 10_000)
-      pinned.release()
+      await cleanUp(pinned)
     }
   }
 
@@ -927,17 +929,8 @@ describe('run_shell with a real shell', () => {
       child.stdout.resume()
       child.stderr.resume()
       const closed = new Promise((resolve) => child.once('close', resolve))
-      const spawned = (): number[] => {
-        try {
-          return readFileSync(list, 'utf8')
-            .split(/\r?\n/)
-            .map((line) => Number.parseInt(line, 10))
-            .filter((pid) => Number.isInteger(pid) && pid > 0)
-        } catch {
-          return []
-        }
-      }
-      let pinned: Pinned = { pids: [], release: () => undefined }
+      const spawned = (): number[] => readPids(list)
+      let pinned: Pinned = unpinned
       try {
         expect(await waitUntil(() => spawned().length >= 3, 60_000)).toBe(true)
         pinned = await pinProcesses(spawned(), 60_000)
@@ -950,15 +943,7 @@ describe('run_shell with a real shell', () => {
         await closed
       } finally {
         child.kill('SIGKILL')
-        for (const pid of pinned.pids.filter(isAlive)) {
-          try {
-            process.kill(pid, 'SIGKILL')
-          } catch {
-            // Exited in the meantime.
-          }
-        }
-        await waitUntil(() => !pinned.pids.some(isAlive), 10_000)
-        pinned.release()
+        await cleanUp(pinned)
       }
     },
   )
@@ -1046,107 +1031,6 @@ describe('run_shell with a real shell', () => {
     },
   )
 })
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-  } catch {
-    return false
-  }
-  // In a container whose init does not reap, a killed child lingers as a zombie.
-  if (process.platform === 'linux') {
-    try {
-      const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8')
-      return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z'
-    } catch {
-      return false
-    }
-  }
-  return true
-}
-
-async function waitUntil(check: () => boolean, ms: number): Promise<boolean> {
-  const end = Date.now() + ms
-  while (Date.now() < end) {
-    if (check()) return true
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  return check()
-}
-
-async function waitForPid(file: string, ms: number): Promise<number> {
-  let pid = NaN
-  await waitUntil(() => {
-    try {
-      pid = Number.parseInt(readFileSync(file, 'utf8').trim(), 10)
-    } catch {
-      return false
-    }
-    return Number.isInteger(pid) && pid > 0
-  }, ms)
-  if (!Number.isInteger(pid)) throw new Error('the grandchild never started')
-  return pid
-}
-
-const WINDOWS_POWERSHELL = path.join(
-  process.env.SystemRoot ?? 'C:\\Windows',
-  'System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-)
-
-/** Starts Windows PowerShell outside the sandbox, so it never holds the sandbox open. */
-function startPowerShell(script: string): ChildProcess {
-  return nodeSpawn(WINDOWS_POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
-    cwd: os.tmpdir(),
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-  })
-}
-
-interface Pinned {
-  pids: number[]
-  release: () => void
-}
-
-/**
- * Windows hands a freed pid to the next new process almost at once, so on a busy runner
- * `isAlive(pid)` can report an unrelated process. Holding an open handle to each process
- * keeps its pid reserved (and reported as exited once it dies) until `release`.
- */
-function pinProcesses(pids: number[], ms: number): Promise<Pinned> {
-  if (process.platform !== 'win32') return Promise.resolve({ pids, release: () => undefined })
-  const ps = startPowerShell(
-    `$ErrorActionPreference = 'Stop'; $all = @(Get-Process -Id ${pids.join(',')}); ` +
-      `foreach ($p in $all) { $null = $p.Handle }; [Console]::Out.WriteLine('pinned'); ` +
-      // Hold the handles until the test closes stdin.
-      `$null = [Console]::In.ReadLine()`,
-  )
-  const release = (): void => {
-    ps.stdin?.end()
-    ps.kill()
-  }
-  let output = ''
-  ps.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()))
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      release()
-      reject(new Error(`could not pin ${pids.join(', ')} within ${String(ms)} ms`))
-    }, ms)
-    ps.stdout?.on('data', (chunk: Buffer) => {
-      output += chunk.toString()
-      if (!output.includes('pinned')) return
-      clearTimeout(timer)
-      resolve({ pids, release })
-    })
-    ps.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    ps.once('close', (code) => {
-      clearTimeout(timer)
-      reject(new Error(`could not pin ${pids.join(', ')} (exit ${String(code)}): ${output}`))
-    })
-  })
-}
 
 /**
  * The command bar: ChatSession.runCommand over the real run_shell tool, with the same

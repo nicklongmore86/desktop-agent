@@ -264,6 +264,7 @@ int wmain(int argc, wchar_t **argv) {
     if (started == 0 || started > self_start || (have_start && started != parent_start) ||
         WaitForSingleObject(parent, 0) != WAIT_TIMEOUT) {
       write_report("job-run:1 error=parent code=0\n");
+      CloseHandle(parent);
       ExitProcess(JOB_RUN_PARENT_GONE);
     }
   }
@@ -307,6 +308,7 @@ int wmain(int argc, wchar_t **argv) {
                       CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
                       &si.StartupInfo, &pi))
     fail("CreateProcess", GetLastError());
+  free(line);
   if (!AssignProcessToJobObject(job, pi.hProcess)) {
     DWORD error = GetLastError();
     TerminateProcess(pi.hProcess, JOB_RUN_FAILED);
@@ -315,6 +317,7 @@ int wmain(int argc, wchar_t **argv) {
   for (i = 0; i < 3; i++)
     if (std_handles[i]) CloseHandle(std_handles[i]);
   DeleteProcThreadAttributeList(attrs);
+  HeapFree(GetProcessHeap(), 0, attrs);
   if (ResumeThread(pi.hThread) == (DWORD)-1) {
     DWORD error = GetLastError();
     kill_job(job);
@@ -328,6 +331,9 @@ int wmain(int argc, wchar_t **argv) {
   if (which != WAIT_OBJECT_0) {
     /* The app is gone (or the wait failed): nothing may outlive it. */
     kill_job(job);
+    CloseHandle(pi.hProcess);
+    CloseHandle(parent);
+    CloseHandle(job);
     ExitProcess(JOB_RUN_PARENT_GONE);
   }
   if (!GetExitCodeProcess(pi.hProcess, &code)) code = JOB_RUN_FAILED;
@@ -336,6 +342,8 @@ int wmain(int argc, wchar_t **argv) {
   message[sizeof message - 1] = '\0';
   write_report(message);
   kill_job(job);
+  CloseHandle(pi.hProcess);
+  CloseHandle(parent);
   CloseHandle(job);
   ExitProcess(code);
 }

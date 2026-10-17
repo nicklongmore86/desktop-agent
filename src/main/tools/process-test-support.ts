@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const WINDOWS_POWERSHELL = path.join(
+export const WINDOWS_POWERSHELL = path.join(
   process.env.SystemRoot ?? 'C:\\Windows',
   'System32\\WindowsPowerShell\\v1.0\\powershell.exe',
 )
