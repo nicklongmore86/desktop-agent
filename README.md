@@ -245,3 +245,9 @@ Assistant Markdown supports GFM tables, task lists and strikethrough, and highli
 The sidebar shows the selected provider and granted folders. Provider selection uses the same switch operation as Settings, with separate history for each provider; there is no automatic fallback. Progress and assistant labels identify the selected provider. A signed-in status confirms authentication, not remaining subscription quota.
 
 The native Codex tool regression test uses a local fake Responses server with the real pinned app-server and execution host. It discovers granted folders, lists an RFI subfolder, confirms a denied shell command does not run, and refuses a read outside the grant. No subscription or API key is used. This runs on Windows CI and against the installer’s bundled runtimes. Real-window tests cover the workspace layout at 360px and 1280px.
+
+## License
+
+Desktop Agent is licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
+
+The Windows installer also bundles third-party runtimes (Claude Code and Codex) that remain under their own licenses and terms; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The installer includes `LICENSE` and `NOTICE` in its `resources` folder.
