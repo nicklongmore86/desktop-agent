@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { defaultKillTree, defaultSpawner } from '../tools/run-shell'
+import type { SpawnWindow } from '../tools/shell-windows'
 import pins from './runtime-pins.json'
 
 export const CODEX_VERSION = '0.162.1'
@@ -298,13 +299,17 @@ export async function providerDirectories(userData: string, name: RuntimeName) {
   return { home, cwd }
 }
 
+/** When each launched process was spawned, for killing its tree (see SpawnWindow). */
+const spawnWindows = new WeakMap<ChildProcessWithoutNullStreams, SpawnWindow>()
+
 export function launch(
   file: string,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): ChildProcessWithoutNullStreams {
-  return spawn(file, args, {
+  const after = Date.now()
+  const child = spawn(file, args, {
     cwd,
     env,
     stdio: 'pipe',
@@ -312,12 +317,17 @@ export function launch(
     windowsHide: true,
     detached: process.platform !== 'win32',
   })
+  spawnWindows.set(child, { after, before: Date.now() })
+  return child
 }
 
 export async function killRuntime(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return
   const kill = defaultKillTree(process.platform, defaultSpawner, runtimeEnv())
-  await Promise.race([kill(child), new Promise<void>((resolve) => setTimeout(resolve, 2000))])
+  await Promise.race([
+    kill(child, spawnWindows.get(child)),
+    new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+  ])
   child.kill('SIGKILL')
 }
 

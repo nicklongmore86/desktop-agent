@@ -3,6 +3,7 @@ import type { PathGuard } from '../permissions/guard'
 import type { FindJobLauncher } from './job-launcher'
 import type { KillTree, ShellSpawner } from './run-shell'
 import { MAX_TREE_ENTRIES } from './walk'
+import { TREE_KILL_SECONDS } from './shell-windows'
 
 export interface ToolLimits {
   /** read_file refuses bigger files unless a line range is given. Also the cap on returned text. */
@@ -28,6 +29,12 @@ export interface ToolLimits {
   maxShellOutputBytes: number
   /** After killing a shell, how long to wait for it to exit before reporting it may still run. */
   killGraceMs: number
+  /**
+   * How long killing a shell's process tree may take before it is reported as not done
+   * (at least killGraceMs): on Windows, taskkill and then the PowerShell fallback, which
+   * has TREE_KILL_SECONDS of its own plus time to start on a busy machine.
+   */
+  killTimeoutMs: number
 }
 
 export const DEFAULT_LIMITS: ToolLimits = {
@@ -46,6 +53,7 @@ export const DEFAULT_LIMITS: ToolLimits = {
   maxShellTimeoutMs: 10 * 60_000,
   maxShellOutputBytes: 100_000,
   killGraceMs: 5000,
+  killTimeoutMs: (TREE_KILL_SECONDS + 7) * 1000,
 }
 
 export interface ToolDeps {
