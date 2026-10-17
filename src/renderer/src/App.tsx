@@ -5,12 +5,13 @@ import type {
   AuditStatus,
   GrantsState,
   ProviderStatus,
-  ProviderId,
 } from '../../shared/ipc'
+import { ANTHROPIC_API, type ConnectionId } from '../../shared/ipc-connections'
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
 import { CommandBar } from './components/CommandBar'
+import { connectionOf, ConnectionsProvider, useConnections } from './connections'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { FileReferencesProvider } from './components/files/file-references'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -28,12 +29,6 @@ import { useChat } from './use-chat'
 import { useChatView } from './use-chat-view'
 import { useCommandLine } from './use-command-line'
 import { useShortcuts, useViewModeHotkey } from './use-shortcuts'
-
-const PROVIDER_NAMES: Record<ProviderId, string> = {
-  'codex-subscription': 'Codex · ChatGPT',
-  'claude-subscription': 'Claude · Subscription',
-  'anthropic-api': 'Claude · API',
-}
 
 function SetupGuide({
   keySaved,
@@ -65,8 +60,17 @@ function SetupGuide({
 }
 
 export function App(): React.JSX.Element {
+  return (
+    <ConnectionsProvider>
+      <AppWindow />
+    </ConnectionsProvider>
+  )
+}
+
+function AppWindow(): React.JSX.Element {
   const api = useApi()
   const chat = useChat()
+  const connections = useConnections()
   // Loads the saved theme and applies it; Settings reads and changes it with useTheme() too.
   useTheme()
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
@@ -157,8 +161,8 @@ export function App(): React.JSX.Element {
     },
     approval !== undefined || settingsSection !== null || listDialog,
   )
-  const providerName = provider ? PROVIDER_NAMES[provider.provider] : 'Loading provider…'
-  const switchProvider = async (next: ProviderId): Promise<void> => {
+  const providerName = connectionOf(connections, provider?.provider)?.label ?? 'Loading provider…'
+  const switchProvider = async (next: ConnectionId): Promise<void> => {
     try {
       setProvider(await chat.switchProvider(next))
     } catch {
@@ -264,7 +268,7 @@ export function App(): React.JSX.Element {
             onDismissStorageWarning={chat.dismissStorageWarning}
             onOpenSettings={openSettings}
             provider={provider}
-            providerNames={PROVIDER_NAMES}
+            connections={connections ?? []}
             onSwitchProvider={switchProvider}
             composerRef={composerRef}
             platform={appInfo?.platform}
@@ -293,15 +297,13 @@ export function App(): React.JSX.Element {
               ) : undefined
             }
             notice={
-              loaded && provider?.provider === 'anthropic-api' && (!keySaved || !hasGrants) ? (
+              loaded && provider?.provider === ANTHROPIC_API && (!keySaved || !hasGrants) ? (
                 <SetupGuide
                   keySaved={keySaved}
                   hasGrants={hasGrants}
                   onOpenSettings={openSettings}
                 />
-              ) : provider &&
-                provider.provider !== 'anthropic-api' &&
-                provider.state !== 'ready' ? (
+              ) : provider && provider.provider !== ANTHROPIC_API && provider.state !== 'ready' ? (
                 <div role="note" className="setup-guide">
                   {provider.message}{' '}
                   <button

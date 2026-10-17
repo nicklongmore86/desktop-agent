@@ -1,10 +1,8 @@
 import { z } from 'zod'
 import {
   IpcChannels,
-  PROVIDERS,
   THEMES,
   type ThemePreference,
-  type ProviderId,
   type DesktopApi,
   type ApiKeyStatus,
   type AppInfo,
@@ -16,6 +14,8 @@ import {
   type ModelSettings,
   type SendResult,
 } from '../shared/ipc'
+import type { ConnectionId } from '../shared/ipc-connections'
+import { parseConnectionId } from './ipc-connections'
 import { registerFeatureHandlers, type FeatureServices } from './ipc-features'
 import type { AddGrantResult } from './permissions'
 import { CONVERSATION_ID } from './storage/history-store'
@@ -33,10 +33,11 @@ export interface IpcMainLike {
   ) => void
 }
 
+/** Each API-key connection's key; no connection means Anthropic API. Throws for any other id. */
 export interface ApiKeyService {
-  hasKey: () => Promise<boolean>
-  set: (key: string) => Promise<void>
-  clear: () => Promise<void>
+  hasKey: (connection?: ConnectionId) => Promise<boolean>
+  set: (key: string, connection?: ConnectionId) => Promise<void>
+  clear: (connection?: ConnectionId) => Promise<void>
 }
 
 export interface GrantService {
@@ -107,13 +108,16 @@ export function registerIpcHandlers(
     })
   }
 
-  const keyStatus = async (): Promise<ApiKeyStatus> => {
+  const keyStatus = async (connection?: ConnectionId): Promise<ApiKeyStatus> => {
     try {
-      return { saved: await services.apiKey.hasKey(), error: null }
+      return { saved: await services.apiKey.hasKey(connection), error: null }
     } catch (error) {
       return { saved: false, error: messageOf(error, 'The saved API key cannot be read.') }
     }
   }
+  /** The key calls' optional last argument: left out, or a connection the registry offers. */
+  const keyConnection = (value: unknown): ConnectionId | undefined =>
+    value === undefined ? undefined : parseConnectionId(value, services.connections)
   const grantsState = (): GrantsState => ({
     roots: [...services.grants.list()],
     loadError: services.grants.loadError,
@@ -123,24 +127,30 @@ export function registerIpcHandlers(
 
   handle(IpcChannels.getAppInfo, () => services.appInfo())
 
-  handle(IpcChannels.apiKeyStatus, keyStatus)
-  handle(IpcChannels.apiKeySet, async (key) => {
+  handle(IpcChannels.apiKeyStatus, (connection) => keyStatus(keyConnection(connection)))
+  handle(IpcChannels.apiKeySet, async (key, value) => {
+    const connection = keyConnection(value)
     if (typeof key !== 'string' || !key.trim() || key.length > 1000)
-      return { saved: (await keyStatus()).saved, error: 'Enter a valid API key.' }
+      return { saved: (await keyStatus(connection)).saved, error: 'Enter a valid API key.' }
     try {
-      await services.apiKey.set(key.trim())
+      await services.apiKey.set(key.trim(), connection)
     } catch (error) {
       return { saved: false, error: messageOf(error, 'Could not save the API key.') }
     }
-    return keyStatus()
+    return keyStatus(connection)
   })
-  handle(IpcChannels.apiKeyClear, async () => {
+  handle(IpcChannels.apiKeyClear, async (value) => {
+    const connection = keyConnection(value)
     try {
-      await services.apiKey.clear()
+      await services.apiKey.clear(connection)
     } catch (error) {
-      return { saved: true, error: messageOf(error, 'Could not clear the API key.') }
+      // Report what is actually stored now; a failed clear may have removed it or not.
+      return {
+        saved: (await keyStatus(connection)).saved,
+        error: messageOf(error, 'Could not clear the API key.'),
+      }
     }
-    return keyStatus()
+    return keyStatus(connection)
   })
 
   handle(IpcChannels.grantsList, grantsState)
@@ -175,10 +185,9 @@ export function registerIpcHandlers(
     return services.provider.setModel(model)
   })
   handle(IpcChannels.providerGet, () => services.provider.get())
-  handle(IpcChannels.providerSet, (provider) => {
-    if (!PROVIDERS.includes(provider as ProviderId)) throw new Error('Unknown provider.')
-    return services.provider.set(provider as ProviderId)
-  })
+  handle(IpcChannels.providerSet, (provider) =>
+    services.provider.set(parseConnectionId(provider, services.connections)),
+  )
   handle(IpcChannels.providerLogin, () => services.provider.login())
   handle(IpcChannels.providerCancelLogin, () => services.provider.cancelLogin())
   handle(IpcChannels.providerLoginState, () => services.provider.loginState())

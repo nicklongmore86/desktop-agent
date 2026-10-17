@@ -1,9 +1,5 @@
-import {
-  PROVIDERS,
-  type HistoryState,
-  type ProviderId,
-  type ProviderStatus,
-} from '../../shared/ipc'
+import type { HistoryState, ProviderStatus } from '../../shared/ipc'
+import type { ConnectionId } from '../../shared/ipc-connections'
 import type { ChatRef, ProjectsState, ProviderChat } from '../../shared/ipc-projects'
 import type { ProjectsService } from '../ipc-projects'
 import type { ConversationHistory, Organize } from '../storage/history-store'
@@ -11,10 +7,12 @@ import type { ProjectsStore } from '../storage/projects-store'
 
 export interface OrganizerDeps {
   projects: ProjectsStore
-  /** A provider's saved chats (the same object the chat session uses for that provider). */
-  historyFor: (provider: ProviderId) => Promise<ConversationHistory>
+  /** A connection's saved chats (the same object the chat session uses for it). Rejects an unknown id. */
+  historyFor: (provider: ConnectionId) => Promise<ConversationHistory>
+  /** The connections the user can choose now, whose chats the list shows. */
+  connections: () => readonly ConnectionId[]
   /** The provider that is open now. */
-  provider: () => ProviderId
+  provider: () => ConnectionId
   /** The open provider's chats go through the session, which owns the open one. */
   chat: {
     rename: (id: string, title: string) => Promise<HistoryState>
@@ -24,7 +22,7 @@ export interface OrganizerDeps {
     historyChanged: () => void
   }
   /** Switches provider and opens one of its chats (the Settings switch, plus a chat). */
-  switchProvider: (provider: ProviderId, id: string) => Promise<ProviderStatus>
+  switchProvider: (provider: ConnectionId, id: string) => Promise<ProviderStatus>
   status: () => Promise<ProviderStatus>
 }
 
@@ -38,7 +36,7 @@ export function createOrganizer(deps: OrganizerDeps): ProjectsService {
     const projects = deps.projects.list()
     const filed = new Set(projects.map((project) => project.id))
     const others: ProviderChat[] = []
-    for (const other of PROVIDERS) {
+    for (const other of deps.connections()) {
       if (other === provider) continue
       let history: ConversationHistory
       try {
@@ -82,7 +80,7 @@ export function createOrganizer(deps: OrganizerDeps): ProjectsService {
     async remove(id) {
       // The project goes first: a chat naming a project that is gone lists as unfiled.
       await deps.projects.remove(id)
-      for (const provider of PROVIDERS) {
+      for (const provider of deps.connections()) {
         const history = await deps.historyFor(provider).catch(() => null)
         if (!history) continue
         await history.unfile(id)

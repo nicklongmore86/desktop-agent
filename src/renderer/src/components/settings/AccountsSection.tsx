@@ -8,7 +8,9 @@ import {
   type SubmitEvent,
 } from 'react'
 import type { ApiKeyStatus, ProviderLoginState, ProviderStatus } from '../../../../shared/ipc'
+import { ANTHROPIC_API, DEFAULT_CONNECTION } from '../../../../shared/ipc-connections'
 import { useApi } from '../../api'
+import { connectionOf, useConnections } from '../../connections'
 import { UsageSection } from './UsageSection'
 
 import { useProviderModels } from '../../provider-models'
@@ -121,7 +123,7 @@ export function ApiKeySection({
 function ModelSection(): React.JSX.Element {
   const selectId = useId()
   const [error, setError] = useState<string | null>(null)
-  const models = useProviderModels('anthropic-api')
+  const models = useProviderModels(ANTHROPIC_API)
   const choice = models.choice
   if (!choice) return <section className="settings-section">Loading…</section>
   return (
@@ -285,6 +287,7 @@ export function ProviderSection({
   onSwitchProvider,
 }: Pick<SettingsPanelProps, 'provider' | 'onProvider' | 'onSwitchProvider'>): React.JSX.Element {
   const api = useApi()
+  const connections = useConnections()
   const mounted = useMounted()
   const [busy, setBusy] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
@@ -357,27 +360,13 @@ export function ProviderSection({
     <section className="settings-section">
       <h3>Accounts &amp; providers</h3>
       <div role="radiogroup" aria-label="Access provider" className="provider-cards">
-        {(
-          [
-            [
-              'claude-subscription',
-              'Claude · Subscription',
-              'Sign in with your Claude account. No API key needed.',
-            ],
-            [
-              'codex-subscription',
-              'Codex · ChatGPT',
-              'Sign in with your ChatGPT account. No API key needed.',
-            ],
-            ['anthropic-api', 'Anthropic API', 'Use your own API key.'],
-          ] as const
-        ).map(([id, title, description]) => (
+        {(connections ?? []).map(({ id, title, description }) => (
           <label className="provider-card" key={id}>
             <input
               type="radio"
               name="provider"
               value={id}
-              checked={(current ?? 'anthropic-api') === id}
+              checked={(current ?? DEFAULT_CONNECTION) === id}
               disabled={busy}
               onChange={() => {
                 void run(() => onSwitchProvider(id))
@@ -406,7 +395,7 @@ export function ProviderSection({
           {provider?.signedIn || provider?.state === 'ready' || provider?.state === 'limited'
             ? 'Connected'
             : provider?.state === 'missing-runtime'
-              ? `Can’t start ${provider.provider === 'claude-subscription' ? 'Claude Code' : 'Codex'}`
+              ? `Can’t start ${connectionOf(connections, provider.provider)?.runtimeLabel ?? 'the runtime'}`
               : provider?.state === 'signed-out'
                 ? 'Not signed in'
                 : (provider?.message ?? 'Loading provider…')}
@@ -428,7 +417,7 @@ export function ProviderSection({
           Retry
         </button>
       )}
-      {provider && provider.provider !== 'anthropic-api' && (
+      {connectionOf(connections, provider?.provider)?.capabilities.authKind === 'runtime-login' && (
         <>
           <button
             disabled={busy || login.active}
@@ -462,7 +451,7 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
         onProvider={props.onProvider}
         onSwitchProvider={props.onSwitchProvider}
       />
-      {!props.provider || props.provider.provider === 'anthropic-api' ? (
+      {!props.provider || props.provider.provider === ANTHROPIC_API ? (
         <>
           <ApiKeySection keyStatus={props.keyStatus} onKeyStatus={props.onKeyStatus} />
           <ModelSection />

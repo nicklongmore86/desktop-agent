@@ -2,7 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ProviderId, ProviderStatus } from '../../shared/ipc'
+import type { ProviderStatus } from '../../shared/ipc'
+import type { ConnectionId } from '../../shared/ipc-connections'
 import { openHistory, type ConversationHistory } from '../storage/history-store'
 import { openProjectsStore } from '../storage/projects-store'
 import { createOrganizer } from './organizer'
@@ -22,12 +23,12 @@ async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'agent-organizer-'))
   directories.push(root)
   // Real stores in a temp folder, one history per provider.
-  const ids = new Map<ProviderId, string[]>([
+  const ids = new Map<ConnectionId, string[]>([
     ['anthropic-api', [API_CHAT]],
     ['codex-subscription', [CODEX_CHAT, CODEX_LOOSE, FORK]],
     ['claude-subscription', []],
   ])
-  const histories = new Map<ProviderId, ConversationHistory>()
+  const histories = new Map<ConnectionId, ConversationHistory>()
   for (const [provider, list] of ids) {
     const queue = [...list]
     const history = await openHistory(join(root, 'history', provider), {
@@ -48,7 +49,7 @@ async function setup() {
     ?.draft()
     .save([{ role: 'user', content: 'loose' }])
   const projects = await openProjectsStore(join(root, 'projects.json'), { newId: () => PROJECT })
-  let provider: ProviderId = 'anthropic-api'
+  let provider: ConnectionId = 'anthropic-api'
   const status = (): ProviderStatus => ({ provider, state: 'ready', message: 'ok' })
   const chat = {
     rename: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
@@ -56,7 +57,7 @@ async function setup() {
     open: vi.fn(() => Promise.resolve()),
     historyChanged: vi.fn(),
   }
-  const switchProvider = vi.fn((next: ProviderId) => {
+  const switchProvider = vi.fn((next: ConnectionId) => {
     provider = next
     return Promise.resolve(status())
   })
@@ -66,6 +67,7 @@ async function setup() {
       const history = histories.get(p)
       return history ? Promise.resolve(history) : Promise.reject(new Error('no history'))
     },
+    connections: () => [...ids.keys()],
     provider: () => provider,
     chat,
     switchProvider,

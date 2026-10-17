@@ -1,3 +1,4 @@
+import type { ConnectionId } from './ipc-connections'
 import type { FeatureApis } from './ipc-features'
 import { filesPushChannels, type FilesChanged } from './ipc-files'
 import { gitPushChannels, type GitChanged } from './ipc-git'
@@ -50,10 +51,12 @@ export const IpcChannels = {
   providerLoginStateChanged: 'provider:login-state-changed',
 } as const
 
-export const PROVIDERS = ['anthropic-api', 'claude-subscription', 'codex-subscription'] as const
-export type ProviderId = (typeof PROVIDERS)[number]
+/**
+ * The provider payloads below carry a connection id (src/shared/ipc-connections.ts)
+ * in their `provider` field; main checks every id it is sent against its registry.
+ */
 export interface ProviderStatus {
-  provider: ProviderId
+  provider: ConnectionId
   state:
     | 'ready'
     | 'missing-runtime'
@@ -71,8 +74,8 @@ export interface ProviderStatus {
 
 /** The sign-in main is running, so Settings can show it again after being reopened. */
 export interface ProviderLoginState {
-  /** The provider signing in, or null when no sign-in is running. */
-  provider: ProviderId | null
+  /** The connection signing in, or null when no sign-in is running. */
+  provider: ConnectionId | null
   active: boolean
   /** Claude's validated sign-in link, once the runtime has printed it. */
   url: string | null
@@ -127,7 +130,7 @@ export interface ProviderModel extends ModelOption {
   isDefault: boolean
 }
 export interface ProviderModels {
-  provider: ProviderId
+  provider: ConnectionId
   options: ProviderModel[]
   /** Effective choice after validating the saved preference against the catalog. */
   selectedModel: string | null
@@ -145,7 +148,7 @@ export interface AllowanceWindow {
 export interface ProviderAllowance {
   /** Availability flags only; balances and account details stay in main. */
   credits?: { hasCredits: boolean; unlimited: boolean }
-  provider: ProviderId
+  provider: ConnectionId
   plan: string | null
   state: 'available' | 'limited' | 'unknown'
   /** Advisory reset time when limited; never proof of recovered usage permission. */
@@ -327,7 +330,7 @@ export interface DesktopApi extends FeatureApis {
     setModel: (model: string | null) => Promise<ProviderResult<ProviderModels>>
     allowance: () => Promise<ProviderResult<ProviderAllowance>>
     get: () => Promise<ProviderStatus>
-    set: (provider: ProviderId) => Promise<ProviderStatus>
+    set: (provider: ConnectionId) => Promise<ProviderStatus>
     login: () => Promise<ProviderStatus>
     cancelLogin: () => Promise<void>
     loginState: () => Promise<ProviderLoginState>
@@ -339,10 +342,11 @@ export interface DesktopApi extends FeatureApis {
     submitLoginCode: (code: string) => Promise<LoginCodeResult>
   }
   getAppInfo: () => Promise<AppInfo>
+  /** Each API-key connection has its own key; leaving out the connection means Anthropic API. */
   apiKey: {
-    status: () => Promise<ApiKeyStatus>
-    set: (key: string) => Promise<ApiKeyStatus>
-    clear: () => Promise<ApiKeyStatus>
+    status: (connection?: ConnectionId) => Promise<ApiKeyStatus>
+    set: (key: string, connection?: ConnectionId) => Promise<ApiKeyStatus>
+    clear: (connection?: ConnectionId) => Promise<ApiKeyStatus>
   }
   grants: {
     list: () => Promise<GrantsState>

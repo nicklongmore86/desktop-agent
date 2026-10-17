@@ -2,7 +2,7 @@ import type { AgentTool, RunResult } from '../agent'
 import { DEFAULT_SYSTEM_PROMPT } from '../agent'
 import type { AgentRunner } from '../chat/session'
 import { codexModels } from './catalog'
-import { SubscriptionError, subscriptionFailure } from './errors'
+import { CODEX_FAILURES, SubscriptionError, mapFailure } from './errors'
 import type { ProviderModels, ProviderFailure } from '../../shared/ipc'
 import features from './codex-features.json'
 import { ToolBridge, transcriptPrompt } from './bridge'
@@ -226,10 +226,10 @@ export function createCodexRunner(
             if (method === 'turn/completed') {
               const turn = object(params['turn'])
               if (turn['status'] === 'completed') finish()
-              else finish(subscriptionFailure(turn['error'], 'codex'))
+              else finish(mapFailure(turn['error'], CODEX_FAILURES))
             }
             if (method === 'error' && params['willRetry'] !== true)
-              finish(subscriptionFailure(params, 'codex'))
+              finish(mapFailure(params, CODEX_FAILURES))
           }
         })
         // Attach rejection handling before turn/start, since notifications can arrive first.
@@ -246,7 +246,7 @@ export function createCodexRunner(
         bridge.flush()
         return { conversation: structuredClone(bridge.history), stopReason: 'end_turn' }
       } catch (error) {
-        const failure = subscriptionFailure(error, 'codex')
+        const failure = mapFailure(error, CODEX_FAILURES)
         const code = options.signal.aborted ? 'aborted' : failure.code
         if (!options.signal.aborted) preferences.onFailure?.(failure)
         options.onEvent({

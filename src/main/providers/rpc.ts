@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { subscriptionFailure } from './errors'
+import { CODEX_FAILURES, mapFailure } from './errors'
 import { killRuntime } from './runtime'
 
 export type RpcObject = Record<string, unknown>
@@ -123,7 +123,7 @@ export class RpcPeer {
           if (!entry) throw new Error('Unexpected runtime response.')
           this.pending.delete(msg['id'] as number)
           clearTimeout(entry.timer)
-          if (msg['error']) entry.reject(subscriptionFailure(msg['error'], 'codex'))
+          if (msg['error']) entry.reject(mapFailure(msg['error'], CODEX_FAILURES))
           else entry.resolve(object(msg['result']))
         }
       } catch {

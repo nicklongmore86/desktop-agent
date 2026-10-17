@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { SubscriptionProviders } from './service'
+import { ConnectionService } from './service'
 import { capture, discoverRuntime, runtimeCandidates } from './runtime'
 vi.mock('./runtime', async (original) => ({
   ...(await original<typeof import('./runtime')>()),
@@ -10,10 +10,10 @@ vi.mock('./runtime', async (original) => ({
   discoverRuntime: vi.fn(),
 }))
 let dir: string
-let provider: SubscriptionProviders
+let provider: ConnectionService
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'provider-status-'))
-  provider = new SubscriptionProviders(dir, vi.fn())
+  provider = new ConnectionService(dir, vi.fn())
   vi.mocked(discoverRuntime).mockResolvedValue('/official/claude')
   vi.mocked(capture).mockImplementation((_file, args) =>
     Promise.resolve(

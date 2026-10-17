@@ -1,4 +1,5 @@
-import type { HistoryState, ProviderId } from '../../../../shared/ipc'
+import type { HistoryState } from '../../../../shared/ipc'
+import { DEFAULT_CONNECTION, type ConnectionId } from '../../../../shared/ipc-connections'
 import type { Project, ProjectsState, ProviderChat } from '../../../../shared/ipc-projects'
 
 export interface ProjectGroup {
@@ -30,7 +31,7 @@ const byRecent = (a: ProviderChat, b: ProviderChat): number =>
 export function arrangeChats(
   history: HistoryState,
   projects: ProjectsState | null,
-  provider: ProviderId | null,
+  provider: ConnectionId | null,
 ): Arranged {
   const own = provider ?? projects?.provider ?? null
   const rows = new Map<string, ProviderChat>()
@@ -39,7 +40,7 @@ export function arrangeChats(
   }
   // The history is the fresher copy: it wins for any id in both (mid provider switch).
   for (const chat of history.conversations)
-    rows.set(chat.id, { ...chat, provider: own ?? 'anthropic-api' })
+    rows.set(chat.id, { ...chat, provider: own ?? DEFAULT_CONNECTION })
   const list = [...rows.values()]
   const known = new Set((projects?.projects ?? []).map((project) => project.id))
   const projectOf = (chat: ProviderChat): string | null =>

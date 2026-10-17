@@ -1,18 +1,17 @@
 import { homedir } from 'node:os'
-import { subscriptionFailure } from './providers/errors'
-import { SubscriptionProviders } from './providers/service'
-import { PROVIDERS, type ProviderId, type ProviderResult } from '../shared/ipc'
+import { ConnectionService } from './providers/service'
+import type { ProviderResult } from '../shared/ipc'
+import { ANTHROPIC_API, DEFAULT_CONNECTION, type ConnectionId } from '../shared/ipc-connections'
 import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
-import { createAgent, createClaudeClient } from './agent'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
 import { createGitService } from './git/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
-import { createApiKeyStore, type SafeStorage } from './secrets'
+import { createKeyStore, type SafeStorage } from './secrets'
 import { openHistory, type ConversationHistory } from './storage/history-store'
 import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
@@ -35,10 +34,10 @@ export interface AppServiceDeps {
   onGitChanged?: (change: GitChanged) => void
 }
 
-/** Builds the key store, grants, guard, audit log, tools, settings and chat session. */
+/** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
 export async function createAppServices(deps: AppServiceDeps) {
   const { userData } = deps
-  const apiKey = createApiKeyStore({ userDataPath: userData, safeStorage: deps.safeStorage })
+  const keys = createKeyStore({ userDataPath: userData, safeStorage: deps.safeStorage })
   const protectedPaths = [
     userData,
     join(homedir(), '.claude'),
@@ -93,21 +92,36 @@ export async function createAppServices(deps: AppServiceDeps) {
 
   const settings = await openSettingsStore(join(userData, 'settings.json'))
 
-  const subscriptions = new SubscriptionProviders(
+  const connections = new ConnectionService(
     userData,
     deps.openUrl ?? (() => Promise.reject(new Error('Browser sign-in is unavailable.'))),
-    { settings, onLoginState: (state) => deps.onProviderLoginState?.(state) },
+    { settings, keys, onLoginState: (state) => deps.onProviderLoginState?.(state) },
   )
-  // Each provider's conversations: userData/history/<provider>/index.json plus one file
+  /** Registered, and not hidden by showPersonalUseConnections. */
+  const available = (id: ConnectionId): boolean => {
+    const adapter = connections.registry.get(id)
+    return Boolean(adapter && (settings.showPersonalUseConnections || !adapter.personalUseOnly))
+  }
+  // A saved connection this build does not offer (unknown, or hidden) falls back to the default.
+  if (!available(settings.connection)) await settings.setConnection(DEFAULT_CONNECTION)
+  /** An API-key connection's key store; the key IPC names no connection for Anthropic API. */
+  const keyFor = (id: ConnectionId = DEFAULT_CONNECTION) => {
+    if (!available(id) || connections.registry.require(id).capabilities.authKind !== 'api-key')
+      throw new Error('Unknown provider.')
+    return keys.forConnection(id)
+  }
+  // Each connection's conversations: userData/history/<id>/index.json plus one file
   // per conversation. Opened (and migrated from the old single file) on first use.
-  const histories = new Map<ProviderId, Promise<ConversationHistory>>()
-  const historyFor = (provider: ProviderId): Promise<ConversationHistory> => {
+  // Only a registered id ever becomes part of a path.
+  const histories = new Map<ConnectionId, Promise<ConversationHistory>>()
+  const historyFor = (provider: ConnectionId): Promise<ConversationHistory> => {
+    if (!connections.registry.has(provider)) return Promise.reject(new Error('Unknown chat.'))
     let history = histories.get(provider)
     if (!history) {
       history = openHistory(join(userData, 'history', provider), {
         legacyFile: join(
           userData,
-          provider === 'anthropic-api' ? 'conversation.json' : `conversation-${provider}.json`,
+          provider === ANTHROPIC_API ? 'conversation.json' : `conversation-${provider}.json`,
         ),
         onError: (error) => {
           console.error('could not save the chat history list', error)
@@ -120,39 +134,19 @@ export async function createAppServices(deps: AppServiceDeps) {
   }
   const userShell = tools.find((tool) => tool.name === 'run_shell')
   const chat = new ChatSession({
-    history: await historyFor(settings.provider),
+    history: await historyFor(settings.connection),
     async createRunner(signal) {
-      if (settings.provider !== 'anthropic-api') {
-        try {
-          return { ok: true, runner: await subscriptions.runner(settings.provider, tools, signal) }
-        } catch (error) {
-          const failure = subscriptionFailure(
-            error,
-            settings.provider === 'codex-subscription' ? 'codex' : 'claude',
-          )
-          return {
-            ok: false,
-            code: failure.code,
-            message: failure.message,
-            ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
-          }
-        }
-      }
-      let key: string | null
+      const connection = settings.connection
       try {
-        key = await apiKey.get()
+        return { ok: true, runner: await connections.runner(connection, tools, signal) }
       } catch (error) {
+        const failure = connections.failure(connection, error)
         return {
           ok: false,
-          code: 'key_unreadable',
-          message: error instanceof Error ? error.message : 'The saved API key cannot be read.',
+          code: failure.code,
+          message: failure.message,
+          ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
         }
-      }
-      if (!key)
-        return { ok: false, code: 'no_api_key', message: 'Add your Anthropic API key in Settings.' }
-      return {
-        ok: true,
-        runner: createAgent({ client: createClaudeClient(key), tools, model: settings.model }),
       }
     },
     emit: (event) => {
@@ -170,14 +164,11 @@ export async function createAppServices(deps: AppServiceDeps) {
   await chat.init()
 
   const metadataResult = async <T>(operation: () => Promise<T>): Promise<ProviderResult<T>> => {
-    const selectedProvider = settings.provider
+    const selected = settings.connection
     try {
       return { ok: true, value: await operation() }
     } catch (error) {
-      const failure = subscriptionFailure(
-        error,
-        selectedProvider === 'codex-subscription' ? 'codex' : 'claude',
-      )
+      const failure = connections.failure(selected, error)
       return {
         ok: false,
         failure: {
@@ -189,42 +180,65 @@ export async function createAppServices(deps: AppServiceDeps) {
     }
   }
   const provider = {
-    models: () => metadataResult(() => subscriptions.models(settings.provider)),
+    models: () => metadataResult(() => connections.models(settings.connection)),
     setModel: (model: string | null) =>
-      metadataResult(() => subscriptions.setModel(settings.provider, model)),
-    allowance: () => metadataResult(() => subscriptions.allowance(settings.provider)),
-    get: () => subscriptions.status(settings.provider),
+      metadataResult(() => connections.setModel(settings.connection, model)),
+    allowance: () => metadataResult(() => connections.allowance(settings.connection)),
+    get: () => connections.status(settings.connection),
     /** `openId`: a saved chat of `next` to open instead of its last one. */
-    async set(next: ProviderId, openId?: string) {
-      if (!PROVIDERS.includes(next)) throw new Error('Unknown provider.')
-      subscriptions.cancelLogin()
-      subscriptions.invalidateMetadata()
-      await chat.switchHistory(await historyFor(next), () => settings.setProvider(next), openId)
-      return subscriptions.status(settings.provider)
+    async set(next: ConnectionId, openId?: string) {
+      if (!available(next)) throw new Error('Unknown provider.')
+      connections.cancelLogin()
+      connections.invalidateMetadata()
+      await chat.switchHistory(await historyFor(next), () => settings.setConnection(next), openId)
+      return connections.status(settings.connection)
     },
-    login: () => subscriptions.login(settings.provider),
+    login: () => connections.login(settings.connection),
     cancelLogin: () => {
-      subscriptions.cancelLogin()
+      connections.cancelLogin()
       return Promise.resolve()
     },
-    loginState: () => Promise.resolve(subscriptions.loginState()),
-    openLoginUrl: () => subscriptions.openLoginUrl(),
+    loginState: () => Promise.resolve(connections.loginState()),
+    openLoginUrl: () => connections.openLoginUrl(),
     copyLoginUrl: () => {
-      const url = subscriptions.loginUrl
+      const url = connections.loginUrl
       if (!url) return Promise.reject(new Error('No sign-in link is waiting.'))
       if (!deps.copyText) return Promise.reject(new Error('Copying is unavailable.'))
       return deps.copyText(url)
     },
-    submitLoginCode: (code: string) => Promise.resolve(subscriptions.submitLoginCode(code)),
+    submitLoginCode: (code: string) => Promise.resolve(connections.submitLoginCode(code)),
   }
-  // Global across providers: a chat names its project by id in its own provider's index.
+  const connectionList = {
+    list: () => connections.registry.list({ personalUse: settings.showPersonalUseConnections }),
+    available,
+  }
+  /** Each API-key connection's key; the renderer only ever learns whether one is saved. */
+  const apiKey = {
+    get: async (id?: ConnectionId) => keyFor(id).get(),
+    hasKey: async (id?: ConnectionId) => keyFor(id).hasKey(),
+    set: async (key: string, id?: ConnectionId) => keyFor(id).set(key),
+    clear: async (id?: ConnectionId) => keyFor(id).clear(),
+  }
+  // Global across connections: a chat names its project by id in its own connection's index.
   const projects = createOrganizer({
     projects: await openProjectsStore(join(userData, 'projects.json')),
     historyFor,
-    provider: () => settings.provider,
+    connections: () => connections.registry.ids().filter(available),
+    provider: () => settings.connection,
     chat,
     switchProvider: (next, id) => provider.set(next, id),
-    status: () => subscriptions.status(settings.provider),
+    status: () => connections.status(settings.connection),
   })
-  return { apiKey, grants, settings, chat, auditStatus, provider, projects, files, git }
+  return {
+    apiKey,
+    grants,
+    settings,
+    chat,
+    auditStatus,
+    provider,
+    connections: connectionList,
+    projects,
+    files,
+    git,
+  }
 }

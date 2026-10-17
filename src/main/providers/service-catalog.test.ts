@@ -5,11 +5,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { SubscriptionProviders } from './service'
+import { ConnectionService } from './service'
 import { connectCodex, createCodexRunner, codexLogin } from './codex'
 import { createClaudeSubscriptionRunner } from './claude'
 import { capture } from './runtime'
-import { subscriptionFailure } from './errors'
+import { CLAUDE_FAILURES, mapFailure } from './errors'
 import { RpcPeer } from './rpc'
 import { openSettingsStore } from '../storage/settings-store'
 
@@ -29,7 +29,7 @@ vi.mock('./runtime', async (original) => ({
   killRuntime: vi.fn(),
 }))
 let dir: string
-let service: SubscriptionProviders
+let service: ConnectionService
 let settings: Awaited<ReturnType<typeof openSettingsStore>>
 let request: ReturnType<typeof vi.fn<(method: string, ...args: unknown[]) => Promise<unknown>>>
 let close: ReturnType<typeof vi.fn>
@@ -43,7 +43,7 @@ beforeEach(async () => {
   vi.mocked(createClaudeSubscriptionRunner).mockReturnValue({ run: vi.fn() })
   dir = await mkdtemp(join(tmpdir(), 'catalog-service-'))
   settings = await openSettingsStore(join(dir, 'settings.json'))
-  service = new SubscriptionProviders(dir, vi.fn(), { settings })
+  service = new ConnectionService(dir, vi.fn(), { settings })
   vi.spyOn(service, 'context').mockResolvedValue({ file: '/fake', cwd: dir, env: {} })
   used = 10
   close = vi.fn()
@@ -202,14 +202,14 @@ it.each(['plan', 'quota-json'] as const)(
     await service.runner('claude-subscription', [])
     const observe = vi.mocked(createClaudeSubscriptionRunner).mock.calls.at(-1)?.[2]
     observe?.onAccount?.('Max')
-    const failure = subscriptionFailure(
+    const failure = mapFailure(
       {
         result:
           kind === 'plan'
             ? 'A subscription is required for this free Claude code sample'
             : JSON.stringify({ code: 'usage_limit', resetsAt: 1800000000 }),
       },
-      'claude',
+      CLAUDE_FAILURES,
     )
     observe?.onFailure?.(failure)
     expect(failure.code).toBe(kind === 'plan' ? 'plan_not_entitled' : 'usage_limit')
@@ -221,7 +221,7 @@ it('gates Claude only for a rejected structured limit with a plausible future re
   await service.runner('claude-subscription', [])
   const observe = vi.mocked(createClaudeSubscriptionRunner).mock.calls.at(-1)?.[2]
   observe?.onLimit?.('2027-01-15T08:00:00.000Z')
-  observe?.onFailure?.(subscriptionFailure({ code: 'usage_limit', resetsAt: 1800000000 }, 'claude'))
+  observe?.onFailure?.(mapFailure({ code: 'usage_limit', resetsAt: 1800000000 }, CLAUDE_FAILURES))
   await expect(service.runner('claude-subscription', [])).rejects.toMatchObject({
     code: 'usage_limit',
   })

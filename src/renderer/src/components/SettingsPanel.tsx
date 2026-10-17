@@ -3,9 +3,9 @@ import type {
   AuditStatus,
   GrantsState,
   ProviderStatus,
-  ProviderId,
   AppInfo,
 } from '../../../shared/ipc'
+import type { ConnectionId } from '../../../shared/ipc-connections'
 import type { SettingsSection } from '../open-settings'
 import { AccountsSection } from './settings/AccountsSection'
 import { FoldersSection } from './settings/FoldersSection'
@@ -14,7 +14,7 @@ export interface SettingsPanelProps {
   provider?: ProviderStatus | null | undefined
   onProvider?: ((status: ProviderStatus) => void) | undefined
   /** Switches provider; the chat uses it to hide the old conversation meanwhile. */
-  onSwitchProvider: (provider: ProviderId) => Promise<ProviderStatus>
+  onSwitchProvider: (provider: ConnectionId) => Promise<ProviderStatus>
   keyStatus: ApiKeyStatus | null
   onKeyStatus: (status: ApiKeyStatus) => void
   grants: GrantsState | null

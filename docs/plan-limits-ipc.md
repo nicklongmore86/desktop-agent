@@ -20,7 +20,7 @@ an explicit user action. Errors from a run arrive on the existing chat event pus
 type ProviderResult<T> = { ok: true; value: T } | { ok: false; failure: ProviderFailure }
 
 interface ProviderModels {
-  provider: ProviderId
+  provider: ConnectionId
   options: ProviderModel[]
   selectedModel: string | null // effective, validated against current catalog
   savedModel: string | null // persisted preference, even if currently unavailable
@@ -35,7 +35,7 @@ interface ProviderModel {
   isDefault: boolean
 }
 interface ProviderAllowance {
-  provider: ProviderId
+  provider: ConnectionId
   plan: string | null
   credits?: { hasCredits: boolean; unlimited: boolean } // availability flags only
   state: 'available' | 'limited' | 'unknown'
@@ -93,7 +93,8 @@ single account per provider. If sign-out or account switching is ever added, the
 (and the saved model preference it validates) must be keyed on account identity, or
 cleared at that point, so one account's model list is never offered to another.
 
-The settings v2 file adds `providerModels: Partial<Record<ProviderId, string>>`.
+The settings v2 file added `providerModels: Partial<Record<ProviderId, string>>`; v3
+renamed it `connectionModels`, keyed by the same ids (see [connections.md](connections.md)).
 This field is Zod validated, bounded to safe model slugs, and persisted through the
 existing serialized atomic writes. Old v1/v2 API model settings are retained.
 

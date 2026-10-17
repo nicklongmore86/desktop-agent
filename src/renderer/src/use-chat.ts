@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer } from 'react'
-import type { ChatState, ProviderId, ProviderStatus } from '../../shared/ipc'
+import type { ChatState, ProviderStatus } from '../../shared/ipc'
+import type { ConnectionId } from '../../shared/ipc-connections'
 import type { ChatRef } from '../../shared/ipc-projects'
 import { useApi } from './api'
 import { chatReducer, initialChatState, type ChatViewState, type SwitchKind } from './chat-state'
@@ -24,7 +25,7 @@ export interface ChatControls {
   deleteConversation: (id: string) => Promise<void>
   respond: (id: string, approved: boolean) => Promise<void>
   /** Switches provider, hiding the old conversation until the new one arrives. */
-  switchProvider: (provider: ProviderId) => Promise<ProviderStatus>
+  switchProvider: (provider: ConnectionId) => Promise<ProviderStatus>
   /** Opens another provider's chat: a provider switch that opens that chat. Null if it failed. */
   openOther: (chat: ChatRef) => Promise<ProviderStatus | null>
   dismissBanner: () => void
@@ -187,7 +188,7 @@ export function useChat(): ChatControls {
     [api],
   )
   const switchProvider = useCallback(
-    (provider: ProviderId) => switchTo('provider', () => api.provider.set(provider)),
+    (provider: ConnectionId) => switchTo('provider', () => api.provider.set(provider)),
     [api, switchTo],
   )
   const openOther = useCallback(
