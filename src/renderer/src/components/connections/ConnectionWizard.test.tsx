@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalPrompt, ProviderStatus } from '../../../../shared/ipc'
 import { ApiContext } from '../../api'
 import { App } from '../../App'
+import { ConnectionOverviewProvider, ConnectionsProvider } from '../../connections'
+import { SwitchQueue } from '../../switch-queue'
+import { ConnectionWizard } from './ConnectionWizard'
 import { BUILTIN_CONNECTION_INFO } from '../../../../shared/connections-fixture'
 import { fakeApi, type FakeApiOptions } from '../../test/fake-api'
 import { setViewport } from '../../test/viewport'
@@ -537,6 +540,123 @@ describe('closing never hangs on main', () => {
     })
     await pastTheBound()
     expect(api.connections.remove).not.toHaveBeenCalled()
+  })
+})
+
+describe('an undo that goes stale while its restoring switch is running', () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+  const ready = (provider: string): ProviderStatus => ({
+    provider,
+    state: 'ready',
+    message: 'Ready.',
+  })
+  const pastTheBound = () => new Promise((done) => setTimeout(done, 200))
+
+  it('keeps the added connection and shows nothing of the undo when the user chose meanwhile', async () => {
+    setViewport(1280)
+    const fake = fakeApi(NOTHING_READY)
+    const { api } = fake
+    const queue = new SwitchQueue()
+    const restore = deferred<ProviderStatus>()
+    const onProvider = vi.fn()
+    const onClose = vi.fn()
+    // The wizard's switch to Ollama lands at once; the switch back is held open.
+    const onSwitchProvider = vi.fn((id: string) =>
+      id === 'ollama' ? Promise.resolve(ready('ollama')) : restore.promise,
+    )
+    const user = userEvent.setup()
+    render(
+      <ApiContext value={api}>
+        <ConnectionsProvider>
+          <ConnectionOverviewProvider>
+            <ConnectionWizard
+              suspended={false}
+              firstRun={false}
+              startAt="ollama"
+              grants={{ roots: [], loadError: null }}
+              onGrants={() => {}}
+              onProvider={onProvider}
+              queue={queue}
+              onSwitchProvider={onSwitchProvider}
+              onClose={onClose}
+            />
+          </ConnectionOverviewProvider>
+        </ConnectionsProvider>
+      </ApiContext>,
+    )
+    await screen.findByRole('dialog', { name: 'Find Ollama' })
+    await waitFor(() => {
+      expect(onSwitchProvider).toHaveBeenCalledWith('ollama')
+    })
+    // Chats are on Ollama now.
+    api.provider.get.mockResolvedValue(ready('ollama'))
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => {
+      expect(onSwitchProvider).toHaveBeenCalledWith('anthropic-api')
+    })
+    // The user chooses something while the restoring switch is still running.
+    queue.choose()
+    act(() => {
+      restore.resolve(ready('anthropic-api'))
+    })
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalled()
+    })
+    await pastTheBound()
+    expect(api.connections.remove).not.toHaveBeenCalled()
+    // The panel may report Ollama's own status; the undo's restored status is never shown.
+    expect(onProvider).not.toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'anthropic-api' }),
+    )
+  })
+
+  it('keeps it too when a newer wizard run starts during the restoring switch', async () => {
+    setViewport(1280)
+    const { user, api } = await (async () => {
+      const result = await renderApp(NOTHING_READY)
+      return result
+    })()
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^Local models/)
+    dialog = await wizard('How do you want to use Local models?')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Which one do you use?')
+    const first = deferred<ProviderStatus>()
+    const restore = deferred<ProviderStatus>()
+    api.provider.set.mockClear()
+    api.provider.set.mockImplementationOnce(() => first.promise)
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    // Back (the undo waits behind the switch), then forward to the list of local apps.
+    await user.keyboard('{Escape}')
+    const access = await wizard('How do you want to use Local models?')
+    await user.click(within(access).getByRole('button', { name: 'Continue' }))
+    const apps = await wizard('Which one do you use?')
+    api.provider.get.mockResolvedValue(ready('ollama'))
+    api.provider.set.mockImplementationOnce(() => restore.promise)
+    act(() => {
+      first.resolve(ready('ollama'))
+    })
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('anthropic-api')
+    })
+    // A newer run starts while the restoring switch is still in flight.
+    await choose(user, apps, /^Ollama/)
+    act(() => {
+      restore.resolve(ready('anthropic-api'))
+    })
+    const find = await wizard('Find Ollama')
+    await pastTheBound()
+    expect(api.connections.remove).not.toHaveBeenCalled()
+    expect(find).toBeTruthy()
   })
 })
 

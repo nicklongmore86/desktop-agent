@@ -216,7 +216,11 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
         await api.provider.cancelLogin()
         if (!stillWanted()) return
         if (back && back !== target) {
-          props.onProvider(await props.onSwitchProvider(back))
+          const restored = await props.onSwitchProvider(back)
+          // The switch cannot be taken back, but nothing else happens on a stale undo: the
+          // user's choice (or the newer run) stands, and the target connection is kept.
+          if (!stillWanted()) return
+          props.onProvider(restored)
           if (wasAdded) await api.connections.remove(target)
         }
       } catch {
