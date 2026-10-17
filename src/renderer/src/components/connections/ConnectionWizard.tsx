@@ -17,6 +17,7 @@ import { useGrantActions } from '../settings/use-grant-actions'
 import { ApiKeyForm } from './ApiKeyForm'
 import { canGoBack, flowReducer, initialFlow, isConnected, stepNumber, type Step } from './flow'
 import { ProviderPanel } from './SignInPanel'
+import { SETTLE_WAIT_MS, settledWithin } from './timing'
 
 export interface ConnectionWizardProps {
   /** An approval is open: the wizard hides and goes inert, so the approval comes first. */
@@ -33,6 +34,9 @@ export interface ConnectionWizardProps {
   onSwitchProvider: (connection: ConnectionId) => Promise<ProviderStatus>
   onClose: () => void
 }
+
+/** Counts preparations across wizards, so a late undo can tell the user has moved on since. */
+let generation = 0
 
 const FOCUSABLE =
   'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]'
@@ -110,13 +114,19 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
   // The connect step works on the connection chats go to, so make it the current one.
   const connectionId = flow.step === 'connect' ? flow.connection : null
   /**
-   * The latest preparation: `live` goes false when it is cancelled (another connection, Back,
-   * Close), and `done` settles once it has stopped touching the provider. Each run waits for
-   * the one before it, and abandoning waits for the last, so a switch that was already started
-   * is finished and then undone, and nothing starts after cancelling.
+   * The latest preparation. `live` goes false when it is cancelled (another connection, Back,
+   * Close). `switching` settles once it has stopped changing the provider (the read and the
+   * switch are over, or it never got that far); the key lookup after is not part of it. A new
+   * preparation, and abandoning, wait for it, but only up to SETTLE_WAIT_MS.
    */
-  const lastRun = useRef<{ live: boolean; done: Promise<void> }>({
+  interface Run {
+    live: boolean
+    switching: Promise<void>
+    done: Promise<void>
+  }
+  const lastRun = useRef<Run>({
     live: false,
+    switching: Promise.resolve(),
     done: Promise.resolve(),
   })
   /** The undo in progress, which a new preparation waits for. */
@@ -126,30 +136,46 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
     const earlier = lastRun.current
     const undoing = abandoning.current
     earlier.live = false
-    const run: { live: boolean; done: Promise<void> } = { live: true, done: Promise.resolve() }
+    generation += 1
+    let release = (): void => {}
+    const run: Run = {
+      live: true,
+      switching: new Promise<void>((done) => {
+        release = done
+      }),
+      done: Promise.resolve(),
+    }
     lastRun.current = run
     // A function, so each check reads the flag as it is now (it can change across an await).
     const cancelled = (): boolean => !run.live
     run.done = (async () => {
-      await Promise.all([earlier.done, undoing])
-      if (cancelled()) return
-      let found: { status: ProviderStatus | null; keySaved: boolean; error: string | null }
+      let next: ProviderStatus | null = null
+      let failed = false
       try {
+        await settledWithin(Promise.all([earlier.switching, undoing]), SETTLE_WAIT_MS)
+        if (cancelled()) return
         const now = await api.provider.get()
         if (cancelled()) return
         if (previous.current === null) {
           previous.current = now.provider
           added.current = !overview.rows.find((row) => row.info.id === connectionId)?.configured
         }
-        let next = now
+        next = now
         if (now.provider !== connectionId) {
           // Past this point the switch happens whatever the user does; abandon puts it back.
           next = await props.onSwitchProvider(connectionId)
           if (cancelled()) return
         }
+      } catch {
+        failed = true
+      } finally {
+        release()
+      }
+      let found: { status: ProviderStatus | null; keySaved: boolean; error: string | null }
+      if (next && !failed) {
         const key = await api.apiKey.status(connectionId).catch(() => null)
         found = { status: next, keySaved: key?.saved ?? false, error: null }
-      } catch {
+      } else {
         found = {
           status: null,
           keySaved: false,
@@ -173,27 +199,51 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
     setPrep((value) => (value ? { ...value, status: next } : value))
   }
 
+  /** Puts the previous connection back and drops the one the wizard added. */
+  const restore = async (
+    target: ConnectionId,
+    back: ConnectionId | null,
+    wasAdded: boolean,
+  ): Promise<void> => {
+    try {
+      await api.provider.cancelLogin()
+      if (back && back !== target) {
+        props.onProvider(await props.onSwitchProvider(back))
+        if (wasAdded) await api.connections.remove(target)
+      }
+    } catch {
+      // The connection stays listed as not set up; Settings can remove it.
+    }
+  }
+
   /** Puts back what the wizard changed for a connection the user did not finish setting up. */
   const abandon = (): Promise<void> => {
     abandoning.current ??= (async () => {
-      // Stop the preparation and wait for any switch it had already started.
-      lastRun.current.live = false
-      await lastRun.current.done
+      const run = lastRun.current
+      run.live = false
       const target = flow.connection
-      if (target && !connectedOnce.current) {
-        try {
-          await api.provider.cancelLogin()
-          const back = previous.current
-          if (back && back !== target) {
-            props.onProvider(await props.onSwitchProvider(back))
-            if (added.current) await api.connections.remove(target)
-          }
-        } catch {
-          // The connection stays listed as not set up; Settings can remove it.
-        }
-      }
+      const back = previous.current
+      const wasAdded = added.current
+      // Wait for a switch already started, but not forever.
+      const landed = await settledWithin(run.switching, SETTLE_WAIT_MS)
       previous.current = null
       added.current = false
+      if (target && !connectedOnce.current) {
+        if (landed) {
+          await restore(target, back, wasAdded)
+        } else if (back && back !== target) {
+          // It may still land. When it does, put things back, unless the user has chosen a
+          // connection of their own meanwhile (another wizard run, or the picker).
+          const mine = generation
+          void run.switching.then(async () => {
+            if (mine !== generation) return
+            const now = await api.provider.get().catch(() => null)
+            if (mine !== generation || now?.provider !== target) return
+            await restore(target, back, wasAdded)
+            overview.refresh()
+          })
+        }
+      }
       overview.refresh()
     })().finally(() => {
       abandoning.current = null
@@ -202,7 +252,8 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
   }
 
   const close = (): void => {
-    void abandon().finally(() => {
+    // Closing never hangs on a provider call that does not answer.
+    void settledWithin(abandon(), SETTLE_WAIT_MS * 2).finally(() => {
       onClose()
     })
   }
@@ -753,7 +804,7 @@ function FolderStep({
       </p>
       {message && (
         <p className="settings-error" role="alert">
-          {message}
+          {plainText(message)}
         </p>
       )}
       {roots.length > 0 && (

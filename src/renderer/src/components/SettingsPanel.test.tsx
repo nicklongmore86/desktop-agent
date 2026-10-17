@@ -79,6 +79,19 @@ describe('SettingsPanel', () => {
     expect(screen.getByRole('alert').textContent).toContain('OS encryption is unavailable')
   })
 
+  it('shows a refused key’s reason without bidi or invisible characters', async () => {
+    const { api, user } = renderSettings({ saved: false, error: null })
+    const RLO = String.fromCharCode(0x202e)
+    const ZWSP = String.fromCharCode(0x200b)
+    api.apiKey.set.mockResolvedValueOnce({
+      saved: false,
+      error: `OpenAI${RLO} rejected${ZWSP} the key.`,
+    })
+    await user.type(await screen.findByLabelText('API key'), 'sk-x')
+    await user.click(screen.getByRole('button', { name: 'Save key' }))
+    expect(screen.getByRole('alert').textContent).toBe('OpenAI rejected the key.')
+  })
+
   it('adds folders only through the native picker and removes them', async () => {
     const { api, user } = renderSettings({ saved: true, error: null }, ['C:\\Projects'])
     const list = screen.getByRole('list', { name: 'Granted folders' })

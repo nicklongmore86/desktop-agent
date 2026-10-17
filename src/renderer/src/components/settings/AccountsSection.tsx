@@ -67,7 +67,7 @@ export function ApiKeySection({
       </p>
       {keyStatus?.error && (
         <p className="settings-error" role="alert">
-          {keyStatus.error}
+          {plainText(keyStatus.error)}
         </p>
       )}
       {showInput ? (
@@ -326,12 +326,14 @@ function PersonalUseToggle(): React.JSX.Element {
               (failure: unknown) => {
                 if (mounted.current)
                   setError(
-                    failure instanceof Error && failure.message
-                      ? failure.message.replace(
-                          /^Error invoking remote method '[^']*': (Error: )?/,
-                          '',
-                        )
-                      : 'Could not change this setting.',
+                    plainText(
+                      failure instanceof Error && failure.message
+                        ? failure.message.replace(
+                            /^Error invoking remote method '[^']*': (Error: )?/,
+                            '',
+                          )
+                        : 'Could not change this setting.',
+                    ),
                   )
               },
             )

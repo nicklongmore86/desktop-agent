@@ -18,6 +18,7 @@ import {
   useConnectionOverview,
   useConnections,
 } from './connections'
+import { plainText } from './plain-text'
 import { ConnectionWizard } from './components/connections/ConnectionWizard'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { FileReferencesProvider } from './components/files/file-references'
@@ -380,7 +381,7 @@ function AppWindow(): React.JSX.Element {
                 // An API-key connection without a key is covered by the guide above.
                 !(keyConnection && !keySaved) ? (
                 <div role="note" className="setup-guide">
-                  {provider.message}{' '}
+                  {plainText(provider.message)}{' '}
                   <button
                     onClick={() => {
                       openSettings()

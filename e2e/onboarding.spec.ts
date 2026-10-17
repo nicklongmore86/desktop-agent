@@ -71,17 +71,32 @@ const noSidewaysScroll = (page: Page): Promise<boolean> =>
 const keyShownAnywhere = (page: Page, secret: string, includingFields: boolean): Promise<boolean> =>
   page.evaluate(
     ([key, fields]) => {
+      const needle = key ?? ''
+      const withFields = fields === 'yes'
       const inFields =
-        fields === 'yes' &&
+        withFields &&
         [
           ...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea'),
-        ].some((field) => field.value.includes(key ?? ''))
+        ].some((field) => field.value.includes(needle))
+      // Every attribute (title, aria-*, data-*, ...). React mirrors a field's value into its own
+      // value attribute, so that one is left out unless the field is meant to be gone.
+      const inAttributes = [...document.querySelectorAll('*')].some((element) =>
+        [...element.attributes].some(
+          (attribute) =>
+            attribute.value.includes(needle) &&
+            (withFields ||
+              !(
+                attribute.name === 'value' &&
+                (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA')
+              )),
+        ),
+      )
       return (
         inFields ||
-        document.body.innerText.includes(key ?? '') ||
-        document.body.textContent.includes(key ?? '') ||
-        // React mirrors a field's value into its attribute, so markup counts only once the field is gone.
-        (fields === 'yes' && document.documentElement.outerHTML.includes(key ?? ''))
+        inAttributes ||
+        document.body.innerText.includes(needle) ||
+        document.body.textContent.includes(needle) ||
+        (withFields && document.documentElement.outerHTML.includes(needle))
       )
     },
     [secret, includingFields ? 'yes' : 'no'],

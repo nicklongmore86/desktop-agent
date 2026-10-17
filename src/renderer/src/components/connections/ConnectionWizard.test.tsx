@@ -1,12 +1,21 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalPrompt, ProviderStatus } from '../../../../shared/ipc'
 import { ApiContext } from '../../api'
 import { App } from '../../App'
 import { BUILTIN_CONNECTION_INFO } from '../../../../shared/connections-fixture'
 import { fakeApi, type FakeApiOptions } from '../../test/fake-api'
 import { setViewport } from '../../test/viewport'
+
+// A short wait, so the tests below that never get an answer from main finish quickly.
+const timing = vi.hoisted(() => ({ ms: 60 }))
+vi.mock('./timing', async (original) => ({
+  ...(await original<typeof import('./timing')>()),
+  get SETTLE_WAIT_MS() {
+    return timing.ms
+  },
+}))
 
 const signedOut = (provider: string): ProviderStatus => ({
   provider,
@@ -313,6 +322,149 @@ describe('local models', () => {
       await within(dialog).findByText('Smaller local models may not use file tools reliably.'),
     ).toBeTruthy()
     expect(within(dialog).getByText('Recommended')).toBeTruthy()
+  })
+})
+
+describe('closing never hangs on main', () => {
+  afterEach(() => {
+    timing.ms = 60
+  })
+  const never = <T,>(): Promise<T> => new Promise<T>(() => {})
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+  const ready = (provider: string): ProviderStatus => ({
+    provider,
+    state: 'ready',
+    message: 'Ready.',
+  })
+  async function toOllama() {
+    const result = await renderApp(NOTHING_READY)
+    const { user } = result
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^Local models/)
+    dialog = await wizard('How do you want to use Local models?')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Which one do you use?')
+    return { ...result, dialog }
+  }
+  const gone = () =>
+    waitFor(
+      () => {
+        expect(screen.queryByRole('dialog')).toBeNull()
+      },
+      { timeout: 2000 },
+    )
+
+  it('closes when the switch never answers, and undoes it if it lands later', async () => {
+    const { user, api, dialog } = await toOllama()
+    const late = deferred<ProviderStatus>()
+    api.provider.set.mockClear()
+    api.provider.set.mockImplementationOnce(() => late.promise)
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await gone()
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama'])
+    // The switch lands after the wizard is gone, with nobody else having chosen: put back.
+    api.provider.get.mockResolvedValue(ready('ollama'))
+    act(() => {
+      late.resolve(ready('ollama'))
+    })
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenLastCalledWith('anthropic-api')
+    })
+    expect(api.connections.remove).toHaveBeenCalledWith('ollama')
+  })
+
+  it('leaves a connection the user chose themselves alone when the late switch lands', async () => {
+    const { user, api, dialog } = await toOllama()
+    const late = deferred<ProviderStatus>()
+    api.provider.set.mockClear()
+    api.provider.set.mockImplementationOnce(() => late.promise)
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await gone()
+    // The user has picked another connection since.
+    api.provider.get.mockResolvedValue(ready('codex-subscription'))
+    act(() => {
+      late.resolve(ready('ollama'))
+    })
+    await new Promise((done) => setTimeout(done, 150))
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama'])
+    expect(api.connections.remove).not.toHaveBeenCalled()
+  })
+
+  it('closes when the first read never answers, and switches nothing', async () => {
+    const { user, api, dialog } = await toOllama()
+    api.provider.get.mockImplementationOnce(() => never<ProviderStatus>())
+    api.provider.set.mockClear()
+    await choose(user, dialog, /^Ollama/)
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await gone()
+    await new Promise((done) => setTimeout(done, 150))
+    expect(api.provider.set).not.toHaveBeenCalled()
+  })
+
+  it('does not wait for a key-status lookup that never answers', async () => {
+    const { user, api, dialog } = await toOllama()
+    api.apiKey.status.mockImplementation(() => never<{ saved: boolean; error: string | null }>())
+    api.provider.set.mockClear()
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await gone()
+    // The switch had landed, so it is undone on the spot.
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenLastCalledWith('anthropic-api')
+    })
+    expect(api.connections.remove).toHaveBeenCalledWith('ollama')
+  })
+
+  it('waits for the undo when a connection is picked again, and never switches late', async () => {
+    // Long enough that the wait is over only because the switch answered.
+    timing.ms = 10_000
+    const { user, api, dialog } = await toOllama()
+    const first = deferred<ProviderStatus>()
+    api.provider.set.mockClear()
+    api.provider.set.mockImplementationOnce(() => first.promise)
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('ollama')
+    })
+    // Back while the switch is in flight, then pick Ollama again straight away.
+    await user.keyboard('{Escape}')
+    let access = await wizard('How do you want to use Local models?')
+    await user.click(within(access).getByRole('button', { name: 'Continue' }))
+    access = await wizard('Which one do you use?')
+    await choose(user, access, /^Ollama/)
+    await new Promise((done) => setTimeout(done, 30))
+    // Nothing else is switched while the first switch and its undo are still pending.
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual(['ollama'])
+    api.provider.get.mockResolvedValue(ready('ollama'))
+    act(() => {
+      first.resolve(ready('ollama'))
+    })
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('anthropic-api')
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Find Ollama' })).toBeTruthy()
+    })
+    // Undo comes strictly before the second pick's own switch.
+    const order = api.provider.set.mock.calls.map(([id]) => id)
+    expect(order.indexOf('anthropic-api')).toBe(1)
   })
 })
 
