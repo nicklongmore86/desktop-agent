@@ -438,6 +438,8 @@ it('labels Codex replies and progress from the selected provider and shows live 
   )
   expect(screen.getByText('1 folder granted')).toBeTruthy()
   expect(screen.getByText('C:\\Users\\me\\Projects')).toBeTruthy()
+  // The picker lists what is ready, once the connection checks are in.
+  await screen.findByRole('option', { name: 'Claude · Subscription' })
   act(() => {
     pushChat({ type: 'run_started', runId: 'codex-run', text: 'Scan Downloads' })
   })
