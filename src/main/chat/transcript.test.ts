@@ -80,6 +80,23 @@ describe('toTranscript', () => {
     ])
   })
 
+  it("keeps a saved command's declined flag, and leaves it unset for older records", () => {
+    const base = { id: 'c1', command: 'dir', cwd: 'C:\\work', output: 'Nothing was run.' }
+    expect(
+      toTranscript([userCommandMessage({ ...base, isError: true, declined: true })]),
+    ).toMatchObject([{ result: { content: 'Nothing was run.', isError: true, declined: true } }])
+    // Saved before the flag existed: no field, so the view falls back to the wording.
+    const [legacy] = toTranscript([userCommandMessage({ ...base, isError: true })])
+    expect(legacy?.kind === 'tool' && legacy.result).toEqual({
+      content: 'Nothing was run.',
+      isError: true,
+    })
+    const bad = `${USER_COMMAND_HEADER}\n${JSON.stringify({ ...base, isError: true, declined: 'yes' })}`
+    expect(toTranscript([{ role: 'user', content: [{ type: 'text', text: bad }] }])).toEqual([
+      { kind: 'user', id: 'h0.0', text: bad },
+    ])
+  })
+
   it('never makes a card from a typed chat message or a malformed record', () => {
     const text = `${USER_COMMAND_HEADER}\n{"id":"c1","command":"x","cwd":"y","output":"","isError":false}`
     // Chat messages are saved as strings: typing the header gives a plain bubble.

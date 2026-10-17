@@ -141,6 +141,7 @@ describe('run_shell', () => {
       .execute({ command: 'rm -rf /', cwd: sb.root }, fakeContext(false).ctx)
     expect(r).toMatchObject({
       isError: true,
+      declined: true,
       content: expect.stringMatching(/declined/) as unknown,
     })
     expect(calls).toEqual([])
@@ -1145,7 +1146,14 @@ describe('run_shell from the command bar', () => {
       { type: 'command_started', runId: 'id-1', id: 'id-2', command, cwd: sb.root },
       { type: 'approval_closed', approvalId: 'id-3', approved: true },
       expect.objectContaining({ type: 'history_changed' }),
-      { type: 'tool_result', runId: 'id-1', id: 'id-2', content: output, isError: false },
+      {
+        type: 'tool_result',
+        runId: 'id-1',
+        id: 'id-2',
+        content: output,
+        isError: false,
+        declined: false,
+      },
       { type: 'run_finished', runId: 'id-1', stopReason: 'end_turn' },
     ])
     // Saved in the conversation, and shown as a card when it is opened again.
@@ -1155,7 +1163,7 @@ describe('run_shell from the command bar', () => {
         id: 'id-2',
         name: 'run_shell',
         input: { command, cwd: sb.root },
-        result: { content: output, isError: false },
+        result: { content: output, isError: false, declined: false },
         origin: 'user-terminal',
       },
     ])
@@ -1165,15 +1173,19 @@ describe('run_shell from the command bar', () => {
     const { spawn, calls } = fakeSpawner((child) => {
       child.exit(0)
     })
-    const { h, session, events } = commandSession({ spawn }, () => false)
+    const { h, session, events, store } = commandSession({ spawn }, () => false)
     await session.runCommand('echo nope', sb.root)
     await settled(session)
     expect(calls).toHaveLength(0)
     expect(h.audit.entries).toEqual([
       expect.objectContaining({ approval: 'denied', origin: 'user-terminal', error: 'declined' }),
     ])
-    expect(commandResult(events)).toMatchObject({ isError: true })
+    expect(commandResult(events)).toMatchObject({ isError: true, declined: true })
     expect(commandResult(events)?.content).toMatch(/Nothing was run/)
+    // The flag is saved with the command, so the reopened card is denied without reading its text.
+    expect(toTranscript(store.saved())).toMatchObject([
+      { kind: 'tool', origin: 'user-terminal', result: { isError: true, declined: true } },
+    ])
   })
 
   it('refuses a cwd outside the grants without asking or running anything', async () => {

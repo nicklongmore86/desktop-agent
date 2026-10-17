@@ -29,6 +29,11 @@ export interface ToolContext {
 export interface ToolResult {
   content: string
   isError?: boolean
+  /**
+   * Set (by defineTool) when the call failed because the user declined its approval.
+   * The chat view shows such calls as denied; it never infers that from `content`.
+   */
+  declined?: boolean
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the contract's default, as specified

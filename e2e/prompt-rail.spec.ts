@@ -58,8 +58,13 @@ for (const width of [1280, 400]) {
         }, event)
       const tool = (runId: string, id: string, name: string, path: string): Promise<void> =>
         push({ type: 'tool_use', runId, turn: 1, id, name, input: { path } })
-      const result = (runId: string, id: string, content: string, isError = false): Promise<void> =>
-        push({ type: 'tool_result', runId, id, content, isError })
+      const result = (
+        runId: string,
+        id: string,
+        content: string,
+        isError = false,
+        declined = false,
+      ): Promise<void> => push({ type: 'tool_result', runId, id, content, isError, declined })
       try {
         await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' })
 
@@ -89,6 +94,7 @@ for (const width of [1280, 400]) {
           'b',
           'b2',
           'The user declined the write to summary.txt. Nothing was changed.',
+          true,
           true,
         )
         await push({ type: 'text_delta', runId: 'b', turn: 2, text: 'I could not move them.' })

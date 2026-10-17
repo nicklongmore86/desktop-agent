@@ -6,7 +6,8 @@ const FOCUSABLE =
 /**
  * A pane as a modal drawer, for windows too narrow to dock it. Escape or the scrim
  * closes it, Tab stays inside, and focus returns to what had it before (the button
- * or shortcut that opened it). The page behind is inert (the shell sets that).
+ * or shortcut that opened it). The page behind is not made inert: the scrim covers it
+ * and Tab stays inside (`inert` here is only for Settings or an approval on top).
  * Hidden while an approval is open, like Settings: the approval always wins focus.
  */
 export function Drawer({

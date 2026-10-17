@@ -1,6 +1,6 @@
 import type { ViewItem } from '../chat-state'
 import { commandPrompt } from './CommandBar'
-import { hasLatin, SafeLines, SafeText } from './reveal'
+import { hasLatin, plainTitle, SafeLines, SafeText } from './reveal'
 import { StatusIcon } from './StatusIcon'
 import { Elapsed, STATUS_TEXT, toolStatus } from './ToolCard'
 
@@ -49,7 +49,7 @@ export function CommandCard({
       <header className="command-card-header">
         <StatusIcon status={status} />
         <span className="command-card-label">You ran</span>
-        <span className="command-card-prompt">
+        <span className="command-card-prompt" title={plainTitle(cwd)}>
           <SafeText text={commandPrompt(cwd, platform)} latinContext={latinContext} />
         </span>
         <span className="tool-status">{STATUS_TEXT[status]}</span>

@@ -88,13 +88,33 @@ export function stepPrompt(from: number, count: number, direction: -1 | 1): numb
   return next < 0 || next >= count ? null : next
 }
 
-/** A single line of plain text for a label: whitespace collapsed, control/format characters dropped. */
+/**
+ * The user-perceived characters of `text`: grapheme clusters where Intl.Segmenter is
+ * available (an emoji with its modifiers stays whole), code points otherwise (never half
+ * a surrogate pair).
+ */
+function characters(text: string): string[] {
+  const Segmenter = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter
+  if (!Segmenter) return Array.from(text)
+  return Array.from(
+    new Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+    (part) => part.segment,
+  )
+}
+
+/**
+ * A single line of plain text for a label: whitespace collapsed, control/format characters
+ * dropped, and at most `max` characters (see `characters`), the last an ellipsis if cut.
+ */
 export function plainLabel(text: string, max: number): string {
   const clean = text
     .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean
+  // A string's UTF-16 length is never less than its character count.
+  if (clean.length <= max) return clean
+  const chars = characters(clean)
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : clean
 }
 
 /** How long a run of tool calls took, from the first call to the last result; null if unknown. */

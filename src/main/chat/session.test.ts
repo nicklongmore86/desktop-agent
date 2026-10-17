@@ -385,6 +385,7 @@ describe('ChatSession', () => {
       id: 'toolu_x',
       content: 'The user declined.',
       isError: true,
+      declined: false,
     })
     expect(store.saved()).toHaveLength(4)
     expect(session.state().items).toMatchObject([

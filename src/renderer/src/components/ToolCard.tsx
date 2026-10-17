@@ -39,14 +39,23 @@ function stringify(input: unknown): string {
 
 type ToolItem = Extract<ViewItem, { kind: 'tool' }>
 
-/** What the tools say when the user declines their approval (see main/tools). */
-const DECLINED = /^The user declined /
+/**
+ * What the tools say when the user declines their approval (see main/tools). Only for
+ * results without main's `declined` flag: chats saved before it was recorded, and agent
+ * tool results reloaded from history (the Messages API has nowhere to keep it).
+ */
+const LEGACY_DECLINED = /^The user declined /
+
+/** Whether the user declined the call: main's flag, or the legacy wording when there is none. */
+function wasDeclined(result: NonNullable<ToolItem['result']>): boolean {
+  return result.declined ?? LEGACY_DECLINED.test(result.content)
+}
 
 /** `queued`: the call is waiting for the user's approval. */
 export function toolStatus(item: ToolItem, running: boolean, queued = false): ToolStatus {
   if (item.result) {
     if (!item.result.isError) return 'done'
-    return DECLINED.test(item.result.content) ? 'denied' : 'error'
+    return wasDeclined(item.result) ? 'denied' : 'error'
   }
   if (!running) return 'no result'
   return queued ? 'queued' : 'running'

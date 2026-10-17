@@ -145,6 +145,39 @@ describe('prompt rail', () => {
     press('ArrowUp')
     expect(scroll).not.toHaveBeenCalled()
   })
+  it('starts afresh on another conversation, even one with as many prompts', async () => {
+    const { pushChat } = await renderApp()
+    converse(pushChat, ['One', 'Two', 'Three'])
+    fireEvent.keyDown(document.body, { code: 'ArrowUp', ctrlKey: true, altKey: true })
+    fireEvent.keyDown(document.body, { code: 'ArrowUp', ctrlKey: true, altKey: true })
+    expect(ticks()[0]?.getAttribute('aria-current')).toBe('location')
+    await userEvent.hover(ticks()[0] as HTMLElement)
+    const nav = (): HTMLElement => screen.getByRole('navigation', { name: 'Prompts' })
+    expect(nav().querySelector('.prompt-preview')).not.toBeNull()
+
+    act(() => {
+      pushChat({
+        type: 'conversation_reset',
+        state: {
+          items: ['Alpha', 'Beta', 'Gamma'].map((text, i) => ({
+            kind: 'user' as const,
+            id: `h${String(i)}`,
+            text,
+          })),
+          running: false,
+          loadError: null,
+          history: { conversations: [], activeId: 'other-chat' },
+        },
+      })
+    })
+    expect(ticks().map((tick) => tick.getAttribute('aria-current'))).toEqual([
+      null,
+      null,
+      'location',
+    ])
+    expect(ticks()[0]?.getAttribute('aria-label')).toBe('Jump to prompt 1 of 3: Alpha')
+    expect(nav().querySelector('.prompt-preview')).toBeNull()
+  })
 })
 
 describe('matchPromptHotkey', () => {
@@ -198,7 +231,14 @@ describe('tool status', () => {
       })
       expect(card().querySelector('.tool-elapsed')?.textContent).toBe('3.0s')
       act(() => {
-        pushChat({ type: 'tool_result', runId: 'r', id: 't1', content: 'ok', isError: false })
+        pushChat({
+          type: 'tool_result',
+          runId: 'r',
+          id: 't1',
+          content: 'ok',
+          isError: false,
+          declined: false,
+        })
       })
       act(() => {
         vi.advanceTimersByTime(10_000)
@@ -214,13 +254,21 @@ describe('tool status', () => {
     act(() => {
       pushChat({ type: 'run_started', runId: 'r', text: 'Go' })
       for (const id of ['q', 'f', 'd']) pushChat(toolUse(id))
-      pushChat({ type: 'tool_result', runId: 'r', id: 'f', content: 'boom', isError: true })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r',
+        id: 'f',
+        content: 'boom',
+        isError: true,
+        declined: false,
+      })
       pushChat({
         type: 'tool_result',
         runId: 'r',
         id: 'd',
         content: 'The user declined the write to x. Nothing was changed.',
         isError: true,
+        declined: true,
       })
       pushApproval({
         id: 'a',
@@ -245,7 +293,14 @@ describe('tool status', () => {
       pushChat({ type: 'run_started', runId: 'r', text: 'Go' })
       for (const id of ['a', 'b', 'c', 'd', 'e']) pushChat(toolUse(id))
       for (const id of ['a', 'b', 'c', 'd'])
-        pushChat({ type: 'tool_result', runId: 'r', id, content: 'ok', isError: id === 'b' })
+        pushChat({
+          type: 'tool_result',
+          runId: 'r',
+          id,
+          content: 'ok',
+          isError: id === 'b',
+          declined: false,
+        })
     })
     const group = screen.getByRole('region', { name: 'Tool activity' })
     const cards = (): string[] =>
@@ -263,7 +318,14 @@ describe('tool status', () => {
     act(() => {
       pushChat({ type: 'run_started', runId: 'r', text: 'One' })
       pushChat(toolUse('t1'))
-      pushChat({ type: 'tool_result', runId: 'r', id: 't1', content: 'ok', isError: false })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r',
+        id: 't1',
+        content: 'ok',
+        isError: false,
+        declined: false,
+      })
       pushChat({ type: 'run_finished', runId: 'r', stopReason: 'end_turn' })
     })
     // The latest turn is never folded.

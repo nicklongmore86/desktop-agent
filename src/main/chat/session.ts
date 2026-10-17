@@ -274,6 +274,7 @@ export class ChatSession {
           id: event.id,
           content: event.result.content,
           isError: event.result.isError === true,
+          declined: event.result.declined === true,
         })
         break
       case 'error':
@@ -400,16 +401,17 @@ export class ChatSession {
       result = { content: 'The command could not be run.', isError: true }
     }
     const isError = result.isError === true
+    const declined = result.declined === true
     // As for a reply: after a switch, this card belongs to the old conversation.
     if (generation === this.generation) {
       this.conversation = [
         ...this.conversation,
-        userCommandMessage({ id, command, cwd, output: result.content, isError }),
+        userCommandMessage({ id, command, cwd, output: result.content, isError, declined }),
       ]
       this.loadError = null
       await this.persist()
     }
-    this.notify({ type: 'tool_result', runId, id, content: result.content, isError })
+    this.notify({ type: 'tool_result', runId, id, content: result.content, isError, declined })
     this.notify({ type: 'run_finished', runId, stopReason: isError ? 'error' : 'end_turn' })
   }
 
