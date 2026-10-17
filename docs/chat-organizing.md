@@ -55,3 +55,9 @@ results, as text. Approvals are never copied (none are saved). Forking from a pr
 keeps that many prompts and their full replies; the cut is always just before a prompt,
 so a tool call is never separated from its result, and the copy is checked with the
 same well-formedness rules as a loaded chat.
+
+Forking a chat that belongs to another provider (reached through Pinned or Projects)
+copies it within that provider, then switches the active provider to open the fork,
+exactly as opening that chat would. The switch is needed because the renderer only shows
+and sends to the active provider's chat, so the new chat could not be opened otherwise;
+like any switch it stops a running reply and denies its approvals.

@@ -1,15 +1,27 @@
 # gitleaks configuration for Desktop Agent.
 #
 # Extends the default ruleset. The unit tests for secret redaction, git
-# parsing and chat organization deliberately embed fake credentials
-# (e.g. "sk-abc...", "AKIAABCDEFGHIJKLMNOP", "sk-ant-api03-abc...",
-# "https://user:pass@claude.ai") to prove they are detected and redacted.
-# None of these are real secrets, so findings are allowlisted for test
-# files only; every other path is still scanned with the full ruleset.
+# parsing and chat organization deliberately embed fake credentials to prove
+# they are detected and redacted. None of these are real secrets, so exactly
+# those values are allowlisted, and only inside test files (condition = AND):
+# the same value in any other path, and any other secret in a test file, is
+# still reported. Add a new fixture here only when it is clearly fake.
 
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "Deliberate fake secrets in unit-test fixtures"
+description = "Known fake secret fixtures, in unit-test files only"
+condition = "AND"
+# targetRules is required: without it gitleaks skips whole matching files
+# before the regexes are consulted, defeating the AND.
+targetRules = ["generic-api-key", "aws-access-token", "curl-auth-header"]
 paths = ['''.*\.test\.ts$''']
+regexes = [
+  '''^sk-abcdefghijklmnop1234$''',
+  '''^sk-live-THISMUSTNEVERLEAVEMAIN0123456789$''',
+  '''^sk-ant-api03-abcdefghijklmnop$''',
+  '''^AKIAABCDEFGHIJKLMNOP$''',
+  '''^0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d$''',
+  '''^https://user:pass@claude\.ai/oauth$''',
+]
