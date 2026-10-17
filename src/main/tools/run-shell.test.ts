@@ -9,6 +9,7 @@ import { fakeContext, makeSandbox, type Sandbox } from '../permissions/test-supp
 import { PathGuard } from '../permissions/guard'
 import {
   defaultKillTree,
+  type KillResult,
   OutputCollector,
   shellEnv,
   shellInvocation,
@@ -21,6 +22,7 @@ import {
   decodeCliXml,
   encodePowerShell,
   powerShellScript,
+  TREE_KILL_SECONDS,
   treeKillScript,
   UTF8_PREAMBLE,
 } from './shell-windows'
@@ -127,7 +129,10 @@ describe('run_shell', () => {
     const r = await h
       .tool('run_shell')
       .execute({ command: 'rm -rf /', cwd: sb.root }, fakeContext(false).ctx)
-    expect(r).toMatchObject({ isError: true, content: /declined/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/declined/) as unknown,
+    })
     expect(calls).toEqual([])
     // A command that never ran is not logged verbatim, only its shape.
     expect(h.audit.entries[0]).toMatchObject({
@@ -178,13 +183,13 @@ describe('run_shell', () => {
     const ctx = fakeContext(true).ctx
     expect(await h.tool('run_shell').execute({ command: '  ', cwd: sb.root }, ctx)).toMatchObject({
       isError: true,
-      content: /empty/,
+      content: expect.stringMatching(/empty/) as unknown,
     })
     expect(
       await h.tool('run_shell').execute({ command: 'ls', cwd: sb.root, timeoutMs: 5 }, ctx),
     ).toMatchObject({
       isError: true,
-      content: /timeoutMs/,
+      content: expect.stringMatching(/timeoutMs/) as unknown,
     })
   })
 
@@ -203,7 +208,9 @@ describe('run_shell', () => {
     expect(killTree).toHaveBeenCalledOnce()
     expect(r).toMatchObject({
       isError: true,
-      content: /^Timed out after 1 s; the process tree was killed/,
+      content: expect.stringMatching(
+        /^Timed out after 1 s; the process tree was killed/,
+      ) as unknown,
     })
     expect(r.content).toContain('started')
   })
@@ -220,7 +227,10 @@ describe('run_shell', () => {
     const h = toolHarness(sb, { spawn, killTree })
     const r = await h.tool('run_shell').execute({ command: 'sleep 100', cwd: sb.root }, ctx)
     expect(killTree).toHaveBeenCalledOnce()
-    expect(r).toMatchObject({ isError: true, content: /Cancelled; the process tree was killed/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Cancelled; the process tree was killed/) as unknown,
+    })
     expect(h.audit.entries[0]).toMatchObject({ outcome: 'error', error: 'cancelled' })
   })
 
@@ -237,8 +247,9 @@ describe('run_shell', () => {
     const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
     expect(r).toMatchObject({
       isError: true,
-      content:
+      content: expect.stringMatching(
         /^Cancelled\. The process tree may still be running: taskkill exited with code 128\./,
+      ) as unknown,
     })
     expect(r.content).not.toMatch(/was killed/)
     expect(h.audit.entries[0]).toMatchObject({ error: 'kill-failed' })
@@ -253,8 +264,73 @@ describe('run_shell', () => {
     const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
     expect(r).toMatchObject({
       isError: true,
-      content: /may still be running: the shell did not exit within 0\.05 s/,
+      content: expect.stringMatching(
+        /may still be running: the shell did not exit within 0\.05 s/,
+      ) as unknown,
     })
+  })
+
+  it('waits for a slow kill and reports its real outcome, starting the grace after it', async () => {
+    for (const killed of [true, false]) {
+      const { ctx, controller } = fakeContext(true)
+      const { spawn, calls } = fakeSpawner(() => {
+        controller.abort()
+      })
+      // Longer than the grace, within the kill's own budget; the shell exits once it is done.
+      const killTree = vi.fn(
+        () =>
+          new Promise<KillResult>((resolve) =>
+            setTimeout(() => {
+              if (killed) calls[0]?.child.exit(null, 'SIGKILL')
+              resolve(killed ? { ok: true } : { ok: false, reason: 'it was denied' })
+            }, 300),
+          ),
+      )
+      const h = toolHarness(sb, {
+        spawn,
+        killTree,
+        limits: { killGraceMs: 50, killTimeoutMs: 5000 },
+      })
+      const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
+      expect(r.content).toMatch(
+        killed
+          ? /^Cancelled; the process tree was killed\./
+          : /^Cancelled\. The process tree may still be running: it was denied\./,
+      )
+    }
+  })
+
+  it('gives the shell its grace only after the kill has finished', async () => {
+    const { ctx, controller } = fakeContext(true)
+    const { spawn } = fakeSpawner(() => {
+      controller.abort()
+    })
+    const killTree = vi.fn(
+      () =>
+        new Promise<KillResult>((resolve) =>
+          setTimeout(() => {
+            resolve({ ok: true })
+          }, 300),
+        ),
+    )
+    const h = toolHarness(sb, { spawn, killTree, limits: { killGraceMs: 50, killTimeoutMs: 5000 } })
+    const started = Date.now()
+    const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
+    expect(r.content).toMatch(/may still be running: the shell did not exit within 0\.05 s/)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(340)
+  })
+
+  it('says the tree may still be running when the kill does not finish within its budget', async () => {
+    const { ctx, controller } = fakeContext(true)
+    const { spawn } = fakeSpawner(() => {
+      controller.abort()
+    })
+    const killTree = vi.fn(() => new Promise<KillResult>(() => undefined))
+    const h = toolHarness(sb, { spawn, killTree, limits: { killGraceMs: 50, killTimeoutMs: 200 } })
+    const r = await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, ctx)
+    expect(r.content).toMatch(
+      /^Cancelled\. The process tree may still be running: the kill command did not finish within 0\.2 s\./,
+    )
   })
 
   it('refuses to spawn if the cwd was swapped for another folder during approval', async () => {
@@ -270,7 +346,10 @@ describe('run_shell', () => {
       return true
     })
     const r = await h.tool('run_shell').execute({ command: 'ls', cwd }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /changed after the command was approved/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/changed after the command was approved/) as unknown,
+    })
     expect(calls).toEqual([])
   })
 
@@ -286,7 +365,10 @@ describe('run_shell', () => {
       return true
     })
     const r = await h.tool('run_shell').execute({ command: 'ls', cwd: sb.root }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /Access denied/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Access denied/) as unknown,
+    })
     expect(calls).toEqual([])
   })
 
@@ -313,7 +395,7 @@ describe('run_shell', () => {
       await h.tool('run_shell').execute({ command: 'x', cwd: sb.root }, fakeContext().ctx),
     ).toMatchObject({
       isError: true,
-      content: /ENOENT powershell\.exe/,
+      content: expect.stringMatching(/ENOENT powershell\.exe/) as unknown,
     })
   })
 
@@ -404,10 +486,15 @@ describe('defaultKillTree', () => {
         })
         return child
       }
-      const shell = new FakeProcess()
-      expect(await defaultKillTree('win32', spawn, { SystemRoot: 'C:\\Windows' })(shell)).toEqual({
-        ok: true,
-      })
+      // Still running as far as the app knows, so its id is held until now.
+      const shell = Object.assign(new FakeProcess(), { exitCode: null, signalCode: null })
+      const before = Date.now()
+      expect(
+        await defaultKillTree('win32', spawn, { SystemRoot: 'C:\\Windows' })(shell, {
+          after: 10,
+          before: 20,
+        }),
+      ).toEqual({ ok: true })
       expect(calls.map((c) => c.file)).toEqual([
         'C:\\Windows\\System32\\taskkill.exe',
         'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
@@ -418,7 +505,12 @@ describe('defaultKillTree', () => {
         '-NonInteractive',
         '-EncodedCommand',
       ])
-      expect(decode(fallback?.args.at(-1) ?? '')).toBe(treeKillScript(4242))
+      const script = decode(fallback?.args.at(-1) ?? '')
+      const aliveAt = Number(/-AliveAt (\d+)/.exec(script)?.[1])
+      expect(aliveAt).toBeGreaterThanOrEqual(before)
+      expect(script).toBe(
+        treeKillScript({ pid: 4242, started: { after: 10, before: 20 }, aliveAt }),
+      )
       expect(fallback?.options.env).toEqual({ SystemRoot: 'C:\\Windows', windir: 'C:\\Windows' })
       expect(shell.kill).toHaveBeenCalledWith('SIGKILL')
     }
@@ -437,13 +529,55 @@ describe('defaultKillTree', () => {
     })
     expect(await defaultKillTree('win32', missing.spawn, {})(new FakeProcess())).toMatchObject({
       ok: false,
-      reason: /^taskkill could not start: ENOENT; the PowerShell fallback could not start/,
+      reason: expect.stringMatching(
+        /^taskkill could not start: ENOENT; the PowerShell fallback could not start/,
+      ) as unknown,
     })
   })
 
+  it('says why the fallback failed when it could not kill the whole tree', async () => {
+    for (const [code, meaning] of [
+      [1, `processes in the tree were still running after ${String(TREE_KILL_SECONDS)} s`],
+      [2, 'it could not list the running processes'],
+      [3, 'access to a process in the tree was denied'],
+      [
+        4,
+        'processes that may belong to the tree could not be identified, so they were left running',
+      ],
+    ] as const) {
+      const { spawn } = fakeSpawner((child, call) => {
+        child.exit(call.file.endsWith('taskkill.exe') ? 1 : code)
+      })
+      expect(await defaultKillTree('win32', spawn, {})(new FakeProcess())).toEqual({
+        ok: false,
+        reason: `taskkill exited with code 1; the PowerShell fallback exited with code ${String(code)} (${meaning})`,
+      })
+    }
+  })
+
   it('only builds a tree-kill script for a real pid', () => {
-    expect(treeKillScript(77)).toContain('$queue.Enqueue(77)')
-    for (const pid of [0, -1, 1.5, Number.NaN]) expect(() => treeKillScript(pid)).toThrow()
+    expect(treeKillScript({ pid: 77 })).toContain(
+      'Invoke-TreeKill -Root 77 -BornAfter -1 -BornBefore -1 -AliveAt -1 ',
+    )
+    expect(
+      treeKillScript({ pid: 77, started: { after: 1000, before: 1005 }, aliveAt: 2000 }),
+    ).toContain('Invoke-TreeKill -Root 77 -BornAfter 1000 -BornBefore 1005 -AliveAt 2000 ')
+    for (const pid of [0, -1, 1.5, Number.NaN]) expect(() => treeKillScript({ pid })).toThrow()
+  })
+
+  it('builds a tree-kill script that never reports a partial kill as success', () => {
+    const script = treeKillScript({ pid: 77 })
+    // Any error ends the kill with a failure instead of being skipped.
+    expect(script).toContain("$ErrorActionPreference = 'Stop'")
+    expect(script).not.toContain('SilentlyContinue')
+    // One way to succeed: a fresh snapshot with no member running and nothing in doubt.
+    expect(script.match(/return 0/g)).toHaveLength(1)
+    expect(script.match(/\bexit\b/g)).toHaveLength(1)
+    // No cmdlet that has to be found in a module: without a module cache that alone
+    // can take longer than the whole kill may.
+    expect(script).not.toMatch(
+      /Get-CimInstance|Get-WmiObject|Get-Process|Stop-Process|Wait-Process|Where-Object|Select-Object|ConvertFrom-Json/,
+    )
   })
 
   it('kills the process group elsewhere, falling back to the child', async () => {
@@ -683,7 +817,10 @@ describe('run_shell with a real shell', () => {
       controller.abort()
     }, 1500)
     const r = await h.tool('run_shell').execute({ command: 'sleep 60', cwd: sb.root }, ctx)
-    expect(r).toMatchObject({ isError: true, content: /Cancelled/ })
+    expect(r).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/Cancelled/) as unknown,
+    })
     expect(Date.now() - started).toBeLessThan(20_000)
   })
 
@@ -721,8 +858,10 @@ describe('run_shell with a real shell', () => {
         isError: true,
         content:
           stop === 'cancel'
-            ? /^Cancelled; the process tree was killed/
-            : /^Timed out after 15 s; the process tree was killed/,
+            ? (expect.stringMatching(/^Cancelled; the process tree was killed/) as unknown)
+            : (expect.stringMatching(
+                /^Timed out after 15 s; the process tree was killed/,
+              ) as unknown),
       })
       expect(await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)).toBe(true)
     } finally {
@@ -758,6 +897,69 @@ describe('run_shell with a real shell', () => {
         return nodeSpawn(file, args, options)
       }
       await expectTreeKilled({ spawn, limits: { killGraceMs: 20_000 } }, 'cancel')
+    },
+  )
+
+  it.runIf(process.platform === 'win32')(
+    'the PowerShell fallback also kills grandchildren started while it runs',
+    { timeout: 150_000 },
+    async () => {
+      const blockTaskkill: ShellSpawner = (file, args, options) => {
+        if (file.toLowerCase().endsWith('taskkill.exe')) throw new Error('taskkill blocked by test')
+        return nodeSpawn(file, args, options)
+      }
+      // A child that starts another long-running ping every 100 ms and writes down its pid.
+      const list = path.join(sb.root, 'spawned.pid')
+      const after = Date.now()
+      const child = nodeSpawn(
+        WINDOWS_POWERSHELL,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'while ($true) { $g = Start-Process -FilePath "$env:SystemRoot\\System32\\PING.EXE" ' +
+            "-ArgumentList '-n','300','127.0.0.1' -PassThru -NoNewWindow; " +
+            `Add-Content -Path '${list}' -Value $g.Id; Start-Sleep -Milliseconds 100 }`,
+        ],
+        { cwd: sb.root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      )
+      const started = { after, before: Date.now() }
+      child.stdout.resume()
+      child.stderr.resume()
+      const closed = new Promise((resolve) => child.once('close', resolve))
+      const spawned = (): number[] => {
+        try {
+          return readFileSync(list, 'utf8')
+            .split(/\r?\n/)
+            .map((line) => Number.parseInt(line, 10))
+            .filter((pid) => Number.isInteger(pid) && pid > 0)
+        } catch {
+          return []
+        }
+      }
+      let pinned: Pinned = { pids: [], release: () => undefined }
+      try {
+        expect(await waitUntil(() => spawned().length >= 3, 60_000)).toBe(true)
+        pinned = await pinProcesses(spawned(), 60_000)
+        const result = await defaultKillTree('win32', blockTaskkill, process.env)(child, started)
+        expect(result).toEqual({ ok: true })
+        // Every grandchild, including those started after the kill began, is gone.
+        const all = spawned()
+        expect(all.length).toBeGreaterThanOrEqual(pinned.pids.length)
+        expect(all.filter(isAlive)).toEqual([])
+        await closed
+      } finally {
+        child.kill('SIGKILL')
+        for (const pid of pinned.pids.filter(isAlive)) {
+          try {
+            process.kill(pid, 'SIGKILL')
+          } catch {
+            // Exited in the meantime.
+          }
+        }
+        await waitUntil(() => !pinned.pids.some(isAlive), 10_000)
+        pinned.release()
+      }
     },
   )
 
@@ -1146,7 +1348,7 @@ describe('run_shell from the command bar', () => {
     await until(() => calls.length > 0)
     expect(calls).toHaveLength(1)
     await session.stop()
-    expect(killTree).toHaveBeenCalledWith(calls[0]?.child)
+    expect(killTree.mock.calls[0]?.[0]).toBe(calls[0]?.child)
     expect(commandResult(events)).toMatchObject({ isError: true })
     expect(commandResult(events)?.content).toMatch(/Cancelled; the process tree was killed/)
     expect(h.audit.entries).toEqual([
