@@ -33,6 +33,10 @@ export interface ConnectionDescriptor {
   /** See docs/connections.md: hidden when settings.showPersonalUseConnections is off. */
   readonly personalUseOnly: boolean
   readonly pickerOrder: number
+  /** Shown to the user before they use it (Gemini's free-tier data use). */
+  readonly notice?: string
+  /** A local server's default API root, when its base URL can be changed. */
+  readonly defaultBaseUrl?: string
 }
 
 /**
@@ -96,6 +100,15 @@ export interface ConnectionAdapter extends ConnectionDescriptor {
   login?: (session: LoginSession) => Promise<void>
   /** Drops cached metadata (switch, sign-in, selection change). */
   invalidate?: () => void
+  /**
+   * Checks a key before it is saved, with a read-only request (never a completion).
+   * Resolves with a safe failure for a key that must not be saved; never throws.
+   */
+  validateKey?: (key: string, signal?: AbortSignal) => Promise<ProviderFailure | null>
+  /** The API root in use, for a connection with defaultBaseUrl. */
+  baseUrl?: () => { baseUrl: string; custom: boolean }
+  /** Saves a custom API root (null: the default). Throws a safe message for one it refuses. */
+  setBaseUrl?: (baseUrl: string | null) => Promise<{ baseUrl: string; custom: boolean }>
 }
 
 /** Builds an adapter once the service (its host) exists. */
@@ -114,5 +127,7 @@ export function connectionInfo(adapter: ConnectionDescriptor): ConnectionInfo {
     capabilities: { ...adapter.capabilities },
     personalUseOnly: adapter.personalUseOnly,
     pickerOrder: adapter.pickerOrder,
+    ...(adapter.notice ? { notice: adapter.notice } : {}),
+    ...(adapter.defaultBaseUrl ? { defaultBaseUrl: adapter.defaultBaseUrl } : {}),
   }
 }

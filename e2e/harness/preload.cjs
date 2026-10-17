@@ -33,6 +33,8 @@ let layout = {
 const layoutSaves = []
 const commandRuns = []
 const loginCalls = { open: 0, copy: 0, codes: [] }
+const savedKeys = new Set(['anthropic-api'])
+const keyCalls = []
 
 // The Files tree: one granted folder with every kind of entry the tree draws.
 const ROOT = 'C:\\Users\\me\\Projects'
@@ -267,6 +269,95 @@ const connections = [
     personalUseOnly: false,
     pickerOrder: 2,
   },
+  {
+    id: 'openai-api',
+    vendor: 'openai',
+    access: 'api-key',
+    label: 'OpenAI · API',
+    shortLabel: 'OpenAI',
+    title: 'OpenAI API',
+    description: 'Use your own OpenAI API key. Billed by OpenAI.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 3,
+  },
+  {
+    id: 'gemini-api',
+    vendor: 'google',
+    access: 'api-key',
+    label: 'Gemini · API',
+    shortLabel: 'Gemini',
+    title: 'Gemini API',
+    description: 'Use a Gemini API key from Google AI Studio. Free keys work, with limits.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 4,
+    notice:
+      'Free Gemini API keys share your data with Google. On the Gemini API free tier, Google may use your prompts, files the agent reads and the responses to improve its products, and people may review them. Do not use a free key with confidential or personal information. Paid-tier usage is not used this way.',
+  },
+  {
+    id: 'openrouter-api',
+    vendor: 'openrouter',
+    access: 'api-key',
+    label: 'OpenRouter · API',
+    shortLabel: 'OpenRouter',
+    title: 'OpenRouter API',
+    description: 'Use your own OpenRouter key to reach many models. Billed by OpenRouter.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 5,
+  },
+  {
+    id: 'ollama',
+    vendor: 'local',
+    access: 'free',
+    label: 'Ollama · Local',
+    shortLabel: 'Ollama',
+    title: 'Ollama',
+    description: 'Run open models on this computer with Ollama. Free; nothing leaves your PC.',
+    capabilities: {
+      authKind: 'local',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 6,
+    defaultBaseUrl: 'http://127.0.0.1:11434/v1',
+  },
+  {
+    id: 'lmstudio',
+    vendor: 'local',
+    access: 'free',
+    label: 'LM Studio · Local',
+    shortLabel: 'LM Studio',
+    title: 'LM Studio',
+    description: 'Run open models on this computer with LM Studio. Free; nothing leaves your PC.',
+    capabilities: {
+      authKind: 'local',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 7,
+    defaultBaseUrl: 'http://127.0.0.1:1234/v1',
+  },
 ]
 
 const model = {
@@ -494,10 +585,27 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
   },
   getAppInfo: resolve({ name: 'desktop-agent', version: '0.0.0-e2e', platform: process.platform }),
+  // Anthropic API starts with a key; the other API-key connections without one. A key
+  // starting "bad" is refused the way main refuses one its pinned host rejects.
   apiKey: {
-    status: resolve({ saved: true, error: null }),
-    set: resolve({ saved: true, error: null }),
-    clear: resolve({ saved: false, error: null }),
+    status: (connection = 'anthropic-api') =>
+      Promise.resolve({ saved: savedKeys.has(connection), error: null }),
+    set: (key, connection = 'anthropic-api') => {
+      keyCalls.push(connection)
+      if (key.startsWith('bad')) {
+        const label = connections.find((c) => c.id === connection)?.shortLabel ?? 'The service'
+        return Promise.resolve({
+          saved: savedKeys.has(connection),
+          error: `${label} rejected the API key. Update it in settings.`,
+        })
+      }
+      savedKeys.add(connection)
+      return Promise.resolve({ saved: true, error: null })
+    },
+    clear: (connection = 'anthropic-api') => {
+      savedKeys.delete(connection)
+      return Promise.resolve({ saved: false, error: null })
+    },
   },
   grants: {
     list: () => Promise.resolve({ roots: rootsGranted ? [ROOT] : [], loadError: null }),
@@ -553,6 +661,18 @@ contextBridge.exposeInMainWorld('desktopApi', {
   },
   connections: {
     list: () => Promise.resolve(structuredClone(connections)),
+    baseUrl: (id) => {
+      const connection = connections.find((c) => c.id === id)
+      return connection?.defaultBaseUrl
+        ? Promise.resolve({ baseUrl: connection.defaultBaseUrl, custom: false, error: null })
+        : Promise.reject(new Error('This connection has no address to change.'))
+    },
+    setBaseUrl: (id, baseUrl) =>
+      Promise.resolve({
+        baseUrl: baseUrl ?? connections.find((c) => c.id === id)?.defaultBaseUrl ?? '',
+        custom: baseUrl !== null,
+        error: null,
+      }),
   },
   audit: {
     reveal: resolve(undefined),
@@ -588,6 +708,8 @@ contextBridge.exposeInMainWorld('e2e', {
     for (const listener of listeners.login) listener(state)
   },
   loginCalls: () => ({ ...loginCalls, codes: loginCalls.codes.slice() }),
+  // The connection each apiKey.set named, in order.
+  keyCalls: () => keyCalls.slice(),
   // Replace the saved chats and push them like main does after a save.
   setHistory: (next) => {
     history = next

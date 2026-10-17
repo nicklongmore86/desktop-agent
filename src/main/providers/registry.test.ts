@@ -12,7 +12,7 @@ import { ConnectionRegistry } from './registry'
 import { ConnectionService } from './service'
 
 const spec = (overrides: Partial<AgentClientSpec> = {}): AgentClientSpec => ({
-  id: 'openai-api',
+  id: 'example-api',
   vendor: 'openai',
   access: 'api-key',
   label: 'GPT · API',
@@ -107,6 +107,35 @@ describe('built-in connections', () => {
         authKind: 'api-key',
         personalUseOnly: false,
       },
+      {
+        id: 'openai-api',
+        vendor: 'openai',
+        access: 'api-key',
+        authKind: 'api-key',
+        personalUseOnly: false,
+      },
+      {
+        id: 'gemini-api',
+        vendor: 'google',
+        access: 'api-key',
+        authKind: 'api-key',
+        personalUseOnly: false,
+      },
+      {
+        id: 'openrouter-api',
+        vendor: 'openrouter',
+        access: 'api-key',
+        authKind: 'api-key',
+        personalUseOnly: false,
+      },
+      { id: 'ollama', vendor: 'local', access: 'free', authKind: 'local', personalUseOnly: false },
+      {
+        id: 'lmstudio',
+        vendor: 'local',
+        access: 'free',
+        authKind: 'local',
+        personalUseOnly: false,
+      },
     ])
   })
 
@@ -118,11 +147,16 @@ describe('built-in connections', () => {
     expect(service.registry.list({ personalUse: false }).map(({ id }) => id)).toEqual([
       'codex-subscription',
       'anthropic-api',
+      'openai-api',
+      'gemini-api',
+      'openrouter-api',
+      'ollama',
+      'lmstudio',
     ])
   })
 
   it('refuses an id it does not know, before any adapter runs', async () => {
-    await expect(service.status('openai-api')).rejects.toThrow('Unknown provider.')
+    await expect(service.status('example-api')).rejects.toThrow('Unknown provider.')
     await expect(service.login('../claude')).rejects.toThrow('Unknown provider.')
     await expect(service.runner('evil', [])).rejects.toThrow('Unknown provider.')
   })
@@ -147,9 +181,9 @@ describe('registry', () => {
 
   it('refuses malformed and duplicate ids, unknown vendors and access types', () => {
     const registry = new ConnectionRegistry()
-    registry.register(adapter('openai-api'))
+    registry.register(adapter('example-api'))
     expect(() => {
-      registry.register(adapter('openai-api'))
+      registry.register(adapter('example-api'))
     }).toThrow('already registered')
     for (const id of ['../x', 'A', '', 'a/b', 'x'.repeat(65)])
       expect(() => {
@@ -161,7 +195,7 @@ describe('registry', () => {
     expect(() => {
       registry.register(adapter('y', { access: 'trial' as never }))
     }).toThrow('Unknown access type')
-    expect(registry.ids()).toEqual(['openai-api'])
+    expect(registry.ids()).toEqual(['example-api'])
     expect(registry.has('__proto__')).toBe(false)
     expect(registry.has(7)).toBe(false)
   })
@@ -179,13 +213,13 @@ describe('an API connection registered through the AgentClient slot', () => {
   it('runs the shared agent loop with the connection’s own key and model', async () => {
     const fake = fakeClient('hello from the new connection')
     const { service, keys, client } = setup('sk-openai', { client: () => fake.client })
-    expect(await service.status('openai-api')).toEqual({
-      provider: 'openai-api',
+    expect(await service.status('example-api')).toEqual({
+      provider: 'example-api',
       state: 'ready',
       message: 'Ready.',
     })
-    const runner = await service.runner('openai-api', [])
-    expect(keys.forConnection).toHaveBeenCalledWith('openai-api')
+    const runner = await service.runner('example-api', [])
+    expect(keys.forConnection).toHaveBeenCalledWith('example-api')
     expect(client).toHaveBeenCalledWith({ key: 'sk-openai', model: 'gpt-test' })
     const onEvent = vi.fn()
     const result = await runner.run([{ role: 'user', content: 'hi' }], {
@@ -205,15 +239,15 @@ describe('an API connection registered through the AgentClient slot', () => {
 
   it('refuses to start without a key, and maps key failures without the store’s internals', async () => {
     const missing = setup(null)
-    const error = await missing.service.runner('openai-api', []).catch((e: unknown) => e)
-    expect(missing.service.failure('openai-api', error)).toEqual({
+    const error = await missing.service.runner('example-api', []).catch((e: unknown) => e)
+    expect(missing.service.failure('example-api', error)).toEqual({
       code: 'no_api_key',
       message: 'Add your OpenAI API key in Settings.',
     })
     expect(missing.client).not.toHaveBeenCalled()
     const unreadable = setup(new Error('Stored API key is corrupt.'))
-    const failure = await unreadable.service.runner('openai-api', []).catch((e: unknown) => e)
-    expect(unreadable.service.failure('openai-api', failure)).toEqual({
+    const failure = await unreadable.service.runner('example-api', []).catch((e: unknown) => e)
+    expect(unreadable.service.failure('example-api', failure)).toEqual({
       code: 'key_unreadable',
       message: 'Stored API key is corrupt.',
     })
@@ -222,7 +256,7 @@ describe('an API connection registered through the AgentClient slot', () => {
   it('never forwards a provider’s own error text', () => {
     const { service } = setup('sk')
     const failure = service.failure(
-      'openai-api',
+      'example-api',
       new Error('429 rate_limit for sk-secret at C:\\Users\\me'),
     )
     // Not an error the client wrote: the client's own neutral message, no Claude wording.
@@ -230,7 +264,7 @@ describe('an API connection registered through the AgentClient slot', () => {
     expect(JSON.stringify(failure)).not.toMatch(/sk-secret|Users|Claude/)
     // A message the service already wrote passes through unchanged.
     const unavailable = new SubscriptionError('model_unavailable', 'Choose an available model.')
-    expect(service.failure('openai-api', unavailable)).toBe(unavailable)
+    expect(service.failure('example-api', unavailable)).toBe(unavailable)
   })
 
   it.each([
@@ -265,7 +299,7 @@ describe('an API connection registered through the AgentClient slot', () => {
         },
       }
       const { service } = setup('sk-other', { client: () => failing, errorEvent })
-      const runner = await service.runner('openai-api', [])
+      const runner = await service.runner('example-api', [])
       const onEvent = vi.fn()
       const result = await runner.run([{ role: 'user', content: 'hi' }], {
         signal: new AbortController().signal,
@@ -276,7 +310,7 @@ describe('an API connection registered through the AgentClient slot', () => {
       expect(onEvent).toHaveBeenCalledWith({ type: 'error', code: 'rate_limit', message, resetsAt })
       expect(JSON.stringify(onEvent.mock.calls)).not.toContain('Claude')
       // The same mapping for an error raised while starting the run.
-      expect(service.failure('openai-api', makeError(resetsAt))).toEqual({
+      expect(service.failure('example-api', makeError(resetsAt))).toEqual({
         code: 'rate_limit',
         message,
         resetsAt,

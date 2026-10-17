@@ -98,6 +98,16 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
     connections: {
       list: vi.fn(() => []),
       available: vi.fn((id: string) => BUILTIN_CONNECTIONS.includes(id)),
+      baseUrl: vi.fn((_id: string) =>
+        Promise.resolve({ baseUrl: 'http://127.0.0.1:11434/v1', custom: false, error: null }),
+      ),
+      setBaseUrl: vi.fn((_id: string, baseUrl: string | null) =>
+        Promise.resolve({
+          baseUrl: baseUrl ?? 'http://127.0.0.1:11434/v1',
+          custom: !!baseUrl,
+          error: null,
+        }),
+      ),
     },
     apiKey: {
       hasKey: vi.fn(() => Promise.resolve(false)),
@@ -561,7 +571,7 @@ describe('registerIpcHandlers', () => {
       expect(services.apiKey.set).toHaveBeenCalledWith('sk', 'anthropic-api')
       await invoke(IpcChannels.apiKeyStatus, appFrame, 'anthropic-api')
       expect(services.apiKey.hasKey).toHaveBeenLastCalledWith('anthropic-api')
-      for (const bad of ['../anthropic-api', 'openai-api', 7, null, '__proto__']) {
+      for (const bad of ['../anthropic-api', 'not-a-connection', 7, null, '__proto__']) {
         await expect(invoke(IpcChannels.apiKeySet, appFrame, 'sk', bad)).rejects.toThrow(
           'Unknown provider.',
         )
@@ -871,6 +881,53 @@ describe('provider IPC', () => {
       'takes no arguments',
     )
     expect(services.connections.list).toHaveBeenCalledOnce()
+  })
+  it('passes a key for each new API-key connection through by id', async () => {
+    const { invoke, services } = setup()
+    for (const id of ['openai-api', 'gemini-api', 'openrouter-api']) {
+      await invoke(IpcChannels.apiKeySet, appFrame, 'sk-x', id)
+      expect(services.apiKey.set).toHaveBeenLastCalledWith('sk-x', id)
+    }
+  })
+  it('reports a refused key without claiming it was saved', async () => {
+    const { invoke, services } = setup()
+    vi.mocked(services.apiKey.set).mockRejectedValueOnce(
+      new Error('OpenAI rejected the API key. Update it in settings.'),
+    )
+    expect(await invoke(IpcChannels.apiKeySet, appFrame, 'sk-bad', 'openai-api')).toEqual({
+      saved: false,
+      error: 'OpenAI rejected the API key. Update it in settings.',
+    })
+  })
+  it('reads and changes a base URL only for a connection the registry offers', async () => {
+    const { invoke, services } = setup()
+    expect(await invoke(connectionsChannels.connectionsBaseUrl, appFrame, 'ollama')).toEqual({
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      custom: false,
+      error: null,
+    })
+    await invoke(
+      connectionsChannels.connectionsSetBaseUrl,
+      appFrame,
+      'ollama',
+      'http://localhost:9/v1',
+    )
+    expect(services.connections.setBaseUrl).toHaveBeenCalledWith('ollama', 'http://localhost:9/v1')
+    await invoke(connectionsChannels.connectionsSetBaseUrl, appFrame, 'lmstudio', null)
+    expect(services.connections.setBaseUrl).toHaveBeenLastCalledWith('lmstudio', null)
+    for (const bad of ['../ollama', 'nope', 7, null, '__proto__', 'OLLAMA']) {
+      await expect(invoke(connectionsChannels.connectionsBaseUrl, appFrame, bad)).rejects.toThrow(
+        'Unknown provider.',
+      )
+      await expect(
+        invoke(connectionsChannels.connectionsSetBaseUrl, appFrame, bad, 'http://127.0.0.1:1/v1'),
+      ).rejects.toThrow('Unknown provider.')
+    }
+    for (const url of [7, {}, 'x'.repeat(2049)])
+      await expect(
+        invoke(connectionsChannels.connectionsSetBaseUrl, appFrame, 'ollama', url),
+      ).rejects.toThrow('Enter a valid address.')
+    expect(services.connections.setBaseUrl).toHaveBeenCalledTimes(2)
   })
   it('accepts explicit provider selection only through trusted IPC', async () => {
     const { invoke, services } = setup()

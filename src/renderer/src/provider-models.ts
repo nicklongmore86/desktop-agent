@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ModelOption, ProviderFailure } from '../../shared/ipc'
-import { ANTHROPIC_API, type ConnectionId } from '../../shared/ipc-connections'
+import type { ConnectionId, ConnectionInfo } from '../../shared/ipc-connections'
 import { useApi } from './api'
+import { connectionOf, useConnections } from './connections'
 
 export interface ModelChoice {
   provider: ConnectionId
@@ -10,6 +11,8 @@ export interface ModelChoice {
   selected: string | null
   /** Shown when the model that will run is not the saved one. */
   note: string | null
+  /** Shown with the list in Settings (local servers do not say which models use tools). */
+  warning?: string
 }
 
 export interface ProviderModelPicker {
@@ -22,33 +25,39 @@ export interface ProviderModelPicker {
   select: (model: string | null) => Promise<boolean>
 }
 
+/** An API-key connection without its own list (Anthropic API) uses the Settings model API. */
+const usesModelApi = (connection: ConnectionInfo | undefined): boolean =>
+  connection?.capabilities.authKind === 'api-key' && !connection.capabilities.listsModels
+
 /**
- * The model list for the composer: provider.models() for the subscriptions
- * (Codex lists models; Claude returns none, so no picker) and the existing
- * model API for Anthropic API mode.
+ * The model list for the composer: provider.models() for connections that list
+ * models (Codex, the other API and local connections; Claude returns none, so no
+ * picker) and the existing model API for Anthropic API mode.
  */
 export function useProviderModels(provider: ConnectionId | undefined): ProviderModelPicker {
   const api = useApi()
+  const connections = useConnections()
+  const modelApi = usesModelApi(connectionOf(connections, provider))
   const [choice, setChoice] = useState<ModelChoice | null>(null)
   const [readFailure, setReadFailure] = useState<ProviderFailure | null>(null)
   const [saveFailure, setSaveFailure] = useState<ProviderFailure | null>(null)
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
-    if (!provider) return
+    if (!provider || !connections) return
     let current = true
     const read = async (): Promise<void> => {
       let next: ModelChoice | null = null
       let failed: ProviderFailure | null = null
       try {
-        if (provider === ANTHROPIC_API) {
+        if (modelApi) {
           const model = await api.model.get()
           if (model.options.length > 0)
             next = { provider, options: model.options, selected: model.model, note: null }
         } else {
           const result = await api.provider.models()
           if (result.ok && result.value.provider === provider && result.value.options.length > 0) {
-            const { options, savedModel, resolvedModel } = result.value
+            const { options, savedModel, resolvedModel, warning } = result.value
             const offered = options.some((option) => option.id === savedModel)
             next = {
               provider,
@@ -58,6 +67,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
                 savedModel && resolvedModel && resolvedModel !== savedModel
                   ? 'Using default model'
                   : null,
+              ...(warning ? { warning } : {}),
             }
           } else if (!result.ok) {
             failed = result.failure
@@ -75,7 +85,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
     return () => {
       current = false
     }
-  }, [api, provider, tick])
+  }, [api, provider, connections, modelApi, tick])
 
   const refresh = useCallback(() => {
     setSaveFailure(null)
@@ -86,7 +96,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
     async (model: string | null): Promise<boolean> => {
       setSaveFailure(null)
       try {
-        if (provider === ANTHROPIC_API) {
+        if (modelApi) {
           if (model === null) return false
           await api.model.set(model)
         } else {
@@ -103,7 +113,7 @@ export function useProviderModels(provider: ConnectionId | undefined): ProviderM
       }
       return true
     },
-    [api, provider],
+    [api, modelApi],
   )
 
   return {
