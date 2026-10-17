@@ -75,6 +75,10 @@ Other scripts:
 | `pnpm start`        | Run the compiled app from `out/`                     |
 | `pnpm dist:win`     | Build, then create the Windows NSIS installer        |
 
+### CI
+
+Every PR runs the Linux check. Windows CI runs on pushes to `main`, when a PR is marked ready for review, and on PRs labelled `windows-ci`. Add that label to PRs that touch Windows-specific code. See [docs/ci.md](docs/ci.md).
+
 ### Building the Windows installer
 
 ```sh

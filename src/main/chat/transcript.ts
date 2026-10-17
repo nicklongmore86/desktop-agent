@@ -1,5 +1,6 @@
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import type { ChatItem } from '../../shared/ipc'
+import { userCommandItem } from './user-command'
 
 function resultText(content: unknown): string {
   if (typeof content === 'string') return content
@@ -19,7 +20,8 @@ function resultText(content: unknown): string {
 /**
  * The chat view of a Messages-API history: user and assistant text, and one
  * tool card per tool_use with its matching tool_result. Tool-result-only user
- * messages are folded into the cards, not shown as user text.
+ * messages are folded into the cards, not shown as user text. A command the user
+ * ran from the command bar is a card of its own (see user-command.ts).
  */
 export function toTranscript(messages: readonly MessageParam[]): ChatItem[] {
   const items: ChatItem[] = []
@@ -27,6 +29,11 @@ export function toTranscript(messages: readonly MessageParam[]): ChatItem[] {
   messages.forEach((message, m) => {
     const role = message.role
     if (role !== 'user' && role !== 'assistant') return
+    const command = userCommandItem(message)
+    if (command) {
+      items.push(command)
+      return
+    }
     const blocks =
       typeof message.content === 'string'
         ? [{ type: 'text' as const, text: message.content }]

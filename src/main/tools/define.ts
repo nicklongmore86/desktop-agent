@@ -170,6 +170,7 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
           args: input === undefined ? { invalidInput: true } : spec.summarize(input, approval),
           paths,
           approval,
+          origin: ctx.origin ?? 'agent',
           outcome: result.isError ? 'error' : 'ok',
           ...(errorCode === undefined ? {} : { error: errorCode }),
           durationMs: Math.max(0, Math.round(deps.now() - started)),

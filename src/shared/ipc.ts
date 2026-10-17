@@ -1,5 +1,6 @@
 import type { FeatureApis } from './ipc-features'
 import { filesPushChannels, type FilesChanged } from './ipc-files'
+import { gitPushChannels, type GitChanged } from './ipc-git'
 
 /** IPC channel names shared by the main process and the preload script. */
 export const IpcChannels = {
@@ -205,6 +206,8 @@ export type ChatItem =
       name: string
       input: unknown
       result: { content: string; isError: boolean } | null
+      /** Set for a command the user typed in the command bar (not the agent's call). */
+      origin?: 'user-terminal'
     }
 
 /** One saved conversation in the history list. Times are milliseconds since the epoch. */
@@ -246,6 +249,8 @@ export type SendResult =
 /** Streamed main -> renderer while a run is in flight. */
 export type ChatEvent =
   | { type: 'run_started'; runId: string; text: string }
+  /** A command typed in the command bar started; its result comes as a tool_result. */
+  | { type: 'command_started'; runId: string; id: string; command: string; cwd: string }
   | { type: 'text_delta'; runId: string; turn: number; text: string }
   /** The turn's response was dropped (truncated tool calls): remove its streamed text. */
   | { type: 'response_discarded'; runId: string; turn: number }
@@ -263,6 +268,9 @@ export type ChatEvent =
 
 export type ApprovalKind = 'write' | 'move' | 'delete' | 'shell'
 
+/** Who asked: the agent, or the user typing in the command bar. */
+export type ApprovalOrigin = 'agent' | 'user-terminal'
+
 export interface ApprovalPrompt {
   /** Random per request; the response must quote it. */
   id: string
@@ -274,6 +282,8 @@ export interface ApprovalPrompt {
   summary: string
   /** Unified diff for writes; the exact shell, cwd and command for run_shell. */
   detail: string | null
+  /** Main always sets it; absent (older prompts, tests) means the agent. */
+  origin?: ApprovalOrigin
 }
 
 /** The main -> renderer channels and their payloads; the preload only subscribes to these. */
@@ -283,6 +293,7 @@ export interface PushPayloads {
   [IpcChannels.auditStatusChanged]: AuditStatus
   [IpcChannels.providerLoginStateChanged]: ProviderLoginState
   [filesPushChannels.filesChanged]: FilesChanged
+  [gitPushChannels.gitChanged]: GitChanged
 }
 export type PushChannel = keyof PushPayloads
 

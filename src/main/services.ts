@@ -5,10 +5,12 @@ import { PROVIDERS, type ProviderId, type ProviderResult } from '../shared/ipc'
 import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import type { FilesChanged } from '../shared/ipc-files'
+import type { GitChanged } from '../shared/ipc-git'
 import { createAgent, createClaudeClient } from './agent'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
+import { createGitService } from './git/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
 import { createApiKeyStore, type SafeStorage } from './secrets'
 import { openHistory, type ConversationHistory } from './storage/history-store'
@@ -30,6 +32,7 @@ export interface AppServiceDeps {
   /** Shows a path in Explorer: Electron's shell.showItemInFolder. */
   revealPath?: (path: string) => void
   onFilesChanged?: (change: FilesChanged) => void
+  onGitChanged?: (change: GitChanged) => void
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings and chat session. */
@@ -81,6 +84,13 @@ export async function createAppServices(deps: AppServiceDeps) {
     emit: (change) => deps.onFilesChanged?.(change),
   })
 
+  const git = createGitService({
+    guard,
+    emptyDir: join(userData, 'git-empty'),
+    emit: (change) => deps.onGitChanged?.(change),
+    openUrl: deps.openUrl ?? (() => Promise.reject(new Error('Opening links is unavailable.'))),
+  })
+
   const settings = await openSettingsStore(join(userData, 'settings.json'))
 
   const subscriptions = new SubscriptionProviders(
@@ -108,6 +118,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     }
     return history
   }
+  const userShell = tools.find((tool) => tool.name === 'run_shell')
   const chat = new ChatSession({
     history: await historyFor(settings.provider),
     async createRunner(signal) {
@@ -150,6 +161,8 @@ export async function createAppServices(deps: AppServiceDeps) {
       if (event.type === 'run_finished') reportAudit()
     },
     promptApproval: deps.promptApproval,
+    // Commands typed in the command bar go through this same tool (no other spawn path).
+    ...(userShell ? { userShell } : {}),
     onSaveError: (error) => {
       console.error('could not save the conversation', error)
     },
@@ -213,5 +226,5 @@ export async function createAppServices(deps: AppServiceDeps) {
     switchProvider: (next, id) => provider.set(next, id),
     status: () => subscriptions.status(settings.provider),
   })
-  return { apiKey, grants, settings, chat, auditStatus, provider, projects, files }
+  return { apiKey, grants, settings, chat, auditStatus, provider, projects, files, git }
 }

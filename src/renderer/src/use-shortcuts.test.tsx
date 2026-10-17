@@ -1,6 +1,12 @@
 import { fireEvent, render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { matchLayoutHotkey, useLayoutHotkeys, type LayoutHotkey } from './use-shortcuts'
+import {
+  matchLayoutHotkey,
+  matchViewModeHotkey,
+  useLayoutHotkeys,
+  useViewModeHotkey,
+  type LayoutHotkey,
+} from './use-shortcuts'
 
 type Keys = Parameters<typeof matchLayoutHotkey>[0]
 const press = (changes: Partial<Keys>): Keys => ({
@@ -66,5 +72,49 @@ describe('useLayoutHotkeys', () => {
     view.rerender(<Host onToggle={onToggle} disabled />)
     key({ code: 'BracketLeft' })
     expect(onToggle).not.toHaveBeenCalled()
+  })
+})
+
+describe('matchViewModeHotkey', () => {
+  it('matches Ctrl/Cmd+Alt+\\ by physical key only', () => {
+    expect(matchViewModeHotkey(press({ code: 'Backslash' }))).toBe(true)
+    expect(matchViewModeHotkey(press({ code: 'Backslash', ctrlKey: false, metaKey: true }))).toBe(
+      true,
+    )
+    expect(matchViewModeHotkey(press({ code: 'BracketLeft' }))).toBe(false)
+    expect(matchViewModeHotkey(press({ code: 'Backslash', repeat: true }))).toBe(false)
+    expect(
+      matchViewModeHotkey(
+        press({ code: 'Backslash', getModifierState: (key) => key === 'AltGraph' }),
+      ),
+    ).toBe(false)
+    expect(matchViewModeHotkey(press({ code: 'Backslash', shiftKey: true }))).toBe(false)
+    expect(matchViewModeHotkey(press({ code: 'Backslash', altKey: false }))).toBe(false)
+    expect(matchViewModeHotkey(press({ code: 'Backslash', defaultPrevented: true }))).toBe(false)
+  })
+})
+
+function ViewHost({ onToggle, disabled }: { onToggle: () => void; disabled: boolean }) {
+  useViewModeHotkey(onToggle, disabled)
+  return (
+    <input
+      aria-label="field"
+      onKeyDown={(event) => {
+        event.stopPropagation()
+      }}
+    />
+  )
+}
+
+describe('useViewModeHotkey', () => {
+  it('runs in the capture phase, before a focused input can swallow the key', () => {
+    const onToggle = vi.fn()
+    const view = render(<ViewHost onToggle={onToggle} disabled={false} />)
+    const field = view.getByRole('textbox', { name: 'field' })
+    expect(fireEvent.keyDown(field, { ctrlKey: true, altKey: true, code: 'Backslash' })).toBe(false)
+    expect(onToggle).toHaveBeenCalledOnce()
+    view.rerender(<ViewHost onToggle={onToggle} disabled />)
+    fireEvent.keyDown(field, { ctrlKey: true, altKey: true, code: 'Backslash' })
+    expect(onToggle).toHaveBeenCalledOnce()
   })
 })

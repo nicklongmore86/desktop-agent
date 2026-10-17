@@ -6,6 +6,7 @@ import { useProviderModels } from '../provider-models'
 import { splitTurns } from '../turns'
 import { useProviderUsage } from '../usage'
 import { ActivityGroup } from './ActivityGroup'
+import { CommandCard } from './CommandCard'
 import { Composer } from './Composer'
 import { ErrorBanner } from './ErrorBanner'
 import { Markdown } from './Markdown'
@@ -33,6 +34,10 @@ export interface ChatViewProps {
   composerRef?: React.RefObject<HTMLTextAreaElement | null>
   /** Shown above the composer when setup is incomplete. */
   notice?: React.ReactNode
+  /** In Command view: the command bar, shown in place of the composer. */
+  commandBar?: React.ReactNode
+  /** The OS, for the shell prompt on command cards. */
+  platform?: string | undefined
 }
 
 export function ChatView({
@@ -50,6 +55,8 @@ export function ChatView({
   onSwitchProvider,
   composerRef,
   notice,
+  commandBar,
+  platform,
 }: ChatViewProps): React.JSX.Element {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -211,6 +218,19 @@ export function ChatView({
                 </li>
               )}
               {turn.entries.map((entry, entryIndex) => {
+                // A command the user typed: its own card, never folded into the agent's work.
+                if (entry.kind === 'command') {
+                  return (
+                    <li key={entry.item.id} className="message message-command">
+                      <CommandCard
+                        item={entry.item}
+                        running={state.running}
+                        queued={waitingIds.has(entry.item.id)}
+                        platform={platform}
+                      />
+                    </li>
+                  )
+                }
                 if (entry.kind === 'tools') {
                   const live = state.running && lastTurn && entryIndex === turn.entries.length - 1
                   return (
@@ -271,7 +291,9 @@ export function ChatView({
       )}
       {notice}
 
-      <div className="composer-dock">
+      {commandBar && <div className="composer-dock">{commandBar}</div>}
+      {/* Kept mounted in Command view, so the message draft survives the switch. */}
+      <div className="composer-dock" hidden={commandBar !== undefined}>
         <Composer
           draft={draft}
           onDraft={setDraft}

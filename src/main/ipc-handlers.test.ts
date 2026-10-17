@@ -6,8 +6,10 @@ import {
   type ChatEvent,
   type ThemePreference,
 } from '../shared/ipc'
+import { commandChannels } from '../shared/ipc-command'
 import { FEATURE_CHANNELS } from '../shared/ipc-features'
 import { filesChannels, filesPushChannels } from '../shared/ipc-files'
+import { gitChannels } from '../shared/ipc-git'
 import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
 import { projectsChannels, type ProjectsState } from '../shared/ipc-projects'
 import type { RunOptions } from './agent'
@@ -129,6 +131,9 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       remove: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
       respondApproval: vi.fn(() => true),
     },
+    command: {
+      run: vi.fn(() => Promise.resolve({ ok: true as const })),
+    },
     files: {
       roots: vi.fn(() => [{ id: ROOT_ID, name: 'granted', path: '/granted' }]),
       list: vi.fn(() => Promise.resolve({ ok: true as const, entries: [], more: 0 })),
@@ -137,6 +142,16 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       reveal: vi.fn(() => Promise.resolve({ ok: true as const })),
       copyPath: vi.fn(() => Promise.resolve({ ok: true as const })),
       reference: vi.fn(() => Promise.resolve({ ok: true as const, text: '@"/granted/a"' })),
+    },
+    git: {
+      overview: vi.fn(() => Promise.resolve({ git: 'missing' as const })),
+      status: vi.fn(() =>
+        Promise.resolve({ ok: false as const, code: 'refused' as const, reason: 'no' }),
+      ),
+      diff: vi.fn(() => Promise.resolve({ ok: true as const, kind: 'empty' as const })),
+      log: vi.fn(() => Promise.resolve({ ok: true as const, commits: [], more: false })),
+      watch: vi.fn(() => Promise.resolve()),
+      openInstallPage: vi.fn(() => Promise.resolve()),
     },
     layout: {
       get: vi.fn(() => ({ ...DEFAULT_LAYOUT })),
@@ -213,6 +228,107 @@ describe('registerIpcHandlers', () => {
           'Invalid layout.',
         )
       expect(services.layout.set).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('git', () => {
+    const repo = { rootId: ROOT_ID, rel: '' }
+    const badRepos = [
+      undefined,
+      null,
+      'C:\\Users\\me\\repo',
+      { rootId: ROOT_ID },
+      { rootId: 'C:\\repo', rel: '' },
+      { rootId: ROOT_ID, rel: 7 },
+      { rootId: ROOT_ID, rel: '', path: '/etc' },
+    ]
+
+    it('passes valid requests on', async () => {
+      const { invoke, services } = setup()
+      expect(await invoke(gitChannels.gitOverview, appFrame)).toEqual({ git: 'missing' })
+      await invoke(gitChannels.gitStatus, appFrame, repo)
+      expect(services.git.status).toHaveBeenCalledWith(repo)
+      const diff = { repo, area: 'staged', path: 'src/new.ts', oldPath: 'src/old.ts' }
+      await invoke(gitChannels.gitDiff, appFrame, diff)
+      expect(services.git.diff).toHaveBeenCalledWith(diff)
+      await invoke(gitChannels.gitLog, appFrame, { repo, skip: 50 })
+      expect(services.git.log).toHaveBeenCalledWith({ repo, skip: 50 })
+      await invoke(gitChannels.gitWatch, appFrame, [repo])
+      expect(services.git.watch).toHaveBeenCalledWith([repo])
+      await invoke(gitChannels.gitOpenInstallPage, appFrame, 'https://evil.example/')
+      // The renderer cannot choose the address: the service takes no argument.
+      expect(services.git.openInstallPage).toHaveBeenCalledWith()
+    })
+
+    it('refuses anything that is not a repository location or a plain request', async () => {
+      const { invoke, services } = setup()
+      for (const bad of badRepos) {
+        await expect(invoke(gitChannels.gitStatus, appFrame, bad)).rejects.toThrow(
+          'Unknown repository.',
+        )
+        await expect(
+          invoke(gitChannels.gitDiff, appFrame, { repo: bad, area: 'staged', path: 'a' }),
+        ).rejects.toThrow('Invalid diff request.')
+        await expect(invoke(gitChannels.gitLog, appFrame, { repo: bad, skip: 0 })).rejects.toThrow(
+          'Invalid history request.',
+        )
+      }
+      for (const bad of [
+        { repo, area: 'all', path: 'a' },
+        { repo, area: 'staged', path: '' },
+        { repo, area: 'staged', path: 'x'.repeat(5000) },
+        { repo, area: 'staged', path: 'a', args: ['--output=/tmp/x'] },
+      ])
+        await expect(invoke(gitChannels.gitDiff, appFrame, bad)).rejects.toThrow(
+          'Invalid diff request.',
+        )
+      for (const skip of [-1, 1.5, 10_000_000, '0'])
+        await expect(invoke(gitChannels.gitLog, appFrame, { repo, skip })).rejects.toThrow(
+          'Invalid history request.',
+        )
+      await expect(
+        invoke(
+          gitChannels.gitWatch,
+          appFrame,
+          Array.from({ length: 100 }, () => repo),
+        ),
+      ).rejects.toThrow('Invalid repositories to watch.')
+      expect(services.git.status).not.toHaveBeenCalled()
+      expect(services.git.diff).not.toHaveBeenCalled()
+      expect(services.git.log).not.toHaveBeenCalled()
+      expect(services.git.watch).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('command', () => {
+    it('hands a typed command and folder to the command service', async () => {
+      const { invoke, services } = setup()
+      expect(await invoke(commandChannels.commandRun, appFrame, 'dir', 'C:\\work')).toEqual({
+        ok: true,
+      })
+      expect(services.command.run).toHaveBeenCalledExactlyOnceWith('dir', 'C:\\work')
+    })
+
+    it('refuses anything but a non-empty command and a folder string', async () => {
+      const { invoke, services } = setup()
+      const bad: unknown[][] = [
+        [],
+        ['dir'],
+        ['dir', 'C:\\work', 'extra'],
+        ['', 'C:\\work'],
+        ['   ', 'C:\\work'],
+        ['x'.repeat(8001), 'C:\\work'],
+        [{ command: 'dir' }, 'C:\\work'],
+        ['dir', ''],
+        ['dir', 7],
+        ['dir', 'C:\\work\0'],
+        ['dir', ['C:\\work']],
+      ]
+      for (const args of bad)
+        await expect(invoke(commandChannels.commandRun, appFrame, ...args)).rejects.toThrow(
+          /Invalid (command|folder)\./,
+        )
+      expect(services.command.run).not.toHaveBeenCalled()
     })
   })
 
@@ -400,6 +516,14 @@ describe('registerIpcHandlers', () => {
     expect(services.apiKey.set).not.toHaveBeenCalled()
     expect(services.grants.remove).not.toHaveBeenCalled()
     for (const fn of Object.values(services.projects)) expect(fn).not.toHaveBeenCalled()
+  })
+
+  it.each(untrusted)('never runs a command for an untrusted frame (%j)', async (event) => {
+    const { invoke, services } = setup()
+    await expect(invoke(commandChannels.commandRun, event, 'dir', 'C:\\work')).rejects.toThrow(
+      'Rejected IPC from untrusted frame',
+    )
+    expect(services.command.run).not.toHaveBeenCalled()
   })
 
   describe('API key', () => {

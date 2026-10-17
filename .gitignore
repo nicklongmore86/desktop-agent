@@ -1,4 +1,6 @@
-.polly/worktrees/
+.polly/
+.cursor/
+state.lock
 node_modules/
 out/
 dist/

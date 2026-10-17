@@ -1,0 +1,27 @@
+name: CI (docs only)
+
+# ci.yml ignores documentation-only changes. This reports a passing "Check (ubuntu-latest)" for
+# those PRs so a check named like the real one is never left pending. It costs one Linux minute.
+on:
+  pull_request:
+    # Keep in sync with paths-ignore in ci.yml.
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - '.polly/**'
+      - 'LICENSE*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "Documentation-only change; CI runs in ci.yml when code changes."

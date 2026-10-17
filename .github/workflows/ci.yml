@@ -1,16 +1,37 @@
 name: CI
 
+# Windows minutes cost more than Linux, so Windows only runs when it matters. See docs/ci.md.
 on:
   push:
     branches: [main]
+    # Keep in sync with ci-docs.yml.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.polly/**'
+      - 'LICENSE*'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.polly/**'
+      - 'LICENSE*'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push cancels the outdated run on the same branch/PR; runs on main always finish.
+# Labelling a PR with anything but `windows-ci` (or labelling a draft) runs nothing, so it gets
+# a group of its own and never cancels a real run.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ github.workflow }}-${{ github.ref }}${{
+    github.event.action == 'labeled'
+    && (github.event.label.name != 'windows-ci' || github.event.pull_request.draft)
+    && format('-noop-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # Keep in sync with "engines" in package.json. pnpm comes from "packageManager".
@@ -19,11 +40,24 @@ env:
 jobs:
   check:
     name: Check (${{ matrix.os }})
+    # Skip labelling events that don't ask for Windows CI.
+    if: >-
+      github.event.action != 'labeled'
+      || (github.event.label.name == 'windows-ci' && !github.event.pull_request.draft)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows: pushes to main, manual runs, and non-draft PRs labelled `windows-ci` or just
+        # marked ready for review. Keep in sync with the installer job's `if`.
+        os: >-
+          ${{ fromJSON(
+          (github.event_name != 'pull_request'
+          || (!github.event.pull_request.draft
+          && (contains(github.event.pull_request.labels.*.name, 'windows-ci')
+          || github.event.action == 'ready_for_review')))
+          && '["ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -58,11 +92,18 @@ jobs:
             e2e-artifacts/
             test-results/e2e/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: ${{ github.ref == 'refs/heads/main' && 5 || 3 }}
 
   installer:
     name: Windows installer
+    # Same condition as the Windows check above.
+    if: >-
+      github.event_name != 'pull_request'
+      || (!github.event.pull_request.draft
+      && (contains(github.event.pull_request.labels.*.name, 'windows-ci')
+      || github.event.action == 'ready_for_review'))
     runs-on: windows-latest
+    timeout-minutes: 45
     needs: check
     steps:
       - uses: actions/checkout@v5
@@ -89,4 +130,4 @@ jobs:
             release/*/*.exe
             release/*/win-unpacked/resources/runtimes/integrity.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.ref == 'refs/heads/main' && 5 || 3 }}

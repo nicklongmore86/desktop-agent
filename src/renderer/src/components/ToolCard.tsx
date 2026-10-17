@@ -52,7 +52,7 @@ export function toolStatus(item: ToolItem, running: boolean, queued = false): To
   return queued ? 'queued' : 'running'
 }
 
-const STATUS_TEXT: Record<ToolStatus, string> = {
+export const STATUS_TEXT: Record<ToolStatus, string> = {
   queued: 'queued',
   running: 'running',
   done: 'done',

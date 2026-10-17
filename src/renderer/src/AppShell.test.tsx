@@ -121,7 +121,7 @@ describe('docked panes (wide window)', () => {
     expect(isInert(left()) && isInert(right())).toBe(true)
   })
 
-  it('switches tabs by click and arrow keys, and keeps the Git tab an empty host', async () => {
+  it('switches tabs by click and arrow keys', async () => {
     const { user } = await renderApp(1280)
     const files = screen.getByRole('tab', { name: 'Files' })
     const git = screen.getByRole('tab', { name: 'Git' })
@@ -135,7 +135,9 @@ describe('docked panes (wide window)', () => {
     await user.keyboard('{Home}')
     expect(files.getAttribute('aria-selected')).toBe('true')
     await user.click(git)
-    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('workspace-tab-git')
+    expect(screen.getByRole('tabpanel', { name: 'Git' }).getAttribute('aria-labelledby')).toBe(
+      'workspace-tab-git',
+    )
   })
 })
 

@@ -8,6 +8,7 @@ const listeners = {
   audit: new Set(),
   login: new Set(),
   files: new Set(),
+  git: new Set(),
 }
 const responses = []
 const subscribe = (set) => (listener) => {
@@ -30,6 +31,7 @@ let layout = {
   rightTab: 'files',
 }
 const layoutSaves = []
+const commandRuns = []
 const loginCalls = { open: 0, copy: 0, codes: [] }
 
 // The Files tree: one granted folder with every kind of entry the tree draws.
@@ -72,6 +74,117 @@ let files = {
 const filesCalls = { watch: [], reveal: [], copy: [], reference: [], search: [] }
 const filesRoots = () => (rootsGranted ? [{ id: ROOT_ID, name: 'Projects', path: ROOT }] : [])
 let rootsGranted = true
+// The Git tab: the granted folder is a repository with every kind of change.
+const DAY = 86_400_000
+const gitRepo = { rootId: ROOT_ID, rel: '', name: 'Projects', path: ROOT, kind: 'repo' }
+let git = {
+  overview: () => ({
+    git: 'found',
+    version: '2.47.1.windows.1',
+    folders: rootsGranted
+      ? [{ rootId: ROOT_ID, name: 'Projects', path: ROOT, repos: [gitRepo] }]
+      : [],
+  }),
+  status: {
+    ok: true,
+    branch: {
+      head: 'feature/git-panel',
+      oid: '5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f',
+      upstream: 'origin/feature/git-panel',
+      ahead: 2,
+      behind: 1,
+    },
+    changes: [
+      { area: 'staged', status: 'added', path: 'src/git/GitTab.tsx', additions: 182, deletions: 0 },
+      {
+        area: 'staged',
+        status: 'renamed',
+        path: 'docs/guide.md',
+        oldPath: 'docs/old-guide.md',
+        additions: 4,
+        deletions: 2,
+      },
+      { area: 'unstaged', status: 'modified', path: 'src/App.tsx', additions: 3, deletions: 1 },
+      { area: 'unstaged', status: 'modified', path: 'budget-2026.xlsx', binary: true },
+      { area: 'unstaged', status: 'deleted', path: 'notes.txt', additions: 0, deletions: 12 },
+      {
+        area: 'unstaged',
+        status: 'modified',
+        path: '.env',
+        hidden: 'A secrets file: its contents stay hidden here.',
+      },
+      { area: 'untracked', status: 'untracked', path: 'docs/brief.md' },
+    ],
+    more: 0,
+  },
+  diff: () => ({
+    ok: true,
+    kind: 'text',
+    redacted: false,
+    diff: [
+      'diff --git a/src/App.tsx b/src/App.tsx',
+      '--- a/src/App.tsx',
+      '+++ b/src/App.tsx',
+      '@@ -184,7 +184,9 @@ export function App() {',
+      '               files: (',
+      '                 <FilesTab grants={grants} onGrants={setGrants} />',
+      '               ),',
+      '-              git: <GitTab />,',
+      '+              git: <GitTab grants={grants} />,',
+      '+              // Changes, Commits; a Pull request view comes later.',
+      '+              // Read-only: nothing here writes to the repository.',
+      '             }}',
+      '           />',
+    ].join('\n'),
+  }),
+  log: {
+    ok: true,
+    commits: [
+      {
+        hash: 'a1',
+        short: '5e1f0c2',
+        author: 'Nick',
+        date: Date.now() - 2 * 3600_000,
+        subject: 'Add the Git panel (read-only)',
+        merge: false,
+      },
+      {
+        hash: 'a2',
+        short: '9b8d7e6',
+        author: 'Nick',
+        date: Date.now() - DAY,
+        subject: 'Merge pull request #24 from feat/files-tree',
+        merge: true,
+      },
+      {
+        hash: 'a3',
+        short: '3c2d1e0',
+        author: 'Robin',
+        date: Date.now() - 3 * DAY,
+        subject: 'Refuse revealing secret files in main',
+        merge: false,
+      },
+      {
+        hash: 'a4',
+        short: '7c6d5e4',
+        author: 'Robin',
+        date: Date.now() - 9 * DAY,
+        subject: 'Files tree: watch expanded folders',
+        merge: false,
+      },
+      {
+        hash: 'a5',
+        short: '1e0f9a8',
+        author: 'Ada',
+        date: Date.now() - 40 * DAY,
+        subject: 'Projects and sessions',
+        merge: false,
+      },
+    ],
+    more: true,
+  },
+}
+const gitCalls = { status: [], diff: [], log: [], watch: [], install: 0 }
 let allowance = { plan: null, state: 'unknown', resetsAt: null, windows: [], lastError: null }
 let codexModels = []
 let savedCodexModel = null
@@ -130,6 +243,30 @@ const modelsResult = () => {
 }
 
 contextBridge.exposeInMainWorld('desktopApi', {
+  git: {
+    overview: () => Promise.resolve(git.overview()),
+    status: (repo) => {
+      gitCalls.status.push(repo)
+      return Promise.resolve(git.status)
+    },
+    diff: (request) => {
+      gitCalls.diff.push(request)
+      return Promise.resolve(git.diff(request))
+    },
+    log: (request) => {
+      gitCalls.log.push(request)
+      return Promise.resolve(git.log)
+    },
+    watch: (repos) => {
+      gitCalls.watch.push(repos)
+      return Promise.resolve()
+    },
+    openInstallPage: () => {
+      gitCalls.install += 1
+      return Promise.resolve()
+    },
+    onChanged: subscribe(listeners.git),
+  },
   files: {
     roots: () => Promise.resolve(filesRoots()),
     list: ({ rootId, rel }) => {
@@ -287,6 +424,12 @@ contextBridge.exposeInMainWorld('desktopApi', {
       return Promise.resolve({ ok: true })
     },
   },
+  command: {
+    run: (command, cwd) => {
+      commandRuns.push({ command, cwd })
+      return Promise.resolve({ ok: true })
+    },
+  },
   layout: {
     get: () => Promise.resolve(layout),
     set: (next) => {
@@ -409,12 +552,39 @@ contextBridge.exposeInMainWorld('e2e', {
   projectCalls: () => JSON.parse(JSON.stringify(projectCalls)),
   // What the renderer saved with layout.set, in order.
   layoutSaves: () => JSON.parse(JSON.stringify(layoutSaves)),
+  // What the renderer passed to command.run, in order.
+  commandRuns: () => commandRuns.slice(),
   // Change what a folder lists and push the change like main's watcher does.
   setFolder: (rel, entries) => {
     files = { ...files, [rel]: entries }
     for (const listener of listeners.files) listener({ rootId: ROOT_ID, rel })
   },
   filesCalls: () => JSON.parse(JSON.stringify(filesCalls)),
+  // The Git tab's answers: 'missing' (no git), 'empty' (a repository with no commits),
+  // 'notRepo', or the default repository; then main's change push for it.
+  setGit: (state) => {
+    if (state === 'missing') git = { ...git, overview: () => ({ git: 'missing' }) }
+    if (state === 'notRepo')
+      git = {
+        ...git,
+        overview: () => ({
+          git: 'found',
+          version: '2.47.1.windows.1',
+          folders: [{ rootId: ROOT_ID, name: 'Projects', path: ROOT, repos: [] }],
+        }),
+      }
+    if (state === 'empty')
+      git = {
+        ...git,
+        status: { ok: true, branch: { head: 'main', oid: null }, changes: [], more: 0 },
+        log: { ok: true, commits: [], more: false },
+      }
+  },
+  pushGitChanged: (stopped = false) => {
+    for (const listener of listeners.git)
+      listener({ rootId: ROOT_ID, rel: '', ...(stopped ? { stopped: true } : {}) })
+  },
+  gitCalls: () => JSON.parse(JSON.stringify(gitCalls)),
   responses: () => responses.slice(),
   stopCalls: () => stopCalls,
   listenerCount: () => listeners.chat.size + listeners.approval.size,

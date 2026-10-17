@@ -2,7 +2,9 @@
  * Registers the per-feature IPC modules (see docs/ipc-modules.md). Add one import,
  * one service in FeatureServices and one call below, in alphabetical order.
  */
+import { registerCommandHandlers, type CommandService } from './ipc-command'
 import { registerFilesHandlers, type FilesService } from './ipc-files'
+import { registerGitHandlers, type GitService } from './ipc-git'
 import { registerLayoutHandlers, type LayoutService } from './ipc-layout'
 import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 
@@ -10,13 +12,17 @@ import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 export type IpcHandle = (channel: string, handler: (...args: unknown[]) => unknown) => void
 
 export interface FeatureServices {
+  command: CommandService
   files: FilesService
+  git: GitService
   layout: LayoutService
   projects: ProjectsService
 }
 
 export function registerFeatureHandlers(handle: IpcHandle, services: FeatureServices): void {
+  registerCommandHandlers(handle, services.command)
   registerFilesHandlers(handle, services.files)
+  registerGitHandlers(handle, services.git)
   registerLayoutHandlers(handle, services.layout)
   registerProjectsHandlers(handle, services.projects)
 }

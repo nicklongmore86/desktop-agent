@@ -16,9 +16,14 @@ export interface ApprovalRequest {
   detail?: string
 }
 
+/** Who asked for a call: the agent, or the user typing in the command bar. */
+export type ToolOrigin = 'agent' | 'user-terminal'
+
 export interface ToolContext {
   requestApproval(req: ApprovalRequest): Promise<boolean>
   signal: AbortSignal
+  /** Recorded in the audit log. Absent means 'agent'. */
+  origin?: ToolOrigin
 }
 
 export interface ToolResult {
