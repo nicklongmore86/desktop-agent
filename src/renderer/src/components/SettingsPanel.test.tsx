@@ -49,7 +49,7 @@ describe('SettingsPanel', () => {
     expect(input.getAttribute('autocomplete')).toBe('off')
     await user.type(input, 'sk-ant-secret-value')
     await user.click(screen.getByRole('button', { name: 'Save key' }))
-    expect(api.apiKey.set).toHaveBeenCalledWith('sk-ant-secret-value')
+    expect(api.apiKey.set).toHaveBeenCalledWith('sk-ant-secret-value', 'anthropic-api')
     expect(screen.getByText('Key saved.')).toBeTruthy()
     expect(screen.queryByLabelText('API key')).toBeNull()
     expect(document.body.innerHTML).not.toContain('sk-ant-secret-value')
@@ -62,7 +62,7 @@ describe('SettingsPanel', () => {
     expect(input).toHaveProperty('value', '')
     await user.type(input, 'sk-new')
     await user.click(screen.getByRole('button', { name: 'Replace key' }))
-    expect(api.apiKey.set).toHaveBeenCalledWith('sk-new')
+    expect(api.apiKey.set).toHaveBeenCalledWith('sk-new', 'anthropic-api')
     await user.click(screen.getByRole('button', { name: 'Remove key' }))
     expect(api.apiKey.clear).toHaveBeenCalledOnce()
     expect(screen.getByText('No key saved.')).toBeTruthy()
@@ -330,5 +330,86 @@ describe('Claude subscription sign-in', () => {
     expect(screen.getByTestId('app-status').textContent).toBe('Sign in with your subscription.')
     expect(screen.getByRole('button', { name: 'Sign in' })).toHaveProperty('disabled', false)
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
+  })
+})
+
+describe('the new connections in Settings', () => {
+  function renderFor(provider: ProviderStatus) {
+    const fake = fakeApi({ provider, key: { saved: false, error: null } })
+    fake.api.provider.models.mockResolvedValue({
+      ok: true,
+      value: {
+        provider: provider.provider,
+        options: [
+          {
+            id: 'qwen3:8b',
+            label: 'qwen3:8b',
+            defaultReasoningEffort: null,
+            supportedReasoningEfforts: [],
+            isDefault: true,
+            toolSupport: 'unknown',
+          },
+        ],
+        selectedModel: 'qwen3:8b',
+        savedModel: null,
+        defaultModel: 'qwen3:8b',
+        resolvedModel: 'qwen3:8b',
+        warning: 'Ollama doesn’t say which models can use tools.',
+      },
+    })
+    const user = userEvent.setup()
+    render(
+      <ApiContext value={fake.api}>
+        <ConnectionsProvider>
+          <SettingsPanel
+            provider={provider}
+            keyStatus={{ saved: false, error: null }}
+            onKeyStatus={() => {}}
+            grants={{ roots: [], loadError: null }}
+            onGrants={() => {}}
+            onSwitchProvider={(next) => fake.api.provider.set(next)}
+            audit={null}
+          />
+        </ConnectionsProvider>
+      </ApiContext>,
+    )
+    return { ...fake, user }
+  }
+
+  it('lists every connection as a card, without switching to any', async () => {
+    const { api } = renderFor({ provider: 'anthropic-api', state: 'ready', message: 'Ready.' })
+    const cards = await screen.findByRole('list', { name: 'Connections' })
+    // The set-up connections are cards; the others are added through the wizard.
+    for (const title of ['Claude · Subscription', 'Codex · ChatGPT', 'Anthropic API'])
+      expect(await within(cards).findByText(title)).toBeTruthy()
+    for (const title of ['OpenAI API', 'Gemini API', 'OpenRouter API', 'Ollama', 'LM Studio'])
+      expect(within(cards).queryByText(title)).toBeNull()
+    expect(api.provider.set).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['openai-api', 'OpenAI API key'],
+    ['gemini-api', 'Gemini API key'],
+    ['openrouter-api', 'OpenRouter API key'],
+  ])('saves a %s key for that connection', async (id, heading) => {
+    const { api, user } = renderFor({ provider: id, state: 'signed-out', message: 'Add a key.' })
+    expect(await screen.findByRole('heading', { name: heading })).toBeTruthy()
+    await user.type(screen.getByLabelText('API key'), 'secret-key')
+    await user.click(screen.getByRole('button', { name: 'Save key' }))
+    expect(api.apiKey.set).toHaveBeenCalledWith('secret-key', id)
+    // Its own model list (provider.models), not the Claude list.
+    expect(await screen.findByLabelText(/ model$/)).toBeTruthy()
+    expect(api.model.get).not.toHaveBeenCalled()
+  })
+
+  it('shows the Gemini free-tier notice with its key', async () => {
+    renderFor({ provider: 'gemini-api', state: 'signed-out', message: 'Add a key.' })
+    expect(await screen.findByText(/Free Gemini API keys share your data with Google/)).toBeTruthy()
+  })
+
+  it('asks no key for a local server, and warns that tool support is unknown', async () => {
+    renderFor({ provider: 'ollama', state: 'ready', message: 'Ollama is running with 1 model.' })
+    expect(await screen.findByText('Ollama doesn’t say which models can use tools.')).toBeTruthy()
+    expect(screen.queryByLabelText('API key')).toBeNull()
   })
 })

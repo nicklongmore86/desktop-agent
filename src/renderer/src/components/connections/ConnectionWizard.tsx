@@ -15,7 +15,6 @@ import { useProviderModels } from '../../provider-models'
 import { useGrantActions } from '../settings/use-grant-actions'
 import { ApiKeyForm } from './ApiKeyForm'
 import { canGoBack, flowReducer, initialFlow, isConnected, stepNumber, type Step } from './flow'
-import { noticeOf } from './notice'
 import { ProviderPanel } from './SignInPanel'
 
 export interface ConnectionWizardProps {
@@ -549,7 +548,7 @@ function ConnectStep({
     </div>
   )
   if (kind === 'api-key') {
-    const notice = noticeOf(info)
+    const notice = info.notice
     return (
       <div className="wizard-section">
         <p className="settings-hint">{info.description}</p>
@@ -620,9 +619,13 @@ function ModelStep({
   }, [pickedLabel, onLabel])
   if (!loaded) return <p role="status">Loading models…</p>
   const localWarning = info.capabilities.authKind === 'local' && (
-    <p className="connection-notice" role="note">
-      Smaller local models may not use file tools reliably.
-    </p>
+    <>
+      <p className="connection-notice" role="note">
+        Smaller local models may not use file tools reliably.
+      </p>
+      {/* The server's own caveat, as main words it (plain text). */}
+      {choice?.warning && <p className="settings-hint">{choice.warning}</p>}
+    </>
   )
   if (!choice) {
     return (

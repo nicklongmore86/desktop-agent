@@ -66,6 +66,7 @@ export function createAgent({
   maxTurns = 10,
   maxTokens = 4096,
   errorEvent = apiErrorEvent,
+  modelName = 'Claude',
 }: {
   client: AgentClient
   tools: AgentTool[]
@@ -75,6 +76,8 @@ export function createAgent({
   maxTokens?: number
   /** Maps what the client throws to a safe event; each client brings its own (default: Anthropic's). */
   errorEvent?: (error: unknown) => Extract<AgentEvent, { type: 'error' }>
+  /** Who the stop-reason messages name ("Claude reached the output token limit"). */
+  modelName?: string
 }) {
   if (
     !Number.isSafeInteger(maxTurns) ||
@@ -139,7 +142,7 @@ export function createAgent({
             onEvent({ type: 'turn_complete', turn, stopReason: message.stop_reason })
             return fail(
               message.stop_reason === 'max_tokens' ? 'max_tokens' : 'protocol',
-              'Claude returned incomplete tool calls. Retry with a larger token limit.',
+              `${modelName} returned incomplete tool calls. Retry with a larger token limit.`,
             )
           }
           // The API rejects empty text blocks, so never save them (or a message of only them).
@@ -149,7 +152,7 @@ export function createAgent({
           if (content.length > 0) history.push({ role: 'assistant', content })
           if (message.stop_reason === 'tool_use') {
             if (!calls.length)
-              return fail('protocol', 'Claude requested tools without providing tool calls.')
+              return fail('protocol', `${modelName} requested tools without providing tool calls.`)
             const results = await Promise.all(
               calls.map(async (call: (typeof calls)[number]): Promise<ToolResultBlockParam> => {
                 onEvent({ type: 'tool_use', turn, id: call.id, name: call.name, input: call.input })
@@ -211,12 +214,12 @@ export function createAgent({
             case 'max_tokens':
               return fail(
                 'max_tokens',
-                'Claude reached the output token limit. Increase maxTokens or narrow the request.',
+                `${modelName} reached the output token limit. Increase maxTokens or narrow the request.`,
               )
             case 'refusal':
               return fail(
                 'refusal',
-                'Claude declined this request. Rephrase it before trying again.',
+                `${modelName} declined this request. Rephrase it before trying again.`,
               )
             case 'model_context_window_exceeded':
               return fail(
@@ -224,7 +227,7 @@ export function createAgent({
                 'Conversation exceeds the model context window. Start a shorter conversation.',
               )
             default:
-              return fail('protocol', 'Claude returned an unsupported stop reason.')
+              return fail('protocol', `${modelName} returned an unsupported stop reason.`)
           }
         }
         return fail(

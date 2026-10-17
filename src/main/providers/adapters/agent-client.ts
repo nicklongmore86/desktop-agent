@@ -10,8 +10,10 @@ export interface AgentClientSpec extends ConnectionDescriptor {
    * `model` is model(host), for clients that take it when they are built.
    */
   client: (options: { key: string | null; model: string }) => AgentClient
-  /** The model id to send, read at each Send. */
-  model: (host: AdapterHost) => string
+  /** The model id to send, read at each Send (a connection may have to list its models first). */
+  model: (host: AdapterHost) => string | Promise<string>
+  /** Who the agent loop's own messages name; default shortLabel ("Claude" for Anthropic). */
+  modelName?: string
   /** The status line Settings shows; these connections have nothing to sign in to. */
   readyMessage: string
   /** Shown when Send finds no saved key. */
@@ -31,7 +33,8 @@ export interface AgentClientSpec extends ConnectionDescriptor {
  * ConnectionService.registerAdapter; see docs/connections.md.
  */
 export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
-  const { client, model, readyMessage, missingKeyMessage, errorEvent, ...descriptor } = spec
+  const { client, model, modelName, readyMessage, missingKeyMessage, errorEvent, ...descriptor } =
+    spec
   return (host) => ({
     ...descriptor,
     failure: (error) => {
@@ -56,12 +59,13 @@ export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
         }
         if (!key) throw new SetupError('no_api_key', missingKeyMessage)
       }
-      const chosen = model(host)
+      const chosen = await model(host)
       return createAgent({
         client: client({ key, model: chosen }),
         tools,
         model: chosen,
         errorEvent,
+        modelName: modelName ?? spec.shortLabel,
       })
     },
   })

@@ -22,6 +22,7 @@ export const createAnthropicApiAdapter = agentClientAdapter({
   pickerOrder: 2,
   client: ({ key }) => createClaudeClient(key ?? ''),
   model: (host) => host.settings?.model ?? DEFAULT_MODEL,
+  modelName: 'Claude',
   readyMessage: 'Anthropic API mode uses your saved API key and separate API billing.',
   missingKeyMessage: 'Add your Anthropic API key in Settings.',
   errorEvent: apiErrorEvent,

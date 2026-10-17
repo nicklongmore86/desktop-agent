@@ -14,6 +14,10 @@ import type { SettingsStore } from '../storage/settings-store'
 import { createAnthropicApiAdapter } from './adapters/anthropic-api'
 import { createClaudeSubscriptionAdapter } from './adapters/claude-subscription'
 import { createCodexSubscriptionAdapter } from './adapters/codex-subscription'
+import { createGeminiApiAdapter } from './adapters/gemini-api'
+import { createLmStudioAdapter, createOllamaAdapter } from './adapters/local-servers'
+import { createOpenAIApiAdapter } from './adapters/openai-api'
+import { createOpenRouterApiAdapter } from './adapters/openrouter-api'
 import type {
   AdapterFactory,
   AdapterHost,
@@ -44,6 +48,11 @@ export const BUILTIN_ADAPTERS: readonly AdapterFactory[] = [
   createClaudeSubscriptionAdapter,
   createCodexSubscriptionAdapter,
   createAnthropicApiAdapter,
+  createOpenAIApiAdapter,
+  createGeminiApiAdapter,
+  createOpenRouterApiAdapter,
+  createOllamaAdapter,
+  createLmStudioAdapter,
 ]
 
 interface ActiveLogin {
@@ -233,6 +242,38 @@ export class ConnectionService implements AdapterHost {
     signal?: AbortSignal,
   ): Promise<AgentRunner> {
     return this.registry.require(provider).runner(tools, signal)
+  }
+
+  /**
+   * Checks a key before it is saved: null when it works (or the connection has no
+   * check), else a safe failure. Only ever a read-only request to the pinned host.
+   */
+  async validateKey(
+    provider: ConnectionId,
+    key: string,
+    signal?: AbortSignal,
+  ): Promise<ProviderFailure | null> {
+    const adapter = this.registry.require(provider)
+    return adapter.validateKey ? adapter.validateKey(key, signal) : null
+  }
+
+  /** A local connection's API root; throws for a connection without one. */
+  baseUrl(provider: ConnectionId): { baseUrl: string; custom: boolean } {
+    const adapter = this.registry.require(provider)
+    if (!adapter.baseUrl) throw new Error('This connection has no address to change.')
+    return adapter.baseUrl()
+  }
+
+  /** Saves a local connection's API root; the adapter refuses anything but loopback. */
+  async setBaseUrl(
+    provider: ConnectionId,
+    baseUrl: string | null,
+  ): Promise<{ baseUrl: string; custom: boolean }> {
+    const adapter = this.registry.require(provider)
+    if (!adapter.setBaseUrl) throw new Error('This connection has no address to change.')
+    const result = await adapter.setBaseUrl(baseUrl)
+    this.invalidateMetadata()
+    return result
   }
 
   /** The connection's own mapping: a code and a message written here, never provider text. */

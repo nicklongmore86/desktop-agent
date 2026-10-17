@@ -2870,3 +2870,20 @@
     padding-inline: var(--space-4);
   }
 }
+
+.advanced-field {
+  margin-top: var(--space-3);
+}
+.advanced-field summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.advanced-field .settings-row {
+  flex-wrap: wrap;
+}
+.advanced-field input[type='text'] {
+  flex: 1 1 14rem;
+  min-width: 0;
+}

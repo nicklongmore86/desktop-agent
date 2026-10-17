@@ -126,7 +126,7 @@ export interface AccessContext {
   showPersonalUse: boolean
 }
 
-const NOT_IN_BUILD = 'This isn’t available in this version of the app yet.'
+const NOT_IN_BUILD = 'This isn’t available right now.'
 
 function costLine(card: ProviderCard, access: AccessType, provider: ProviderKey): string {
   if (provider === 'local') return 'Runs on this PC. No account needed.'

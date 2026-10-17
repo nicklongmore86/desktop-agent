@@ -1,9 +1,5 @@
 import type { ProviderStatus } from '../../../shared/ipc'
-import {
-  ANTHROPIC_API,
-  type ConnectionId,
-  type ConnectionInfo,
-} from '../../../shared/ipc-connections'
+import type { ConnectionId, ConnectionInfo } from '../../../shared/ipc-connections'
 import type { OpenSettings } from '../open-settings'
 import type { ProviderModelPicker } from '../provider-models'
 import { summarizeUsage, type ProviderUsage } from '../usage'
@@ -119,9 +115,8 @@ export function Composer({
                 })
               }}
             >
-              {choice.provider !== ANTHROPIC_API && (
-                <option value={DEFAULT_MODEL}>Default model</option>
-              )}
+              {connections.find((connection) => connection.id === choice.provider)?.capabilities
+                .listsModels && <option value={DEFAULT_MODEL}>Default model</option>}
               {choice.options.map((option) => (
                 <option key={option.id} value={option.id}>
                   {option.label}

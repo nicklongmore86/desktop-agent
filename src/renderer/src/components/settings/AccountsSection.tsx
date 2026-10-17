@@ -10,7 +10,8 @@ import {
 import { useApi } from '../../api'
 import { useConnectionOverview, type ConnectionRow } from '../../connections'
 import { useProviderModels } from '../../provider-models'
-import { ProviderPanel, useMounted } from '../connections/SignInPanel'
+import { ProviderPanel } from '../connections/SignInPanel'
+import { useMounted } from '../connections/use-mounted'
 import type { SettingsPanelProps } from '../SettingsPanel'
 import { UsageSection } from './UsageSection'
 
@@ -19,10 +20,13 @@ export function ApiKeySection({
   onKeyStatus,
   connection = ANTHROPIC_API,
   title = 'Anthropic API key',
+  notice,
 }: Pick<SettingsPanelProps, 'keyStatus' | 'onKeyStatus'> & {
   /** The key's connection; Anthropic API is the one the key calls default to. */
   connection?: ConnectionId
   title?: string
+  /** Something to read before using the key (a free Gemini key's data use). */
+  notice?: string | undefined
 }): React.JSX.Element {
   const api = useApi()
   const inputId = useId()
@@ -51,9 +55,7 @@ export function ApiKeySection({
   const save = (event: SubmitEvent<HTMLFormElement>): void => {
     event.preventDefault()
     if (!draft.trim()) return
-    void run(() =>
-      connection === ANTHROPIC_API ? api.apiKey.set(draft) : api.apiKey.set(draft, connection),
-    )
+    void run(() => api.apiKey.set(draft, connection))
   }
 
   return (
@@ -113,9 +115,7 @@ export function ApiKeySection({
             className="button-danger"
             disabled={busy}
             onClick={() => {
-              void run(() =>
-                connection === ANTHROPIC_API ? api.apiKey.clear() : api.apiKey.clear(connection),
-              )
+              void run(() => api.apiKey.clear(connection))
             }}
           >
             Remove key
@@ -125,6 +125,7 @@ export function ApiKeySection({
       <p className="settings-hint">
         The key is encrypted by Windows and can&apos;t be viewed again.
       </p>
+      {notice && <p className="settings-hint">{notice}</p>}
     </section>
   )
 }
@@ -156,6 +157,7 @@ function ModelSection({ connection }: { connection: ConnectionId }): React.JSX.E
           </option>
         ))}
       </select>
+      {choice.warning && <p className="settings-hint">{choice.warning}</p>}
       {error && (
         <p className="settings-error" role="alert">
           {error}
@@ -189,6 +191,7 @@ function ConnectionKey({ info }: { info: ConnectionInfo }): React.JSX.Element {
       onKeyStatus={setKeyStatus}
       connection={info.id}
       title={`${info.title} key`}
+      notice={info.notice}
     />
   )
 }
@@ -428,12 +431,11 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
                         )}
                       </>
                     )}
-                    {info.capabilities.reportsUsage ? (
+                    {info.capabilities.reportsUsage || info.capabilities.listsModels ? (
+                      // Usage where the connection reports it, and its own model list.
                       <UsageSection key={info.id} provider={info.id} />
                     ) : (
-                      (info.capabilities.listsModels || info.id === ANTHROPIC_API) && (
-                        <ModelSection connection={info.id} />
-                      )
+                      info.id === ANTHROPIC_API && <ModelSection connection={info.id} />
                     )}
                   </>
                 ) : (

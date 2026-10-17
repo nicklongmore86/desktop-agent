@@ -252,7 +252,8 @@ describe('first run', () => {
       key: { saved: false, error: null },
       grants: { roots: [], loadError: null },
     })
-    const guide = screen.getByRole('note', { name: 'Finish setting up' })
+    // The key status is read once main has said which connection is current.
+    const guide = await screen.findByRole('note', { name: 'Finish setting up' })
     expect(guide.textContent).toContain('Add your Anthropic API key')
     expect(guide.textContent).toContain('Grant at least one folder')
     await user.click(within(guide).getByRole('button', { name: 'Open Settings' }))
@@ -263,6 +264,27 @@ describe('first run', () => {
   it('stays out of the way once set up', async () => {
     await renderApp()
     expect(screen.queryByRole('note', { name: 'Finish setting up' })).toBeNull()
+  })
+
+  it('asks for the current API-key connection’s own key, by id', async () => {
+    const { api } = await renderApp({
+      provider: { provider: 'openai-api', state: 'signed-out', message: 'Add a key.' },
+      key: { saved: false, error: null },
+    })
+    const guide = await screen.findByRole('note', { name: 'Finish setting up' })
+    expect(guide.textContent).toContain('Add your OpenAI API key, so OpenAI can answer.')
+    expect(guide.textContent).not.toContain('Claude')
+    expect(api.apiKey.status).toHaveBeenCalledWith('openai-api')
+  })
+
+  it('shows a local server’s own status instead of a key guide', async () => {
+    const message = "Ollama isn't running. Install it from ollama.com, start it, then check again."
+    await renderApp({
+      provider: { provider: 'ollama', state: 'error', message },
+      key: { saved: false, error: null },
+    })
+    expect(screen.queryByRole('note', { name: 'Finish setting up' })).toBeNull()
+    expect((await screen.findByRole('note')).textContent).toContain(message)
   })
 })
 
@@ -433,6 +455,10 @@ describe('connections from main', () => {
     setViewport(1280)
     const { api, user } = await renderApp()
     const picker = screen.getByRole('combobox', { name: 'Active provider' })
+    // The picker lists what is ready, once the checks are in.
+    await within(picker).findByRole('option', { name: 'Add or manage connections…' })
+    await within(picker).findByRole('option', { name: 'Claude · API' })
+    await within(picker).findByRole('option', { name: 'Claude · Subscription' })
     expect(
       within(picker)
         .getAllByRole('option')
@@ -475,6 +501,7 @@ describe('connections from main', () => {
     )
     await screen.findByText('v0.1.0')
     const picker = screen.getByRole('combobox', { name: 'Active provider' })
+    await within(picker).findByRole('option', { name: 'Claude · API' })
     expect(
       within(picker)
         .getAllByRole('option')

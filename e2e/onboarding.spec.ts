@@ -27,7 +27,7 @@ interface E2eWindow {
     setLocalRunning: (running: boolean) => void
     setStatus: (id: string, status: ProviderStatus) => void
     connectionCalls: () => { add: string[]; remove: string[]; status: string[]; set: string[] }
-    keyCalls: () => { id: string; length: number }[]
+    keyCalls: () => string[]
   }
 }
 
@@ -123,7 +123,9 @@ test('API key: main’s refusal is shown, then a saved key never appears again',
     await access.getByRole('button', { name: 'Continue' }).click()
 
     const key = wizardOf(page, 'Add your Gemini API key')
-    await expect(key.getByRole('note')).toContainText('Free Gemini keys may let Google')
+    await expect(key.getByRole('note')).toContainText(
+      'Free Gemini API keys share your data with Google',
+    )
     await expect(key.getByRole('link', { name: 'Get a key' })).toHaveAttribute(
       'href',
       'https://aistudio.google.com/app/apikey',
@@ -132,7 +134,9 @@ test('API key: main’s refusal is shown, then a saved key never appears again',
     await expect(field).toHaveAttribute('type', 'password')
     await field.fill('bad-key')
     await key.getByRole('button', { name: 'Save key' }).click()
-    await expect(key.getByRole('alert')).toHaveText('That key was not accepted.')
+    await expect(key.getByRole('alert')).toHaveText(
+      'Gemini rejected the API key. Update it in settings.',
+    )
 
     await field.fill('AIza-a-good-key')
     await key.getByRole('button', { name: 'Save key' }).click()
@@ -141,10 +145,7 @@ test('API key: main’s refusal is shown, then a saved key never appears again',
     ).toBeVisible()
     await expect(key.getByLabel('Gemini API key')).toHaveCount(0)
     expect(await page.content()).not.toContain('AIza-a-good-key')
-    expect(await e2e(page, (api) => api.keyCalls())).toEqual([
-      { id: 'gemini-api', length: 7 },
-      { id: 'gemini-api', length: 15 },
-    ])
+    expect(await e2e(page, (api) => api.keyCalls())).toEqual(['gemini-api', 'gemini-api'])
     await key.getByRole('button', { name: 'Continue' }).click()
     await wizardOf(page, 'Pick a model').getByRole('button', { name: 'Continue' }).click()
     await wizardOf(page, 'Choose a folder to work in')
@@ -185,6 +186,39 @@ test('local models: not running, then Check again finds it', async () => {
       model.getByText('Smaller local models may not use file tools reliably.'),
     ).toBeVisible()
     await expect(model.getByRole('radio', { name: /qwen3:8b/ })).toBeChecked()
+  } finally {
+    await app.close()
+  }
+})
+
+test('local models: a custom address on another machine is refused with a reason', async () => {
+  const { app, page } = await launch(1280, 'first-run')
+  try {
+    await wizardOf(page, 'Which AI do you want to use?')
+      .getByRole('button', { name: /^Local models/ })
+      .click()
+    await wizardOf(page, 'How do you want to use Local models?')
+      .getByRole('button', { name: 'Continue' })
+      .click()
+    await wizardOf(page, 'Which one do you use?')
+      .getByRole('button', { name: /^Ollama/ })
+      .click()
+    const find = wizardOf(page, 'Find Ollama')
+    await find.getByText('Advanced').click()
+    const address = find.getByRole('textbox', { name: 'Server address' })
+    await address.fill('http://192.168.1.20:11434/v1')
+    await find.getByRole('button', { name: 'Save address' }).click()
+    await expect(find.getByRole('alert')).toContainText('Only an address on this PC')
+    await expect(find.getByRole('button', { name: 'Use the usual address' })).toHaveCount(0)
+
+    // An address on this PC is kept, and the server is looked for again.
+    await e2e(page, (api) => {
+      api.setLocalRunning(true)
+    })
+    await address.fill('http://localhost:9999/v1')
+    await find.getByRole('button', { name: 'Save address' }).click()
+    await expect(find.getByText('Connected')).toBeVisible()
+    await expect(find.getByRole('button', { name: 'Use the usual address' })).toBeVisible()
   } finally {
     await app.close()
   }

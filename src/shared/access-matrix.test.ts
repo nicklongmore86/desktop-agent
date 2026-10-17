@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { ALL_CONNECTION_INFO } from './extra-connections-fixture'
 import { BUILTIN_CONNECTION_INFO } from './connections-fixture'
 import {
   ACCESS_MATRIX,
@@ -11,7 +10,7 @@ import {
   type ProviderKey,
 } from './access-matrix'
 
-const all = { connections: ALL_CONNECTION_INFO, showPersonalUse: true }
+const all = { connections: BUILTIN_CONNECTION_INFO, showPersonalUse: true }
 const options = (provider: ProviderKey, context = all) => accessOptions(provider, context)
 const pick = (provider: ProviderKey, access: string, context = all) =>
   options(provider, context).find((option) => option.access === access)
@@ -105,7 +104,7 @@ describe('access matrix', () => {
 
   it('hides the personal-use subscription when main leaves it out', () => {
     const hidden = {
-      connections: ALL_CONNECTION_INFO.filter((info) => info.id !== 'claude-subscription'),
+      connections: BUILTIN_CONNECTION_INFO.filter((info) => info.id !== 'claude-subscription'),
       showPersonalUse: false,
     }
     expect(options('claude', hidden).map((option) => option.access)).toEqual(['free', 'api-key'])
@@ -114,18 +113,23 @@ describe('access matrix', () => {
     expect(pick('claude', 'subscription', missing)).toMatchObject({ available: false })
   })
 
-  it('shows a connection this build does not have as unavailable instead of dropping it', () => {
-    const builtins = { connections: BUILTIN_CONNECTION_INFO, showPersonalUse: true }
+  it('shows a connection main does not offer as unavailable instead of dropping it', () => {
+    const builtins = {
+      connections: BUILTIN_CONNECTION_INFO.filter(
+        (info) => info.vendor === 'anthropic' || info.vendor === 'openai',
+      ),
+      showPersonalUse: true,
+    }
     expect(pick('gemini', 'api-key', builtins)).toMatchObject({ available: false })
     expect(pick('local', 'free', builtins)).toMatchObject({ available: false })
-    expect(pick('local', 'free', builtins)?.text).toMatch(/isn’t available/)
+    expect(pick('local', 'free', builtins)?.text).toMatch(/isn’t available right now/)
     // Only the connections main lists can be used.
     expect(pick('claude', 'api-key', builtins)).toMatchObject({ available: true })
   })
 
   it('finds the card and segment for an existing connection', () => {
     const info = (id: string) => {
-      const found = ALL_CONNECTION_INFO.find((entry) => entry.id === id)
+      const found = BUILTIN_CONNECTION_INFO.find((entry) => entry.id === id)
       if (!found) throw new Error(`No fixture for ${id}`)
       return found
     }

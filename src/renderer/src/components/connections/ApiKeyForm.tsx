@@ -3,7 +3,7 @@ import { KEY_HELP } from '../../../../shared/access-matrix'
 import type { ApiKeyStatus } from '../../../../shared/ipc'
 import type { ConnectionId } from '../../../../shared/ipc-connections'
 import { useApi } from '../../api'
-import { useMounted } from './SignInPanel'
+import { useMounted } from './use-mounted'
 
 /**
  * Saving an API key for a connection: a masked field, a link to where the key

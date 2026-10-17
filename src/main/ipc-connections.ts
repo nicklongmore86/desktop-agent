@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   CONNECTION_ID,
   connectionsChannels,
+  type ConnectionBaseUrl,
   type ConnectionId,
   type ConnectionInfo,
   type ConnectionsState,
@@ -24,6 +25,10 @@ export interface ConnectionsService {
   remove: (id: ConnectionId) => Promise<ConnectionsState>
   /** Throws when hiding would leave chats on a personal-use connection. */
   setShowPersonalUse: (show: boolean) => Promise<ConnectionsState>
+  /** A local connection's API root; rejects for one without. */
+  baseUrl: (id: ConnectionId) => Promise<ConnectionBaseUrl>
+  /** Validates (loopback only) and saves; a refused URL comes back as `error`. */
+  setBaseUrl: (id: ConnectionId, baseUrl: string | null) => Promise<ConnectionBaseUrl>
 }
 
 /** The shape of an id: a safe single path segment. The registry decides whether it exists. */
@@ -67,5 +72,14 @@ export function registerConnectionsHandlers(
     const show = z.tuple([z.boolean()]).safeParse(args)
     if (!show.success) throw new Error('Invalid choice.')
     return connections.setShowPersonalUse(show.data[0])
+  })
+  handle(connectionsChannels.connectionsBaseUrl, (id) =>
+    connections.baseUrl(parseConnectionId(id, connections)),
+  )
+  handle(connectionsChannels.connectionsSetBaseUrl, (id, baseUrl) => {
+    const connection = parseConnectionId(id, connections)
+    if (baseUrl !== null && (typeof baseUrl !== 'string' || baseUrl.length > 2048))
+      throw new Error('Enter a valid address.')
+    return connections.setBaseUrl(connection, baseUrl)
   })
 }

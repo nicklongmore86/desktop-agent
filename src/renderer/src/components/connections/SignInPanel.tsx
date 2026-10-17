@@ -1,31 +1,13 @@
-import {
-  useEffect,
-  useEffectEvent,
-  useId,
-  useRef,
-  useState,
-  type RefObject,
-  type SubmitEvent,
-} from 'react'
+import { useEffect, useEffectEvent, useId, useState, type SubmitEvent } from 'react'
 import type { ProviderLoginState, ProviderStatus } from '../../../../shared/ipc'
 import type { ConnectionInfo } from '../../../../shared/ipc-connections'
+import { BaseUrlField } from './BaseUrlField'
+import { useMounted } from './use-mounted'
 import { useApi } from '../../api'
 import { isConnected } from './flow'
 
 /** Claude prints `<code>#<state>`; main checks it again before passing it on. */
 const LOGIN_CODE = /^[^#\s]+#[^#\s]+$/
-
-/** False once the component has unmounted, so late replies never set its state. */
-export function useMounted(): RefObject<boolean> {
-  const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-    }
-  }, [])
-  return mounted
-}
 
 export function LoginLink({ url }: { url: string }): React.JSX.Element {
   const api = useApi()
@@ -277,6 +259,14 @@ export function ProviderPanel({
         >
           Check again
         </button>
+      )}
+      {authKind === 'local' && connection.defaultBaseUrl && (
+        <BaseUrlField
+          connection={connection}
+          onChanged={() => {
+            void run(() => api.provider.get())
+          }}
+        />
       )}
       {authKind === 'runtime-login' && (
         <>

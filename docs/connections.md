@@ -4,19 +4,24 @@ A **connection** is one way the app reaches a model: a **vendor** (who serves it
 an **access type** (how the user pays). It replaced the closed list of three providers,
 which mixed the two ("claude-subscription" is Anthropic _and_ a subscription).
 
-| Connection id         | Vendor      | Access         | Signs in with                  |
-| --------------------- | ----------- | -------------- | ------------------------------ |
-| `claude-subscription` | `anthropic` | `subscription` | Claude Code's own login        |
-| `codex-subscription`  | `openai`    | `subscription` | Codex's own login (ChatGPT)    |
-| `anthropic-api`       | `anthropic` | `api-key`      | The user's saved Anthropic key |
+| Connection id         | Vendor       | Access         | Signs in with                   |
+| --------------------- | ------------ | -------------- | ------------------------------- |
+| `claude-subscription` | `anthropic`  | `subscription` | Claude Code's own login         |
+| `codex-subscription`  | `openai`     | `subscription` | Codex's own login (ChatGPT)     |
+| `anthropic-api`       | `anthropic`  | `api-key`      | The user's saved Anthropic key  |
+| `openai-api`          | `openai`     | `api-key`      | The user's saved OpenAI key     |
+| `gemini-api`          | `google`     | `api-key`      | A Gemini (AI Studio) key        |
+| `openrouter-api`      | `openrouter` | `api-key`      | The user's saved OpenRouter key |
+| `ollama`              | `local`      | `free`         | Nothing: a server on loopback   |
+| `lmstudio`            | `local`      | `free`         | Nothing: a server on loopback   |
 
 Vendors are `anthropic | openai | google | local | openrouter`; access types are
 `free | subscription | api-key` (`src/shared/ipc-connections.ts`). Add a vendor there
 before registering its first adapter.
 
 **Ids never change.** A connection id names its history directory
-(`userData/history/<id>/`) and its key file (`userData/secrets/<id>.enc`), so the three
-built-in ids are the old provider ids and nothing moved on disk. An id is lowercase
+(`userData/history/<id>/`) and its key file (`userData/secrets/<id>.enc`), so the first
+three ids are the old provider ids and nothing moved on disk. An id is lowercase
 letters, digits and hyphens (`CONNECTION_ID`), so it is always one safe path segment,
 and main only uses one after looking it up in the registry.
 
@@ -47,6 +52,8 @@ interface ConnectionAdapter {
   }
   personalUseOnly: boolean
   pickerOrder: number // the composer picker's order (Settings uses registration order)
+  notice?: string // shown before use: Gemini's free-tier data use
+  defaultBaseUrl?: string // local servers: their base URL can be changed (loopback only)
 
   status(signal?): Promise<ProviderStatus> // never throws
   runner(tools, signal?): Promise<AgentRunner> // throws; failure() maps it
@@ -56,6 +63,9 @@ interface ConnectionAdapter {
   allowance?(): Promise<ProviderAllowance>
   login?(session: LoginSession): Promise<void>
   invalidate?(): void
+  validateKey?(key, signal?): Promise<ProviderFailure | null> // read-only, before a key is saved
+  baseUrl?(): { baseUrl: string; custom: boolean }
+  setBaseUrl?(baseUrl: string | null): Promise<{ baseUrl: string; custom: boolean }>
 }
 type AdapterFactory = (host: AdapterHost) => ConnectionAdapter
 ```
@@ -67,53 +77,77 @@ store, `openUrl`, `context(runtime)` for a bundled runtime's isolated directory,
 ## Adding a connection
 
 A connection that talks to a model API directly uses the **AgentClient slot**: describe
-it and supply an `AgentClient` (`src/main/agent/types.ts`). `agentClientAdapter` builds
-the adapter, and `createAgent` runs the same tool loop, approvals and audit log as every
-other connection. Anthropic API is built this way (`adapters/anthropic-api.ts`).
+it and supply an `AgentClient` (`src/main/agent/types.ts`). `agentClientAdapter`
+(`adapters/agent-client.ts`) builds the adapter, and `createAgent` runs the same tool
+loop, approvals and audit log as every other connection. Anthropic API is built this way
+(`adapters/anthropic-api.ts`).
+
+A connection that can also list its models and check a key builds on that with
+`modelApiAdapter` (`adapters/model-api.ts`). It adds `status()`, `models()`,
+`setModel()`, `validateKey()` and, for local servers, the base URL setting. The five
+newer connections use it; `adapters/compat.ts` supplies the Chat Completions parts
+(`createOpenAICompatClient`, `listOpenAICompatModels`, `validateOpenAICompatKey`):
 
 ```ts
 // src/main/providers/adapters/openai-api.ts
-import {
-  createOpenAICompatClient,
-  DEFAULT_BASE_URLS,
-  openAICompatErrorEvent,
-} from '../../llm/openai-compat'
-
-export const createOpenAIApiAdapter = agentClientAdapter({
-  id: 'openai-api',
-  vendor: 'openai',
-  access: 'api-key',
-  label: 'GPT · API',
-  shortLabel: 'GPT API',
-  title: 'OpenAI API',
-  description: 'Use your own API key.',
-  capabilities: {
-    authKind: 'api-key',
-    listsModels: false,
-    reportsUsage: false,
-    needsRuntime: false,
-  },
-  personalUseOnly: false,
-  pickerOrder: 3,
-  client: ({ key, model }) =>
-    createOpenAICompatClient({
-      flavor: 'openai',
-      baseUrl: DEFAULT_BASE_URLS.openai,
-      apiKey: key ?? undefined,
-      model,
-    }),
-  model: (host) => host.settings?.selection('openai-api') ?? 'gpt-…',
-  readyMessage: 'OpenAI API mode uses your saved API key and separate API billing.',
-  missingKeyMessage: 'Add your OpenAI API key in Settings.',
-  // The client's own mapper: without it, its errors would be read as Anthropic SDK errors.
-  errorEvent: openAICompatErrorEvent,
-})
+export const openAIApiAdapter = (options: AdapterTestOptions = {}) =>
+  modelApiAdapter({
+    id: OPENAI_API,
+    vendor: 'openai',
+    access: 'api-key',
+    label: 'OpenAI · API',
+    shortLabel: 'OpenAI', // also the name in the agent loop's own messages
+    title: 'OpenAI API',
+    description: 'Use your own OpenAI API key. Billed by OpenAI.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 3,
+    ...compatSpec('openai', options), // client, list, checkKey, errorEvent
+    recommended: ['gpt-5.5', 'gpt-5.1', 'gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4o'],
+    readyMessage: () => 'OpenAI API mode uses your saved API key and separate API billing.',
+    missingKeyMessage: 'Add your OpenAI API key in Settings.',
+    noModelsMessage: 'This OpenAI key has no chat models available.',
+  })
+export const createOpenAIApiAdapter = openAIApiAdapter()
 ```
+
+`options.fetch` exists for tests only: they serve the pinned host from a local fake
+server (`adapters/new-connections.test.ts`). No test uses a real account or the network.
+
+What `modelApiAdapter` does for every such connection:
+
+- **Status.** API keys: no key is `signed-out` with `missingKeyMessage`; a saved key is
+  checked with `checkKey` (cached for a minute per key) and is `ready` or `error` with the
+  client's own message. Local servers: `GET /v1/models` with a 3-second timeout; `ready`
+  with the model count, or `error` with `unreachableMessage` ("Ollama isn't running.
+  Install it from ollama.com, start it, then check again.") and code
+  `runtime_unavailable`, or `noModelsMessage` when the list is empty.
+- **Models.** `list()` filters to models that can run the tool loop (OpenAI drops
+  embeddings, audio and image models; OpenRouter keeps only models that advertise
+  `tools`; Gemini keeps `generateContent` chat models). The default is the first
+  `recommended` id that is listed, else the first one. Local lists mark `toolSupport:
+'unknown'` and carry `modelWarning`, which Settings shows. `setModel` saves the choice
+  per connection (`connectionModels`); a Send without one uses the default.
+- **Keys.** `validateKey` runs before `apiKey.set` stores anything: `GET /models` (OpenAI),
+  `models.list` (Gemini) or `GET /api/v1/key` (OpenRouter, whose model list is public).
+  Never a completion. A refused key is not saved and `apiKey.set` answers with the
+  client's message and the key that is still stored, if any.
+- **Hosts.** Hosted flavors always use their one pinned https host (`resolveBaseUrl`
+  refuses any other, and redirects are never followed); Gemini's host is fixed in its
+  client. Local servers never get a key.
+- **Errors.** Everything goes through the client's own `errorEvent`
+  (`openAICompatErrorEvent`, `geminiErrorEvent`), in the agent loop and in `failure()`.
 
 `errorEvent` maps whatever the client throws to a safe code and app-written message, both
 inside the agent loop (`createAgent`'s `errorEvent` option, which defaults to Anthropic's
-`apiErrorEvent`) and in the adapter's `failure()`. Gemini uses `geminiErrorEvent` from
-`src/main/llm/gemini`; Anthropic API passes `apiErrorEvent` explicitly.
+`apiErrorEvent`) and in the adapter's `failure()`. The loop's own messages ("… reached the
+output token limit") name `createAgent`'s `modelName`, which `agentClientAdapter` sets to
+the connection's `shortLabel` (Anthropic API passes `modelName: 'Claude'`, the default).
 
 Then register it, either with the built-ins (`BUILTIN_ADAPTERS` in `service.ts`, whose
 order is the Settings order) or at runtime with `connections.registerAdapter(factory)`.
@@ -149,15 +183,22 @@ between them. API connections use their client's `errorEvent` (above).
 ## Settings and keys
 
 `settings.json` version 3 has `connection` (was `provider`), `connectionModels` (was
-`providerModels`; same ids), `connections` (the configured connections, `{ id }[]`) and
-`showPersonalUseConnections`. v1 and v2 files are read and migrated in memory; the first
+`providerModels`; same ids), `connections` (the configured connections,
+`{ id, baseUrl? }[]`) and `showPersonalUseConnections`. `baseUrl` is a local server's
+API root when it is not the default; main saves it only after `resolveBaseUrl` accepts it
+(`http://` on `127.0.0.1`, `::1` or `localhost`, no credentials, query or fragment) and
+checks it again before every request, so a hand-edited file cannot point it elsewhere.
+Adding a connection to the registry, saving its key or changing its base URL never
+changes `connection`: nobody is switched. v1 and v2 files are read and migrated in memory; the first
 write saves version 3. Theme, model and layout are unchanged. A saved connection the
 build does not offer falls back to `anthropic-api` when the app starts.
 
 Keys are per connection in `userData/secrets/<id>.enc`, encrypted with `safeStorage`
 (the `basic_text` backend is refused). The old `anthropic-api-key.enc` is moved there,
 as encrypted bytes, on first use; clearing removes both files so a cleared key cannot
-come back. The renderer only ever learns whether a key is saved.
+come back. The renderer only ever learns whether a key is saved. Model ids
+(`MODEL_ID` in `settings-store.ts`) allow `/`, `:` and `@` for OpenRouter, Ollama and LM
+Studio ids, but nothing shaped like a path.
 
 ## Adding and choosing connections (the wizard)
 

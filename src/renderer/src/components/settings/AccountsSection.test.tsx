@@ -3,13 +3,13 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { ApiContext } from '../../api'
 import { App } from '../../App'
-import { ALL_CONNECTION_INFO } from '../../../../shared/extra-connections-fixture'
+import { BUILTIN_CONNECTION_INFO } from '../../../../shared/connections-fixture'
 import { fakeApi, type FakeApiOptions } from '../../test/fake-api'
 import { setViewport } from '../../test/viewport'
 
 async function renderApp(options: FakeApiOptions = {}) {
   setViewport(1280)
-  const fake = fakeApi({ connections: ALL_CONNECTION_INFO, ...options })
+  const fake = fakeApi({ connections: BUILTIN_CONNECTION_INFO, ...options })
   const user = userEvent.setup()
   render(
     <ApiContext value={fake.api}>

@@ -16,7 +16,7 @@ import type {
   ThemePreference,
 } from '../../../shared/ipc'
 import {
-  BUILTIN_CONNECTIONS,
+  type ConnectionBaseUrl,
   type ConnectionId,
   type ConnectionInfo,
   type ConnectionsState,
@@ -131,6 +131,13 @@ export const FAKE_FILES: Record<string, FileEntry[]> = {
   'C:\\Users\\me\\Projects\nsrc/lib': [{ name: 'util.ts', rel: 'src/lib/util.ts', kind: 'file' }],
 }
 
+/** What a fresh settings file has set up (the first three; the rest are added in the wizard). */
+const DEFAULT_CONFIGURED: readonly ConnectionId[] = [
+  'claude-subscription',
+  'codex-subscription',
+  'anthropic-api',
+]
+
 export interface FakeApiOptions {
   /** Anthropic API's key, which the key calls default to. */
   key?: ApiKeyStatus
@@ -182,7 +189,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
   const keyOf = (connection: ConnectionId = 'anthropic-api'): ApiKeyStatus =>
     keys[connection] ?? { saved: false, error: null }
   const allConnections = options.connections ?? BUILTIN_CONNECTION_INFO
-  let configured: ConnectionId[] = options.configured ?? [...BUILTIN_CONNECTIONS]
+  let configured: ConnectionId[] = options.configured ?? [...DEFAULT_CONFIGURED]
   let showPersonalUse = options.showPersonalUse ?? true
   const offered = (): ConnectionInfo[] =>
     allConnections.filter((info) => showPersonalUse || !info.personalUseOnly)
@@ -623,6 +630,20 @@ export function fakeApi(options: FakeApiOptions = {}) {
         showPersonalUse = show
         return Promise.resolve(connectionsState())
       }),
+      baseUrl: vi.fn((_id: ConnectionId) =>
+        Promise.resolve<ConnectionBaseUrl>({
+          baseUrl: 'http://127.0.0.1:11434/v1',
+          custom: false,
+          error: null,
+        }),
+      ),
+      setBaseUrl: vi.fn((_id: ConnectionId, baseUrl: string | null) =>
+        Promise.resolve<ConnectionBaseUrl>({
+          baseUrl: baseUrl ?? 'http://127.0.0.1:11434/v1',
+          custom: baseUrl !== null,
+          error: null,
+        }),
+      ),
     },
     audit: {
       reveal: vi.fn(async () => {}),

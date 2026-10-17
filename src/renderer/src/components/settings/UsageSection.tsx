@@ -115,6 +115,7 @@ export function UsageSection({ provider }: { provider: ConnectionId }): React.JS
             </p>
           )}
           {choice?.note && <p className="settings-hint">{choice.note}</p>}
+          {choice?.warning && <p className="settings-hint">{choice.warning}</p>}
         </>
       )}
     </section>

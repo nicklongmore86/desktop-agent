@@ -6,7 +6,9 @@ import {
   type ThemePreference,
 } from '../../shared/ipc'
 import {
-  BUILTIN_CONNECTIONS,
+  ANTHROPIC_API,
+  CLAUDE_SUBSCRIPTION,
+  CODEX_SUBSCRIPTION,
   CONNECTION_ID,
   DEFAULT_CONNECTION,
   type ConnectionId,
@@ -24,9 +26,14 @@ export const MODEL_OPTIONS: readonly ModelOption[] = [
   { id: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
 ]
 
-/** A connection the user has set up. Room for per-connection settings (an endpoint, a name). */
+/** A connection the user has set up, with its per-connection settings. */
 export interface ConfiguredConnection {
   id: ConnectionId
+  /**
+   * A local server's API root, when it is not the default. Saved only after main's
+   * loopback check; checked again (resolveBaseUrl) before every request.
+   */
+  baseUrl?: string
 }
 
 /**
@@ -61,6 +68,10 @@ export interface SettingsStore {
   addConnection: (connection: ConnectionId) => Promise<void>
   /** Throws for the current connection: chats go there, so it cannot be taken out. */
   removeConnection: (connection: ConnectionId) => Promise<void>
+  /** A connection's saved API root, or null for its default. */
+  baseUrl: (connection: ConnectionId) => string | null
+  /** Saves an API root the caller has validated (null: back to the default). */
+  setBaseUrl: (connection: ConnectionId, baseUrl: string | null) => Promise<void>
   readonly showPersonalUseConnections: boolean
   setShowPersonalUseConnections: (show: boolean) => Promise<void>
   readonly model: string
@@ -78,16 +89,24 @@ export interface SettingsStore {
 const isOffered = (model: unknown): model is string =>
   typeof model === 'string' && MODEL_OPTIONS.some((option) => option.id === model)
 
-const connectionIdSchema = z.string().regex(CONNECTION_ID)
-const selectionSchema = z.partialRecord(
-  connectionIdSchema,
-  z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/),
-)
-const connectionsSchema = z.array(z.object({ id: connectionIdSchema })).max(64)
-/** v2's provider ids: the built-in connection ids, unchanged. */
-const V2_PROVIDERS: readonly string[] = BUILTIN_CONNECTIONS
+/**
+ * A model id a connection may list: OpenRouter's `vendor/model:variant`, Ollama's
+ * `name:tag`, LM Studio's `name@quant`. Never part of a path, and nothing shaped like
+ * one (a drive, `..`, `//`) is accepted anyway.
+ */
+export const MODEL_ID = /^(?![a-zA-Z]:\/)(?!.*(?:\.\.|\/\/))[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,255}$/
 
-const defaultConnections = (): ConfiguredConnection[] => BUILTIN_CONNECTIONS.map((id) => ({ id }))
+const connectionIdSchema = z.string().regex(CONNECTION_ID)
+const selectionSchema = z.partialRecord(connectionIdSchema, z.string().regex(MODEL_ID))
+const baseUrlSchema = z.string().min(1).max(2048)
+const connectionsSchema = z
+  .array(z.object({ id: connectionIdSchema, baseUrl: baseUrlSchema.optional() }))
+  .max(64)
+/** v2's provider ids: the first three connection ids, unchanged. */
+const V2_PROVIDERS: readonly string[] = [CLAUDE_SUBSCRIPTION, CODEX_SUBSCRIPTION, ANTHROPIC_API]
+
+/** The first three, as before; a newer connection is added once the user uses or sets it up. */
+const defaultConnections = (): ConfiguredConnection[] => V2_PROVIDERS.map((id) => ({ id }))
 
 /** Unique ids, the current connection included. */
 function withConnection(
@@ -114,7 +133,8 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
       const saved = connectionIdSchema.safeParse(parsed['connection'])
       if (saved.success) connection = saved.data
       const list = connectionsSchema.safeParse(parsed['connections'])
-      if (list.success) connections = list.data.map(({ id }) => ({ id }))
+      if (list.success)
+        connections = list.data.map(({ id, baseUrl }) => ({ id, ...(baseUrl ? { baseUrl } : {}) }))
       if (typeof parsed['showPersonalUseConnections'] === 'boolean')
         showPersonalUseConnections = parsed['showPersonalUseConnections']
       const selections = selectionSchema.safeParse(parsed['connectionModels'] ?? {})
@@ -200,6 +220,20 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
         if (id === connection)
           throw new Error('Switch to another connection before removing this one.')
         const list = connections.filter((entry) => entry.id !== id)
+        await writeJsonFile(file, snapshot({ connections: list }))
+        connections = list
+      })
+    },
+    baseUrl: (id) => connections.find((entry) => entry.id === id)?.baseUrl ?? null,
+    async setBaseUrl(id, next) {
+      if (!CONNECTION_ID.test(id)) throw new Error('Unknown provider.')
+      if (next !== null && !baseUrlSchema.safeParse(next).success)
+        throw new Error('Enter a shorter address.')
+      await serial(async () => {
+        // Never changes which connection chats go to.
+        const list = withConnection(connections, id).map((entry) =>
+          entry.id !== id ? entry : next === null ? { id } : { id, baseUrl: next },
+        )
         await writeJsonFile(file, snapshot({ connections: list }))
         connections = list
       })

@@ -268,50 +268,99 @@ const builtinConnections = [
     personalUseOnly: false,
     pickerOrder: 2,
   },
+  {
+    id: 'openai-api',
+    vendor: 'openai',
+    access: 'api-key',
+    label: 'OpenAI · API',
+    shortLabel: 'OpenAI',
+    title: 'OpenAI API',
+    description: 'Use your own OpenAI API key. Billed by OpenAI.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 3,
+  },
+  {
+    id: 'gemini-api',
+    vendor: 'google',
+    access: 'api-key',
+    label: 'Gemini · API',
+    shortLabel: 'Gemini',
+    title: 'Gemini API',
+    description: 'Use a Gemini API key from Google AI Studio. Free keys work, with limits.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 4,
+    notice:
+      'Free Gemini API keys share your data with Google. On the Gemini API free tier, Google may use your prompts, files the agent reads and the responses to improve its products, and people may review them. Do not use a free key with confidential or personal information. Paid-tier usage is not used this way.',
+  },
+  {
+    id: 'openrouter-api',
+    vendor: 'openrouter',
+    access: 'api-key',
+    label: 'OpenRouter · API',
+    shortLabel: 'OpenRouter',
+    title: 'OpenRouter API',
+    description: 'Use your own OpenRouter key to reach many models. Billed by OpenRouter.',
+    capabilities: {
+      authKind: 'api-key',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 5,
+  },
+  {
+    id: 'ollama',
+    vendor: 'local',
+    access: 'free',
+    label: 'Ollama · Local',
+    shortLabel: 'Ollama',
+    title: 'Ollama',
+    description: 'Run open models on this computer with Ollama. Free; nothing leaves your PC.',
+    capabilities: {
+      authKind: 'local',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 6,
+    defaultBaseUrl: 'http://127.0.0.1:11434/v1',
+  },
+  {
+    id: 'lmstudio',
+    vendor: 'local',
+    access: 'free',
+    label: 'LM Studio · Local',
+    shortLabel: 'LM Studio',
+    title: 'LM Studio',
+    description: 'Run open models on this computer with LM Studio. Free; nothing leaves your PC.',
+    capabilities: {
+      authKind: 'local',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 7,
+    defaultBaseUrl: 'http://127.0.0.1:1234/v1',
+  },
 ]
 
-// The connections feat/new-connections registers, as the renderer sees them. The wizard is
-// data-driven, so these only need the shape (src/shared/extra-connections-fixture.ts).
-const keyConnection = (id, vendor, title, extra = {}) => ({
-  id,
-  vendor,
-  access: 'api-key',
-  label: `${title} · API`,
-  shortLabel: title,
-  title: `${title} API`,
-  description: 'Use your own API key.',
-  capabilities: {
-    authKind: 'api-key',
-    listsModels: true,
-    reportsUsage: false,
-    needsRuntime: false,
-  },
-  personalUseOnly: false,
-  pickerOrder: 3,
-  ...extra,
-})
-const localConnection = (id, title) => ({
-  id,
-  vendor: 'local',
-  access: 'free',
-  label: `${title} · Local`,
-  shortLabel: title,
-  title,
-  description: `Models running on this PC with ${title}.`,
-  capabilities: { authKind: 'local', listsModels: true, reportsUsage: false, needsRuntime: false },
-  personalUseOnly: false,
-  pickerOrder: 5,
-})
-const allConnections = [
-  ...builtinConnections,
-  keyConnection('openai-api', 'openai', 'OpenAI'),
-  keyConnection('gemini-api', 'google', 'Gemini', {
-    notice: 'Free Gemini keys may let Google use your prompts to improve its products.',
-  }),
-  localConnection('ollama', 'Ollama'),
-  localConnection('lmstudio', 'LM Studio'),
-  keyConnection('openrouter-api', 'openrouter', 'OpenRouter'),
-]
+const allConnections = builtinConnections
+const customBaseUrl = {}
 const connectionInfo = (id) => allConnections.find((info) => info.id === id)
 let showPersonalUse = true
 const offered = () => allConnections.filter((info) => showPersonalUse || !info.personalUseOnly)
@@ -593,13 +642,20 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
   },
   getAppInfo: resolve({ name: 'desktop-agent', version: '0.0.0-e2e', platform: process.platform }),
+  // Anthropic API starts with a key; the other API-key connections without one. A key
+  // starting "bad" is refused the way main refuses one its pinned host rejects.
   apiKey: {
     status: (id = 'anthropic-api') => Promise.resolve({ saved: keys[id] === true, error: null }),
     set: (key, id = 'anthropic-api') => {
-      keyCalls.push({ id, length: key.length })
-      // Stands in for main's validation: this key is refused.
-      if (key === 'bad-key')
-        return Promise.resolve({ saved: keys[id] === true, error: 'That key was not accepted.' })
+      keyCalls.push(id)
+      // Stands in for main's validation: a refused key is not saved.
+      if (key.startsWith('bad')) {
+        const label = connectionInfo(id)?.shortLabel ?? 'The service'
+        return Promise.resolve({
+          saved: keys[id] === true,
+          error: `${label} rejected the API key. Update it in settings.`,
+        })
+      }
       keys[id] = true
       return Promise.resolve({ saved: true, error: null })
     },
@@ -700,6 +756,33 @@ contextBridge.exposeInMainWorld('desktopApi', {
       showPersonalUse = show
       return Promise.resolve(connectionsState())
     },
+    baseUrl: (id) => {
+      const connection = allConnections.find((c) => c.id === id)
+      return connection?.defaultBaseUrl
+        ? Promise.resolve({
+            baseUrl: customBaseUrl[id] ?? connection.defaultBaseUrl,
+            custom: id in customBaseUrl,
+            error: null,
+          })
+        : Promise.reject(new Error('This connection has no address to change.'))
+    },
+    setBaseUrl: (id, baseUrl) => {
+      const usual = allConnections.find((c) => c.id === id)?.defaultBaseUrl ?? ''
+      // Stands in for main's check: an address on this PC only.
+      if (
+        baseUrl !== null &&
+        !/^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\//.test(baseUrl)
+      ) {
+        return Promise.resolve({
+          baseUrl: customBaseUrl[id] ?? usual,
+          custom: id in customBaseUrl,
+          error: 'Only an address on this PC can be used (127.0.0.1 or localhost).',
+        })
+      }
+      if (baseUrl === null) delete customBaseUrl[id]
+      else customBaseUrl[id] = baseUrl
+      return Promise.resolve({ baseUrl: baseUrl ?? usual, custom: baseUrl !== null, error: null })
+    },
   },
   audit: {
     reveal: resolve(undefined),
@@ -753,7 +836,7 @@ contextBridge.exposeInMainWorld('e2e', {
   },
   // What the wizard and cards did through the connection and key calls.
   connectionCalls: () => JSON.parse(JSON.stringify(connectionCalls)),
-  keyCalls: () => JSON.parse(JSON.stringify(keyCalls)),
+  keyCalls: () => keyCalls.slice(),
   // Replace the saved chats and push them like main does after a save.
   setHistory: (next) => {
     history = next

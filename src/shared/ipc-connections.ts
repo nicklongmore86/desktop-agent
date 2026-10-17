@@ -16,6 +16,8 @@ export const connectionsChannels = {
   connectionsAdd: 'connections:add',
   connectionsRemove: 'connections:remove',
   connectionsSetShowPersonalUse: 'connections:set-show-personal-use',
+  connectionsBaseUrl: 'connections:base-url',
+  connectionsSetBaseUrl: 'connections:set-base-url',
 } as const
 
 /** Who serves the model. Add a vendor here before registering its first adapter. */
@@ -38,11 +40,22 @@ export const CONNECTION_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 export const ANTHROPIC_API = 'anthropic-api'
 export const CLAUDE_SUBSCRIPTION = 'claude-subscription'
 export const CODEX_SUBSCRIPTION = 'codex-subscription'
+/** The direct API connections added after the first three. */
+export const OPENAI_API = 'openai-api'
+export const GEMINI_API = 'gemini-api'
+export const OPENROUTER_API = 'openrouter-api'
+export const OLLAMA = 'ollama'
+export const LMSTUDIO = 'lmstudio'
 /** In the order Settings lists them. */
 export const BUILTIN_CONNECTIONS: readonly ConnectionId[] = [
   CLAUDE_SUBSCRIPTION,
   CODEX_SUBSCRIPTION,
   ANTHROPIC_API,
+  OPENAI_API,
+  GEMINI_API,
+  OPENROUTER_API,
+  OLLAMA,
+  LMSTUDIO,
 ]
 /** Used when nothing valid is saved: the same default as before connections existed. */
 export const DEFAULT_CONNECTION: ConnectionId = ANTHROPIC_API
@@ -85,6 +98,18 @@ export interface ConnectionInfo {
    * them differently from Settings. Lower first.
    */
   pickerOrder: number
+  /** Something the user should read before using it (Gemini's free-tier data use). */
+  notice?: string
+  /** A local server's default API root; present only when the base URL can be changed. */
+  defaultBaseUrl?: string
+}
+
+/** A local connection's API root: the default, or the loopback URL the user chose. */
+export interface ConnectionBaseUrl {
+  baseUrl: string
+  custom: boolean
+  /** Why the last change was refused (not loopback, not a URL); null when it was saved. */
+  error: string | null
 }
 
 /** Which of the listed connections the user has set up, and the setting that hides some. */
@@ -112,5 +137,9 @@ export interface ConnectionsApi {
     remove: (id: ConnectionId) => Promise<ConnectionsState>
     /** Rejects hiding while chats go to a personal-use connection: switch away first. */
     setShowPersonalUse: (show: boolean) => Promise<ConnectionsState>
+    /** A local connection's API root. Rejects for a connection without one. */
+    baseUrl: (connection: ConnectionId) => Promise<ConnectionBaseUrl>
+    /** Main accepts loopback http URLs only; null goes back to the default. */
+    setBaseUrl: (connection: ConnectionId, baseUrl: string | null) => Promise<ConnectionBaseUrl>
   }
 }

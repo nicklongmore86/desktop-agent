@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { ApprovalPrompt, ProviderStatus } from '../../../../shared/ipc'
 import { ApiContext } from '../../api'
 import { App } from '../../App'
-import { ALL_CONNECTION_INFO } from '../../../../shared/extra-connections-fixture'
+import { BUILTIN_CONNECTION_INFO } from '../../../../shared/connections-fixture'
 import { fakeApi, type FakeApiOptions } from '../../test/fake-api'
 import { setViewport } from '../../test/viewport'
 
@@ -17,13 +17,15 @@ const signedOut = (provider: string): ProviderStatus => ({
 /** Nothing is set up: no key, and every connection reports it is not ready. */
 const NOTHING_READY: FakeApiOptions = {
   key: { saved: false, error: null },
-  connections: ALL_CONNECTION_INFO,
-  statuses: Object.fromEntries(ALL_CONNECTION_INFO.map((info) => [info.id, signedOut(info.id)])),
+  connections: BUILTIN_CONNECTION_INFO,
+  statuses: Object.fromEntries(
+    BUILTIN_CONNECTION_INFO.map((info) => [info.id, signedOut(info.id)]),
+  ),
   provider: { provider: 'anthropic-api', state: 'ready', message: 'API mode' },
 }
 
 /** A user who has a key and all the connections listed, so the wizard stays closed. */
-const SET_UP: FakeApiOptions = { connections: ALL_CONNECTION_INFO }
+const SET_UP: FakeApiOptions = { connections: BUILTIN_CONNECTION_INFO }
 
 async function renderApp(options: FakeApiOptions) {
   setViewport(1280)
@@ -161,7 +163,9 @@ describe('the API key path', () => {
 
   it('shows the free-key notice and a Get a key link, saves through main and shows no key', async () => {
     const { user, api, dialog } = await toGeminiKey()
-    expect(within(dialog).getByRole('note').textContent).toMatch(/Free Gemini keys may let Google/)
+    expect(within(dialog).getByRole('note').textContent).toMatch(
+      /Free Gemini API keys share your data with Google/,
+    )
     const link = within(dialog).getByRole('link', { name: 'Get a key' })
     expect(link.getAttribute('href')).toBe('https://aistudio.google.com/app/apikey')
     expect(link.getAttribute('target')).toBe('_blank')
@@ -312,6 +316,73 @@ describe('local models', () => {
   })
 })
 
+describe('the local server address (Advanced)', () => {
+  async function toFindOllama() {
+    const result = await renderApp(NOTHING_READY)
+    const { user, api } = result
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^Local models/)
+    dialog = await wizard('How do you want to use Local models?')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Which one do you use?')
+    api.provider.set.mockResolvedValueOnce({
+      provider: 'ollama',
+      state: 'error',
+      message: 'Ollama is not running at 127.0.0.1:11434. Start it, then check again.',
+    })
+    await choose(user, dialog, /^Ollama/)
+    dialog = await wizard('Find Ollama')
+    await within(dialog).findByText(/Ollama is not running/)
+    await user.click(within(dialog).getByText('Advanced'))
+    return { ...result, dialog }
+  }
+
+  it('refuses an address that is not on this PC, with the reason from main', async () => {
+    const { user, api, dialog } = await toFindOllama()
+    expect(within(dialog).getByRole('textbox', { name: 'Server address' })).toHaveProperty(
+      'placeholder',
+      'http://127.0.0.1:11434/v1',
+    )
+    api.connections.setBaseUrl.mockResolvedValueOnce({
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      custom: false,
+      error: 'Only an address on this PC can be used.',
+    })
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Server address' }),
+      'http://192.168.1.20:11434/v1',
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Save address' }))
+    expect((await within(dialog).findByRole('alert')).textContent).toBe(
+      'Only an address on this PC can be used.',
+    )
+    expect(api.connections.setBaseUrl).toHaveBeenCalledWith(
+      'ollama',
+      'http://192.168.1.20:11434/v1',
+    )
+    // A refused address is not kept: no "usual address" button, and the server is not re-checked.
+    expect(within(dialog).queryByRole('button', { name: 'Use the usual address' })).toBeNull()
+  })
+
+  it('saves a good address, looks for the server again, and can go back to the usual one', async () => {
+    const { user, api, dialog } = await toFindOllama()
+    api.provider.get.mockResolvedValueOnce({
+      provider: 'ollama',
+      state: 'ready',
+      message: 'Ready.',
+    })
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Server address' }),
+      'http://localhost:9999/v1',
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Save address' }))
+    expect(await within(dialog).findByText('Connected')).toBeTruthy()
+    expect(api.connections.setBaseUrl).toHaveBeenCalledWith('ollama', 'http://localhost:9999/v1')
+    await user.click(await within(dialog).findByRole('button', { name: 'Use the usual address' }))
+    expect(api.connections.setBaseUrl).toHaveBeenLastCalledWith('ollama', null)
+  })
+})
+
 describe('combinations that do not work', () => {
   it('keeps them visible and disabled with the reason, and points to the next step', async () => {
     const { user } = await renderApp(NOTHING_READY)
@@ -357,7 +428,7 @@ describe('combinations that do not work', () => {
   it('hides the Claude subscription when personal-use connections are off', async () => {
     const { user } = await renderApp({
       ...NOTHING_READY,
-      connections: ALL_CONNECTION_INFO,
+      connections: BUILTIN_CONNECTION_INFO,
       showPersonalUse: false,
     })
     let dialog = await wizard('Which AI do you want to use?')
@@ -475,7 +546,7 @@ describe('with an approval', () => {
 describe('untrusted text', () => {
   it('renders connection labels, errors and model names as plain text', async () => {
     const hostile = '<img src=x onerror="alert(1)">'
-    const connections = ALL_CONNECTION_INFO.map((info) =>
+    const connections = BUILTIN_CONNECTION_INFO.map((info) =>
       info.id === 'ollama' ? { ...info, title: hostile, description: hostile } : info,
     )
     const { user, api } = await renderApp({

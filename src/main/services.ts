@@ -239,13 +239,35 @@ export async function createAppServices(deps: AppServiceDeps) {
       await settings.setShowPersonalUseConnections(show)
       return connectionList.state()
     },
+    baseUrl: (id: ConnectionId) => Promise.resolve({ ...connections.baseUrl(id), error: null }),
+    async setBaseUrl(id: ConnectionId, baseUrl: string | null) {
+      try {
+        return { ...(await connections.setBaseUrl(id, baseUrl)), error: null }
+      } catch (error) {
+        // resolveBaseUrl's messages are written here and never echo the URL.
+        return {
+          ...connections.baseUrl(id),
+          error: error instanceof Error ? error.message : 'That address was refused.',
+        }
+      }
+    },
   }
   /** Each API-key connection's key; the renderer only ever learns whether one is saved. */
   const apiKey = {
     get: async (id?: ConnectionId) => keyFor(id).get(),
     hasKey: async (id?: ConnectionId) => keyFor(id).hasKey(),
-    set: async (key: string, id?: ConnectionId) => keyFor(id).set(key),
-    clear: async (id?: ConnectionId) => keyFor(id).clear(),
+    /** A key that fails the connection's read-only check is never saved. */
+    async set(key: string, id: ConnectionId = DEFAULT_CONNECTION) {
+      const store = keyFor(id)
+      const failure = await connections.validateKey(id, key)
+      if (failure) throw new Error(failure.message)
+      await store.set(key)
+      connections.invalidateMetadata()
+    },
+    async clear(id?: ConnectionId) {
+      await keyFor(id).clear()
+      connections.invalidateMetadata()
+    },
   }
   // Global across connections: a chat names its project by id in its own connection's index.
   const projects = createOrganizer({

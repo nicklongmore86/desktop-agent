@@ -9,5 +9,8 @@ export const connectionsApi = (invoke: Invoke): ConnectionsApi => ({
     add: (id) => invoke(connectionsChannels.connectionsAdd, id),
     remove: (id) => invoke(connectionsChannels.connectionsRemove, id),
     setShowPersonalUse: (show) => invoke(connectionsChannels.connectionsSetShowPersonalUse, show),
+    baseUrl: (connection) => invoke(connectionsChannels.connectionsBaseUrl, connection),
+    setBaseUrl: (connection, baseUrl) =>
+      invoke(connectionsChannels.connectionsSetBaseUrl, connection, baseUrl),
   },
 })
