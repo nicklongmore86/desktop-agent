@@ -8,7 +8,7 @@ import {
   type SubmitEvent,
 } from 'react'
 import type { ApiKeyStatus, ProviderLoginState, ProviderStatus } from '../../../../shared/ipc'
-import { ANTHROPIC_API, DEFAULT_CONNECTION } from '../../../../shared/ipc-connections'
+import { DEFAULT_CONNECTION, type ConnectionInfo } from '../../../../shared/ipc-connections'
 import { useApi } from '../../api'
 import { connectionOf, useConnections } from '../../connections'
 import { UsageSection } from './UsageSection'
@@ -18,7 +18,11 @@ import type { SettingsPanelProps } from '../SettingsPanel'
 export function ApiKeySection({
   keyStatus,
   onKeyStatus,
-}: Pick<SettingsPanelProps, 'keyStatus' | 'onKeyStatus'>): React.JSX.Element {
+  connection,
+}: Pick<SettingsPanelProps, 'keyStatus' | 'onKeyStatus'> & {
+  /** The API-key connection the key is for; absent means Anthropic API. */
+  connection?: ConnectionInfo | undefined
+}): React.JSX.Element {
   const api = useApi()
   const inputId = useId()
   const [draft, setDraft] = useState('')
@@ -46,12 +50,12 @@ export function ApiKeySection({
   const save = (event: SubmitEvent<HTMLFormElement>): void => {
     event.preventDefault()
     if (!draft.trim()) return
-    void run(() => api.apiKey.set(draft))
+    void run(() => (connection ? api.apiKey.set(draft, connection.id) : api.apiKey.set(draft)))
   }
 
   return (
     <section className="settings-section" aria-labelledby={`${inputId}-title`}>
-      <h3 id={`${inputId}-title`}>Anthropic API key</h3>
+      <h3 id={`${inputId}-title`}>{`${connection?.title ?? 'Anthropic API'} key`}</h3>
       <p className="settings-status" role="status">
         {saved ? 'Key saved.' : 'No key saved.'}
       </p>
@@ -70,7 +74,7 @@ export function ApiKeySection({
             type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder="sk-ant-…"
+            placeholder={!connection || connection.vendor === 'anthropic' ? 'sk-ant-…' : undefined}
             value={draft}
             onChange={(event) => {
               setDraft(event.target.value)
@@ -106,7 +110,7 @@ export function ApiKeySection({
             className="button-danger"
             disabled={busy}
             onClick={() => {
-              void run(() => api.apiKey.clear())
+              void run(() => (connection ? api.apiKey.clear(connection.id) : api.apiKey.clear()))
             }}
           >
             Remove key
@@ -116,14 +120,15 @@ export function ApiKeySection({
       <p className="settings-hint">
         The key is encrypted by Windows and can&apos;t be viewed again.
       </p>
+      {connection?.notice && <p className="settings-hint">{connection.notice}</p>}
     </section>
   )
 }
 
-function ModelSection(): React.JSX.Element {
+function ModelSection({ provider }: { provider: string }): React.JSX.Element {
   const selectId = useId()
   const [error, setError] = useState<string | null>(null)
-  const models = useProviderModels(ANTHROPIC_API)
+  const models = useProviderModels(provider)
   const choice = models.choice
   if (!choice) return <section className="settings-section">Loading…</section>
   return (
@@ -444,6 +449,11 @@ export function ProviderSection({
 }
 
 export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
+  const connections = useConnections()
+  const current = props.provider?.provider ?? DEFAULT_CONNECTION
+  const connection = connectionOf(connections, current)
+  // Before the list has loaded, the default connection (Anthropic API) is assumed.
+  const capabilities = connection?.capabilities ?? { authKind: 'api-key', listsModels: false }
   return (
     <>
       <ProviderSection
@@ -451,13 +461,19 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
         onProvider={props.onProvider}
         onSwitchProvider={props.onSwitchProvider}
       />
-      {!props.provider || props.provider.provider === ANTHROPIC_API ? (
-        <>
-          <ApiKeySection keyStatus={props.keyStatus} onKeyStatus={props.onKeyStatus} />
-          <ModelSection />
-        </>
+      {capabilities.authKind === 'api-key' && (
+        <ApiKeySection
+          // Siblings: the key section and the usage section need different keys.
+          key={`key:${current}`}
+          keyStatus={props.keyStatus}
+          onKeyStatus={props.onKeyStatus}
+          connection={connection}
+        />
+      )}
+      {capabilities.authKind === 'api-key' && !capabilities.listsModels ? (
+        <ModelSection provider={current} />
       ) : (
-        <UsageSection key={props.provider.provider} provider={props.provider.provider} />
+        props.provider && <UsageSection key={`usage:${current}`} provider={current} />
       )}
     </>
   )

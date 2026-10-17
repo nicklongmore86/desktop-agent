@@ -6,7 +6,7 @@ import type {
   GrantsState,
   ProviderStatus,
 } from '../../shared/ipc'
-import { ANTHROPIC_API, type ConnectionId } from '../../shared/ipc-connections'
+import type { ConnectionId, ConnectionInfo } from '../../shared/ipc-connections'
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
@@ -31,19 +31,22 @@ import { useCommandLine } from './use-command-line'
 import { useShortcuts, useViewModeHotkey } from './use-shortcuts'
 
 function SetupGuide({
+  connection,
   keySaved,
   hasGrants,
   onOpenSettings,
 }: {
+  connection: ConnectionInfo
   keySaved: boolean
   hasGrants: boolean
   onOpenSettings: () => void
 }): React.JSX.Element {
+  const name = connection.vendor === 'anthropic' ? 'Claude' : connection.shortLabel
   return (
     <div className="setup-guide" role="note" aria-label="Finish setting up">
       <strong>Finish setting up in Settings:</strong>
       <ul>
-        {!keySaved && <li>Add your Anthropic API key, so Claude can answer.</li>}
+        {!keySaved && <li>{`Add your ${connection.title} key, so ${name} can answer.`}</li>}
         {!hasGrants && <li>Grant at least one folder, so the agent can work with your files.</li>}
       </ul>
       <button
@@ -75,7 +78,8 @@ function AppWindow(): React.JSX.Element {
   useTheme()
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
-  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
+  /** The current API-key connection's key status, tagged with the connection it is for. */
+  const [keyState, setKeyState] = useState<{ id: ConnectionId; status: ApiKeyStatus } | null>(null)
   const [grants, setGrants] = useState<GrantsState | null>(null)
   const [provider, setProvider] = useState<ProviderStatus | null>(null)
   const [audit, setAudit] = useState<AuditStatus | null>(null)
@@ -88,12 +92,32 @@ function AppWindow(): React.JSX.Element {
       setProvider((current) => current ?? status)
     }, report('provider.get'))
     api.getAppInfo().then(setAppInfo, report('getAppInfo'))
-    api.apiKey.status().then(setKeyStatus, report('apiKey.status'))
     api.grants.list().then(setGrants, report('grants.list'))
     api.audit.status().then(setAudit, report('audit.status'))
     return api.onAuditStatus(setAudit)
   }, [api])
 
+  const connection = connectionOf(connections, provider?.provider)
+  const keyConnection = connection?.capabilities.authKind === 'api-key' ? connection.id : null
+  useEffect(() => {
+    if (!keyConnection) return
+    let live = true
+    api.apiKey.status(keyConnection).then(
+      (status) => {
+        if (live) setKeyState({ id: keyConnection, status })
+      },
+      (error: unknown) => {
+        console.error('apiKey.status failed', error)
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [api, keyConnection])
+  const keyStatus = keyState && keyState.id === keyConnection ? keyState.status : null
+  const setKeyStatus = (status: ApiKeyStatus): void => {
+    if (keyConnection) setKeyState({ id: keyConnection, status })
+  }
   const loaded = keyStatus !== null && grants !== null
   const keySaved = keyStatus?.saved ?? false
   const hasGrants = (grants?.roots.length ?? 0) > 0
@@ -297,13 +321,17 @@ function AppWindow(): React.JSX.Element {
               ) : undefined
             }
             notice={
-              loaded && provider?.provider === ANTHROPIC_API && (!keySaved || !hasGrants) ? (
+              loaded && connection && keyConnection && (!keySaved || !hasGrants) ? (
                 <SetupGuide
+                  connection={connection}
                   keySaved={keySaved}
                   hasGrants={hasGrants}
                   onOpenSettings={openSettings}
                 />
-              ) : provider && provider.provider !== ANTHROPIC_API && provider.state !== 'ready' ? (
+              ) : provider &&
+                provider.state !== 'ready' &&
+                // An API-key connection without a key is covered by the guide above.
+                !(keyConnection && !keySaved) ? (
                 <div role="note" className="setup-guide">
                   {provider.message}{' '}
                   <button

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   CONNECTION_ID,
   connectionsChannels,
+  type ConnectionBaseUrl,
   type ConnectionId,
   type ConnectionInfo,
 } from '../shared/ipc-connections'
@@ -12,6 +13,10 @@ export interface ConnectionsService {
   list: () => ConnectionInfo[]
   /** True for a registered connection the user can choose now. */
   available: (id: ConnectionId) => boolean
+  /** A local connection's API root; rejects for one without. */
+  baseUrl: (id: ConnectionId) => Promise<ConnectionBaseUrl>
+  /** Validates (loopback only) and saves; a refused URL comes back as `error`. */
+  setBaseUrl: (id: ConnectionId, baseUrl: string | null) => Promise<ConnectionBaseUrl>
 }
 
 /** The shape of an id: a safe single path segment. The registry decides whether it exists. */
@@ -34,5 +39,14 @@ export function registerConnectionsHandlers(
   handle(connectionsChannels.connectionsList, (...args) => {
     if (args.length) throw new Error('Listing connections takes no arguments.')
     return connections.list()
+  })
+  handle(connectionsChannels.connectionsBaseUrl, (id) =>
+    connections.baseUrl(parseConnectionId(id, connections)),
+  )
+  handle(connectionsChannels.connectionsSetBaseUrl, (id, baseUrl) => {
+    const connection = parseConnectionId(id, connections)
+    if (baseUrl !== null && (typeof baseUrl !== 'string' || baseUrl.length > 2048))
+      throw new Error('Enter a valid address.')
+    return connections.setBaseUrl(connection, baseUrl)
   })
 }

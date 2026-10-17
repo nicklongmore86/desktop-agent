@@ -19,6 +19,7 @@ import { parseConnectionId } from './ipc-connections'
 import { registerFeatureHandlers, type FeatureServices } from './ipc-features'
 import type { AddGrantResult } from './permissions'
 import { CONVERSATION_ID } from './storage/history-store'
+import { MODEL_ID } from './storage/settings-store'
 
 /** The parts of an IPC invoke event the handlers look at. */
 export interface IpcSenderEvent {
@@ -135,7 +136,11 @@ export function registerIpcHandlers(
     try {
       await services.apiKey.set(key.trim(), connection)
     } catch (error) {
-      return { saved: false, error: messageOf(error, 'Could not save the API key.') }
+      // A refused key is not saved: report the key that is stored, if any, and why.
+      return {
+        saved: (await keyStatus(connection)).saved,
+        error: messageOf(error, 'Could not save the API key.'),
+      }
     }
     return keyStatus(connection)
   })
@@ -174,10 +179,7 @@ export function registerIpcHandlers(
   handle(IpcChannels.providerModels, () => services.provider.models())
   handle(IpcChannels.providerAllowance, () => services.provider.allowance())
   handle(IpcChannels.providerSetModel, (model) => {
-    if (
-      model !== null &&
-      (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model))
-    )
+    if (model !== null && (typeof model !== 'string' || !MODEL_ID.test(model)))
       return {
         ok: false,
         failure: { code: 'model_unavailable', message: 'Choose an available model.' },

@@ -252,7 +252,8 @@ describe('first run', () => {
       key: { saved: false, error: null },
       grants: { roots: [], loadError: null },
     })
-    const guide = screen.getByRole('note', { name: 'Finish setting up' })
+    // The key status is read once main has said which connection is current.
+    const guide = await screen.findByRole('note', { name: 'Finish setting up' })
     expect(guide.textContent).toContain('Add your Anthropic API key')
     expect(guide.textContent).toContain('Grant at least one folder')
     await user.click(within(guide).getByRole('button', { name: 'Open Settings' }))
@@ -263,6 +264,27 @@ describe('first run', () => {
   it('stays out of the way once set up', async () => {
     await renderApp()
     expect(screen.queryByRole('note', { name: 'Finish setting up' })).toBeNull()
+  })
+
+  it('asks for the current API-key connection’s own key, by id', async () => {
+    const { api } = await renderApp({
+      provider: { provider: 'openai-api', state: 'signed-out', message: 'Add a key.' },
+      key: { saved: false, error: null },
+    })
+    const guide = await screen.findByRole('note', { name: 'Finish setting up' })
+    expect(guide.textContent).toContain('Add your OpenAI API key, so OpenAI can answer.')
+    expect(guide.textContent).not.toContain('Claude')
+    expect(api.apiKey.status).toHaveBeenCalledWith('openai-api')
+  })
+
+  it('shows a local server’s own status instead of a key guide', async () => {
+    const message = "Ollama isn't running. Install it from ollama.com, start it, then check again."
+    await renderApp({
+      provider: { provider: 'ollama', state: 'error', message },
+      key: { saved: false, error: null },
+    })
+    expect(screen.queryByRole('note', { name: 'Finish setting up' })).toBeNull()
+    expect((await screen.findByRole('note')).textContent).toContain(message)
   })
 })
 
@@ -434,14 +456,32 @@ describe('connections from main', () => {
       within(picker)
         .getAllByRole('option')
         .map((option) => option.textContent),
-    ).toEqual(['Codex · ChatGPT', 'Claude · Subscription', 'Claude · API'])
+    ).toEqual([
+      'Codex · ChatGPT',
+      'Claude · Subscription',
+      'Claude · API',
+      'OpenAI · API',
+      'Gemini · API',
+      'OpenRouter · API',
+      'Ollama · Local',
+      'LM Studio · Local',
+    ])
     await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
     const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
     expect(
       within(cards)
         .getAllByRole('radio')
         .map((radio) => radio.getAttribute('value')),
-    ).toEqual(['claude-subscription', 'codex-subscription', 'anthropic-api'])
+    ).toEqual([
+      'claude-subscription',
+      'codex-subscription',
+      'anthropic-api',
+      'openai-api',
+      'gemini-api',
+      'openrouter-api',
+      'ollama',
+      'lmstudio',
+    ])
     expect(within(cards).getByText('Anthropic API')).toBeTruthy()
     expect(api.connections.list).toHaveBeenCalledOnce()
   })
@@ -472,7 +512,15 @@ describe('connections from main', () => {
       within(picker)
         .getAllByRole('option')
         .map((option) => option.textContent),
-    ).toEqual(['Renamed Codex', 'Claude · API'])
+    ).toEqual([
+      'Renamed Codex',
+      'Claude · API',
+      'OpenAI · API',
+      'Gemini · API',
+      'OpenRouter · API',
+      'Ollama · Local',
+      'LM Studio · Local',
+    ])
     await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
     const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
     expect(within(cards).queryByText('Claude · Subscription')).toBeNull()

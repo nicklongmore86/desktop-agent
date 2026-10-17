@@ -128,6 +128,8 @@ export interface ProviderModel extends ModelOption {
   defaultReasoningEffort: string | null
   supportedReasoningEfforts: string[]
   isDefault: boolean
+  /** Whether the server says the model can call tools; absent when the list does not say. */
+  toolSupport?: 'supported' | 'unknown'
 }
 export interface ProviderModels {
   provider: ConnectionId
@@ -137,6 +139,8 @@ export interface ProviderModels {
   savedModel: string | null
   defaultModel: string | null
   resolvedModel: string | null
+  /** Shown with the list: local servers do not say which models can use tools. */
+  warning?: string
 }
 export interface AllowanceWindow {
   limitId: string

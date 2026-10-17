@@ -4,5 +4,8 @@ import type { Invoke } from './features'
 export const connectionsApi = (invoke: Invoke): ConnectionsApi => ({
   connections: {
     list: () => invoke(connectionsChannels.connectionsList),
+    baseUrl: (connection) => invoke(connectionsChannels.connectionsBaseUrl, connection),
+    setBaseUrl: (connection, baseUrl) =>
+      invoke(connectionsChannels.connectionsSetBaseUrl, connection, baseUrl),
   },
 })

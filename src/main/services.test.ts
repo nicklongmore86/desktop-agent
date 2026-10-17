@@ -71,7 +71,8 @@ it('preserves legacy API history and starts both subscriptions without reading t
   expect(services.chat.state().items[0]).toMatchObject({ text: 'claude-subscription' })
   await services.provider.set('anthropic-api')
   expect(services.chat.state().items[0]).toMatchObject({ text: 'legacy API history' })
-  expect(invalidate).toHaveBeenCalledTimes(4)
+  // Each switch, and saving the key (its metadata is cached per key).
+  expect(invalidate).toHaveBeenCalledTimes(5)
 })
 
 it.each([
@@ -256,16 +257,24 @@ it('offers the registry’s connections, and can hide the personal-use one', asy
     Promise.resolve({ provider, state: 'ready', message: 'ready' }),
   )
   const shown = await open()
-  // Nothing changes by default: all three, Claude subscription included.
+  // Every built-in, Claude subscription included; the saved choice is not changed.
   expect(shown.connections.list().map(({ id, label }) => [id, label])).toEqual([
     ['claude-subscription', 'Claude · Subscription'],
     ['codex-subscription', 'Codex · ChatGPT'],
     ['anthropic-api', 'Claude · API'],
+    ['openai-api', 'OpenAI · API'],
+    ['gemini-api', 'Gemini · API'],
+    ['openrouter-api', 'OpenRouter · API'],
+    ['ollama', 'Ollama · Local'],
+    ['lmstudio', 'LM Studio · Local'],
   ])
+  expect(shown.settings.connection).toBe('anthropic-api')
   await shown.provider.set('claude-subscription')
   // Only an API-key connection has a key; the key calls refuse any other.
   await expect(shown.apiKey.hasKey('claude-subscription')).rejects.toThrow('Unknown provider.')
-  await expect(shown.apiKey.hasKey('openai-api')).rejects.toThrow('Unknown provider.')
+  await expect(shown.apiKey.hasKey('ollama')).rejects.toThrow('Unknown provider.')
+  await expect(shown.apiKey.hasKey('not-a-connection')).rejects.toThrow('Unknown provider.')
+  expect(await shown.apiKey.hasKey('openai-api')).toBe(false)
   expect(await shown.apiKey.hasKey()).toBe(false)
   await shown.settings.setShowPersonalUseConnections(false)
 
@@ -275,10 +284,68 @@ it('offers the registry’s connections, and can hide the personal-use one', asy
   expect(hidden.connections.list().map(({ id }) => id)).toEqual([
     'codex-subscription',
     'anthropic-api',
+    'openai-api',
+    'gemini-api',
+    'openrouter-api',
+    'ollama',
+    'lmstudio',
   ])
   expect(hidden.connections.available('claude-subscription')).toBe(false)
   await expect(hidden.provider.set('claude-subscription')).rejects.toThrow('Unknown provider.')
   await expect(
-    hidden.projects.open({ provider: 'openai-api', id: '00000000-0000-4000-8000-000000000000' }),
+    hidden.projects.open({
+      provider: 'claude-subscription',
+      id: '00000000-0000-4000-8000-000000000000',
+    }),
   ).rejects.toThrow()
+})
+
+it('saves a new connection’s key only after the pinned host accepts it, and never switches', async () => {
+  const userData = await mkdtemp(join(tmpdir(), 'key-check-'))
+  dirs.push(userData)
+  // api.openai.com, served locally: the real adapter, with only the network replaced.
+  const hosts: string[] = []
+  const paths: string[] = []
+  const realFetch = globalThis.fetch
+  vi.stubGlobal('fetch', (input: string | URL, init?: RequestInit) => {
+    const url = new URL(String(input))
+    hosts.push(url.origin)
+    paths.push(url.pathname)
+    const auth = new Headers(init?.headers).get('authorization')
+    const ok = auth === 'Bearer sk-good'
+    return Promise.resolve(
+      new Response(JSON.stringify(ok ? { data: [{ id: 'gpt-5.1' }] } : { error: {} }), {
+        status: ok ? 200 : 401,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+  })
+  try {
+    const services = await createAppServices({
+      userData,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (text) => Buffer.from(text),
+        decryptString: (value) => value.toString(),
+      },
+      trash: () => Promise.resolve(),
+      emit: vi.fn(),
+      promptApproval: vi.fn(),
+      onAuditStatus: vi.fn(),
+    })
+    await expect(services.apiKey.set('sk-bad', 'openai-api')).rejects.toThrow(
+      'OpenAI rejected the API key. Update it in settings.',
+    )
+    expect(await services.apiKey.hasKey('openai-api')).toBe(false)
+    await services.apiKey.set('sk-good', 'openai-api')
+    expect(await services.apiKey.hasKey('openai-api')).toBe(true)
+    // Its own file; Anthropic's key is untouched.
+    expect(await services.apiKey.hasKey()).toBe(false)
+    expect(hosts.every((host) => host === 'https://api.openai.com')).toBe(true)
+    expect(paths).toEqual(['/v1/models', '/v1/models'])
+    expect(services.settings.connection).toBe('anthropic-api')
+  } finally {
+    vi.stubGlobal('fetch', realFetch)
+    vi.unstubAllGlobals()
+  }
 })

@@ -561,6 +561,16 @@ export function fakeApi(options: FakeApiOptions = {}) {
     },
     connections: {
       list: vi.fn(() => Promise.resolve(structuredClone(BUILTIN_CONNECTION_INFO))),
+      baseUrl: vi.fn((_id: ConnectionId) =>
+        Promise.resolve({ baseUrl: 'http://127.0.0.1:11434/v1', custom: false, error: null }),
+      ),
+      setBaseUrl: vi.fn((_id: ConnectionId, baseUrl: string | null) =>
+        Promise.resolve({
+          baseUrl: baseUrl ?? 'http://127.0.0.1:11434/v1',
+          custom: baseUrl !== null,
+          error: null,
+        }),
+      ),
     },
     audit: {
       reveal: vi.fn(async () => {}),

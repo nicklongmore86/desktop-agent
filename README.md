@@ -1,11 +1,11 @@
 # desktop-agent
 
-A Windows-first desktop chat agent with Anthropic API, Claude subscription, and Codex subscription access to permissioned local file and shell tools.
+A Windows-first desktop chat agent with Anthropic API, Claude subscription, Codex subscription, OpenAI API, Gemini API, OpenRouter, Ollama and LM Studio access to permissioned local file and shell tools.
 
 ## Goals (v1)
 
 - **Platform:** Windows 10/11 first (Electron + TypeScript); macOS/Linux later.
-- **Providers:** Anthropic API (encrypted API key), Claude subscription (official Claude Agent SDK), or Codex subscription (official app-server with ChatGPT-managed authentication).
+- **Providers:** Anthropic API (encrypted API key), Claude subscription (official Claude Agent SDK), Codex subscription (official app-server with ChatGPT-managed authentication), or the app's own agent loop over the OpenAI API, Gemini API (free AI Studio keys or paid), OpenRouter (tool-capable models only), Ollama or LM Studio (on this computer, no key). See [Connections](#connections).
 - **Capabilities:** full file access (list, read, search, write, move, delete) within user-granted folders, plus shell commands (PowerShell/cmd).
 - **Safety model:**
   - Access limited to explicitly granted root folders; a hard denylist always blocks secrets (`~/.ssh`, `.env*`, credential/key stores, browser profiles, etc.).
@@ -199,22 +199,36 @@ After Electron is ready, construct `createKeyStore({ userDataPath: app.getPath('
 
 Tests use a fake streaming client and fake encryption without network or Electron. Storage tests use isolated temporary directories and native path operations for Windows/Linux portability.
 
+### Connections
+
+Settings lists every connection; choosing one is always the user's decision (nothing switches on its own, and each connection keeps its own chat history and model choice). All of them run the same tool loop, approvals and audit log ([docs/connections.md](docs/connections.md)).
+
+| Connection         | Access                         | Key goes to                              | How it is checked                               |
+| ------------------ | ------------------------------ | ---------------------------------------- | ----------------------------------------------- |
+| Anthropic API      | Your Anthropic key             | `api.anthropic.com`                      | At the first Send                               |
+| OpenAI API         | Your OpenAI key                | `api.openai.com` only                    | `GET /v1/models` when the key is saved          |
+| Gemini API         | AI Studio key (free or paid)   | `generativelanguage.googleapis.com` only | `models.list` when the key is saved             |
+| OpenRouter API     | Your OpenRouter key            | `openrouter.ai` only                     | `GET /api/v1/key` when the key is saved         |
+| Ollama / LM Studio | Free, on this computer, no key | Nothing (loopback only)                  | `GET /v1/models` on `127.0.0.1:11434` / `:1234` |
+
+A key is checked with a read-only request (never a completion) before it is saved; a key the service rejects is not saved, and Settings shows why. **Free Gemini API keys share your data with Google**: on the free tier, Google may use prompts, files the agent reads and responses to improve its products. Settings shows this notice with the Gemini key. Local servers do not say which models can call tools, so Settings warns about that; pick a model that supports tool calling. A local server's address can be changed (`connections.setBaseUrl`), but main accepts only `http://` on `127.0.0.1`, `::1` or `localhost`.
+
 ### Chat window, IPC and approvals
 
 `src/main/services.ts` builds everything from userData at startup: the key store, `GrantStore`, `PathGuard`, `AuditLog`, `createTools` (with `shell.trashItem`), the settings store, the connection registry and the chat session. Each run asks the selected connection's adapter for a runner ([docs/connections.md](docs/connections.md)): Anthropic API builds `createAgent` + `createClaudeClient` with its key and the current model; the subscriptions start their bundled runtime without reading any key. Provider switches stop the current run and serialize history/settings changes. Loading the saved conversation at startup goes through the same queue, so sends wait for it and a slow load can never overwrite a later switch.
 
 **IPC.** The contract is `src/shared/ipc.ts`; the preload exposes it as `window.desktopApi`. Every renderer → main handler (`src/main/ipc-handlers.ts`) first checks that the call comes from the app window's current main frame (the same `WebFrameMain` object as `webContents.mainFrame`), that it is top-level and on an app URL, and throws otherwise.
 
-| Area        | Calls                                                    | Notes                                                                    |
-| ----------- | -------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Connections | `connections.list`                                       | Labels and capabilities from main's registry; never credentials          |
-| API key     | `apiKey.status`, `set`, `clear` (optional connection id) | Returns `{ saved, error }` only; the key never goes back to the renderer |
-| Grants      | `grants.list`, `add`, `remove`                           | `add` takes no argument: main opens the native folder picker             |
-| Model       | `model.get`, `set`                                       | `settings.json` in userData; only offered models; default from the agent |
-| Chat        | `chat.load`, `send`, `stop`, `newChat`                   | One run at a time; `send` returns once the run has started               |
-| Approvals   | `approvals.respond(id, approved)`                        | Only a pending id resolves anything; only `true` approves                |
-| Audit       | `audit.status`                                           | `{ healthy, path }`                                                      |
-| Pushes      | `onChatEvent`, `onApprovalRequest`, `onAuditStatus`      | Main → renderer; each returns an unsubscribe function                    |
+| Area        | Calls                                                    | Notes                                                                                                        |
+| ----------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Connections | `connections.list`, `baseUrl`, `setBaseUrl`              | Labels and capabilities from main's registry; never credentials. Base URLs: local connections, loopback only |
+| API key     | `apiKey.status`, `set`, `clear` (optional connection id) | Returns `{ saved, error }` only; the key never goes back to the renderer                                     |
+| Grants      | `grants.list`, `add`, `remove`                           | `add` takes no argument: main opens the native folder picker                                                 |
+| Model       | `model.get`, `set`                                       | `settings.json` in userData; only offered models; default from the agent                                     |
+| Chat        | `chat.load`, `send`, `stop`, `newChat`                   | One run at a time; `send` returns once the run has started                                                   |
+| Approvals   | `approvals.respond(id, approved)`                        | Only a pending id resolves anything; only `true` approves                                                    |
+| Audit       | `audit.status`                                           | `{ healthy, path }`                                                                                          |
+| Pushes      | `onChatEvent`, `onApprovalRequest`, `onAuditStatus`      | Main → renderer; each returns an unsubscribe function                                                        |
 
 **Approval flow.** When a tool asks for approval, the session gives the request a random id (`crypto.randomUUID`) and pushes it to the window with the tool, kind, summary and full detail: the whole diff for `write_file`, and the exact shell path, working folder and command for `run_shell`. The tool waits until the renderer answers that id. Answers from another frame, for an unknown or already settled id, or with anything but `approved === true` never approve anything. Every pending approval is denied when the user presses Stop, starts a new chat, reloads or closes the window, the renderer crashes, the app quits, or the run ends. The dialog focuses **Deny**, Escape denies, Tab stays inside the dialog, and further requests queue behind it.
 
@@ -230,7 +244,7 @@ To match a string field inside `toMatchObject` or `expect.objectContaining`, use
 
 ### Workspace chat
 
-**Composer and shortcuts.** Provider and model pickers live in the composer. Switching provider uses the same operation as Settings (the conversation is cleared, with separate history per provider). The model picker uses `provider.models()` / `provider.setModel()` for Codex and the existing model API for Anthropic API mode; it is hidden when a provider has no model list (Claude subscription). A usage indicator next to the pickers reads `provider.allowance()` (on provider switch, after each completed turn and on usage-limit errors; never polled) and is advisory only: amber from 80% of any window used, red when limited, and it never blocks sending. Click it to open account settings.
+**Composer and shortcuts.** Provider and model pickers live in the composer. Switching provider uses the same operation as Settings (the conversation is cleared, with separate history per provider). The model picker uses `provider.models()` / `provider.setModel()` for connections that list models (Codex, OpenAI, Gemini, OpenRouter, Ollama, LM Studio) and the existing model API for Anthropic API mode; it is hidden when a provider has no model list (Claude subscription). A usage indicator next to the pickers reads `provider.allowance()` (on provider switch, after each completed turn and on usage-limit errors; never polled) and is advisory only: amber from 80% of any window used, red when limited, and it never blocks sending. Click it to open account settings.
 
 | Shortcut            | Action                                                                 |
 | ------------------- | ---------------------------------------------------------------------- |
