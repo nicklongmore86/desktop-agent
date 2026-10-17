@@ -773,17 +773,7 @@ describe('run_shell with a real shell', () => {
                 /^Timed out after 15 s; the process tree was killed/,
               ) as unknown),
       })
-      const gone = await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)
-      if (process.env['TREEKILL_DIAG']) {
-        const t = Date.now()
-        const late =
-          gone || (await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 60_000))
-        console.error(
-          `TEST-DIAG [${new Date().toISOString()}] child=${String(child)} grandchild=${String(grandchild)} goneIn10s=${String(gone)} ` +
-            `goneLater=${String(late)} extraMs=${String(Date.now() - t)} childAlive=${String(isAlive(child))} grandchildAlive=${String(isAlive(grandchild))}`,
-        )
-      }
-      expect(gone).toBe(true)
+      expect(await waitUntil(() => !isAlive(child) && !isAlive(grandchild), 10_000)).toBe(true)
     } finally {
       // Whatever failed above, leave nothing running in the sandbox: it would hold the
       // folder open and fail the next steps with EBUSY.
