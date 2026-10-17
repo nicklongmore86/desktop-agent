@@ -10,6 +10,7 @@ import {
   decodeCliXml,
   encodePowerShell,
   powerShellScript,
+  type SpawnWindow,
   TREE_KILL_EXIT,
   treeKillScript,
 } from './shell-windows'
@@ -26,6 +27,9 @@ export interface ShellProcess {
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
   ): unknown
   kill(signal?: NodeJS.Signals): boolean
+  /** null while the app has not seen the process exit (as on a ChildProcess). */
+  readonly exitCode?: number | null
+  readonly signalCode?: NodeJS.Signals | null
 }
 
 export interface ShellSpawnOptions {
@@ -46,7 +50,11 @@ export type ShellSpawner = (
 /** The outcome of killing a process tree: whether the killer reports success. */
 export type KillResult = { ok: true } | { ok: false; reason: string }
 
-export type KillTree = (process: ShellProcess) => Promise<KillResult>
+/**
+ * Kills `process` and everything it started. `started` is when it was spawned, so the
+ * Windows fallback can tell it from a process that later reused its id.
+ */
+export type KillTree = (process: ShellProcess, started?: SpawnWindow) => Promise<KillResult>
 
 export const defaultSpawner: ShellSpawner = (file, args, options) => nodeSpawn(file, args, options)
 
@@ -102,9 +110,11 @@ export function defaultKillTree(
   spawn: ShellSpawner,
   env: NodeJS.ProcessEnv,
 ): KillTree {
-  return async (child) => {
+  return async (child, started) => {
     const pid = child.pid
     if (pid === undefined) return { ok: false, reason: 'the process has no id' }
+    // Until the app sees the exit it holds the process handle, so the id is not reused.
+    const aliveAt = child.exitCode === null && child.signalCode === null ? Date.now() : undefined
     if (platform !== 'win32') {
       try {
         process.kill(-pid, 'SIGKILL')
@@ -128,7 +138,7 @@ export function defaultKillTree(
       root,
       'the PowerShell fallback',
       powerShellPath(root),
-      [...POWERSHELL_FLAGS, encodePowerShell(treeKillScript(pid))],
+      [...POWERSHELL_FLAGS, encodePowerShell(treeKillScript({ pid, started, aliveAt }))],
       TREE_KILL_EXIT,
     )
     // The shell itself, in case both killers failed to reach it.
@@ -422,6 +432,21 @@ export function runShellTool(deps: ResolvedDeps): ToolSpec<Input> {
   }
 }
 
+/** `promise`, or `fallback` if it has not settled within `ms`. */
+function withDeadline<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => {
+      timer = setTimeout(() => {
+        resolve(fallback)
+      }, ms)
+    }),
+  ]).finally(() => {
+    clearTimeout(timer)
+  })
+}
+
 /** Device and inode of a real (non-link) folder, or null. */
 async function folderIdentity(path: string): Promise<Identity | null> {
   try {
@@ -445,6 +470,8 @@ async function runProcess(
   const stdout = new OutputCollector(deps.limits.maxShellOutputBytes)
   const stderr = new OutputCollector(deps.limits.maxShellOutputBytes)
   let child: ShellProcess
+  const spawning = Date.now()
+  let started: SpawnWindow
   try {
     child = deps.spawn(file, args, {
       cwd,
@@ -454,6 +481,7 @@ async function runProcess(
       windowsHide: true,
       detached: deps.platform !== 'win32',
     })
+    started = { after: spawning, before: Date.now() }
   } catch (error) {
     return errorResult(`Could not start ${file}: ${(error as Error).message}`, 'spawn-failed')
   }
@@ -465,6 +493,9 @@ async function runProcess(
   })
 
   const graceMs = deps.limits.killGraceMs
+  // The kill gets its own budget; the shell's grace starts once the kill has finished, so
+  // a slow but successful kill is not reported as a failure, nor the outcome told early.
+  const killBudgetMs = Math.max(graceMs, deps.limits.killTimeoutMs)
   const state: { stoppedBy: 'timeout' | 'cancel' | null; kill: Promise<KillResult> | null } = {
     stoppedBy: null,
     kill: null,
@@ -475,16 +506,24 @@ async function runProcess(
     | { kind: 'unresponsive' }
   >((resolve) => {
     let graceTimer: NodeJS.Timeout | undefined
+    let settled = false
     const stop = (reason: 'timeout' | 'cancel'): void => {
       if (state.stoppedBy) return
       state.stoppedBy = reason
-      state.kill = deps.killTree(child).catch((error: unknown) => ({
+      const kill = deps.killTree(child, started).catch((error: unknown) => ({
         ok: false as const,
         reason: error instanceof Error ? error.message : String(error),
       }))
-      graceTimer = setTimeout(() => {
-        resolve({ kind: 'unresponsive' })
-      }, graceMs)
+      state.kill = withDeadline(kill, killBudgetMs, {
+        ok: false,
+        reason: `the kill command did not finish within ${String(killBudgetMs / 1000)} s`,
+      })
+      void state.kill.then(() => {
+        if (settled) return
+        graceTimer = setTimeout(() => {
+          resolve({ kind: 'unresponsive' })
+        }, graceMs)
+      })
     }
     const timer = setTimeout(() => {
       stop('timeout')
@@ -494,6 +533,7 @@ async function runProcess(
     }
     signal.addEventListener('abort', onAbort, { once: true })
     const finish = (): void => {
+      settled = true
       clearTimeout(timer)
       clearTimeout(graceTimer)
       signal.removeEventListener('abort', onAbort)
@@ -524,15 +564,8 @@ async function runProcess(
   }
 
   // Report the kill honestly: only claim the tree is gone if the killer said so and the
-  // shell actually exited.
-  const killed = await Promise.race([
-    state.kill,
-    new Promise<KillResult>((resolve) =>
-      setTimeout(() => {
-        resolve({ ok: false, reason: 'the kill command did not finish' })
-      }, graceMs),
-    ),
-  ])
+  // shell actually exited. (Bounded: state.kill settles within killBudgetMs.)
+  const killed = await state.kill
   const what =
     state.stoppedBy === 'timeout' ? `Timed out after ${String(timeoutMs / 1000)} s` : 'Cancelled'
   if (killed.ok && outcome.kind !== 'unresponsive') {
