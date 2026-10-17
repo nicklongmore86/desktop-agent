@@ -25,6 +25,8 @@ export function toolHarness(sb: Sandbox, overrides: Partial<ToolDeps> = {}): Too
       trashed.push(p)
       return Promise.resolve()
     },
+    // No Job Object unless a test passes a launcher: the plain kill path, with no note.
+    jobLauncher: () => Promise.resolve({ ok: false, reason: null }),
     ...overrides,
   })
   const tools = Object.fromEntries(list.map((t) => [t.name, t]))

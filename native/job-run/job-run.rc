@@ -1,0 +1,32 @@
+// Version resource for job-run.exe. Keep FILEVERSION in sync with JOB_RUN_VERSION in
+// scripts/build-job-helper.mjs.
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "nicklongmore86"
+      VALUE "FileDescription", "Desktop Agent command job launcher"
+      VALUE "FileVersion", "1.0.0.0"
+      VALUE "InternalName", "job-run"
+      VALUE "LegalCopyright", "Copyright (C) 2026 nicklongmore86"
+      VALUE "OriginalFilename", "job-run.exe"
+      VALUE "ProductName", "Desktop Agent"
+      VALUE "ProductVersion", "1.0.0.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

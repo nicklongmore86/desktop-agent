@@ -1,6 +1,7 @@
 import { defineTool } from './define'
 import { DEFAULT_LIMITS, type ResolvedDeps, type ToolDeps } from './deps'
 import { deletePathTool } from './delete-path'
+import { defaultJobLauncher } from './job-launcher'
 import { listDirTool } from './list-dir'
 import { moveFileTool } from './move-file'
 import { readFileTool } from './read-file'
@@ -36,6 +37,7 @@ export function createTools(deps: ToolDeps): AgentTool[] {
     trash: deps.trash,
     spawn,
     killTree: deps.killTree ?? defaultKillTree(platform, spawn, deps.env ?? process.env),
+    jobLauncher: deps.jobLauncher ?? defaultJobLauncher(platform, deps.guard),
     env: shellEnv(deps.env ?? process.env),
     now: deps.now ?? (() => performance.now()),
   }

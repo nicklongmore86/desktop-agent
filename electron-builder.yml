@@ -20,6 +20,10 @@ extraResources:
   - from: build/runtime-bundle
     to: runtimes
     filter: ['**/*']
+  # job-run.exe, built by `pnpm build:helpers`; checked against its pin after packing.
+  - from: build/helpers
+    to: helpers
+    filter: ['job-run.exe']
 
 win:
   target:
