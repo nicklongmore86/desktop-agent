@@ -576,6 +576,24 @@ describe('registerIpcHandlers', () => {
       expect(services.apiKey.clear).not.toHaveBeenCalled()
     })
 
+    it.each([
+      ['still saved', () => Promise.resolve(true), true],
+      ['gone', () => Promise.resolve(false), false],
+      ['unreadable', () => Promise.reject(new Error('Stored API key is corrupt.')), false],
+    ] as const)(
+      'reports the stored state after a failed clear (key %s)',
+      async (_name, hasKey, saved) => {
+        const { invoke, services } = setup()
+        services.apiKey.clear = () =>
+          Promise.reject(new Error('Could not clear the encrypted API key.'))
+        services.apiKey.hasKey = hasKey
+        expect(await invoke(IpcChannels.apiKeyClear, appFrame)).toEqual({
+          saved,
+          error: 'Could not clear the encrypted API key.',
+        })
+      },
+    )
+
     it('surfaces store errors as status, not exceptions', async () => {
       const { invoke, services } = setup()
       services.apiKey.set = () => Promise.reject(new Error('OS encryption is unavailable.'))

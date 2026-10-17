@@ -144,7 +144,11 @@ export function registerIpcHandlers(
     try {
       await services.apiKey.clear(connection)
     } catch (error) {
-      return { saved: true, error: messageOf(error, 'Could not clear the API key.') }
+      // Report what is actually stored now; a failed clear may have removed it or not.
+      return {
+        saved: (await keyStatus(connection)).saved,
+        error: messageOf(error, 'Could not clear the API key.'),
+      }
     }
     return keyStatus(connection)
   })

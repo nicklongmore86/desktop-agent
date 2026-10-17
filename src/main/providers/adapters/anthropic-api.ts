@@ -1,6 +1,5 @@
 import { ANTHROPIC_API } from '../../../shared/ipc-connections'
-import { createClaudeClient, DEFAULT_MODEL } from '../../agent'
-import { CLAUDE_FAILURES } from '../errors'
+import { apiErrorEvent, createClaudeClient, DEFAULT_MODEL } from '../../agent'
 import { agentClientAdapter } from './agent-client'
 
 /** Anthropic by API key: the user's own key and separate API billing, never a fallback. */
@@ -25,5 +24,5 @@ export const createAnthropicApiAdapter = agentClientAdapter({
   model: (host) => host.settings?.model ?? DEFAULT_MODEL,
   readyMessage: 'Anthropic API mode uses your saved API key and separate API billing.',
   missingKeyMessage: 'Add your Anthropic API key in Settings.',
-  wording: CLAUDE_FAILURES,
+  errorEvent: apiErrorEvent,
 })

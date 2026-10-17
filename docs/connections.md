@@ -73,6 +73,12 @@ other connection. Anthropic API is built this way (`adapters/anthropic-api.ts`).
 
 ```ts
 // src/main/providers/adapters/openai-api.ts
+import {
+  createOpenAICompatClient,
+  DEFAULT_BASE_URLS,
+  openAICompatErrorEvent,
+} from '../../llm/openai-compat'
+
 export const createOpenAIApiAdapter = agentClientAdapter({
   id: 'openai-api',
   vendor: 'openai',
@@ -89,13 +95,25 @@ export const createOpenAIApiAdapter = agentClientAdapter({
   },
   personalUseOnly: false,
   pickerOrder: 3,
-  client: ({ key }) => createOpenAICompatClient({ apiKey: key ?? '', baseUrl: '…' }),
+  client: ({ key, model }) =>
+    createOpenAICompatClient({
+      flavor: 'openai',
+      baseUrl: DEFAULT_BASE_URLS.openai,
+      apiKey: key ?? undefined,
+      model,
+    }),
   model: (host) => host.settings?.selection('openai-api') ?? 'gpt-…',
   readyMessage: 'OpenAI API mode uses your saved API key and separate API billing.',
   missingKeyMessage: 'Add your OpenAI API key in Settings.',
-  wording: { planNotEntitled: '…', usageLimit: '…' },
+  // The client's own mapper: without it, its errors would be read as Anthropic SDK errors.
+  errorEvent: openAICompatErrorEvent,
 })
 ```
+
+`errorEvent` maps whatever the client throws to a safe code and app-written message, both
+inside the agent loop (`createAgent`'s `errorEvent` option, which defaults to Anthropic's
+`apiErrorEvent`) and in the adapter's `failure()`. Gemini uses `geminiErrorEvent` from
+`src/main/llm/gemini`; Anthropic API passes `apiErrorEvent` explicitly.
 
 Then register it, either with the built-ins (`BUILTIN_ADAPTERS` in `service.ts`, whose
 order is the Settings order) or at runtime with `connections.registerAdapter(factory)`.
@@ -123,9 +141,10 @@ not rules:
 - **Codex subscription:** ChatGPT login forced, config layers and API keys refused
   (`codex.ts`); auth, entitlement and usage are checked inside the run.
 
-Errors go through each adapter's `failure()`, which uses `mapFailure(error, wording)`
-(`errors.ts`): it extracts known codes and reset times only, and the message is always
-written in the app. Only the plan and limit messages differ per connection.
+Errors go through each adapter's `failure()`. The subscriptions use
+`mapFailure(error, wording)` (`errors.ts`): it extracts known codes and reset times only,
+and the message is always written in the app; only the plan and limit messages differ
+between them. API connections use their client's `errorEvent` (above).
 
 ## Settings and keys
 

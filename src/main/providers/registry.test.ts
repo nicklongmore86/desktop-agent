@@ -5,7 +5,9 @@ import type { AgentClient, AgentStream } from '../agent'
 import type { ApiKeyStore } from '../secrets'
 import { agentClientAdapter, type AgentClientSpec } from './adapters/agent-client'
 import type { AdapterFactory, ConnectionAdapter } from './connection'
-import { CLAUDE_FAILURES } from './errors'
+import { GeminiError, geminiErrorEvent } from '../llm/gemini'
+import { OpenAICompatError, openAICompatErrorEvent } from '../llm/openai-compat'
+import { SubscriptionError } from './errors'
 import { ConnectionRegistry } from './registry'
 import { ConnectionService } from './service'
 
@@ -29,7 +31,7 @@ const spec = (overrides: Partial<AgentClientSpec> = {}): AgentClientSpec => ({
   model: () => 'gpt-test',
   readyMessage: 'Ready.',
   missingKeyMessage: 'Add your OpenAI API key in Settings.',
-  wording: CLAUDE_FAILURES,
+  errorEvent: openAICompatErrorEvent,
   ...overrides,
 })
 
@@ -184,7 +186,7 @@ describe('an API connection registered through the AgentClient slot', () => {
     })
     const runner = await service.runner('openai-api', [])
     expect(keys.forConnection).toHaveBeenCalledWith('openai-api')
-    expect(client).toHaveBeenCalledWith({ key: 'sk-openai' })
+    expect(client).toHaveBeenCalledWith({ key: 'sk-openai', model: 'gpt-test' })
     const onEvent = vi.fn()
     const result = await runner.run([{ role: 'user', content: 'hi' }], {
       signal: new AbortController().signal,
@@ -223,9 +225,64 @@ describe('an API connection registered through the AgentClient slot', () => {
       'openai-api',
       new Error('429 rate_limit for sk-secret at C:\\Users\\me'),
     )
-    expect(failure.code).toBe('usage_limit')
-    expect(JSON.stringify(failure)).not.toMatch(/sk-secret|Users/)
+    // Not an error the client wrote: the client's own neutral message, no Claude wording.
+    expect(failure).toEqual({ code: 'api', message: 'The model request failed. Please try again.' })
+    expect(JSON.stringify(failure)).not.toMatch(/sk-secret|Users|Claude/)
+    // A message the service already wrote passes through unchanged.
+    const unavailable = new SubscriptionError('model_unavailable', 'Choose an available model.')
+    expect(service.failure('openai-api', unavailable)).toBe(unavailable)
   })
+
+  it.each([
+    [
+      'OpenAI-compatible',
+      openAICompatErrorEvent,
+      (resetsAt: string) =>
+        new OpenAICompatError('rate_limit', 'OpenAI rate limit reached. Try again later.', {
+          status: 429,
+          resetsAt,
+        }),
+      'OpenAI rate limit reached. Try again later.',
+    ],
+    [
+      'Gemini',
+      geminiErrorEvent,
+      (resetsAt: string) =>
+        new GeminiError('rate_limit', 'Gemini rate limit reached. Try again later.', resetsAt),
+      'Gemini rate limit reached. Try again later.',
+    ],
+  ] as const)(
+    'reports a %s client error with the client’s own code and message, never Claude’s',
+    async (_name, errorEvent, makeError, message) => {
+      const resetsAt = new Date(Date.now() + 60_000).toISOString()
+      const failing: AgentClient = {
+        messages: {
+          stream: () => ({
+            on: () => undefined,
+            finalMessage: () => Promise.reject(makeError(resetsAt)),
+            abort: () => undefined,
+          }),
+        },
+      }
+      const { service } = setup('sk-other', { client: () => failing, errorEvent })
+      const runner = await service.runner('openai-api', [])
+      const onEvent = vi.fn()
+      const result = await runner.run([{ role: 'user', content: 'hi' }], {
+        signal: new AbortController().signal,
+        onEvent,
+        requestApproval: () => Promise.resolve(false),
+      })
+      expect(result.stopReason).toBe('rate_limit')
+      expect(onEvent).toHaveBeenCalledWith({ type: 'error', code: 'rate_limit', message, resetsAt })
+      expect(JSON.stringify(onEvent.mock.calls)).not.toContain('Claude')
+      // The same mapping for an error raised while starting the run.
+      expect(service.failure('openai-api', makeError(resetsAt))).toEqual({
+        code: 'rate_limit',
+        message,
+        resetsAt,
+      })
+    },
+  )
 
   it('needs no key for a local connection', async () => {
     const { service, keys, client } = setup(null, {
@@ -241,7 +298,7 @@ describe('an API connection registered through the AgentClient slot', () => {
     })
     await service.runner('local-llm', [])
     expect(keys.forConnection).not.toHaveBeenCalled()
-    expect(client).toHaveBeenCalledWith({ key: null })
+    expect(client).toHaveBeenCalledWith({ key: null, model: 'gpt-test' })
   })
 })
 
