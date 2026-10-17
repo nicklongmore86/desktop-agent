@@ -142,7 +142,14 @@ export function ChatView({
 
   return (
     <div className="chat">
-      <PromptRail prompts={prompts} scrollRef={messagesRef} disabled={approvalOpen} />
+      {/* Keyed by conversation: another chat starts with fresh scroll-spy, preview and flash
+          state, even when it has as many prompts as the last one. */}
+      <PromptRail
+        key={state.history.activeId ?? ''}
+        prompts={prompts}
+        scrollRef={messagesRef}
+        disabled={approvalOpen}
+      />
       <div className="chat-toolbar">
         <span className="provider-badge">{providerName}</span>
         <span className="folder-count">

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ViewItem } from './chat-state'
 import {
   activePromptIndex,
@@ -46,6 +46,33 @@ describe('plainLabel', () => {
   it('collapses whitespace, drops control and bidi characters and truncates', () => {
     expect(plainLabel('a\n\n  b‮c\u0007d', 80)).toBe('a b c d')
     expect(plainLabel('x'.repeat(100), 10)).toBe(`${'x'.repeat(9)}…`)
+  })
+
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
+  it('counts and cuts whole emoji, never half a surrogate pair or a cluster', () => {
+    // Each is 2+ UTF-16 units: a plain emoji, one with a skin tone, a flag.
+    expect(plainLabel('😀😀😀', 3)).toBe('😀😀😀')
+    const cut = plainLabel('ab😀😀😀', 3)
+    expect(cut).toBe('ab…')
+    expect(plainLabel('a😀👍🏽🇬🇧z', 4)).toBe('a😀👍🏽…')
+    expect(plainLabel('👍🏽xy', 3)).toBe('👍🏽xy')
+    expect(plainLabel('é'.normalize('NFD').repeat(5), 3)).toBe(`${'é'.normalize('NFD').repeat(2)}…`)
+    for (let max = 1; max < 12; max++) {
+      expect(plainLabel('x😀👍🏽🇬🇧y😀z👍🏽', max)).not.toMatch(lone)
+    }
+  })
+
+  it('falls back to code points without Intl.Segmenter', () => {
+    vi.stubGlobal('Intl', { ...Intl, Segmenter: undefined })
+    try {
+      expect(plainLabel('a😀😀😀', 3)).toBe('a😀…')
+      // A skin-tone emoji is two code points here (one cluster with Intl.Segmenter).
+      expect(plainLabel('👍🏽xy', 3)).toBe('👍🏽…')
+      for (let max = 1; max < 8; max++) expect(plainLabel('😀x😀y😀', max)).not.toMatch(lone)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

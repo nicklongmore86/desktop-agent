@@ -145,6 +145,39 @@ describe('prompt rail', () => {
     press('ArrowUp')
     expect(scroll).not.toHaveBeenCalled()
   })
+  it('starts afresh on another conversation, even one with as many prompts', async () => {
+    const { pushChat } = await renderApp()
+    converse(pushChat, ['One', 'Two', 'Three'])
+    fireEvent.keyDown(document.body, { code: 'ArrowUp', ctrlKey: true, altKey: true })
+    fireEvent.keyDown(document.body, { code: 'ArrowUp', ctrlKey: true, altKey: true })
+    expect(ticks()[0]?.getAttribute('aria-current')).toBe('location')
+    await userEvent.hover(ticks()[0] as HTMLElement)
+    const nav = (): HTMLElement => screen.getByRole('navigation', { name: 'Prompts' })
+    expect(nav().querySelector('.prompt-preview')).not.toBeNull()
+
+    act(() => {
+      pushChat({
+        type: 'conversation_reset',
+        state: {
+          items: ['Alpha', 'Beta', 'Gamma'].map((text, i) => ({
+            kind: 'user' as const,
+            id: `h${String(i)}`,
+            text,
+          })),
+          running: false,
+          loadError: null,
+          history: { conversations: [], activeId: 'other-chat' },
+        },
+      })
+    })
+    expect(ticks().map((tick) => tick.getAttribute('aria-current'))).toEqual([
+      null,
+      null,
+      'location',
+    ])
+    expect(ticks()[0]?.getAttribute('aria-label')).toBe('Jump to prompt 1 of 3: Alpha')
+    expect(nav().querySelector('.prompt-preview')).toBeNull()
+  })
 })
 
 describe('matchPromptHotkey', () => {
