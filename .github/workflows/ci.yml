@@ -69,6 +69,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
+      # job-run.exe (MSVC, Windows only; a no-op on Linux), before the tests that run it and
+      # before the build that compiles in its pin.
+      - run: pnpm build:helpers
       - run: pnpm test
       - run: pnpm build
       # Real Electron/Chromium rendering of adversarial approval prompts (e2e/), on the built renderer.
@@ -113,6 +116,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm build:helpers
       - run: pnpm build
       - run: pnpm exec electron-builder --win nsis --x64 --publish never
         env:
@@ -123,6 +127,11 @@ jobs:
         run: |
           $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
           pnpm exec vitest run src/main/providers/native.test.ts src/main/providers/codex-tools-native.test.ts
+      - name: Test packaged job-run.exe
+        shell: pwsh
+        run: |
+          $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
+          pnpm exec vitest run src/main/tools/job-run.test.ts -t 'packaged job-run.exe'
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-windows-x64

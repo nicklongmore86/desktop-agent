@@ -4,6 +4,8 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
+// @ts-expect-error -- a plain .mjs build script without type declarations
+import { readPin } from './scripts/job-helper.mjs'
 import { buildCsp } from './src/shared/csp'
 
 // lowlight's package `exports` hides lib/, so resolve its entry point and step to lib/ beside it.
@@ -34,7 +36,10 @@ function cspPlugin(): Plugin {
 }
 
 export default defineConfig({
-  main: {},
+  main: {
+    // job-run.exe's digest from `pnpm build:helpers` (Windows), or none: see job-launcher.ts.
+    define: { __JOB_RUN_SHA256__: JSON.stringify((readPin as () => string | null)()) },
+  },
   preload: {},
   renderer: {
     plugins: [react(), cspPlugin()],

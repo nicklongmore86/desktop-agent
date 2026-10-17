@@ -14,6 +14,7 @@
     "dev": "electron-vite dev",
     "start": "electron-vite preview",
     "build": "electron-vite build",
+    "build:helpers": "node scripts/build-job-helper.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.e2e.json",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -21,7 +22,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "dist:win": "electron-vite build && electron-builder --win nsis --x64 --publish never"
+    "dist:win": "node scripts/build-job-helper.mjs && electron-vite build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.299",
