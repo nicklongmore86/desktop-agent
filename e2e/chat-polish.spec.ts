@@ -106,20 +106,35 @@ for (const width of [1280, 400]) {
             input: { path: `C:\\Users\\me\\Downloads\\${id}` },
           })
         }
-        await push({ type: 'tool_result', runId: 'r', id: 't1', content: 'RFI', isError: false })
+        await push({
+          type: 'tool_result',
+          runId: 'r',
+          id: 't1',
+          content: 'RFI',
+          isError: false,
+          declined: false,
+        })
         await push({
           type: 'tool_result',
           runId: 'r',
           id: 't2',
           content: 'Invoices',
           isError: false,
+          declined: false,
         })
         // Streaming: one tool still running.
         await expect(page.getByRole('button', { name: /Using 3 tools/ })).toBeVisible()
         await expect(page.locator('.typing-dots')).toBeVisible()
         await shot('streaming')
 
-        await push({ type: 'tool_result', runId: 'r', id: 't3', content: 'Logs', isError: false })
+        await push({
+          type: 'tool_result',
+          runId: 'r',
+          id: 't3',
+          content: 'Logs',
+          isError: false,
+          declined: false,
+        })
         await push({ type: 'text_delta', runId: 'r', turn: 2, text: MARKDOWN })
         await push({ type: 'run_finished', runId: 'r', stopReason: 'end_turn' })
         await expect(page.getByRole('table')).toBeVisible()

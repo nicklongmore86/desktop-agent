@@ -17,6 +17,8 @@ export interface UserCommandRecord {
   cwd: string
   output: string
   isError: boolean
+  /** The user declined the approval. Absent in commands saved before it was recorded. */
+  declined?: boolean
 }
 
 export function userCommandMessage(record: UserCommandRecord): MessageParam {
@@ -41,15 +43,16 @@ export function userCommandItem(message: MessageParam): Extract<ChatItem, { kind
     return null
   }
   if (typeof record !== 'object' || record === null) return null
-  const { id, command, cwd, output, isError } = record as Record<string, unknown>
+  const { id, command, cwd, output, isError, declined } = record as Record<string, unknown>
   if (!isString(id) || !isString(command) || !isString(cwd) || !isString(output)) return null
   if (typeof isError !== 'boolean') return null
+  if (declined !== undefined && typeof declined !== 'boolean') return null
   return {
     kind: 'tool',
     id,
     name: 'run_shell',
     input: { command, cwd },
-    result: { content: output, isError },
+    result: { content: output, isError, ...(declined === undefined ? {} : { declined }) },
     origin: 'user-terminal',
   }
 }

@@ -150,8 +150,22 @@ describe('activity group', () => {
           input: { path: id },
         })
       }
-      pushChat({ type: 'tool_result', runId: 'r1', id: 't1', content: 'ok', isError: false })
-      pushChat({ type: 'tool_result', runId: 'r1', id: 't2', content: 'ok', isError: false })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r1',
+        id: 't1',
+        content: 'ok',
+        isError: false,
+        declined: false,
+      })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r1',
+        id: 't2',
+        content: 'ok',
+        isError: false,
+        declined: false,
+      })
     })
     expect(screen.getAllByRole('region', { name: 'Tool activity' })).toHaveLength(1)
     // One still runs: open, and says so.
@@ -159,7 +173,14 @@ describe('activity group', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
 
     act(() => {
-      pushChat({ type: 'tool_result', runId: 'r1', id: 't3', content: 'ok', isError: false })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r1',
+        id: 't3',
+        content: 'ok',
+        isError: false,
+        declined: false,
+      })
       pushChat({ type: 'run_finished', runId: 'r1', stopReason: 'end_turn' })
     })
     const done = screen.getByRole('button', { name: /Used 3 tools/ })
@@ -174,10 +195,24 @@ describe('activity group', () => {
     act(() => {
       pushChat({ type: 'run_started', runId: 'r1', text: 'Go' })
       pushChat({ type: 'tool_use', runId: 'r1', turn: 1, id: 'a', name: 'read_file', input: {} })
-      pushChat({ type: 'tool_result', runId: 'r1', id: 'a', content: 'x', isError: true })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r1',
+        id: 'a',
+        content: 'x',
+        isError: true,
+        declined: false,
+      })
       pushChat({ type: 'text_delta', runId: 'r1', turn: 2, text: 'Then' })
       pushChat({ type: 'tool_use', runId: 'r1', turn: 2, id: 'b', name: 'read_file', input: {} })
-      pushChat({ type: 'tool_result', runId: 'r1', id: 'b', content: 'x', isError: false })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r1',
+        id: 'b',
+        content: 'x',
+        isError: false,
+        declined: false,
+      })
       pushChat({ type: 'run_finished', runId: 'r1', stopReason: 'end_turn' })
     })
     expect(screen.getAllByRole('region', { name: 'Tool activity' })).toHaveLength(2)

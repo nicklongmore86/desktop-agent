@@ -31,7 +31,14 @@ describe('chatReducer: commands from the command bar', () => {
     ])
     const done = run(
       [
-        { type: 'tool_result', runId: 'r1', id: 'c1', content: 'exit code: 0', isError: false },
+        {
+          type: 'tool_result',
+          runId: 'r1',
+          id: 'c1',
+          content: 'exit code: 0',
+          isError: false,
+          declined: false,
+        },
         { type: 'run_finished', runId: 'r1', stopReason: 'end_turn' },
       ],
       started,

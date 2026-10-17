@@ -104,6 +104,7 @@ for (const width of [1280, 400]) {
             id: 't1',
             content: 'RFI\nInvoices',
             isError: false,
+            declined: false,
           })
         })
         await expect(page.getByText('I found')).toBeVisible()

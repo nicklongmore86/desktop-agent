@@ -29,7 +29,14 @@ describe('chatReducer', () => {
         name: 'list_dir',
         input: { path: 'C:\\' },
       },
-      { type: 'tool_result', runId: 'r1', id: 't1', content: 'a.txt', isError: false },
+      {
+        type: 'tool_result',
+        runId: 'r1',
+        id: 't1',
+        content: 'a.txt',
+        isError: false,
+        declined: false,
+      },
       { type: 'text_delta', runId: 'r1', turn: 2, text: 'Found it.' },
     ])
     expect(state.running).toBe(true)

@@ -139,6 +139,7 @@ for (const viewport of [1280, 400]) {
           id: 'cmd-1',
           content: OUTPUT,
           isError: false,
+          declined: false,
         })
         await push(page, { type: 'run_finished', runId: 'run-1', stopReason: 'end_turn' })
         const card = page.getByRole('region', { name: 'Command you ran' })

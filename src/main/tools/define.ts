@@ -182,9 +182,10 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
           // Reporting the failure failed too; the call's result still stands.
         }
       }
-      return result.isError
-        ? { content: result.content, isError: true }
-        : { content: result.content }
+      if (!result.isError) return { content: result.content }
+      return errorCode === 'declined'
+        ? { content: result.content, isError: true, declined: true }
+        : { content: result.content, isError: true }
     },
   }
 }

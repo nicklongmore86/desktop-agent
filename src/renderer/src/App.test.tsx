@@ -48,7 +48,14 @@ describe('chat view', () => {
     expect(within(messages).getByText('running')).toBeTruthy()
 
     act(() => {
-      pushChat({ type: 'tool_result', runId: 'r1', id: 't1', content: 'Boom', isError: true })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r1',
+        id: 't1',
+        content: 'Boom',
+        isError: true,
+        declined: false,
+      })
     })
     expect(within(messages).getByText('failed')).toBeTruthy()
     // The card is collapsible: the result is inside a <details>.

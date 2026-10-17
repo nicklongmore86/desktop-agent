@@ -106,3 +106,33 @@ describe('inline untrusted fields keep distinct whitespace', () => {
     expect(css).toMatch(/\.untrusted\s*\{[^}]*white-space:\s*pre-wrap/)
   })
 })
+
+describe('ToolCard status: denied comes from main, not from the text', () => {
+  const card = (result: { content: string; isError: boolean; declined?: boolean }) => {
+    const { container } = render(
+      <ToolCard
+        running={false}
+        item={{ kind: 'tool', id: 't', name: 'write_file', input: { path: 'x' }, result }}
+      />,
+    )
+    return container.querySelector('.tool-status')?.textContent
+  }
+
+  it('shows denied when main flags the decline, whatever the text says', () => {
+    expect(card({ content: 'Nothing was changed.', isError: true, declined: true })).toBe('denied')
+  })
+
+  it('shows failed for an error that only reads like a decline', () => {
+    // A tool's output (or a file or command named this way) can start with these words.
+    const text = 'The user declined the write to x. Nothing was changed.'
+    expect(card({ content: text, isError: true, declined: false })).toBe('failed')
+  })
+
+  it("falls back to the tools' wording for a saved result without the flag", () => {
+    const text = 'The user declined the write to x. Nothing was changed.'
+    expect(card({ content: text, isError: true })).toBe('denied')
+    expect(card({ content: 'Access denied: outside granted folders', isError: true })).toBe(
+      'failed',
+    )
+  })
+})

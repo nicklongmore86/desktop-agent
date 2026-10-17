@@ -196,6 +196,19 @@ export type ChatErrorCode =
   | 'busy'
   | 'internal'
 
+/** A tool call's result as the chat view shows it. */
+export interface ToolResultView {
+  content: string
+  isError: boolean
+  /**
+   * Set only by main: true when the call failed because the user declined its approval.
+   * Live results always carry it. Undefined only for a result from a chat saved before
+   * main recorded it (and for agent tool results reloaded from history, which the
+   * Messages API cannot carry it in); the view then falls back to the tools' wording.
+   */
+  declined?: boolean
+}
+
 /** What the chat view shows for a saved conversation. Built in main from Messages-API history. */
 export type ChatItem =
   | { kind: 'user'; id: string; text: string }
@@ -205,7 +218,7 @@ export type ChatItem =
       id: string
       name: string
       input: unknown
-      result: { content: string; isError: boolean } | null
+      result: ToolResultView | null
       /** Set for a command the user typed in the command bar (not the agent's call). */
       origin?: 'user-terminal'
     }
@@ -255,7 +268,15 @@ export type ChatEvent =
   /** The turn's response was dropped (truncated tool calls): remove its streamed text. */
   | { type: 'response_discarded'; runId: string; turn: number }
   | { type: 'tool_use'; runId: string; turn: number; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; runId: string; id: string; content: string; isError: boolean }
+  | {
+      type: 'tool_result'
+      runId: string
+      id: string
+      content: string
+      isError: boolean
+      /** The user declined the call's approval (see ToolResultView.declined). */
+      declined: boolean
+    }
   | { type: 'approval_closed'; approvalId: string; approved: boolean }
   | { type: 'error'; runId: string; code: ChatErrorCode; message: string; resetsAt?: string }
   | { type: 'run_finished'; runId: string; stopReason: string }

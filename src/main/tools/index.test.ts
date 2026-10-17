@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fakeContext, makeSandbox, MemoryAudit, type Sandbox } from '../permissions/test-support'
-import { defineTool, ToolFailure } from './define'
+import { defineTool, errorResult, type RunResult, ToolFailure } from './define'
 import { toolHarness } from './test-support'
 
 let sb: Sandbox
@@ -154,4 +154,38 @@ describe('createTools', () => {
       expect(audit.entries).toEqual([expect.objectContaining({ outcome: 'error', error: code })])
     },
   )
+
+  it('flags a declined call by its code, never by its wording', async () => {
+    const run = (body: () => Promise<RunResult>) =>
+      defineTool(
+        {
+          name: 'run',
+          description: 'Fails',
+          inputSchema: { type: 'object', properties: {} },
+          needsApproval: true,
+          parse: () => ({}),
+          summarize: () => ({}),
+          run: body,
+        },
+        {
+          guard: toolHarness(sb).guard,
+          audit: new MemoryAudit(),
+          now: () => 0,
+          onAuditFailure: () => {},
+        },
+      ).execute({}, fakeContext().ctx)
+    await expect(
+      run(() => Promise.resolve(errorResult('No thanks.', 'declined'))),
+    ).resolves.toEqual({ content: 'No thanks.', isError: true, declined: true })
+    await expect(
+      run(() => Promise.reject(new ToolFailure('No thanks.', 'declined'))),
+    ).resolves.toEqual({ content: 'No thanks.', isError: true, declined: true })
+    // A failure that only reads like a refusal (a path, a command's output) is not one.
+    await expect(
+      run(() => Promise.resolve(errorResult('The user declined to be found.', 'failed'))),
+    ).resolves.toEqual({ content: 'The user declined to be found.', isError: true })
+    await expect(run(() => Promise.resolve({ content: 'The user declined' }))).resolves.toEqual({
+      content: 'The user declined',
+    })
+  })
 })

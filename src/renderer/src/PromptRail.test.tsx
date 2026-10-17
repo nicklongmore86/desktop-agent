@@ -198,7 +198,14 @@ describe('tool status', () => {
       })
       expect(card().querySelector('.tool-elapsed')?.textContent).toBe('3.0s')
       act(() => {
-        pushChat({ type: 'tool_result', runId: 'r', id: 't1', content: 'ok', isError: false })
+        pushChat({
+          type: 'tool_result',
+          runId: 'r',
+          id: 't1',
+          content: 'ok',
+          isError: false,
+          declined: false,
+        })
       })
       act(() => {
         vi.advanceTimersByTime(10_000)
@@ -214,13 +221,21 @@ describe('tool status', () => {
     act(() => {
       pushChat({ type: 'run_started', runId: 'r', text: 'Go' })
       for (const id of ['q', 'f', 'd']) pushChat(toolUse(id))
-      pushChat({ type: 'tool_result', runId: 'r', id: 'f', content: 'boom', isError: true })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r',
+        id: 'f',
+        content: 'boom',
+        isError: true,
+        declined: false,
+      })
       pushChat({
         type: 'tool_result',
         runId: 'r',
         id: 'd',
         content: 'The user declined the write to x. Nothing was changed.',
         isError: true,
+        declined: true,
       })
       pushApproval({
         id: 'a',
@@ -245,7 +260,14 @@ describe('tool status', () => {
       pushChat({ type: 'run_started', runId: 'r', text: 'Go' })
       for (const id of ['a', 'b', 'c', 'd', 'e']) pushChat(toolUse(id))
       for (const id of ['a', 'b', 'c', 'd'])
-        pushChat({ type: 'tool_result', runId: 'r', id, content: 'ok', isError: id === 'b' })
+        pushChat({
+          type: 'tool_result',
+          runId: 'r',
+          id,
+          content: 'ok',
+          isError: id === 'b',
+          declined: false,
+        })
     })
     const group = screen.getByRole('region', { name: 'Tool activity' })
     const cards = (): string[] =>
@@ -263,7 +285,14 @@ describe('tool status', () => {
     act(() => {
       pushChat({ type: 'run_started', runId: 'r', text: 'One' })
       pushChat(toolUse('t1'))
-      pushChat({ type: 'tool_result', runId: 'r', id: 't1', content: 'ok', isError: false })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r',
+        id: 't1',
+        content: 'ok',
+        isError: false,
+        declined: false,
+      })
       pushChat({ type: 'run_finished', runId: 'r', stopReason: 'end_turn' })
     })
     // The latest turn is never folded.

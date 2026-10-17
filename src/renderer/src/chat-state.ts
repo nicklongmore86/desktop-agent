@@ -204,7 +204,11 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
           item.kind === 'tool' && item.id === event.id
             ? {
                 ...item,
-                result: { content: event.content, isError: event.isError },
+                result: {
+                  content: event.content,
+                  isError: event.isError,
+                  declined: event.declined,
+                },
                 endedAt: Date.now(),
               }
             : item,

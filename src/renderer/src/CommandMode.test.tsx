@@ -220,6 +220,7 @@ describe('command bar', () => {
         id: 'cmd-1',
         content: 'Cancelled; the process tree was killed.',
         isError: true,
+        declined: false,
       })
       pushChat({ type: 'run_finished', runId: 'run-1', stopReason: 'error' })
     })
@@ -295,11 +296,31 @@ describe('command cards and the conversation model', () => {
         id: 'cmd-1',
         content: 'The user declined to run the command. Nothing was run.',
         isError: true,
+        declined: true,
       })
       pushChat({ type: 'run_finished', runId: 'run-cmd-1', stopReason: 'error' })
     })
     expect(within(card).getByText('denied')).toBeTruthy()
     expect(card.querySelector('.tool-elapsed')?.textContent).toMatch(/^\d+ms$|s$/)
+  })
+
+  it('shows failed, not denied, for a command whose own output reads like a decline', async () => {
+    const { pushChat } = await renderApp()
+    act(() => {
+      pushChat(started('cmd-1'))
+      pushChat({
+        type: 'tool_result',
+        runId: 'run-cmd-1',
+        id: 'cmd-1',
+        content: 'The user declined to run the command. Nothing was run.',
+        isError: true,
+        declined: false,
+      })
+      pushChat({ type: 'run_finished', runId: 'run-cmd-1', stopReason: 'error' })
+    })
+    const card = screen.getByRole('region', { name: 'Command you ran' })
+    expect(within(card).getByText('failed')).toBeTruthy()
+    expect(within(card).queryByText('denied')).toBeNull()
   })
 
   it('is not a prompt in the rail, and stays out of the folded work of earlier turns', async () => {
@@ -308,7 +329,14 @@ describe('command cards and the conversation model', () => {
     act(() => {
       pushChat({ type: 'run_started', runId: 'r1', text: 'First question' })
       pushChat({ type: 'tool_use', runId: 'r1', turn: 1, id: 't1', name: 'list_dir', input: {} })
-      pushChat({ type: 'tool_result', runId: 'r1', id: 't1', content: 'a', isError: false })
+      pushChat({
+        type: 'tool_result',
+        runId: 'r1',
+        id: 't1',
+        content: 'a',
+        isError: false,
+        declined: false,
+      })
       pushChat({ type: 'run_finished', runId: 'r1', stopReason: 'end_turn' })
       pushChat(started('cmd-1', 'git status'))
       pushChat({
@@ -317,6 +345,7 @@ describe('command cards and the conversation model', () => {
         id: 'cmd-1',
         content: 'clean',
         isError: false,
+        declined: false,
       })
       pushChat({ type: 'run_finished', runId: 'run-cmd-1', stopReason: 'end_turn' })
       pushChat({ type: 'run_started', runId: 'r2', text: 'Second question' })
