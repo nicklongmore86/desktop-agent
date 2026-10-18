@@ -21,7 +21,7 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {}
 
-async function getJson(
+export async function getJson(
   options: ConnectionOptions & { signal?: AbortSignal },
   endpoint: string,
 ): Promise<unknown> {

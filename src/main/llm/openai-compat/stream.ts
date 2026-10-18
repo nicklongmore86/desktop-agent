@@ -2,12 +2,13 @@ import type { ContentBlock, Message, StopReason, Usage } from '@anthropic-ai/sdk
 import { OpenAICompatError, statusError } from './errors'
 import { transcriptToolId } from './translate'
 
-const MAX_EVENT_BYTES = 8 * 1024 * 1024
-const MAX_STREAM_BYTES = 64 * 1024 * 1024
+export const MAX_EVENT_BYTES = 8 * 1024 * 1024
+export const MAX_STREAM_BYTES = 64 * 1024 * 1024
 
 /**
  * Yields each SSE `data:` payload (joined across lines) until `[DONE]` or end of body.
- * Comment lines (": OPENROUTER PROCESSING") and other fields are ignored.
+ * Comment lines (": OPENROUTER PROCESSING") and other fields are ignored. One event's
+ * data is capped at MAX_EVENT_BYTES however many `data:` lines it is split across.
  */
 export async function* sseData(
   body: ReadableStream<Uint8Array>,
@@ -17,7 +18,17 @@ export async function* sseData(
   const decoder = new TextDecoder()
   let buffer = ''
   let data: string[] = []
+  let eventSize = 0
   let total = 0
+  const oversized = (): OpenAICompatError =>
+    new OpenAICompatError('protocol', 'The model sent an oversized stream event.')
+  const push = (line: string): void => {
+    const value = line.slice(line.startsWith('data: ') ? 6 : 5)
+    // +1 for the newline each line adds when the event's lines are joined.
+    eventSize += value.length + 1
+    if (eventSize > MAX_EVENT_BYTES) throw oversized()
+    data.push(value)
+  }
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -35,18 +46,19 @@ export async function* sseData(
           if (data.length) {
             const payload = data.join('\n')
             data = []
+            eventSize = 0
             if (payload.trim() === '[DONE]') return
             yield payload
           }
         } else if (line.startsWith('data:')) {
-          data.push(line.slice(line.startsWith('data: ') ? 6 : 5))
+          push(line)
         }
       }
-      if (buffer.length > MAX_EVENT_BYTES)
-        throw new OpenAICompatError('protocol', 'The model sent an oversized stream event.')
+      // A single line that never ends; split lines are counted in push().
+      if (buffer.length > MAX_EVENT_BYTES) throw oversized()
     }
     buffer += decoder.decode()
-    if (buffer.startsWith('data:')) data.push(buffer.slice(buffer.startsWith('data: ') ? 6 : 5))
+    if (buffer.startsWith('data:')) push(buffer)
     if (data.length && data.join('\n').trim() !== '[DONE]') yield data.join('\n')
   } finally {
     reader.releaseLock()

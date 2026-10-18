@@ -1,4 +1,5 @@
-// A local fake Chat Completions server for the openai-compat tests. Not imported by app code.
+// A local fake Chat Completions / Responses server for the openai-compat and openai-responses
+// tests. Not imported by app code.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
@@ -133,4 +134,102 @@ export function redirectFetch(origin: string, seen: string[] = []) {
     const url = new URL(input)
     return fetch(`${origin}${url.pathname}`, init)
   }
+}
+
+// Responses API events (openai-responses). Each carries its own `type`.
+export const responsesEvents = {
+  created: (id = 'resp_1') => ({
+    type: 'response.created',
+    response: { id, status: 'in_progress' },
+  }),
+  textDelta: (delta: string) => ({
+    type: 'response.output_text.delta',
+    item_id: 'msg_1',
+    output_index: 0,
+    content_index: 0,
+    delta,
+  }),
+  message: (text: string) => ({
+    type: 'response.output_item.done',
+    output_index: 0,
+    item: {
+      type: 'message',
+      id: 'msg_1',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text, annotations: [] }],
+    },
+  }),
+  call: (fields: {
+    call_id?: string
+    name?: string
+    arguments?: string
+    status?: string
+    namespace?: string
+  }) => ({
+    type: 'response.output_item.done',
+    output_index: 1,
+    item: { type: 'function_call', id: 'fc_1', status: 'completed', ...fields },
+  }),
+  completed: (usage = { input: 12, output: 5, cached: 0 }) => ({
+    type: 'response.completed',
+    response: {
+      id: 'resp_1',
+      status: 'completed',
+      usage: {
+        input_tokens: usage.input,
+        input_tokens_details: { cached_tokens: usage.cached },
+        output_tokens: usage.output,
+        total_tokens: usage.input + usage.output,
+      },
+    },
+  }),
+  incomplete: (reason: string) => ({
+    type: 'response.incomplete',
+    response: { id: 'resp_1', status: 'incomplete', incomplete_details: { reason } },
+  }),
+  failed: (code: string, message = 'provider text') => ({
+    type: 'response.failed',
+    response: { id: 'resp_1', status: 'failed', error: { code, message } },
+  }),
+}
+
+/** Streams Responses events as `event:` + `data:` pairs. The Responses API sends no [DONE]. */
+export function responsesSse(events: unknown[]): Handler {
+  return (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
+    for (const event of events) {
+      const type = (event as { type?: unknown }).type
+      if (typeof type === 'string') res.write(`event: ${type}\n`)
+      res.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
+    res.end()
+  }
+}
+
+/** Streams raw SSE text, one write per part: for framing and size tests. */
+export function rawSse(parts: Iterable<string>): Handler {
+  return (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    for (const part of parts) res.write(part)
+    res.end()
+  }
+}
+
+/**
+ * One SSE event whose JSON is split over `lines` short `data:` lines, each about
+ * `lineLength` characters. Joined with newlines (as SSE joins them) it is valid JSON:
+ * `base` plus a `pad` array of strings.
+ */
+export function splitEvent(
+  base: Record<string, unknown>,
+  lines: number,
+  lineLength = 1024,
+): string[] {
+  const filler = `data: "${'x'.repeat(lineLength)}",\n`
+  return [
+    `data: ${JSON.stringify(base).slice(0, -1)},"pad":[\n`,
+    ...Array.from({ length: lines }, () => filler),
+    'data: ""]}\n\n',
+  ]
 }
