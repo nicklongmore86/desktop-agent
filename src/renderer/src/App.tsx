@@ -209,6 +209,9 @@ function AppWindow(): React.JSX.Element {
     }
   }
   const [approval, ...queued] = chat.state.approvals
+  // The notice is only in the way of the shortcuts while it is showing; under an approval it
+  // is hidden, and the approval's own rule already holds them.
+  const planNoticeVisible = showPlanNotice && approval === undefined
   const shell = useRef<ShellHandle>(null)
   // A chat-list dialog (delete, fork, project) is open: shortcuts wait for it.
   const [listDialog, setListDialog] = useState(false)
@@ -233,7 +236,7 @@ function AppWindow(): React.JSX.Element {
         focusInput(view)
       },
     },
-    approval !== undefined || listDialog || wizard !== null || showPlanNotice,
+    approval !== undefined || listDialog || wizard !== null || planNoticeVisible,
   )
   useViewModeHotkey(
     () => {
@@ -243,7 +246,7 @@ function AppWindow(): React.JSX.Element {
       settingsSection !== null ||
       listDialog ||
       wizard !== null ||
-      showPlanNotice,
+      planNoticeVisible,
   )
   /** A choice the user made: it waits its turn behind any switch in flight, and counts as intent. */
   const userSwitch = <T,>(task: () => Promise<T>): Promise<T> => {

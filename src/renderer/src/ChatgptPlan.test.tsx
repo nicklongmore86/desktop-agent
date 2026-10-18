@@ -156,6 +156,76 @@ describe('the first-use plan notice', () => {
   })
 })
 
+describe('the plan notice and an approval together', () => {
+  const prompt = {
+    id: 'a1',
+    runId: 'r1',
+    toolUseId: null,
+    tool: 'write_file',
+    kind: 'write' as const,
+    summary: 'Write a file',
+    detail: null,
+  }
+
+  it('lets Esc deny the approval, then shows the notice again for Esc to dismiss', async () => {
+    const { api, user, pushApproval, pushChat } = await renderApp({
+      provider: PLAN,
+      configured: PLAN_CONFIGURED,
+    })
+    const title = 'You’re using your ChatGPT plan'
+    await screen.findByRole('dialog', { name: title })
+    act(() => {
+      pushApproval(prompt)
+    })
+    const approval = await screen.findByRole('alertdialog')
+    // Focus is in the approval (Deny), and the notice is hidden beneath it.
+    await waitFor(() => {
+      expect(approval.contains(document.activeElement)).toBe(true)
+    })
+    expect(screen.queryByRole('dialog', { name: title })).toBeNull()
+
+    await user.keyboard('{Escape}')
+    expect(api.approvals.respond).toHaveBeenCalledExactlyOnceWith('a1', false)
+    // Esc went to the approval: the notice was not marked seen.
+    expect(localStorage.getItem('plan-notice-seen:chatgpt-plan')).toBeNull()
+
+    act(() => {
+      pushChat({ type: 'approval_closed', approvalId: 'a1' })
+    })
+    const notice = await screen.findByRole('dialog', { name: title })
+    await waitFor(() => {
+      expect(notice.contains(document.activeElement)).toBe(true)
+    })
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: title })).toBeNull()
+    expect(localStorage.getItem('plan-notice-seen:chatgpt-plan')).toBe('1')
+  })
+
+  it('leaves the global shortcuts as they were: off under an approval, off under the notice', async () => {
+    const { api, user, pushApproval, pushChat } = await renderApp({
+      provider: PLAN,
+      configured: PLAN_CONFIGURED,
+    })
+    await screen.findByRole('dialog', { name: 'You’re using your ChatGPT plan' })
+    // Notice showing: Ctrl+N does nothing.
+    await user.keyboard('{Control>}n{/Control}')
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    act(() => {
+      pushApproval(prompt)
+    })
+    await screen.findByRole('alertdialog')
+    await user.keyboard('{Control>}n{/Control}')
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    act(() => {
+      pushChat({ type: 'approval_closed', approvalId: 'a1' })
+    })
+    await user.click(await screen.findByRole('button', { name: 'Got it' }))
+    // Both gone: the shortcut works again.
+    await user.keyboard('{Control>}n{/Control}')
+    expect(api.chat.newChat).toHaveBeenCalledOnce()
+  })
+})
+
 describe('the invitation for Codex · ChatGPT users', () => {
   it('shows on Codex, opens the wizard at ChatGPT · Plan, and dismisses for good', async () => {
     const { user, api } = await renderApp({ provider: CODEX })
