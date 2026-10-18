@@ -660,6 +660,74 @@ describe('an undo that goes stale while its restoring switch is running', () => 
   })
 })
 
+describe('each run keeps its own undo state', () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+  const ready = (provider: string): ProviderStatus => ({
+    provider,
+    state: 'ready',
+    message: 'Ready.',
+  })
+
+  it('undoes a different target against the session baseline and removes only its own connection', async () => {
+    const { user, api } = await renderApp(NOTHING_READY)
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^Local models/)
+    dialog = await wizard('How do you want to use Local models?')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Which one do you use?')
+    api.provider.set.mockClear()
+    // Run A: Ollama. It lands (chats are on Ollama, which it added).
+    await choose(user, dialog, /^Ollama/)
+    await waitFor(() => {
+      expect(api.apiKey.status).toHaveBeenCalledWith('ollama')
+    })
+    // Back: A's undo starts, and its switch back to the baseline is held open.
+    const restore = deferred<ProviderStatus>()
+    api.provider.set.mockImplementationOnce(() => restore.promise)
+    await user.keyboard('{Escape}')
+    const access = await wizard('How do you want to use Local models?')
+    await user.click(within(access).getByRole('button', { name: 'Continue' }))
+    const apps = await wizard('Which one do you use?')
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenLastCalledWith('anthropic-api')
+    })
+    // Run B, a different target, starts while A's restore is in flight.
+    await choose(user, apps, /^LM Studio/)
+    act(() => {
+      restore.resolve(ready('anthropic-api'))
+    })
+    await within(await wizard('Find LM Studio')).findByRole('button', { name: 'Check again' })
+    // A's undo went stale: Ollama was neither removed nor shown. B switched on its own.
+    expect(api.connections.remove).not.toHaveBeenCalled()
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual([
+      'ollama',
+      'anthropic-api',
+      'lmstudio',
+    ])
+    // B's undo returns to the session baseline (not to Ollama) and removes only LM Studio.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull()
+    })
+    await waitFor(() => {
+      expect(api.connections.remove).toHaveBeenCalledWith('lmstudio')
+    })
+    expect(api.connections.remove).toHaveBeenCalledTimes(1)
+    expect(api.provider.set.mock.calls.map(([id]) => id)).toEqual([
+      'ollama',
+      'anthropic-api',
+      'lmstudio',
+      'anthropic-api',
+    ])
+  })
+})
+
 describe('text a server supplies', () => {
   it('shows model names and status messages without bidi or invisible characters', async () => {
     const RLO = String.fromCharCode(0x202e)

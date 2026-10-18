@@ -44,6 +44,33 @@ export interface ConnectionWizardProps {
 /** Counts preparations across wizards, so a late undo can tell the user has moved on since. */
 let generation = 0
 
+/** Where chats were before the wizard changed anything, valid while the user has chosen nothing. */
+interface Baseline {
+  connection: ConnectionId
+  intent: number
+}
+
+/**
+ * One preparation of the connect step and everything its undo needs. It is written by that
+ * run's own turn in the switch queue and read only by that run's undo.
+ */
+interface Run {
+  id: number
+  target: ConnectionId
+  /** Cancelled (another connection, Back, Close): it stops touching the provider. */
+  live: boolean
+  /** The session baseline this run saw; null until its turn comes. */
+  baseline: Baseline | null
+  /** This run's switch put the connection in the set-up list, so undoing removes it again. */
+  added: boolean
+  /** This run started a switch away from where chats were. */
+  switched: boolean
+  /** The user carried on past the connect step, so there is nothing to undo. */
+  finished: boolean
+  /** The undo already queued for this run, so Esc twice does not queue it twice. */
+  undoing: Promise<void> | null
+}
+
 const FOCUSABLE =
   'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]'
 
@@ -71,11 +98,6 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
   const dialog = useRef<HTMLDivElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
   const [flow, dispatch] = useReducer(flowReducer, initialFlow)
-  /** The connection chats went to before the wizard switched them, to put back on cancel. */
-  const previous = useRef<ConnectionId | null>(null)
-  /** The wizard added the connection to the set-up ones, so cancelling takes it out again. */
-  const added = useRef(false)
-  const connectedOnce = useRef(false)
   /** What the connect step found out about its connection; keyed so a stale one is never shown. */
   const [prep, setPrep] = useState<{
     connection: ConnectionId
@@ -123,16 +145,32 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
    * The latest preparation. Every provider call the wizard makes (the read, the switch, and
    * the undo) runs inside the app's switch queue, so it never overlaps another switch. A new
    * preparation behind one that is still running waits its turn, and says so.
+   *
+   * What an undo needs lives in the record of the run it belongs to (see `Run`), never in a
+   * ref shared between runs. The one thing that carries across runs is the session baseline:
+   * where chats were before the wizard changed anything. The first run to start takes it, later
+   * runs of the same session reuse it, so the undo of any of them returns to the original
+   * connection and not to an intermediate one the wizard had switched to. It stops being valid
+   * as soon as the user chooses a connection themselves (their choice is the new starting
+   * point), and it is dropped when an undo completes or a connection is finished.
    */
-  const lastRun = useRef<{ live: boolean; id: number } | null>(null)
+  const lastRun = useRef<Run | null>(null)
+  const baseline = useRef<Baseline | null>(null)
   const [behindOther, setBehindOther] = useState(false)
-  /** The undo in progress, so Esc twice does not queue it twice. */
-  const abandoning = useRef<Promise<void> | null>(null)
   useEffect(() => {
     if (!connectionId) return
     if (lastRun.current) lastRun.current.live = false
     generation += 1
-    const run = { live: true, id: generation }
+    const run: Run = {
+      id: generation,
+      target: connectionId,
+      live: true,
+      baseline: null,
+      added: false,
+      switched: false,
+      finished: false,
+      undoing: null,
+    }
     lastRun.current = run
     // A function, so each check reads the flag as it is now (it can change across an await).
     const cancelled = (): boolean => !run.live
@@ -146,12 +184,18 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
           setBehindOther(false)
           const now = await api.provider.get()
           if (cancelled()) return null
-          if (previous.current === null) {
-            previous.current = now.provider
-            added.current = !overview.rows.find((row) => row.info.id === connectionId)?.configured
+          const state = await api.connections.state().catch(() => null)
+          if (cancelled()) return null
+          // This run's own record: what it added, and where chats were before the wizard.
+          run.added = state !== null && !state.configured.includes(connectionId)
+          if (baseline.current?.intent !== props.queue.intent) {
+            baseline.current = { connection: now.provider, intent: props.queue.intent }
           }
+          run.baseline = baseline.current
+          if (now.provider === connectionId) return now
           // From here the switch happens whatever the user does; abandoning puts it back.
-          return now.provider === connectionId ? now : await props.onSwitchProvider(connectionId)
+          run.switched = true
+          return await props.onSwitchProvider(connectionId)
         })
       } catch {
         failed = true
@@ -186,59 +230,53 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
   }
 
   /**
-   * Puts back what the wizard changed for a connection the user did not finish setting up. It
-   * is queued behind any switch in flight, and decided only when its turn comes: the run it
-   * belongs to must still be the latest, and the user must not have chosen a connection of
-   * their own since. Both are read from what was true when abandoning began.
+   * Puts back what one run changed, for a connection the user did not finish setting up. It
+   * is queued behind any switch in flight, and decided only when its turn comes. It reads and
+   * changes only that run's record. Before every step with an effect it checks that the run
+   * is still the latest and that the user has chosen nothing since abandoning began; if not,
+   * it stops there and leaves everything as the newer run or the user's choice has it.
    */
   const abandon = (): Promise<void> => {
-    if (abandoning.current) return abandoning.current
     // Everything the undo depends on is read now, before anything is awaited.
     const run = lastRun.current
-    if (run) run.live = false
-    const asked = {
-      run: run?.id ?? -1,
-      intent: props.queue.intent,
-      target: flow.connection,
-      finished: connectedOnce.current,
-    }
-    const stillWanted = (): boolean =>
-      generation === asked.run && props.queue.intent === asked.intent
+    if (!run) return Promise.resolve()
+    run.live = false
+    if (run.undoing) return run.undoing
+    const intent = props.queue.intent
+    const owns = (): boolean => generation === run.id && props.queue.intent === intent
     const undo = async (): Promise<void> => {
-      const target = asked.target
-      if (!target || asked.finished || !stillWanted()) return
+      const start = run.baseline
+      if (!run.switched || run.finished || !start || !owns()) return
       const now = await api.provider.get().catch(() => null)
-      // Chats are not on it (the switch failed, or never happened): nothing to undo.
-      if (now?.provider !== target || !stillWanted()) return
-      const back = previous.current
-      const wasAdded = added.current
+      // Chats are not on it (the switch failed, or someone moved them): nothing to undo.
+      if (now?.provider !== run.target || !owns()) return
       try {
         await api.provider.cancelLogin()
-        if (!stillWanted()) return
-        if (back && back !== target) {
-          const restored = await props.onSwitchProvider(back)
+        if (!owns()) return
+        if (start.connection !== run.target) {
+          const restored = await props.onSwitchProvider(start.connection)
           // The switch cannot be taken back, but nothing else happens on a stale undo: the
           // user's choice (or the newer run) stands, and the target connection is kept.
-          if (!stillWanted()) return
+          if (!owns()) return
           props.onProvider(restored)
-          if (wasAdded) await api.connections.remove(target)
+          if (run.added) await api.connections.remove(run.target)
         }
       } catch {
         // The connection stays listed as not set up; Settings can remove it.
       }
-      previous.current = null
-      added.current = false
+      // Only the baseline this run used is dropped, never one a newer run has taken.
+      if (baseline.current === start) baseline.current = null
     }
-    abandoning.current = props.queue
+    run.undoing = props.queue
       .run(undo)
       .catch(() => {})
       .then(() => {
         overview.refresh()
       })
       .finally(() => {
-        abandoning.current = null
+        run.undoing = null
       })
-    return abandoning.current
+    return run.undoing
   }
 
   const close = (): void => {
@@ -392,7 +430,8 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
                 setPrep((value) => (value ? { ...value, keySaved: true } : value))
               }}
               onContinue={() => {
-                connectedOnce.current = true
+                if (lastRun.current) lastRun.current.finished = true
+                baseline.current = null
                 if (status) props.onProvider(status)
                 overview.refresh()
                 dispatch({ type: 'connected' })
