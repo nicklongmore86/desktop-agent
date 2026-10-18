@@ -12,10 +12,19 @@ export interface ConnectionOptions {
   fetch?: FetchLike
   /** Abort when no response bytes arrive for this long. Default 120 s. */
   timeoutMs?: number
+  /** Read before each request instead of `apiKey`, e.g. an OAuth token that may be refreshed. */
+  getAccessToken?: () => Promise<string>
+  /** Overrides the flavor's name in error text. */
+  label?: string
+  /** Overrides how a non-2xx response is mapped. */
+  statusError?: typeof statusError
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_ERROR_BODY = 64 * 1024
+const KEY_FORMAT = /^[\x21-\x7e]{1,1024}$/
+// OAuth access tokens are JWTs, which run longer than API keys.
+const TOKEN_FORMAT = /^[\x21-\x7e]{1,16384}$/
 
 export interface Connection {
   label: string
@@ -40,13 +49,29 @@ export interface Connection {
 /** Validates the base URL and key up front, so a bad config fails before any request. */
 export function connect(options: ConnectionOptions): Connection {
   const { flavor } = options
-  const label = FLAVOR_LABELS[flavor]
+  const label = options.label ?? FLAVOR_LABELS[flavor]
   const root = resolveBaseUrl(options.baseUrl, flavor)
   const apiKey = options.apiKey?.trim() || undefined
-  if (apiKey !== undefined && !/^[\x21-\x7e]{1,1024}$/.test(apiKey))
+  const { getAccessToken } = options
+  const mapStatus = options.statusError ?? statusError
+  if (apiKey !== undefined && !KEY_FORMAT.test(apiKey))
     throw new OpenAICompatError('authentication', `The ${label} API key has an invalid format.`)
-  if (!apiKey && (flavor === 'openai' || flavor === 'openrouter'))
+  if (!apiKey && !getAccessToken && (flavor === 'openai' || flavor === 'openrouter'))
     throw new OpenAICompatError('authentication', `Add a ${label} API key in settings.`)
+  const bearer = async (): Promise<string | undefined> => {
+    if (apiKey || !getAccessToken) return apiKey
+    let token: string
+    try {
+      token = (await getAccessToken()).trim()
+    } catch (error) {
+      if (error instanceof OpenAICompatError) throw error
+      // The token source's own error text may carry credentials; never forward it.
+      throw new OpenAICompatError('auth_expired', `Sign in to ${label} again.`)
+    }
+    if (!TOKEN_FORMAT.test(token))
+      throw new OpenAICompatError('auth_expired', `The ${label} sign-in is invalid. Sign in again.`)
+    return token
+  }
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init))
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const url = (endpoint: string): string => endpointUrl(root, endpoint)
@@ -85,8 +110,10 @@ export function connect(options: ConnectionOptions): Connection {
       touch()
       try {
         if (init.signal?.aborted) throw new Error('aborted')
+        const token = await bearer()
+        if (init.signal?.aborted) throw new Error('aborted')
         const headers: Record<string, string> = { Accept: init.accept }
-        if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+        if (token) headers.Authorization = `Bearer ${token}`
         if (init.body !== undefined) headers['Content-Type'] = 'application/json'
         const response = await doFetch(url(endpoint), {
           method: init.method,
@@ -107,7 +134,7 @@ export function connect(options: ConnectionOptions): Connection {
         }
         if (!response.ok) {
           const body = await readErrorBody(response)
-          throw statusError(response.status, body, label, response.headers)
+          throw mapStatus(response.status, body, label, response.headers)
         }
         return { response, touch, done, mapError }
       } catch (error) {
