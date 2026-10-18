@@ -319,3 +319,33 @@ describe('settings v3 migration', () => {
     expect(store.connections).toEqual([{ id: 'anthropic-api' }])
   })
 })
+
+it('keeps the ChatGPT host id and registrations, and refuses anything that does not validate', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatgpt-settings-'))
+  try {
+    const file = join(dir, 'settings.json')
+    const store = await openSettingsStore(file)
+    expect(store.chatgptAuth).toBeNull()
+    const value = {
+      hostId: 'urn:uuid:4f1c2a3b-5d6e-4f70-8a9b-0c1d2e3f4a5b',
+      accounts: [{ subject: 'user-1', clientId: 'oaiapp_abc' }],
+      current: 'user-1',
+    }
+    await store.setChatgptAuth(value)
+    await store.setTheme('dark')
+    const reopened = await openSettingsStore(file)
+    expect(reopened.chatgptAuth).toEqual(value)
+    expect(reopened.theme).toBe('dark')
+    await expect(
+      reopened.setChatgptAuth({ ...value, hostId: 'person@example.com' }),
+    ).rejects.toThrow()
+    await expect(
+      reopened.setChatgptAuth({ ...value, accounts: [{ subject: 'a b', clientId: 'x' }] }),
+    ).rejects.toThrow()
+    expect(reopened.chatgptAuth).toEqual(value)
+    await writeFile(file, JSON.stringify({ version: 3, chatgptAuth: { hostId: 'bad' } }))
+    expect((await openSettingsStore(file)).chatgptAuth).toBeNull()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
