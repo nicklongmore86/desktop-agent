@@ -151,22 +151,19 @@ for (const viewport of [1280, 400]) {
           }
           await expect.poll(() => width(page, '.shell-pane-left')).toBe(280)
 
-          // The layout is saved (debounced) with numbers and a tab, never a path.
+          // The layout is saved (debounced) with numbers and a tab, never a path. A slow run
+          // can save an earlier step first, so wait for the save of the final layout.
+          const layoutSaves = (): Promise<LayoutPrefs[]> =>
+            page.evaluate(() => (window as unknown as E2eWindow).e2e.layoutSaves())
           await expect
-            .poll(() =>
-              page.evaluate(() => (window as unknown as E2eWindow).e2e.layoutSaves().length),
-            )
-            .toBeGreaterThan(0)
-          const saves = await page.evaluate(() =>
-            (window as unknown as E2eWindow).e2e.layoutSaves(),
-          )
-          expect(saves.at(-1)).toMatchObject({
-            version: 1,
-            leftOpen: true,
-            rightOpen: true,
-            leftWidth: 280,
-          })
-          expect(JSON.stringify(saves)).not.toContain('Projects')
+            .poll(async () => (await layoutSaves()).at(-1))
+            .toMatchObject({
+              version: 1,
+              leftOpen: true,
+              rightOpen: true,
+              leftWidth: 280,
+            })
+          expect(JSON.stringify(await layoutSaves())).not.toContain('Projects')
 
           // Tabs: Git is an empty host.
           await right.getByRole('tab', { name: 'Git' }).click()
