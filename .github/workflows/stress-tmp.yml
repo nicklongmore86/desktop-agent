@@ -1,0 +1,40 @@
+name: Stress (temporary)
+
+on:
+  push:
+    branches: [fix/windows-ci-flakes]
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: Stress ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.18.1
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Raise the display resolution
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      # Cold start first, as in CI: the e2e flake hit the first test of a fresh runner.
+      - name: e2e app-shell x4
+        run: pnpm exec playwright test e2e/app-shell.spec.ts --repeat-each=4 --retries=0
+      - name: walk.test.ts x5
+        shell: pwsh
+        run: |
+          for ($i = 1; $i -le 5; $i++) {
+            pnpm exec vitest run src/main/tools/walk.test.ts --reporter=verbose
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
