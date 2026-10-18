@@ -192,7 +192,8 @@ describe('assertNoBlockedInside', () => {
     await expect(assertNoBlockedInside(big, guard, MAX_TREE_ENTRIES, signal)).rejects.toMatchObject(
       { code: 'protected' },
     )
-  })
+    // Real disk I/O: 2,000 file creates and two full walks take 2-5 s on Windows CI runners.
+  }, 30_000)
 
   it('allows folders far beyond the old 100,000-entry cap', async () => {
     // A synthetic folder: the listing, lstat and handle checks of its children are faked so
