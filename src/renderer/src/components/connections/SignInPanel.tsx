@@ -211,7 +211,9 @@ export function ProviderPanel({
     <>
       {waiting ? (
         <p className="settings-status" role="status">
-          Waiting for sign-in…
+          {authKind === 'chatgpt-login'
+            ? 'Waiting for you to finish signing in to ChatGPT in your browser…'
+            : 'Waiting for sign-in…'}
         </p>
       ) : status?.state === 'error' && authKind !== 'local' ? (
         <p className="settings-error" role="alert">
@@ -227,7 +229,10 @@ export function ProviderPanel({
               : status?.state === 'missing-runtime'
                 ? `Can’t start ${connection.runtimeLabel ?? 'the runtime'}`
                 : status?.state === 'signed-out'
-                  ? 'Not signed in'
+                  ? // Sign in with ChatGPT says why it has to sign in again (ended, consent).
+                    authKind === 'chatgpt-login' && status.failure
+                    ? plainText(status.message)
+                    : 'Not signed in'
                   : plainText(status?.message ?? 'Loading provider…')}
         </p>
       )}
@@ -269,6 +274,18 @@ export function ProviderPanel({
           }}
         />
       )}
+      {authKind === 'chatgpt-login' && (
+        <ChatgptSignIn
+          busy={busy}
+          active={login.active}
+          onSignIn={() => {
+            void signIn()
+          }}
+          onCancel={() => {
+            void api.provider.cancelLogin()
+          }}
+        />
+      )}
       {authKind === 'runtime-login' && (
         <>
           <button
@@ -294,5 +311,42 @@ export function ProviderPanel({
         </>
       )}
     </>
+  )
+}
+
+/**
+ * Sign in with ChatGPT: main opens the browser and waits on its own loopback listener, so
+ * there is no link or code to show here, only the button and Cancel while it waits. A
+ * plain button for now: OpenAI's official button artwork replaces it (the
+ * `data-sign-in="chatgpt"` hook), keeping the same accessible name.
+ */
+function ChatgptSignIn({
+  busy,
+  active,
+  onSignIn,
+  onCancel,
+}: {
+  busy: boolean
+  active: boolean
+  onSignIn: () => void
+  onCancel: () => void
+}): React.JSX.Element {
+  return (
+    <div className="settings-row">
+      <button
+        type="button"
+        className="button-primary"
+        data-sign-in="chatgpt"
+        disabled={busy || active}
+        onClick={onSignIn}
+      >
+        Sign in with ChatGPT
+      </button>
+      {(busy || active) && (
+        <button type="button" onClick={onCancel}>
+          Cancel sign-in
+        </button>
+      )}
+    </div>
   )
 }

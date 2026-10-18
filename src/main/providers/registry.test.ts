@@ -101,6 +101,13 @@ describe('built-in connections', () => {
         personalUseOnly: false,
       },
       {
+        id: 'chatgpt-plan',
+        vendor: 'openai',
+        access: 'plan',
+        authKind: 'chatgpt-login',
+        personalUseOnly: false,
+      },
+      {
         id: 'anthropic-api',
         vendor: 'anthropic',
         access: 'api-key',
@@ -146,6 +153,7 @@ describe('built-in connections', () => {
   it('hides personal-use connections when they are not shown', () => {
     expect(service.registry.list({ personalUse: false }).map(({ id }) => id)).toEqual([
       'codex-subscription',
+      'chatgpt-plan',
       'anthropic-api',
       'openai-api',
       'gemini-api',

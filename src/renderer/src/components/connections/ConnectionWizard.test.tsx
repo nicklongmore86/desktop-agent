@@ -161,6 +161,151 @@ describe('the subscription path', () => {
   })
 })
 
+describe('the ChatGPT plan path', () => {
+  const PLAN_MODELS = [
+    {
+      id: 'gpt-6.1-sol',
+      label: 'GPT-6.1 Sol',
+      defaultReasoningEffort: null,
+      supportedReasoningEfforts: [],
+      isDefault: true,
+    },
+  ]
+
+  async function toPlanSignIn(options: FakeApiOptions = NOTHING_READY) {
+    const app = await renderApp(options)
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(app.user, dialog, /^ChatGPT/)
+    dialog = await wizard('How do you want to use ChatGPT?')
+    const segments = within(dialog).getByRole('radiogroup', { name: 'Access type' })
+    expect(
+      within(segments)
+        .getAllByRole('radio')
+        .map((radio) => radio.getAttribute('value')),
+    ).toEqual(['free', 'subscription', 'plan', 'api-key'])
+    await app.user.click(within(dialog).getByRole('radio', { name: /Plan/ }))
+    expect(
+      within(dialog).getByText(
+        'Documented for ChatGPT Plus and Pro. On other plans, use Subscription (Codex).',
+      ),
+    ).toBeTruthy()
+    await app.user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Sign in with ChatGPT')
+    await waitFor(() => {
+      expect(app.api.provider.set).toHaveBeenCalledWith('chatgpt-plan')
+    })
+    return { ...app, dialog }
+  }
+
+  /** provider.login() waits, as main does for the browser, until the test settles it. */
+  function pendingLogin(app: Awaited<ReturnType<typeof toPlanSignIn>>) {
+    let settle!: (status: ProviderStatus) => void
+    app.api.provider.login.mockImplementationOnce(
+      () =>
+        new Promise<ProviderStatus>((resolve) => {
+          app.pushLoginState({ provider: 'chatgpt-plan', active: true, url: null, result: null })
+          settle = (status) => {
+            app.pushLoginState({ provider: null, active: false, url: null, result: status })
+            resolve(status)
+          }
+        }),
+    )
+    return (status: ProviderStatus) => {
+      act(() => {
+        settle(status)
+      })
+    }
+  }
+
+  it('signs in with ChatGPT, waits, cancels, signs in again and finishes', async () => {
+    const app = await toPlanSignIn()
+    const { user, api, dialog } = app
+    expect(within(dialog).getByText(/Plus or Pro plan/)).toBeTruthy()
+    const button = await within(dialog).findByRole('button', { name: 'Sign in with ChatGPT' })
+    // The hook the official button artwork replaces.
+    expect(button.getAttribute('data-sign-in')).toBe('chatgpt')
+    // No link or code to paste: main waits on its own loopback listener.
+    expect(within(dialog).queryByRole('button', { name: 'Sign in' })).toBeNull()
+
+    const settle = pendingLogin(app)
+    await user.click(button)
+    expect(
+      await within(dialog).findByText(
+        'Waiting for you to finish signing in to ChatGPT in your browser…',
+      ),
+    ).toBeTruthy()
+    expect(within(dialog).queryByLabelText('Sign-in link')).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Sign in with ChatGPT' })).toHaveProperty(
+      'disabled',
+      true,
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel sign-in' }))
+    expect(api.provider.cancelLogin).toHaveBeenCalledOnce()
+    settle({ provider: 'chatgpt-plan', state: 'error', message: 'Sign-in cancelled.' })
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Sign-in cancelled.')
+    // Still on the connect step, and the cancelled attempt switched nobody away.
+    expect(screen.getByRole('dialog', { name: 'Sign in with ChatGPT' })).toBeTruthy()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Sign in with ChatGPT' }))
+    expect(await within(dialog).findByText('Connected')).toBeTruthy()
+    api.provider.models.mockResolvedValue({
+      ok: true,
+      value: {
+        provider: 'chatgpt-plan',
+        options: PLAN_MODELS,
+        selectedModel: 'gpt-6.1-sol',
+        savedModel: null,
+        defaultModel: 'gpt-6.1-sol',
+        resolvedModel: 'gpt-6.1-sol',
+      },
+    })
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    let next = await wizard('Pick a model')
+    expect(await within(next).findByRole('radio', { name: /GPT-6.1 Sol/ })).toBeTruthy()
+    await user.click(within(next).getByRole('button', { name: 'Continue' }))
+    next = await wizard('Choose a folder to work in')
+    await user.click(within(next).getByRole('button', { name: 'Continue' }))
+    next = await wizard('You’re all set')
+    expect(within(next).getByRole('status').textContent).toBe(
+      'You’re set up with ChatGPT · Plan · GPT-6.1 Sol.',
+    )
+  })
+
+  it('closing while it waits cancels the sign-in and puts back the connection chats went to', async () => {
+    const app = await toPlanSignIn({ ...NOTHING_READY, configured: ['anthropic-api'] })
+    const { user, api, dialog } = app
+    const settle = pendingLogin(app)
+    await user.click(await within(dialog).findByRole('button', { name: 'Sign in with ChatGPT' }))
+    await within(dialog).findByRole('button', { name: 'Cancel sign-in' })
+    api.provider.cancelLogin.mockImplementationOnce(() => {
+      settle({ provider: 'chatgpt-plan', state: 'error', message: 'Sign-in cancelled.' })
+      return Promise.resolve()
+    })
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull()
+    })
+    expect(api.provider.cancelLogin).toHaveBeenCalled()
+    expect(api.provider.set).toHaveBeenLastCalledWith('anthropic-api')
+    expect(api.connections.remove).toHaveBeenCalledWith('chatgpt-plan')
+  })
+
+  it('leaves Codex for ChatGPT Free and Subscription', async () => {
+    const { user, api } = await renderApp(NOTHING_READY)
+    let dialog = await wizard('Which AI do you want to use?')
+    await choose(user, dialog, /^ChatGPT/)
+    dialog = await wizard('How do you want to use ChatGPT?')
+    await user.click(within(dialog).getByRole('radio', { name: /Subscription/ }))
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    dialog = await wizard('Sign in to ChatGPT')
+    await waitFor(() => {
+      expect(api.provider.set).toHaveBeenCalledWith('codex-subscription')
+    })
+    expect(await within(dialog).findByRole('button', { name: 'Sign in' })).toBeTruthy()
+    expect(within(dialog).queryByRole('button', { name: 'Sign in with ChatGPT' })).toBeNull()
+  })
+})
+
 describe('the API key path', () => {
   async function toGeminiKey(options: FakeApiOptions = NOTHING_READY) {
     const app = await renderApp(options)
@@ -1043,6 +1188,8 @@ describe('keyboard, Back and focus', () => {
       'checked',
       true,
     )
+    await user.keyboard('{ArrowRight}')
+    expect(within(dialog).getByRole('radio', { name: /Plan/ })).toHaveProperty('checked', true)
     await user.keyboard('{ArrowRight}')
     expect(within(dialog).getByRole('radio', { name: /API key/ })).toHaveProperty('checked', true)
   })

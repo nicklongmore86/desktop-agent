@@ -101,6 +101,12 @@ export interface ConnectionAdapter extends ConnectionDescriptor {
   /** Drops cached metadata (switch, sign-in, selection change). */
   invalidate?: () => void
   /**
+   * The connection is being removed: sign out and delete what it stored (ChatGPT plan's
+   * tokens). Resolves with a note for the user (sign-out not confirmed), else null.
+   * Throws a safe message when the stored sign-in could not be deleted. Never chats.
+   */
+  forget?: () => Promise<string | null>
+  /**
    * Checks a key before it is saved, with a read-only request (never a completion).
    * Resolves with a safe failure for a key that must not be saved; never throws.
    */

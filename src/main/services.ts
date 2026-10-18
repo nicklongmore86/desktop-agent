@@ -1,5 +1,6 @@
 import { homedir } from 'node:os'
 import type { ConnectionsService } from './ipc-connections'
+import type { AdapterFactory } from './providers/connection'
 import { ConnectionService } from './providers/service'
 import type { ProviderResult } from '../shared/ipc'
 import {
@@ -38,6 +39,8 @@ export interface AppServiceDeps {
   revealPath?: (path: string) => void
   onFilesChanged?: (change: FilesChanged) => void
   onGitChanged?: (change: GitChanged) => void
+  /** Replaces the built-in connections (tests). */
+  adapters?: readonly AdapterFactory[]
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
@@ -101,7 +104,12 @@ export async function createAppServices(deps: AppServiceDeps) {
   const connections = new ConnectionService(
     userData,
     deps.openUrl ?? (() => Promise.reject(new Error('Browser sign-in is unavailable.'))),
-    { settings, keys, onLoginState: (state) => deps.onProviderLoginState?.(state) },
+    {
+      settings,
+      keys,
+      onLoginState: (state) => deps.onProviderLoginState?.(state),
+      ...(deps.adapters ? { adapters: deps.adapters } : {}),
+    },
   )
   /** Registered, and not hidden by showPersonalUseConnections. */
   const available = (id: ConnectionId): boolean => {
@@ -230,8 +238,12 @@ export async function createAppServices(deps: AppServiceDeps) {
     },
     async remove(id: ConnectionId) {
       if (!available(id)) throw new Error('Unknown provider.')
+      if (id === settings.connection)
+        throw new Error('Switch to another connection before removing this one.')
+      // A signed-in connection signs out first; if its tokens cannot be deleted it stays listed.
+      const notice = await connections.forget(id)
       await settings.removeConnection(id)
-      return connectionList.state()
+      return { ...connectionList.state(), ...(notice ? { notice } : {}) }
     },
     async setShowPersonalUse(show: boolean) {
       if (!show && connections.registry.get(settings.connection)?.personalUseOnly)

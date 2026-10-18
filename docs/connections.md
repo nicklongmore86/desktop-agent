@@ -8,6 +8,7 @@ which mixed the two ("claude-subscription" is Anthropic _and_ a subscription).
 | --------------------- | ------------ | -------------- | ------------------------------- |
 | `claude-subscription` | `anthropic`  | `subscription` | Claude Code's own login         |
 | `codex-subscription`  | `openai`     | `subscription` | Codex's own login (ChatGPT)     |
+| `chatgpt-plan`        | `openai`     | `plan`         | Sign in with ChatGPT (main)     |
 | `anthropic-api`       | `anthropic`  | `api-key`      | The user's saved Anthropic key  |
 | `openai-api`          | `openai`     | `api-key`      | The user's saved OpenAI key     |
 | `gemini-api`          | `google`     | `api-key`      | A Gemini (AI Studio) key        |
@@ -16,7 +17,7 @@ which mixed the two ("claude-subscription" is Anthropic _and_ a subscription).
 | `lmstudio`            | `local`      | `free`         | Nothing: a server on loopback   |
 
 Vendors are `anthropic | openai | google | local | openrouter`; access types are
-`free | subscription | api-key` (`src/shared/ipc-connections.ts`). Add a vendor there
+`free | subscription | plan | api-key` (`src/shared/ipc-connections.ts`). Add a vendor there
 before registering its first adapter.
 
 **Ids never change.** A connection id names its history directory
@@ -45,7 +46,7 @@ interface ConnectionAdapter {
   description: string
   runtimeLabel?: string // "Can't start Claude Code"
   capabilities: {
-    authKind: 'runtime-login' | 'api-key' | 'local' | 'none'
+    authKind: 'runtime-login' | 'chatgpt-login' | 'api-key' | 'local' | 'none'
     listsModels: boolean
     reportsUsage: boolean
     needsRuntime: boolean
@@ -63,6 +64,7 @@ interface ConnectionAdapter {
   allowance?(): Promise<ProviderAllowance>
   login?(session: LoginSession): Promise<void>
   invalidate?(): void
+  forget?(): Promise<string | null> // on remove: sign out and delete stored tokens
   validateKey?(key, signal?): Promise<ProviderFailure | null> // read-only, before a key is saved
   baseUrl?(): { baseUrl: string; custom: boolean }
   setBaseUrl?(baseUrl: string | null): Promise<{ baseUrl: string; custom: boolean }>
@@ -158,7 +160,8 @@ refuses to start without one (`no_api_key`); for `local` or `none` the client ge
 `registry.test.ts` fails until the fixture matches the real list.
 
 A connection that needs its own runtime or sign-in implements `ConnectionAdapter`
-directly, as `adapters/claude-subscription.ts` and `adapters/codex-subscription.ts` do.
+directly, as `adapters/claude-subscription.ts`, `adapters/codex-subscription.ts` and
+`adapters/chatgpt-plan.ts` do. ChatGPT Plan is described in [chatgpt-plan.md](chatgpt-plan.md).
 
 ## What each adapter keeps
 
@@ -229,7 +232,9 @@ Four small calls beside `connections.list()` make this possible (`ipc-connection
 | `connections.setShowPersonalUse(show)` | Sets `showPersonalUseConnections`; refuses to hide the current connection. |
 
 Every id is checked against the registry first (`parseConnectionId`), and removing a
-connection never touches chat history. The renderer deletes an API-key connection's saved
+connection never touches chat history. Removing a connection with `forget()` (ChatGPT
+Plan) signs it out first; if its stored sign-in cannot be deleted it stays listed, and an
+unconfirmed revocation comes back as `notice` on the state `remove` returns. The renderer deletes an API-key connection's saved
 key only after the user confirms. The composer lists the connections that are ready (a
 saved key for API-key ones, otherwise a ready status) plus the one in use.
 

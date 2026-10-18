@@ -252,6 +252,23 @@ const builtinConnections = [
     pickerOrder: 0,
   },
   {
+    id: 'chatgpt-plan',
+    vendor: 'openai',
+    access: 'plan',
+    label: 'ChatGPT · Plan',
+    shortLabel: 'ChatGPT',
+    title: 'ChatGPT · Plan',
+    description: 'Sign in with ChatGPT to use your Plus or Pro plan. No API key needed.',
+    capabilities: {
+      authKind: 'chatgpt-login',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 8,
+  },
+  {
     id: 'anthropic-api',
     vendor: 'anthropic',
     access: 'api-key',
@@ -384,6 +401,8 @@ const statusOf = (id) => {
   const kind = connectionInfo(id)?.capabilities.authKind
   if (kind === 'local') return NOT_RUNNING(id)
   if (kind === 'runtime-login' && firstRun) return SIGNED_OUT(id)
+  // Sign in with ChatGPT starts signed out everywhere: nothing is saved in a fresh profile.
+  if (kind === 'chatgpt-login') return SIGNED_OUT(id)
   return READY(id)
 }
 // API keys by connection; only Anthropic's is saved, as the old harness always claimed.
@@ -399,6 +418,14 @@ const connectionsState = () => ({
 const firstRun = process.env.E2E_SCENARIO === 'first-run'
 if (firstRun) delete keys['anthropic-api']
 let loginSucceeds = false
+// provider.login() waits (like main waiting for the browser) until cancelLogin or finishLogin.
+let loginPending = false
+let finishPending = null
+const loginCallsLog = { login: [], cancel: 0 }
+const chatgptModels = [
+  { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' },
+  { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra' },
+]
 
 const model = {
   model: 'claude-sonnet-5-5',
@@ -414,9 +441,11 @@ const modelsResult = () => {
   const options =
     provider.provider === 'codex-subscription'
       ? codexModels
-      : provider.provider === 'ollama' || provider.provider === 'lmstudio'
-        ? localModels
-        : []
+      : provider.provider === 'chatgpt-plan'
+        ? chatgptModels
+        : provider.provider === 'ollama' || provider.provider === 'lmstudio'
+          ? localModels
+          : []
   return {
     ok: true,
     value: {
@@ -595,17 +624,42 @@ contextBridge.exposeInMainWorld('desktopApi', {
     set: (next) => {
       connectionCalls.set.push(next)
       if (!configured.includes(next)) configured = [...configured, next]
-      provider = statuses[next] ?? (firstRun ? statusOf(next) : READY(next))
+      const signsIn = connectionInfo(next)?.capabilities.authKind === 'chatgpt-login'
+      provider = statuses[next] ?? (firstRun || signsIn ? statusOf(next) : READY(next))
       return Promise.resolve(provider)
     },
     login: () => {
+      loginCallsLog.login.push(provider.provider)
+      if (loginPending) {
+        const id = provider.provider
+        const state = { provider: id, active: true, url: null, result: null }
+        loginState = state
+        for (const listener of listeners.login) listener(state)
+        return new Promise((done) => {
+          finishPending = (signedIn) => {
+            finishPending = null
+            const result = signedIn
+              ? { ...READY(id), signedIn: true, message: 'Signed in with ChatGPT.' }
+              : { provider: id, state: 'error', message: 'Sign-in cancelled.' }
+            if (signedIn) statuses[id] = result
+            if (provider.provider === id) provider = signedIn ? result : provider
+            loginState = { provider: null, active: false, url: null, result }
+            for (const listener of listeners.login) listener(loginState)
+            done(result)
+          }
+        })
+      }
       if (loginSucceeds) {
         provider = { ...READY(provider.provider), message: 'Signed in.' }
         statuses[provider.provider] = provider
       }
       return Promise.resolve(provider)
     },
-    cancelLogin: resolve(undefined),
+    cancelLogin: () => {
+      loginCallsLog.cancel += 1
+      finishPending?.(false)
+      return Promise.resolve(undefined)
+    },
     loginState: () => Promise.resolve(loginState),
     openLoginUrl: () => {
       loginCalls.open += 1
@@ -818,6 +872,14 @@ contextBridge.exposeInMainWorld('e2e', {
     for (const listener of listeners.login) listener(state)
   },
   loginCalls: () => ({ ...loginCalls, codes: loginCalls.codes.slice() }),
+  // provider.login() waits until cancelLogin (cancelled) or finishLogin (signed in).
+  setLoginPending: (next) => {
+    loginPending = next
+  },
+  finishLogin: () => {
+    finishPending?.(true)
+  },
+  loginLog: () => JSON.parse(JSON.stringify(loginCallsLog)),
   // What provider.login() does next: sign in (true) or leave the status as it is.
   setLoginSucceeds: (next) => {
     loginSucceeds = next

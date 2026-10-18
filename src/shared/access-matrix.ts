@@ -41,6 +41,7 @@ export const PROVIDER_CARDS: readonly ProviderCard[] = [
 export const ACCESS_LABELS: Record<AccessType, string> = {
   free: 'Free',
   subscription: 'Subscription',
+  plan: 'Plan',
   'api-key': 'API key',
 }
 
@@ -80,6 +81,10 @@ export const ACCESS_MATRIX: Record<ProviderKey, Partial<Record<AccessType, Cell>
   chatgpt: {
     free: { use: ['codex-subscription'], note: 'ChatGPT Free includes limited Codex use.' },
     subscription: { use: ['codex-subscription'] },
+    plan: {
+      use: ['chatgpt-plan'],
+      note: 'Documented for ChatGPT Plus and Pro. On other plans, use Subscription (Codex).',
+    },
     'api-key': { use: ['openai-api'] },
   },
   gemini: {
@@ -131,14 +136,19 @@ const NOT_IN_BUILD = 'This isn’t available right now.'
 function costLine(card: ProviderCard, access: AccessType, provider: ProviderKey): string {
   if (provider === 'local') return 'Runs on this PC. No account needed.'
   if (access === 'subscription') return 'Uses your plan’s limits. No API charges.'
+  if (access === 'plan')
+    return 'Sign in with ChatGPT and use your plan’s limits directly. No API charges.'
   if (access === 'free') return 'Limited daily use.'
   if (provider === 'gemini')
     return 'A free key has limited daily use. A paid key is billed per use to your Google account.'
   return `Billed per use to your ${card.vendorName} account.`
 }
 
+/** The order the wizard shows access segments in. */
+const ACCESS_ORDER = ['free', 'subscription', 'plan', 'api-key'] as const
+
 /**
- * The access segments to show for a provider, in Free, Subscription, API key order.
+ * The access segments to show for a provider, in Free, Subscription, Plan, API key order.
  * An option is available when at least one of its connections is offered by main.
  * A personal-use connection main hides (showPersonalUseConnections off) hides its
  * segment too, rather than showing it disabled.
@@ -148,7 +158,7 @@ export function accessOptions(provider: ProviderKey, context: AccessContext): Ac
   if (!card) return []
   const row = ACCESS_MATRIX[provider]
   const options: AccessOption[] = []
-  for (const access of ['free', 'subscription', 'api-key'] as const) {
+  for (const access of ACCESS_ORDER) {
     const cell = row[access]
     if (!cell) continue
     const label = ACCESS_LABELS[access]
@@ -196,7 +206,7 @@ export function providerOf(connection: ConnectionInfo): ProviderKey | null {
 /** The access segment that names this connection (ChatGPT's two share Codex: Subscription wins). */
 export function accessOf(provider: ProviderKey, id: ConnectionId): AccessType | null {
   const row = ACCESS_MATRIX[provider]
-  for (const access of ['subscription', 'api-key', 'free'] as const) {
+  for (const access of ['subscription', 'plan', 'api-key', 'free'] as const) {
     const cell = row[access]
     if (cell && 'use' in cell && cell.use.includes(id)) return access
   }

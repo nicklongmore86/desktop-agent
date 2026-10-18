@@ -12,6 +12,7 @@ import type { AgentRunner } from '../chat/session'
 import type { KeyStore } from '../secrets'
 import type { SettingsStore } from '../storage/settings-store'
 import { createAnthropicApiAdapter } from './adapters/anthropic-api'
+import { createChatgptPlanAdapter } from './adapters/chatgpt-plan'
 import { createClaudeSubscriptionAdapter } from './adapters/claude-subscription'
 import { createCodexSubscriptionAdapter } from './adapters/codex-subscription'
 import { createGeminiApiAdapter } from './adapters/gemini-api'
@@ -47,6 +48,7 @@ export interface ConnectionOptions {
 export const BUILTIN_ADAPTERS: readonly AdapterFactory[] = [
   createClaudeSubscriptionAdapter,
   createCodexSubscriptionAdapter,
+  createChatgptPlanAdapter,
   createAnthropicApiAdapter,
   createOpenAIApiAdapter,
   createGeminiApiAdapter,
@@ -233,6 +235,21 @@ export class ConnectionService implements AdapterHost {
             ? error.message
             : 'Sign-in failed.',
       }
+    }
+  }
+
+  /**
+   * Before a connection is removed: ends a sign-in in progress for it and lets the adapter
+   * sign out and delete what it stored. Resolves with a note for the user, or null.
+   */
+  async forget(provider: ConnectionId): Promise<string | null> {
+    const adapter = this.registry.require(provider)
+    if (!adapter.forget) return null
+    if (this.active?.provider === provider) this.active.controller.abort()
+    try {
+      return await adapter.forget()
+    } finally {
+      adapter.invalidate?.()
     }
   }
 
