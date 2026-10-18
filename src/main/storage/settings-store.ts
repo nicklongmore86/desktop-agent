@@ -37,6 +37,20 @@ export interface ConfiguredConnection {
 }
 
 /**
+ * Sign in with ChatGPT's non-secret registration data: this install's host id
+ * (generated once, before the first sign-in) and each ChatGPT account's issued
+ * client id, kept after sign-out so signing in again reuses it. Tokens live in
+ * the encrypted key store, never here.
+ */
+export interface ChatgptAuthSettings {
+  /** An opaque `urn:uuid:` value, never derived from the user. */
+  hostId: string
+  accounts: { subject: string; clientId: string }[]
+  /** The subject of the account last signed in. */
+  current?: string
+}
+
+/**
  * settings.json. Version 3 replaced v2's `provider` and `providerModels` with
  * `connection` and `connectionModels` (the ids did not change) and added
  * `connections` and `showPersonalUseConnections`. Older files are read and
@@ -56,6 +70,8 @@ interface SettingsFile {
   theme?: ThemePreference
   /** Added later without a version bump: has its own version, and a missing or invalid one means the defaults. */
   layout?: LayoutPrefs
+  /** Added later without a version bump: a missing or invalid value means none yet. */
+  chatgptAuth?: ChatgptAuthSettings
 }
 
 export interface SettingsStore {
@@ -84,6 +100,9 @@ export interface SettingsStore {
   setLayout: (layout: unknown) => Promise<LayoutPrefs>
   /** Throws for a model that is not offered. */
   setModel: (model: string) => Promise<ModelSettings>
+  readonly chatgptAuth: ChatgptAuthSettings | null
+  /** Throws for a value that does not validate. */
+  setChatgptAuth: (value: ChatgptAuthSettings) => Promise<void>
 }
 
 const isOffered = (model: unknown): model is string =>
@@ -102,6 +121,20 @@ const baseUrlSchema = z.string().min(1).max(2048)
 const connectionsSchema = z
   .array(z.object({ id: connectionIdSchema, baseUrl: baseUrlSchema.optional() }))
   .max(64)
+export const chatgptAuthSchema = z.object({
+  hostId: z
+    .string()
+    .regex(/^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  accounts: z
+    .array(
+      z.object({
+        subject: z.string().regex(/^[\x21-\x7e]{1,256}$/),
+        clientId: z.string().regex(/^[A-Za-z0-9._-]{1,256}$/),
+      }),
+    )
+    .max(32),
+  current: z.string().max(256).optional(),
+})
 /** v2's provider ids: the first three connection ids, unchanged. */
 const V2_PROVIDERS: readonly string[] = [CLAUDE_SUBSCRIPTION, CODEX_SUBSCRIPTION, ANTHROPIC_API]
 
@@ -127,6 +160,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let theme: ThemePreference = 'system'
   let layout: LayoutPrefs = { ...DEFAULT_LAYOUT }
   let connectionModels: Partial<Record<ConnectionId, string>> = {}
+  let chatgptAuth: ChatgptAuthSettings | undefined
   try {
     const parsed = (await readJsonFile(file)) as Record<string, unknown> | undefined
     if (parsed?.['version'] === 3) {
@@ -151,6 +185,8 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     if (THEMES.includes(parsed?.['theme'] as ThemePreference))
       theme = parsed?.['theme'] as ThemePreference
     layout = parseLayout(parsed?.['layout'])
+    const auth = chatgptAuthSchema.safeParse(parsed?.['chatgptAuth'])
+    if (auth.success) chatgptAuth = withoutUndefined(auth.data)
   } catch {
     // Keep the default.
   }
@@ -170,6 +206,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     showPersonalUseConnections,
     theme,
     layout,
+    ...(chatgptAuth ? { chatgptAuth } : {}),
     ...changes,
   })
   const view = (): ModelSettings => ({
@@ -282,5 +319,21 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
         return view()
       })
     },
+    get chatgptAuth() {
+      return chatgptAuth ?? null
+    },
+    async setChatgptAuth(next) {
+      const validated = withoutUndefined(chatgptAuthSchema.parse(next))
+      await serial(async () => {
+        await writeJsonFile(file, snapshot({ chatgptAuth: validated }))
+        chatgptAuth = validated
+      })
+    },
   }
+}
+
+/** Zod's output has `current: undefined` where the type wants the key left out. */
+function withoutUndefined(value: z.infer<typeof chatgptAuthSchema>): ChatgptAuthSettings {
+  const { current, ...rest } = value
+  return current === undefined ? rest : { ...rest, current }
 }
