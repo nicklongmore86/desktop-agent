@@ -190,7 +190,7 @@ describe('the plan notice and an approval together', () => {
     expect(localStorage.getItem('plan-notice-seen:chatgpt-plan')).toBeNull()
 
     act(() => {
-      pushChat({ type: 'approval_closed', approvalId: 'a1' })
+      pushChat({ type: 'approval_closed', approvalId: 'a1', approved: false })
     })
     const notice = await screen.findByRole('dialog', { name: title })
     await waitFor(() => {
@@ -217,7 +217,7 @@ describe('the plan notice and an approval together', () => {
     await user.keyboard('{Control>}n{/Control}')
     expect(api.chat.newChat).not.toHaveBeenCalled()
     act(() => {
-      pushChat({ type: 'approval_closed', approvalId: 'a1' })
+      pushChat({ type: 'approval_closed', approvalId: 'a1', approved: false })
     })
     await user.click(await screen.findByRole('button', { name: 'Got it' }))
     // Both gone: the shortcut works again.
