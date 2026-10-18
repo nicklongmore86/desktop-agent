@@ -6,6 +6,7 @@ import { useMounted } from './use-mounted'
 import { plainText } from '../../plain-text'
 import { useApi } from '../../api'
 import { isConnected } from './flow'
+import { ChatgptButton } from '../chatgpt-plan/ChatgptButton'
 
 /** Claude prints `<code>#<state>`; main checks it again before passing it on. */
 const LOGIN_CODE = /^[^#\s]+#[^#\s]+$/
@@ -316,9 +317,9 @@ export function ProviderPanel({
 
 /**
  * Sign in with ChatGPT: main opens the browser and waits on its own loopback listener, so
- * there is no link or code to show here, only the button and Cancel while it waits. A
- * plain button for now: OpenAI's official button artwork replaces it (the
- * `data-sign-in="chatgpt"` hook), keeping the same accessible name.
+ * there is no link or code to show here, only OpenAI's "Continue with ChatGPT" button
+ * (labelled as their guidelines require for the action that starts sign-in) and Cancel
+ * while it waits.
  */
 function ChatgptSignIn({
   busy,
@@ -333,15 +334,7 @@ function ChatgptSignIn({
 }): React.JSX.Element {
   return (
     <div className="settings-row">
-      <button
-        type="button"
-        className="button-primary"
-        data-sign-in="chatgpt"
-        disabled={busy || active}
-        onClick={onSignIn}
-      >
-        Sign in with ChatGPT
-      </button>
+      <ChatgptButton disabled={busy || active} onClick={onSignIn} />
       {(busy || active) && (
         <button type="button" onClick={onCancel}>
           Cancel sign-in

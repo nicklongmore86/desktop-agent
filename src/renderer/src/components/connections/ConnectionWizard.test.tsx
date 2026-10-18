@@ -221,7 +221,7 @@ describe('the ChatGPT plan path', () => {
     const app = await toPlanSignIn()
     const { user, api, dialog } = app
     expect(within(dialog).getByText(/Plus or Pro plan/)).toBeTruthy()
-    const button = await within(dialog).findByRole('button', { name: 'Sign in with ChatGPT' })
+    const button = await within(dialog).findByRole('button', { name: 'Continue with ChatGPT' })
     // The hook the official button artwork replaces.
     expect(button.getAttribute('data-sign-in')).toBe('chatgpt')
     // No link or code to paste: main waits on its own loopback listener.
@@ -235,7 +235,7 @@ describe('the ChatGPT plan path', () => {
       ),
     ).toBeTruthy()
     expect(within(dialog).queryByLabelText('Sign-in link')).toBeNull()
-    expect(within(dialog).getByRole('button', { name: 'Sign in with ChatGPT' })).toHaveProperty(
+    expect(within(dialog).getByRole('button', { name: 'Continue with ChatGPT' })).toHaveProperty(
       'disabled',
       true,
     )
@@ -246,7 +246,7 @@ describe('the ChatGPT plan path', () => {
     // Still on the connect step, and the cancelled attempt switched nobody away.
     expect(screen.getByRole('dialog', { name: 'Sign in with ChatGPT' })).toBeTruthy()
 
-    await user.click(within(dialog).getByRole('button', { name: 'Sign in with ChatGPT' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Continue with ChatGPT' }))
     expect(await within(dialog).findByText('Connected')).toBeTruthy()
     api.provider.models.mockResolvedValue({
       ok: true,
@@ -275,7 +275,7 @@ describe('the ChatGPT plan path', () => {
     const app = await toPlanSignIn({ ...NOTHING_READY, configured: ['anthropic-api'] })
     const { user, api, dialog } = app
     const settle = pendingLogin(app)
-    await user.click(await within(dialog).findByRole('button', { name: 'Sign in with ChatGPT' }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Continue with ChatGPT' }))
     await within(dialog).findByRole('button', { name: 'Cancel sign-in' })
     api.provider.cancelLogin.mockImplementationOnce(() => {
       settle({ provider: 'chatgpt-plan', state: 'error', message: 'Sign-in cancelled.' })
@@ -302,7 +302,7 @@ describe('the ChatGPT plan path', () => {
       expect(api.provider.set).toHaveBeenCalledWith('codex-subscription')
     })
     expect(await within(dialog).findByRole('button', { name: 'Sign in' })).toBeTruthy()
-    expect(within(dialog).queryByRole('button', { name: 'Sign in with ChatGPT' })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Continue with ChatGPT' })).toBeNull()
   })
 })
 

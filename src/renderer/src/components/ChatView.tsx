@@ -1,6 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProviderStatus } from '../../../shared/ipc'
-import type { ConnectionId, ConnectionInfo } from '../../../shared/ipc-connections'
+import {
+  CHATGPT_PLAN,
+  type ConnectionId,
+  type ConnectionInfo,
+} from '../../../shared/ipc-connections'
 import type { ChatViewState } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
 import { useProviderModels } from '../provider-models'
@@ -296,6 +300,7 @@ export function ChatView({
           banner={state.banner}
           onDismiss={onDismissBanner}
           onOpenSettings={onOpenSettings}
+          manageUsage={provider?.provider === CHATGPT_PLAN}
           onNewChat={() => {
             void onNewChat()
           }}

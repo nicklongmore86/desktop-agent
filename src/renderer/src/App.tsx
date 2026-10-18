@@ -6,7 +6,12 @@ import type {
   GrantsState,
   ProviderStatus,
 } from '../../shared/ipc'
-import type { ConnectionId, ConnectionInfo } from '../../shared/ipc-connections'
+import {
+  CHATGPT_PLAN,
+  CODEX_SUBSCRIPTION,
+  type ConnectionId,
+  type ConnectionInfo,
+} from '../../shared/ipc-connections'
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
 import { ChatView } from './components/ChatView'
@@ -22,6 +27,9 @@ import { plainText } from './plain-text'
 import { SwitchQueue } from './switch-queue'
 import { ConnectionWizard } from './components/connections/ConnectionWizard'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { planNoticeKey, SWITCH_BANNER_KEY, useFlag } from './components/chatgpt-plan/plan-flags'
+import { PlanNotice } from './components/chatgpt-plan/PlanNotice'
+import { PlanSwitchBanner } from './components/chatgpt-plan/PlanSwitchBanner'
 import { FileReferencesProvider } from './components/files/file-references'
 import { SettingsDialog } from './components/SettingsDialog'
 import { AppHeader } from './components/shell/AppHeader'
@@ -102,6 +110,22 @@ function AppWindow(): React.JSX.Element {
     null,
   )
   const [firstRunChecked, setFirstRunChecked] = useState(false)
+  // ChatGPT · Plan: the one-time notice after its first sign-in, and the Codex users' invitation.
+  const [planNoticeSeen, markPlanNoticeSeen] = useFlag(planNoticeKey(CHATGPT_PLAN))
+  const [switchBannerDismissed, dismissSwitchBanner] = useFlag(SWITCH_BANNER_KEY)
+  // Waits for the wizard and Settings to close, so it never stacks on another dialog.
+  const showPlanNotice =
+    provider?.provider === CHATGPT_PLAN &&
+    provider.state === 'ready' &&
+    !planNoticeSeen &&
+    settingsSection === null &&
+    wizard === null
+  const planReady = overview.rows.some((row) => row.info.id === CHATGPT_PLAN && row.ready)
+  const showSwitchBanner =
+    provider?.provider === CODEX_SUBSCRIPTION &&
+    provider.state === 'ready' &&
+    !switchBannerDismissed &&
+    !planReady
 
   useEffect(() => {
     const report = (what: string) => (error: unknown) => {
@@ -185,6 +209,9 @@ function AppWindow(): React.JSX.Element {
     }
   }
   const [approval, ...queued] = chat.state.approvals
+  // The notice is only in the way of the shortcuts while it is showing; under an approval it
+  // is hidden, and the approval's own rule already holds them.
+  const planNoticeVisible = showPlanNotice && approval === undefined
   const shell = useRef<ShellHandle>(null)
   // A chat-list dialog (delete, fork, project) is open: shortcuts wait for it.
   const [listDialog, setListDialog] = useState(false)
@@ -209,13 +236,17 @@ function AppWindow(): React.JSX.Element {
         focusInput(view)
       },
     },
-    approval !== undefined || listDialog || wizard !== null,
+    approval !== undefined || listDialog || wizard !== null || planNoticeVisible,
   )
   useViewModeHotkey(
     () => {
       if (!chat.state.switching) changeView(view === 'chat' ? 'command' : 'chat')
     },
-    approval !== undefined || settingsSection !== null || listDialog || wizard !== null,
+    approval !== undefined ||
+      settingsSection !== null ||
+      listDialog ||
+      wizard !== null ||
+      planNoticeVisible,
   )
   /** A choice the user made: it waits its turn behind any switch in flight, and counts as intent. */
   const userSwitch = <T,>(task: () => Promise<T>): Promise<T> => {
@@ -259,7 +290,7 @@ function AppWindow(): React.JSX.Element {
     <FileReferencesProvider>
       <AppShell
         shellRef={shell}
-        inert={settingsSection !== null || wizard !== null}
+        inert={settingsSection !== null || wizard !== null || showPlanNotice}
         suspended={Boolean(approval)}
         blocked={listDialog}
         left={(variant) => (
@@ -331,6 +362,15 @@ function AppWindow(): React.JSX.Element {
             <strong>Audit logging is failing.</strong> Tool calls still run, but are not being
             recorded in <code>{audit.path}</code>.
           </div>
+        )}
+
+        {showSwitchBanner && (
+          <PlanSwitchBanner
+            onSetUp={() => {
+              setWizard({ startAt: CHATGPT_PLAN, firstRun: false })
+            }}
+            onDismiss={dismissSwitchBanner}
+          />
         )}
 
         <ErrorBoundary onReset={chat.newChat} resetLabel="Start a new chat">
@@ -439,6 +479,10 @@ function AppWindow(): React.JSX.Element {
           onSwitchProvider={switchForWizard}
           onClose={closeWizard}
         />
+      )}
+
+      {showPlanNotice && (
+        <PlanNotice suspended={Boolean(approval)} onDismiss={markPlanNoticeSeen} />
       )}
 
       {approval && (

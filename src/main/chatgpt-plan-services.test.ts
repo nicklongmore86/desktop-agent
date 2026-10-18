@@ -25,11 +25,15 @@ beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), 'chatgpt-plan-services-'))
 })
 afterEach(async () => {
+  failDelete = false
   vi.restoreAllMocks()
   await oauth.close()
   await api.close()
   await rm(userData, { recursive: true, force: true })
 })
+
+/** Makes the connection's token file undeletable, whatever else works. */
+let failDelete = false
 
 async function services() {
   return createAppServices({
@@ -49,8 +53,24 @@ async function services() {
       chatgptPlanAdapter({
         auth: (host) => {
           if (!host.keys || !host.settings) throw new Error('no stores')
+          const { keys } = host
           return openChatgptAuth(
-            { keys: host.keys, settings: host.settings, sleep: () => Promise.resolve() },
+            {
+              keys: {
+                forConnection: (connection) => {
+                  const store = keys.forConnection(connection)
+                  return {
+                    ...store,
+                    clear: () =>
+                      failDelete
+                        ? Promise.reject(new Error('EBUSY: file is locked'))
+                        : store.clear(),
+                  }
+                },
+              },
+              settings: host.settings,
+              sleep: () => Promise.resolve(),
+            },
             oauth.endpoints,
           )
         },
@@ -88,6 +108,25 @@ it('removing the connection signs out and deletes its tokens, never its chats', 
   const settings = await readFile(join(userData, 'settings.json'), 'utf8')
   expect(settings).toContain('"hostId"')
   expect(settings).not.toMatch(/token|eyJ/i)
+})
+
+it('keeps the connection listed when its tokens cannot be deleted', async () => {
+  const app = await services()
+  await app.provider.set('chatgpt-plan')
+  await app.provider.login()
+  await app.provider.set('anthropic-api')
+
+  failDelete = true
+  await expect(app.connections.remove('chatgpt-plan')).rejects.toThrow()
+  // The connection stays listed (so Remove can be tried again) and the file is still there.
+  expect(app.connections.state().configured).toContain('chatgpt-plan')
+  expect(await readdir(join(userData, 'secrets'))).toEqual(['chatgpt-plan.enc'])
+
+  // Once the file can be deleted again, the same Remove completes.
+  failDelete = false
+  const state = await app.connections.remove('chatgpt-plan')
+  expect(state.configured).not.toContain('chatgpt-plan')
+  expect(await readdir(join(userData, 'secrets'))).toEqual([])
 })
 
 it('passes on an unconfirmed sign-out as a notice', async () => {

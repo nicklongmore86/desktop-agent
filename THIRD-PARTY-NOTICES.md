@@ -20,3 +20,20 @@ The Claude distribution ambiguity described in README remains unresolved: the
 support article describes Claude plan use with the SDK, while the SDK overview
 requires prior approval for third-party products offering claude.ai login. This
 package makes no authorization claim and does not change authentication methods.
+
+# OpenAI Sign in with ChatGPT logo
+
+The "Continue with ChatGPT" button in the ChatGPT · Plan sign-in screen shows OpenAI's
+ChatGPT logo, taken unmodified from OpenAI's published Sign in with ChatGPT button assets
+(`https://developers.openai.com/assets/siwc/sign-in-buttons/chatgpt-logo-white.svg`;
+shipped as `src/renderer/src/assets/openai/chatgpt-logo-white.svg`, inside the app's
+renderer bundle). It is drawn in white on the dark button and in black on the light
+button from that one file.
+
+The logo is OpenAI's trademark and artwork. It is **not** covered by this project's
+Apache-2.0 license, nor by the Sign-in with ChatGPT DevKit Noncommercial License, which
+excludes OpenAI's names, marks, logos and branded visual assets. Its use is subject to
+OpenAI's Sign in with ChatGPT terms (https://openai.com/policies/sign-in-with-chatgpt-terms/)
+and brand guidelines (https://openai.com/brand/), solely to identify the sign-in action.
+Its use here does not imply OpenAI sponsors or endorses Desktop Agent. Do not reuse the
+file outside that purpose, and follow OpenAI's current terms if you redistribute it.

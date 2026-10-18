@@ -375,7 +375,7 @@ describe('the ChatGPT plan card', () => {
     expect(
       await within(plan).findByText('Your ChatGPT sign-in has ended. Sign in with ChatGPT again.'),
     ).toBeTruthy()
-    await user.click(within(plan).getByRole('button', { name: 'Sign in with ChatGPT' }))
+    await user.click(within(plan).getByRole('button', { name: 'Continue with ChatGPT' }))
     expect(api.provider.login).toHaveBeenCalledOnce()
     expect(await within(plan).findByText('Connected')).toBeTruthy()
     expect(within(plan).queryByRole('heading', { name: 'Usage' })).toBeNull()

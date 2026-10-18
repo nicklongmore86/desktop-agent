@@ -3,6 +3,7 @@ import type { ChatErrorCode } from '../../../shared/ipc'
 import type { Banner } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
 import { StatusIcon } from './StatusIcon'
+import { ManageUsageLink } from './chatgpt-plan/ManageUsageLink'
 
 const TITLES: Record<ChatErrorCode, string> = {
   usage_limit: 'Plan limit reached',
@@ -46,11 +47,14 @@ export function ErrorBanner({
   onDismiss,
   onOpenSettings,
   onNewChat,
+  manageUsage = false,
 }: {
   banner: Banner
   onDismiss: () => void
   onOpenSettings: OpenSettings
   onNewChat: () => void
+  /** ChatGPT · Plan is the connection in use: a limit or plan error offers Manage usage. */
+  manageUsage?: boolean
 }): React.JSX.Element {
   const info = banner.code === 'aborted'
   return (
@@ -68,6 +72,9 @@ export function ErrorBanner({
         <strong>{TITLES[banner.code]}.</strong> {plainText(banner.message)}
       </div>
       <div className="banner-actions">
+        {manageUsage && (banner.code === 'usage_limit' || banner.code === 'plan_not_entitled') && (
+          <ManageUsageLink className="button-primary" />
+        )}
         {SETTINGS_CODES.has(banner.code) && (
           <button
             type="button"

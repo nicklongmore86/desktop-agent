@@ -1,9 +1,10 @@
 import type { AgentErrorCode } from '../../agent/types'
+import { MANAGE_USAGE_URL } from '../../../shared/chatgpt-plan'
 import { OpenAICompatError, retryAt } from '../openai-compat/errors'
 
 export const LABEL = 'ChatGPT'
 /** Where ChatGPT plan users review and change their usage limits. */
-export const MANAGE_USAGE_URL = 'https://chatgpt.com/settings/usage'
+export { MANAGE_USAGE_URL }
 
 /**
  * An OpenAICompatError with the ChatGPT-plan details the docs say to preserve. Messages
