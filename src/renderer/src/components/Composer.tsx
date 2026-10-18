@@ -1,10 +1,15 @@
 import type { ProviderStatus } from '../../../shared/ipc'
-import type { ConnectionId, ConnectionInfo } from '../../../shared/ipc-connections'
+import {
+  CHATGPT_PLAN,
+  type ConnectionId,
+  type ConnectionInfo,
+} from '../../../shared/ipc-connections'
 import type { OpenSettings } from '../open-settings'
 import type { ProviderModelPicker } from '../provider-models'
 import { summarizeUsage, type ProviderUsage } from '../usage'
 import { useComposerReferences } from './files/use-composer-references'
 import { useToast } from './Toast'
+import { ManageUsageLink } from './chatgpt-plan/ManageUsageLink'
 
 export interface ComposerProps {
   draft: string
@@ -125,6 +130,12 @@ export function Composer({
             </select>
           )}
           {choice?.note && <span className="composer-note">{choice.note}</span>}
+          {provider?.provider === CHATGPT_PLAN && provider.state !== 'signed-out' && (
+            <span className="plan-label">
+              <span>Using ChatGPT plan</span>
+              <ManageUsageLink />
+            </span>
+          )}
           {summary && (
             <button
               type="button"

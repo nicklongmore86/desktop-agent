@@ -906,6 +906,7 @@
 
 .banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
   margin: var(--space-2) var(--space-4) 0;
@@ -930,7 +931,7 @@
 }
 
 .banner-text {
-  flex: 1;
+  flex: 1 1 50%;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -2419,6 +2420,74 @@
   display: none;
 }
 
+/* Sign in with ChatGPT: OpenAI's button, the plan label, Manage usage and the first-use notice */
+
+.chatgpt-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: var(--space-2) var(--space-4);
+  border-color: var(--color-text);
+  border-radius: var(--radius-pill);
+  background: var(--color-text);
+  color: var(--color-surface-0);
+  font-weight: 600;
+}
+
+.chatgpt-button:hover:not(:disabled) {
+  border-color: var(--color-text-muted);
+  background: var(--color-text-muted);
+}
+
+/* OpenAI's logo file as a mask, so it takes the button's text colour (their black or white). */
+.chatgpt-button-logo {
+  flex: none;
+  width: 21px;
+  height: 21px;
+  background: currentcolor;
+  mask: url('../assets/openai/chatgpt-logo-white.svg') center / contain no-repeat;
+}
+
+.plan-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.manage-usage {
+  color: var(--color-accent-text);
+  text-decoration: underline;
+}
+
+/* In an error banner it is the primary action, so it looks like the button it stands for. */
+.manage-usage.button-primary {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.manage-usage.button-primary:hover {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent-hover);
+}
+
+.plan-notice .approval-actions {
+  align-items: center;
+}
+
+.plan-switch-banner .chip {
+  margin-right: var(--space-1);
+}
+
 /*
  * Windows High Contrast: author colours are replaced by the user's palette, so
  * the things that carry meaning without colour need system colours here.
@@ -2426,6 +2495,31 @@
  * stays visible on every surface.
  */
 @media (forced-colors: active) {
+  /* The button's fill and logo come from the page colours, which High Contrast replaces. */
+  .chatgpt-button {
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  .chatgpt-button-logo {
+    forced-color-adjust: none;
+    background: ButtonText;
+  }
+
+  .chatgpt-button:disabled {
+    border-color: GrayText;
+    color: GrayText;
+  }
+
+  .chatgpt-button:disabled .chatgpt-button-logo {
+    background: GrayText;
+  }
+
+  .manage-usage {
+    color: LinkText;
+  }
+
   .unsafe-char {
     border: 1px solid CanvasText;
     background: Highlight;

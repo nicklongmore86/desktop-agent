@@ -22,7 +22,7 @@ ChatGPT Plus and Pro"; ChatGPT Free and the other plans keep using Free / Subscr
 | Models                | main: `GET /v1/models`                                        | slugs and display names                      |
 | Remove the connection | main: revoke at OpenAI, delete the tokens                     | `notice` if revocation is unconfirmed        |
 
-- `authKind` is `chatgpt-login`. The sign-in panel shows a plain **Sign in with ChatGPT**
+- `authKind` is `chatgpt-login`. The sign-in panel shows OpenAI's **Continue with ChatGPT**
   button (`data-sign-in="chatgpt"`) and **Cancel sign-in** while it waits. There is no
   link or code to paste: main waits on its own loopback listener.
 - The API key calls refuse this connection (`authKind` is not `api-key`), so its token
@@ -48,15 +48,33 @@ A tool-format rejection is a 400/422 (or an in-stream failure) whose `error.para
 against a strict pattern before it is shown; the provider's own text never is. Main also
 logs `chatgpt-plan: tool format rejected (param=…, request=…)`.
 
-## For the next PR (OpenAI's button, plan notice, composer label, Manage usage)
+## Screens (Sign in with ChatGPT UI)
 
-- Button artwork: replace the button marked `data-sign-in="chatgpt"` in
-  `components/connections/SignInPanel.tsx` (`ChatgptSignIn`); keep its accessible name.
-- One-time plan notice: show it before the first sign-in, from the wizard's connect step
-  for `authKind === 'chatgpt-login'`.
-- Composer label and Manage usage: the connection's `label` is "ChatGPT · Plan"; a
-  `usage_limit` failure from it carries `MANAGE_USAGE_URL`
-  (`llm/openai-responses/errors.ts`).
+Follows OpenAI's published guidance: <https://developers.openai.com/siwc/ui-ux-guidelines>,
+<https://developers.openai.com/siwc/quickstart> and
+<https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt>.
+
+- **Button**: `components/chatgpt-plan/ChatgptButton.tsx`, labelled **Continue with ChatGPT**
+  (OpenAI's label for the action that starts sign-in; the dialog stays "Sign in with
+  ChatGPT"). It keeps `data-sign-in="chatgpt"`. The logo is OpenAI's own file
+  (`assets/openai/chatgpt-logo-white.svg`, see THIRD-PARTY-NOTICES.md), drawn through a CSS
+  mask, so the fill follows the theme (dark button on light, light button on dark) and
+  High Contrast uses system colours.
+- **First-use notice** (`PlanNotice`): "You’re using your ChatGPT plan" with **Got it** and
+  Manage usage, shown once per connection after the first sign-in, once the wizard and
+  Settings are closed. OpenAI asks for it on the first sign-in only, so a later sign-in does
+  not show it again. The flag is `plan-notice-seen:chatgpt-plan` in `localStorage`
+  (kept after Remove). An open approval hides it and has focus first.
+- **Composer label**: "Using ChatGPT plan" + **Manage usage** beside the pickers while the
+  connection in use is `chatgpt-plan` and not signed out.
+- **Manage usage** is a link to the fixed `MANAGE_USAGE_URL`
+  (`src/shared/chatgpt-plan.ts`, also used by main's error text), opened by the main
+  process's window-open handler like every other link. No URL from a response is used.
+- **Errors**: `usage_limit` and `plan_not_entitled` banners on this connection show Manage
+  usage as the primary action, before Open Settings.
+- **Codex invitation** (`PlanSwitchBanner`): shown while Codex · ChatGPT is in use and
+  ChatGPT · Plan is not ready; dismissible (`plan-switch-banner-dismissed`); its action
+  opens the wizard on ChatGPT · Plan's sign-in. Codex itself is unchanged.
 
 ## Verifying with a real account (Windows)
 
@@ -66,7 +84,7 @@ holding every function, each with `strict: false`. To check it:
 
 1. Build and install (or `pnpm dev`) on Windows. Use a ChatGPT **Plus or Pro** account.
 2. Settings → Accounts & providers → **Add connection** → ChatGPT → **Plan** → Continue.
-3. Click **Sign in with ChatGPT**. Your browser opens OpenAI's sign-in. Sign in and allow
+3. Click **Continue with ChatGPT**. Your browser opens OpenAI's sign-in. Sign in and allow
    Desktop Agent to use your plan. The wizard shows **Connected**. (Also try **Cancel
    sign-in** once while the browser is open: the wizard says "Sign-in cancelled." and
    nothing is saved.)

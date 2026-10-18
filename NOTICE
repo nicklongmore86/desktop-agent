@@ -6,3 +6,7 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 The Windows installer also redistributes third-party software under its own
 licenses and terms. See THIRD-PARTY-NOTICES.md (installed as
 resources/runtimes/notices/THIRD-PARTY-NOTICES.md) and the license files beside it.
+
+The ChatGPT · Plan sign-in screen shows OpenAI's ChatGPT logo (OpenAI's trademark and
+artwork, subject to OpenAI's own terms and not licensed under Apache-2.0); see
+THIRD-PARTY-NOTICES.md.

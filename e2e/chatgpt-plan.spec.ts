@@ -63,7 +63,7 @@ test('ChatGPT Plan: sign in, wait, cancel, sign in again, pick a model, finish',
     await e2e(page, (api) => {
       api.setLoginPending(true)
     })
-    const button = signIn.getByRole('button', { name: 'Sign in with ChatGPT' })
+    const button = signIn.getByRole('button', { name: 'Continue with ChatGPT' })
     await expect(button).toHaveAttribute('data-sign-in', 'chatgpt')
     await button.click()
     await expect(
@@ -80,7 +80,7 @@ test('ChatGPT Plan: sign in, wait, cancel, sign in again, pick a model, finish',
       api.finishLogin()
     })
     await expect(signIn.getByText('Connected')).toBeVisible()
-    await signIn.getByRole('button', { name: 'Continue' }).click()
+    await signIn.getByRole('button', { name: 'Continue', exact: true }).click()
 
     const model = page.getByRole('dialog', { name: 'Pick a model' })
     await model.getByRole('radio', { name: /GPT-6.1 Sol/ }).check()
@@ -114,7 +114,7 @@ test('ChatGPT Plan: closing while it waits cancels the sign-in and puts chats ba
     await e2e(page, (api) => {
       api.setLoginPending(true)
     })
-    await signIn.getByRole('button', { name: 'Sign in with ChatGPT' }).click()
+    await signIn.getByRole('button', { name: 'Continue with ChatGPT' }).click()
     await expect(signIn.getByRole('button', { name: 'Cancel sign-in' })).toBeVisible()
     await signIn.getByRole('button', { name: 'Close' }).click()
     await expect(page.getByRole('dialog', { name: 'Sign in with ChatGPT' })).toHaveCount(0)
