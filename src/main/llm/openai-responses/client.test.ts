@@ -11,9 +11,12 @@ import {
   redirectFetch,
   responsesEvents as ev,
   responsesSse,
+  rawSse,
+  splitEvent,
   type FakeServer,
   type Handler,
 } from '../openai-compat/test-support'
+import { MAX_EVENT_BYTES, MAX_STREAM_BYTES } from '../openai-compat/stream'
 import { TOOL_ERROR_PREFIX } from '../openai-compat/translate'
 import { createChatGPTResponsesClient, type ChatGPTResponsesClientOptions } from './client'
 import { MANAGE_USAGE_URL, ResponsesError } from './errors'
@@ -45,6 +48,22 @@ const params: MessageCreateParamsNonStreaming = {
   model: 'ignored',
   max_tokens: 100,
   messages: [{ role: 'user', content: 'Hi' }],
+}
+const tool = (name: string) => ({
+  name,
+  input_schema: { type: 'object' as const, properties: {} },
+})
+/** Offers `read`, `f` and `g`: the model may call only offered tools. */
+const withTools: MessageCreateParamsNonStreaming = {
+  ...params,
+  tools: [tool('read'), tool('f'), tool('g')],
+}
+/** A completed call in this client's namespace; `namespace: null` sends none. */
+const call = (
+  fields: Omit<Parameters<typeof ev.call>[0], 'namespace'> & { namespace?: string | null },
+) => {
+  const { namespace = TOOL_NAMESPACE, ...rest } = fields
+  return ev.call({ ...rest, ...(namespace === null ? {} : { namespace }) })
 }
 async function failure(promise: Promise<unknown>): Promise<OpenAICompatError> {
   const error: unknown = await promise.then(
@@ -375,7 +394,7 @@ describe('openai-responses client', () => {
     const execute = vi.fn(() => Promise.resolve({ content: 'ran' }))
     server.reply(
       responsesSse([
-        ev.call({ call_id: 'call_t', name: 'read', arguments: '{"pa' }),
+        call({ call_id: 'call_t', name: 'read', arguments: '{"pa' }),
         ev.incomplete('max_output_tokens'),
       ]),
     )
@@ -421,7 +440,17 @@ describe('openai-responses client', () => {
       /not valid JSON/,
     ],
     ['no call id', { name: 'read', arguments: '{}' }, /without an id/],
-    ['no name', { call_id: 'c1', arguments: '{}' }, /without a name/],
+    ['no name', { call_id: 'c1', arguments: '{}' }, /did not offer/],
+    [
+      'no namespace',
+      { call_id: 'c1', name: 'read', arguments: '{}', namespace: null },
+      /did not offer/,
+    ],
+    [
+      'a name that was not offered',
+      { call_id: 'c1', name: 'write_file', arguments: '{}' },
+      /did not offer/,
+    ],
     [
       'an unfinished status',
       { call_id: 'c1', name: 'read', arguments: '{}', status: 'incomplete' },
@@ -434,9 +463,9 @@ describe('openai-responses client', () => {
     ],
   ])('never runs a tool call with %s', async (_label, fields, message) => {
     const execute = vi.fn(() => Promise.resolve({ content: 'ran' }))
-    const events = [ev.call(fields), ev.completed()]
+    const events = [call(fields), ev.completed()]
     server.reply(responsesSse(events))
-    const error = await failure(finalOf())
+    const error = await failure(finalOf(client(), withTools))
     expect(error).toMatchObject({
       code: 'protocol',
       message: expect.stringMatching(message) as unknown,
@@ -460,14 +489,14 @@ describe('openai-responses client', () => {
 
   it('maps provider call ids to stable transcript-safe ids', async () => {
     const events = [
-      ev.call({ call_id: 'call:with/odd chars', name: 'f', arguments: '{}' }),
-      ev.call({ call_id: 'call_ok', name: 'g', arguments: '{}' }),
+      call({ call_id: 'call:with/odd chars', name: 'f', arguments: '{}' }),
+      call({ call_id: 'call_ok', name: 'g', arguments: '{}' }),
       ev.completed(),
     ]
     server.reply(responsesSse(events))
-    const first = await finalOf()
+    const first = await finalOf(client(), withTools)
     server.reply(responsesSse(events))
-    const again = await finalOf()
+    const again = await finalOf(client(), withTools)
     const ids = first.content.map((b) => (b.type === 'tool_use' ? b.id : ''))
     expect(ids[0]).toMatch(/^call_[0-9a-f]{24}$/)
     expect(ids[1]).toBe('call_ok')
@@ -671,10 +700,93 @@ describe('openai-responses client', () => {
     })
   })
 
-  it('validates the model before any request', () => {
-    expect(() => client({ model: ' ' })).toThrow(
-      expect.objectContaining({ code: 'invalid_request' }),
-    )
+  it.each([
+    ' ',
+    'gpt 6',
+    'gpt/6',
+    '../responses',
+    'gpt-6?x=1',
+    'gpt-6#frag',
+    'gpt-6\nX-Injected: 1',
+    'gpt\u20116',
+    'a'.repeat(257),
+  ])('refuses the model %j before any request', (model) => {
+    expect(() => client({ model })).toThrow(expect.objectContaining({ code: 'invalid_request' }))
     expect(server.requests).toHaveLength(0)
+  })
+
+  it('accepts a model slug as the model list returns it', async () => {
+    server.reply(responsesSse([ev.message('ok'), ev.completed()]))
+    await finalOf(client({ model: ' gpt-6.1-sol:2026_10 ' }))
+    expect(server.requests[0]?.body).toMatchObject({ model: 'gpt-6.1-sol:2026_10' })
+  })
+
+  it('never sends a conversation with an orphaned tool result', async () => {
+    server.reply(responsesSse([ev.message('ok'), ev.completed()]))
+    const error = await failure(
+      finalOf(client(), {
+        ...withTools,
+        messages: [
+          { role: 'user', content: 'Go' },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'gone', content: 'r' }] },
+        ],
+      }),
+    )
+    expect(error).toMatchObject({ code: 'protocol' })
+    expect(server.requests).toHaveLength(0)
+  })
+
+  describe('stream size bounds', () => {
+    const delta = (size: number) =>
+      `data: ${JSON.stringify({ type: 'response.reasoning_text.delta', delta: 'x'.repeat(size) })}\n\n`
+    const finish = `data: ${JSON.stringify(ev.message('ok'))}\n\ndata: ${JSON.stringify(ev.completed())}\n\n`
+
+    it('rejects one event larger than the per-event bound on a single line', async () => {
+      server.reply(rawSse([delta(MAX_EVENT_BYTES + 1024), finish]))
+      expect(await failure(finalOf())).toMatchObject({
+        code: 'protocol',
+        message: expect.stringMatching(/oversized stream event/) as unknown,
+      })
+    })
+
+    it('rejects an oversized line that never ends, without waiting for it', async () => {
+      server.reply((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        // No newline and the stream stays open: only the line-buffer bound can stop it.
+        res.write(`data: "${'x'.repeat(MAX_EVENT_BYTES + 1024)}`)
+      })
+      expect(await failure(finalOf(client({ timeoutMs: 10_000 })))).toMatchObject({
+        code: 'protocol',
+        message: expect.stringMatching(/oversized stream event/) as unknown,
+      })
+    }, 30_000)
+
+    it('rejects one event split over many short data lines past the per-event bound', async () => {
+      // Each line is short, so the line buffer never grows; only the event's total does.
+      const lines = Math.ceil(MAX_EVENT_BYTES / 1024) + 16
+      server.reply(
+        rawSse([...splitEvent({ type: 'response.reasoning_text.delta' }, lines), finish]),
+      )
+      expect(await failure(finalOf())).toMatchObject({
+        code: 'protocol',
+        message: expect.stringMatching(/oversized stream event/) as unknown,
+      })
+    }, 30_000)
+
+    it('accepts the same data split across many events under the bound', async () => {
+      const event = splitEvent({ type: 'response.reasoning_text.delta' }, 1024)
+      server.reply(rawSse([...Array.from({ length: 12 }, () => event).flat(), finish]))
+      expect((await finalOf()).content).toMatchObject([{ type: 'text', text: 'ok' }])
+    }, 30_000)
+
+    it('rejects a stream larger than the total bound', async () => {
+      const part = delta(1024 * 1024)
+      const count = Math.ceil(MAX_STREAM_BYTES / part.length) + 2
+      server.reply(rawSse([...Array.from({ length: count }, () => part), finish]))
+      expect(await failure(finalOf())).toMatchObject({
+        code: 'protocol',
+        message: expect.stringMatching(/too large/) as unknown,
+      })
+    }, 60_000)
   })
 })

@@ -11,12 +11,15 @@ import {
   chunk,
   fakeServer,
   json,
+  rawSse,
   redirectFetch,
+  splitEvent,
   sse,
   toolDelta,
   usageChunk,
   type FakeServer,
 } from './test-support'
+import { MAX_EVENT_BYTES } from './stream'
 import { IMAGE_PLACEHOLDER, TOOL_ERROR_PREFIX } from './translate'
 
 let server: FakeServer
@@ -199,6 +202,20 @@ describe('openai-compat client', () => {
       { role: 'tool', tool_call_id: 'call_2' },
     ])
   })
+
+  it('rejects a chunk split over many short data lines past the per-event bound', async () => {
+    const lines = Math.ceil(MAX_EVENT_BYTES / 1024) + 16
+    server.reply(
+      rawSse([
+        ...splitEvent({ id: 'chatcmpl-1', object: 'chat.completion.chunk', choices: [] }, lines),
+        `data: ${JSON.stringify(chunk({ content: 'ok' }, 'stop'))}\n\ndata: [DONE]\n\n`,
+      ]),
+    )
+    expect(await failure(finalOf())).toMatchObject({
+      code: 'protocol',
+      message: expect.stringMatching(/oversized stream event/) as unknown,
+    })
+  }, 30_000)
 
   it('rejects malformed tool arguments as a protocol error and never runs the tool', async () => {
     const execute = vi.fn(() => Promise.resolve({ content: 'ran' }))

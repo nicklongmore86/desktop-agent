@@ -97,7 +97,14 @@ const userText = (text: string): ResponsesInputItem => ({
   content: [{ type: 'input_text', text }],
 })
 
-function translateMessage(message: MessageParam): ResponsesInputItem[] {
+/**
+ * `calls` holds the ids of the tool calls in the assistant message just before `message`
+ * that are still unanswered. A tool result must answer one of them, once: the API rejects
+ * an output with no matching call, and the app's stored transcripts keep the same
+ * pairing (conversation-store.ts). An orphaned result means the history is damaged, so the
+ * request is refused rather than sent with the result silently dropped.
+ */
+function translateMessage(message: MessageParam, calls: Set<string>): ResponsesInputItem[] {
   if (typeof message.content === 'string') {
     if (!message.content) return []
     return message.role === 'user'
@@ -130,6 +137,11 @@ function translateMessage(message: MessageParam): ResponsesInputItem[] {
   const out: ResponsesInputItem[] = message.content
     .filter((block) => block.type === 'tool_result')
     .map((block) => {
+      if (!calls.delete(block.tool_use_id))
+        throw new OpenAICompatError(
+          'protocol',
+          'The conversation has a tool result without its tool call, so it was not sent.',
+        )
       const output = textOf(block.content)
       return {
         type: 'function_call_output',
@@ -149,7 +161,15 @@ function translateMessage(message: MessageParam): ResponsesInputItem[] {
  */
 export function toResponsesRequest(params: MessageCreateParamsNonStreaming): ResponsesRequest {
   const system = typeof params.system === 'string' ? params.system : textOf(params.system ?? [])
-  const input = params.messages.flatMap(translateMessage)
+  const input: ResponsesInputItem[] = []
+  let calls = new Set<string>()
+  for (const message of params.messages) {
+    input.push(...translateMessage(message, calls))
+    calls =
+      message.role === 'assistant' && typeof message.content !== 'string'
+        ? new Set(message.content.flatMap((b) => (b.type === 'tool_use' ? [b.id] : [])))
+        : new Set()
+  }
   // Hosted (server) tools have no input_schema and are never offered on this route.
   const functions: ResponsesFunctionTool[] = (params.tools ?? []).flatMap((tool) =>
     'input_schema' in tool
@@ -194,4 +214,9 @@ export function assertAllowedBody(body: object): void {
         'invalid_request',
         'The ChatGPT request had an unsupported field.',
       )
+}
+
+/** The function names a request offers; the model may call only these. */
+export function offeredToolNames(body: ResponsesRequest): ReadonlySet<string> {
+  return new Set(body.tools?.flatMap((ns) => ns.tools.map((tool) => tool.name)) ?? [])
 }

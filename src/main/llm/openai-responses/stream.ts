@@ -37,7 +37,11 @@ export class ResponsesAccumulator {
   private items = 0
   private id = ''
   private terminal: Terminal | null = null
-  constructor(private readonly model: string) {}
+  constructor(
+    private readonly model: string,
+    /** The names offered in the request; a call to any other name is never returned. */
+    private readonly offered: ReadonlySet<string>,
+  ) {}
 
   /** True once a terminal event has arrived; later events are ignored. */
   get done(): boolean {
@@ -99,7 +103,12 @@ export class ResponsesAccumulator {
         else if (p.type === 'refusal') this.refusal = true
       }
     } else if (item.type === 'function_call') {
-      if (item.namespace !== undefined && item.namespace !== TOOL_NAMESPACE)
+      // Offered tools all sit in one namespace, so each call must name it and an offered tool.
+      if (
+        item.namespace !== TOOL_NAMESPACE ||
+        typeof item.name !== 'string' ||
+        !this.offered.has(item.name)
+      )
         throw new OpenAICompatError('protocol', `${LABEL} called a tool this app did not offer.`)
       // A call the model did not finish is never run.
       if (item.status !== undefined && item.status !== 'completed')
@@ -145,8 +154,7 @@ export class ResponsesAccumulator {
       if (parsed) input = parsed
       if (stop === 'tool_use') {
         // Never execute a call that cannot be answered or whose arguments are not an object.
-        if (!call.name)
-          throw new OpenAICompatError('protocol', `${LABEL} sent a tool call without a name.`)
+        // (Its name was checked against the offered tools when the item arrived.)
         if (!call.callId)
           throw new OpenAICompatError('protocol', `${LABEL} sent a tool call without an id.`)
         if (!parsed)
@@ -154,7 +162,7 @@ export class ResponsesAccumulator {
             'protocol',
             `${LABEL} sent tool arguments that are not valid JSON. The tool was not run.`,
           )
-      } else if (!call.name) return
+      }
       // An incomplete response keeps its calls so the agent loop discards the turn.
       let id = transcriptToolId(call.callId || undefined, `${this.id}:${String(i)}`)
       while (seen.has(id)) id = transcriptToolId(undefined, `${id}:${String(i)}`)

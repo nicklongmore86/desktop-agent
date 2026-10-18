@@ -10,10 +10,12 @@ import {
 import { sseData } from '../openai-compat/stream'
 import { LABEL, responsesError, responsesStatusError } from './errors'
 import { ResponsesAccumulator } from './stream'
-import { toResponsesRequest } from './translate'
+import { offeredToolNames, toResponsesRequest } from './translate'
 
 /** The only API root ChatGPT plan use allows; never configurable. */
 export const RESPONSES_BASE_URL = 'https://api.openai.com/v1'
+/** A model `slug` as listChatGPTModels accepts it, and the only form ever sent as `model`. */
+export const MODEL_SLUG = /^[A-Za-z0-9._:-]{1,256}$/
 
 export interface ChatGPTConnectionOptions {
   /**
@@ -53,7 +55,7 @@ export function connectChatGPT(options: ChatGPTConnectionOptions): Connection {
  */
 export function createChatGPTResponsesClient(options: ChatGPTResponsesClientOptions): AgentClient {
   const model = options.model.trim()
-  if (!model || model.length > 256)
+  if (!MODEL_SLUG.test(model))
     throw new OpenAICompatError('invalid_request', `Choose a ${LABEL} model.`)
   const connection = connectChatGPT(options)
   return {
@@ -120,7 +122,7 @@ class ResponsesStream implements AgentStream {
           throw responsesError(json.error, undefined, response.headers)
         throw new OpenAICompatError('protocol', `${LABEL} did not stream its response.`)
       }
-      const acc = new ResponsesAccumulator(model)
+      const acc = new ResponsesAccumulator(model, offeredToolNames(body))
       for await (const data of sseData(response.body, touch)) {
         let event: unknown
         try {

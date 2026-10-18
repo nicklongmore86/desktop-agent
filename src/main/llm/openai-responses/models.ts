@@ -1,7 +1,7 @@
 import { OpenAICompatError, openAICompatErrorEvent } from '../openai-compat/errors'
 import { getJson } from '../openai-compat/models'
 import type { KeyValidation } from '../openai-compat/models'
-import { RESPONSES_BASE_URL, type ChatGPTConnectionOptions } from './client'
+import { MODEL_SLUG, RESPONSES_BASE_URL, type ChatGPTConnectionOptions } from './client'
 import { LABEL, responsesStatusError } from './errors'
 
 export interface ChatGPTModel {
@@ -12,7 +12,6 @@ export interface ChatGPTModel {
 }
 
 const MAX_MODELS = 1000
-const SLUG = /^[A-Za-z0-9._:-]{1,256}$/
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -49,7 +48,7 @@ export async function listChatGPTModels(
     const entry = record(raw)
     if (entry.visibility !== 'list') continue
     const slug = typeof entry.slug === 'string' ? entry.slug.trim() : ''
-    if (!SLUG.test(slug) || seen.has(slug)) continue
+    if (!MODEL_SLUG.test(slug) || seen.has(slug)) continue
     seen.add(slug)
     const name = typeof entry.display_name === 'string' ? entry.display_name.trim() : ''
     models.push({ slug, displayName: name ? name.slice(0, 256) : slug })

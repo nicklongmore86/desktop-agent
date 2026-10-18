@@ -206,3 +206,30 @@ export function responsesSse(events: unknown[]): Handler {
     res.end()
   }
 }
+
+/** Streams raw SSE text, one write per part: for framing and size tests. */
+export function rawSse(parts: Iterable<string>): Handler {
+  return (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    for (const part of parts) res.write(part)
+    res.end()
+  }
+}
+
+/**
+ * One SSE event whose JSON is split over `lines` short `data:` lines, each about
+ * `lineLength` characters. Joined with newlines (as SSE joins them) it is valid JSON:
+ * `base` plus a `pad` array of strings.
+ */
+export function splitEvent(
+  base: Record<string, unknown>,
+  lines: number,
+  lineLength = 1024,
+): string[] {
+  const filler = `data: "${'x'.repeat(lineLength)}",\n`
+  return [
+    `data: ${JSON.stringify(base).slice(0, -1)},"pad":[\n`,
+    ...Array.from({ length: lines }, () => filler),
+    'data: ""]}\n\n',
+  ]
+}
