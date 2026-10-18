@@ -176,12 +176,39 @@ describe('first sign-in (dynamic registration)', () => {
     expect(second?.get('client_id')).toBe('oaiapp_test_client')
     expect(second?.has('agent_name_hint')).toBe(false)
     expect(second?.get('ext_agent_host_id')).toBe(first?.get('ext_agent_host_id'))
-    expect(second?.get('id_token_hint')).toMatch(/^eyJ/)
     expect(second?.get('login_hint')).toBe('person@example.com')
+    expect(second?.has('id_token_hint')).toBe(false)
     for (const key of ['state', 'nonce', 'code_challenge'])
       expect(second?.get(key)).not.toBe(first?.get(key))
     expect(fake.tokenRequests[1]?.get('client_id')).toBe('oaiapp_test_client')
     noteSecrets()
+  })
+
+  it('never puts token material in the authorize URL', async () => {
+    const urls: string[] = []
+    const auth = service()
+    const record = (url: string) => {
+      urls.push(url)
+      return fake.openUrl(url)
+    }
+    await auth.login(session({ openUrl: record }))
+    clock = Date.now() + 56 * 60 * 1000
+    await auth.getAccessToken()
+    clock = Date.now()
+    await auth.login(session({ openUrl: record }))
+    expect(urls).toHaveLength(2)
+    noteSecrets()
+    const tokens = [...seenSecrets, ...fake.issuedIdTokens]
+    expect(tokens.length).toBeGreaterThan(3)
+    for (const url of urls) {
+      const decoded = decodeURIComponent(url)
+      for (const token of tokens) expect(decoded).not.toContain(token)
+      expect(decoded).not.toMatch(/eyJ[\w-]*\.[\w-]*/)
+      expect(decoded).not.toMatch(/id_token|access_token|refresh_token|code_verifier/)
+    }
+    // Nor is an ID token kept once it has been verified.
+    const saved = JSON.stringify(await savedRecord())
+    for (const idToken of fake.issuedIdTokens) expect(saved).not.toContain(idToken)
   })
 
   it('asks for consent again when requested', async () => {
@@ -399,22 +426,40 @@ describe('refresh', () => {
     expect((await failure(auth.getAccessToken())).code).toBe('sign-in-again')
     expect(await auth.status()).toEqual({ state: 'sign-in-again', reason: 'expired' })
     const record = await savedRecord()
-    expect(record?.['tokens']).toBeUndefined()
-    expect(record?.['idToken']).toMatch(/^eyJ/)
+    expect(record).toMatchObject({ subject: 'user-subject-1', ended: 'expired' })
+    expect(JSON.stringify(record)).not.toMatch(/eyJ|rt-/)
     expect(await service().status()).toEqual({ state: 'sign-in-again', reason: 'expired' })
     noteSecrets()
   })
 
-  it.each(['invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired'])(
-    'treats %s as terminal',
-    async (error) => {
-      const auth = await signedIn()
-      nearExpiry()
-      fake.options.refreshReply = () => ({ status: 400, body: { error } })
-      expect((await failure(auth.getAccessToken())).code).toBe('sign-in-again')
-      expect((await savedRecord())?.['tokens']).toBeUndefined()
-    },
-  )
+  it.each([
+    [400, { error: 'invalid_grant' }],
+    [400, { error: 'invalid_refresh_token' }],
+    [400, { error: 'token_expired' }],
+    [400, { error: 'refresh_token_expired' }],
+    [400, { error: 'refresh_token_invalidated' }],
+    [400, { error: 'unauthorized_client' }],
+    [400, { error: 'invalid_scope' }],
+    [400, { error: 'some_future_error' }],
+    [403, { detail: 'not an OAuth error body' }],
+    [404, undefined],
+  ])('treats a %i reply %j as permanent, without retrying', async (status, body) => {
+    const auth = await signedIn()
+    nearExpiry()
+    fake.options.refreshReply = () => ({ status, body })
+    expect((await failure(auth.getAccessToken())).code).toBe('sign-in-again')
+    expect((await savedRecord())?.['tokens']).toBeUndefined()
+    expect(await auth.status()).toEqual({ state: 'sign-in-again', reason: 'expired' })
+    // No loop: later calls fail at once without asking OpenAI again.
+    const refreshes = () =>
+      fake.tokenRequests.filter((f) => f.get('grant_type') === 'refresh_token')
+    expect(refreshes()).toHaveLength(1)
+    expect((await failure(auth.getAccessToken())).code).toBe('sign-in-again')
+    expect((await failure(service().getAccessToken())).code).toBe('sign-in-again')
+    expect(refreshes()).toHaveLength(1)
+    // The registration is kept: signing in again reuses the issued client.
+    expect(settings.chatgptAuth?.accounts).toHaveLength(1)
+  })
 
   it('drops the registration on invalid_client so the next sign-in registers again', async () => {
     const auth = await signedIn()
@@ -426,6 +471,20 @@ describe('refresh', () => {
     await auth.login(session())
     expect(fake.authorizeRequests[1]?.get('client_id')).toBe('dynamic_agent_client')
   })
+
+  it.each([408, 429, 500, 502, 503])(
+    'keeps the credentials on a %i refresh reply and retries later',
+    async (status) => {
+      const auth = await signedIn()
+      clock = Date.now() + 61 * 60 * 1000
+      fake.options.refreshReply = () => ({ status, body: { error: 'temporarily_unavailable' } })
+      expect((await failure(auth.getAccessToken())).code).toBe('server')
+      expect((await savedRecord())?.['tokens']).toBeDefined()
+      expect(await auth.status()).toEqual({ state: 'signed-in', email: 'person@example.com' })
+      delete fake.options.refreshReply
+      expect(await auth.getAccessToken()).toMatch(/^eyJ/)
+    },
+  )
 
   it('keeps the credentials on 5xx and network failures', async () => {
     const auth = await signedIn()
@@ -664,8 +723,7 @@ describe('secrets stay out of errors and logs', () => {
     })
     await failure(auth.getAccessToken())
     noteSecrets()
-    const record = await savedRecord()
-    if (typeof record?.['idToken'] === 'string') seenSecrets.add(record['idToken'])
+    for (const idToken of fake.issuedIdTokens) seenSecrets.add(idToken)
     const errorText = seenErrors
       .map((error) =>
         error instanceof Error

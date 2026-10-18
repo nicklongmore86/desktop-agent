@@ -20,9 +20,11 @@ const tokensSchema = z.object({
 /**
  * The credential record, one JSON document in the encrypted key store under
  * CREDENTIAL_ID. Every field is replaced together, so a rotated refresh token
- * is never saved without the access token and expiry it came with. Without
- * `tokens` the record only keeps the ID token as id_token_hint for signing in
- * again; `ended` says why the tokens were dropped.
+ * is never saved without the access token and expiry it came with. The ID
+ * token is verified and then discarded: it is never sent anywhere (no
+ * id_token_hint, which would put it in a browser URL), so it is not kept.
+ * Without `tokens` the record only remembers which account to sign in again;
+ * `ended` says why the tokens were dropped.
  */
 export const credentialSchema = z.object({
   version: z.literal(1),
@@ -31,7 +33,6 @@ export const credentialSchema = z.object({
   email: z.string().max(320).optional(),
   clientId: clientIdSchema,
   hostId: z.string().max(256),
-  idToken: token,
   tokens: tokensSchema.optional(),
   ended: z.enum(['expired', 'plan-not-enabled']).optional(),
   savedAt: z.string().max(64),

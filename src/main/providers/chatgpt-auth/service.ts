@@ -73,16 +73,16 @@ export interface ChatgptAuthDeps {
   loginTimeout?: number
 }
 
-/** Refresh errors after which the refresh token can never work again. */
-const TERMINAL_REFRESH_ERRORS: ReadonlySet<string> = new Set([
-  'invalid_grant',
-  'invalid_refresh_token',
-  'token_expired',
-  'refresh_token_expired',
-  'refresh_token_invalidated',
-  'refresh_token_reused',
-  'invalid_client',
-])
+/**
+ * Refresh replies worth retrying later with the same refresh token: request
+ * timeout, rate limiting and every 5xx. Any other non-200 reply is a permanent
+ * OAuth error (invalid_grant, refresh_token_reused, unauthorized_client,
+ * invalid_scope, or a code this app does not know), so the tokens are dropped
+ * and the user signs in again rather than the app retrying a token that will
+ * never work.
+ */
+const isTransientStatus = (status: number): boolean =>
+  status === 408 || status === 429 || status >= 500
 const REVOKE_ATTEMPTS = 3
 export const UNCONFIRMED_SIGN_OUT =
   "Signed out on this computer, but couldn't confirm sign-out at OpenAI. You can disconnect Desktop Agent in ChatGPT Settings."
@@ -209,7 +209,7 @@ export function openChatgptAuth(
       throw new ChatgptAuthError('storage')
     }
   }
-  /** Drops the tokens but keeps the ID token as a sign-in hint. */
+  /** Drops the tokens but remembers the account, so status says to sign in again. */
   async function end(current: Credential, reason: NonNullable<Credential['ended']>): Promise<void> {
     const { tokens: _tokens, ...rest } = current
     const ended: Credential = { ...rest, ended: reason, savedAt: new Date(now()).toISOString() }
@@ -217,7 +217,7 @@ export function openChatgptAuth(
     try {
       await store.set(JSON.stringify(ended))
     } catch {
-      // The tokens must not survive even if the hint cannot be kept.
+      // The tokens must not survive even if the account cannot be remembered.
       await clear().catch(() => {})
     }
   }
@@ -329,15 +329,14 @@ export function openChatgptAuth(
       log('refresh request failed')
       throw error
     }
-    if (response.status >= 500) {
+    if (isTransientStatus(response.status)) {
       log(`refresh returned ${String(response.status)}`)
       throw new ChatgptAuthError('server')
     }
     if (response.status !== 200) {
       const code = oauthError(response.json)
       log(`refresh rejected (${code ?? String(response.status)})`)
-      if (code === undefined || !TERMINAL_REFRESH_ERRORS.has(code))
-        throw new ChatgptAuthError('token-exchange')
+      // A broken registration is forgotten too, so the next sign-in registers again.
       if (code === 'invalid_client') await forget(current.clientId)
       await end(current, 'expired')
       throw new ChatgptAuthError('sign-in-again')
@@ -348,7 +347,6 @@ export function openChatgptAuth(
       log('refresh returned an unexpected response')
       throw new ChatgptAuthError('token-exchange')
     }
-    let idToken = current.idToken
     if (parsed.id_token !== undefined) {
       try {
         const { jwks } = await discover()
@@ -358,7 +356,6 @@ export function openChatgptAuth(
           now: now(),
         })
         if (claims.sub !== current.subject) throw new ChatgptAuthError('account-mismatch')
-        idToken = parsed.id_token
       } catch (error) {
         if (error instanceof ChatgptAuthError && error.transient) throw error
         // The rotated tokens cannot be trusted for this account: fail closed.
@@ -374,7 +371,6 @@ export function openChatgptAuth(
     }
     const next: Credential = {
       ...current,
-      idToken,
       tokens,
       savedAt: new Date(now()).toISOString(),
     }
@@ -435,11 +431,10 @@ export function openChatgptAuth(
         ext_agent_host_id: settings.hostId,
       }
       if (!registration) query['agent_name_hint'] = AGENT_NAME
-      // The retained ID token (and email) only identify the account to OpenAI's authorize page.
-      if (registration && previous?.subject === registration.subject) {
-        query['id_token_hint'] = previous.idToken
-        if (previous.email) query['login_hint'] = previous.email
-      }
+      // Only the email preselects the account. No id_token_hint: a token in a browser URL can end
+      // up in history, extensions or crash reports, and the saved client id already pins the account.
+      if (registration && previous?.subject === registration.subject && previous.email)
+        query['login_hint'] = previous.email
       if (session.reconsent) query['prompt'] = 'consent'
       for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
       log(registration ? 'sign-in started' : 'registration started')
@@ -528,7 +523,6 @@ export function openChatgptAuth(
       ...(claims.email !== undefined ? { email: claims.email } : {}),
       clientId,
       hostId: settings.hostId,
-      idToken: parsed.id_token,
       tokens,
       savedAt: new Date(now()).toISOString(),
     }

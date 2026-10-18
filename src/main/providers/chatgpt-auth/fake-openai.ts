@@ -23,6 +23,8 @@ export interface FakeOpenAi {
   /** Every token request's form, refreshes included. */
   tokenRequests: URLSearchParams[]
   revokeRequests: URLSearchParams[]
+  /** Every ID token issued, so tests can look for them where they must not be. */
+  issuedIdTokens: string[]
   /** The refresh token the server will accept next. */
   currentRefreshToken: () => string | undefined
   /** Signs a JWT with the server's key (or another), for ID tokens the tests build. */
@@ -85,6 +87,7 @@ export async function startFakeOpenAi(): Promise<FakeOpenAi> {
   const authorizeRequests: URLSearchParams[] = []
   const tokenRequests: URLSearchParams[] = []
   const revokeRequests: URLSearchParams[] = []
+  const issuedIdTokens: string[] = []
   let base = ''
 
   const signJwt = (
@@ -103,6 +106,7 @@ export async function startFakeOpenAi(): Promise<FakeOpenAi> {
     authorizeRequests,
     tokenRequests,
     revokeRequests,
+    issuedIdTokens,
     currentRefreshToken: () => refreshToken,
     signJwt,
     options: {
@@ -142,7 +146,9 @@ export async function startFakeOpenAi(): Promise<FakeOpenAi> {
     }
     if (fake.options.idToken) claims = fake.options.idToken(claims)
     const token = signJwt(claims, fake.options.signingKey ?? privateKey)
-    return fake.options.rawIdToken ? fake.options.rawIdToken(token) : token
+    const issued = fake.options.rawIdToken ? fake.options.rawIdToken(token) : token
+    issuedIdTokens.push(issued)
+    return issued
   }
   const issueTokens = (clientId: string, nonce: string | undefined, withIdToken: boolean) => {
     refreshToken = `rt-${random()}`
