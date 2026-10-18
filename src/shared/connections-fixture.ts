@@ -43,6 +43,23 @@ export const BUILTIN_CONNECTION_INFO: ConnectionInfo[] = [
     pickerOrder: 0,
   },
   {
+    id: 'chatgpt-plan',
+    vendor: 'openai',
+    access: 'plan',
+    label: 'ChatGPT · Plan',
+    shortLabel: 'ChatGPT',
+    title: 'ChatGPT · Plan',
+    description: 'Sign in with ChatGPT to use your Plus or Pro plan. No API key needed.',
+    capabilities: {
+      authKind: 'chatgpt-login',
+      listsModels: true,
+      reportsUsage: false,
+      needsRuntime: false,
+    },
+    personalUseOnly: false,
+    pickerOrder: 8,
+  },
+  {
     id: 'anthropic-api',
     vendor: 'anthropic',
     access: 'api-key',

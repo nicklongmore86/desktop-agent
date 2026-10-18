@@ -261,6 +261,7 @@ it('offers the registry’s connections, and can hide the personal-use one', asy
   expect(shown.connections.list().map(({ id, label }) => [id, label])).toEqual([
     ['claude-subscription', 'Claude · Subscription'],
     ['codex-subscription', 'Codex · ChatGPT'],
+    ['chatgpt-plan', 'ChatGPT · Plan'],
     ['anthropic-api', 'Claude · API'],
     ['openai-api', 'OpenAI · API'],
     ['gemini-api', 'Gemini · API'],
@@ -299,6 +300,7 @@ it('offers the registry’s connections, and can hide the personal-use one', asy
   expect(hidden.settings.connection).toBe('anthropic-api')
   expect(hidden.connections.list().map(({ id }) => id)).toEqual([
     'codex-subscription',
+    'chatgpt-plan',
     'anthropic-api',
     'openai-api',
     'gemini-api',

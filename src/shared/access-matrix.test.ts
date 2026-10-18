@@ -27,7 +27,7 @@ describe('access matrix', () => {
     ])
   })
 
-  it('shows the segments that apply, in Free, Subscription, API key order', () => {
+  it('shows the segments that apply, in Free, Subscription, Plan, API key order', () => {
     expect(options('claude').map((option) => option.access)).toEqual([
       'free',
       'subscription',
@@ -36,6 +36,7 @@ describe('access matrix', () => {
     expect(options('chatgpt').map((option) => option.access)).toEqual([
       'free',
       'subscription',
+      'plan',
       'api-key',
     ])
     expect(options('gemini').map((option) => option.access)).toEqual([
@@ -79,6 +80,24 @@ describe('access matrix', () => {
       ])
     }
     expect(pick('chatgpt', 'free')?.note).toBe('ChatGPT Free includes limited Codex use.')
+  })
+
+  it('offers ChatGPT Plan as its own connection, with the Plus and Pro note', () => {
+    expect(pick('chatgpt', 'plan')).toMatchObject({
+      available: true,
+      label: 'Plan',
+      connections: [expect.objectContaining({ id: 'chatgpt-plan', label: 'ChatGPT · Plan' })],
+      text: 'Sign in with ChatGPT and use your plan’s limits directly. No API charges.',
+      note: 'Documented for ChatGPT Plus and Pro. On other plans, use Subscription (Codex).',
+    })
+    expect(accessOf('chatgpt', 'chatgpt-plan')).toBe('plan')
+    // Not offered by main (an older build): shown, but unavailable.
+    const without = {
+      connections: BUILTIN_CONNECTION_INFO.filter((info) => info.id !== 'chatgpt-plan'),
+      showPersonalUse: true,
+    }
+    expect(pick('chatgpt', 'plan', without)).toMatchObject({ available: false })
+    expect(pick('chatgpt', 'subscription', without)).toMatchObject({ available: true })
   })
 
   it('offers Ollama and LM Studio under local models, and OpenRouter free through its key', () => {

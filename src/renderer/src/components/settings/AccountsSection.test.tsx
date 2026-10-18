@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { ApiContext } from '../../api'
 import { App } from '../../App'
 import { BUILTIN_CONNECTION_INFO } from '../../../../shared/connections-fixture'
+import type { ConnectionsState } from '../../../../shared/ipc-connections'
 import { fakeApi, type FakeApiOptions } from '../../test/fake-api'
 import { setViewport } from '../../test/viewport'
 
@@ -324,5 +325,97 @@ describe('the composer’s connection picker', () => {
     expect(await screen.findByRole('dialog', { name: 'Which AI do you want to use?' })).toBeTruthy()
     expect(api.provider.set).not.toHaveBeenCalled()
     expect(picker).toHaveProperty('value', 'anthropic-api')
+  })
+})
+
+describe('the ChatGPT plan card', () => {
+  const signedIn = {
+    provider: 'chatgpt-plan',
+    state: 'ready' as const,
+    signedIn: true,
+    message: 'Signed in with ChatGPT.',
+  }
+
+  it('signs in with ChatGPT and shows the model, with no usage bars', async () => {
+    const { user, api } = await renderApp({
+      configured: ['anthropic-api', 'chatgpt-plan'],
+      provider: {
+        provider: 'chatgpt-plan',
+        state: 'signed-out',
+        signedIn: false,
+        message: 'Your ChatGPT sign-in has ended. Sign in with ChatGPT again.',
+        failure: {
+          code: 'auth_expired',
+          message: 'Your ChatGPT sign-in has ended. Sign in with ChatGPT again.',
+        },
+      },
+    })
+    api.provider.models.mockResolvedValue({
+      ok: true,
+      value: {
+        provider: 'chatgpt-plan',
+        options: [
+          {
+            id: 'gpt-6.1-sol',
+            label: 'GPT-6.1 Sol',
+            defaultReasoningEffort: null,
+            supportedReasoningEfforts: [],
+            isDefault: true,
+          },
+        ],
+        selectedModel: 'gpt-6.1-sol',
+        savedModel: null,
+        defaultModel: 'gpt-6.1-sol',
+        resolvedModel: 'gpt-6.1-sol',
+      },
+    })
+    const list = await openAccounts(user)
+    const plan = await waitForCard(list, 'ChatGPT · Plan')
+    // Why it has to sign in again, not just "Not signed in".
+    expect(
+      await within(plan).findByText('Your ChatGPT sign-in has ended. Sign in with ChatGPT again.'),
+    ).toBeTruthy()
+    await user.click(within(plan).getByRole('button', { name: 'Sign in with ChatGPT' }))
+    expect(api.provider.login).toHaveBeenCalledOnce()
+    expect(await within(plan).findByText('Connected')).toBeTruthy()
+    expect(within(plan).queryByRole('heading', { name: 'Usage' })).toBeNull()
+    expect(within(plan).queryByRole('progressbar')).toBeNull()
+    expect(within(plan).getByText(/doesn’t report usage here/)).toBeTruthy()
+    expect(await within(plan).findByLabelText('Model')).toBeTruthy()
+  })
+
+  it('removing it says it signs out, and shows an unconfirmed sign-out', async () => {
+    const { user, api } = await renderApp({
+      configured: ['anthropic-api', 'chatgpt-plan'],
+      statuses: { 'chatgpt-plan': signedIn },
+    })
+    const notice =
+      "Signed out on this computer, but couldn't confirm sign-out at OpenAI. You can disconnect Desktop Agent in ChatGPT Settings."
+    const remove = api.connections.remove.getMockImplementation()
+    api.connections.remove.mockImplementationOnce(async (id) => ({
+      ...(await (remove as (id: string) => Promise<ConnectionsState>)(id)),
+      notice,
+    }))
+    const list = await openAccounts(user)
+    await user.click(
+      await within(await waitForCard(list, 'ChatGPT · Plan')).findByRole('button', {
+        name: 'Remove ChatGPT · Plan',
+      }),
+    )
+    const confirm = screen.getByRole('alertdialog')
+    expect(confirm.textContent).toMatch(/Your chat history for it stays on this PC/)
+    expect(confirm.textContent).toMatch(/signed out of ChatGPT and its saved sign-in is deleted/)
+    expect(confirm.textContent).not.toMatch(/API key/)
+    await user.click(within(confirm).getByRole('button', { name: 'Remove connection' }))
+    await waitFor(() => {
+      expect(api.connections.remove).toHaveBeenCalledExactlyOnceWith('chatgpt-plan')
+    })
+    // No key call: main signs out and deletes the tokens as part of remove.
+    expect(api.apiKey.clear).not.toHaveBeenCalled()
+    expect(await screen.findByText(notice)).toBeTruthy()
+    await waitFor(() => {
+      expect(within(list).queryByText('ChatGPT · Plan')).toBeNull()
+    })
+    expect(api.chat.remove).not.toHaveBeenCalled()
   })
 })

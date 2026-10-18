@@ -17,6 +17,8 @@ export class ResponsesError extends OpenAICompatError {
   readonly requestId?: string
   /** False when sending the same body again cannot succeed. */
   readonly retryable: boolean
+  /** The request's tool definitions were rejected; `param` names the field. */
+  readonly toolFormat: boolean
   constructor(
     code: AgentErrorCode,
     message: string,
@@ -27,6 +29,7 @@ export class ResponsesError extends OpenAICompatError {
       param?: string
       requestId?: string
       retryable?: boolean
+      toolFormat?: boolean
     } = {},
   ) {
     super(code, message, {
@@ -38,6 +41,7 @@ export class ResponsesError extends OpenAICompatError {
     if (options.param) this.param = options.param
     if (options.requestId) this.requestId = options.requestId
     this.retryable = options.retryable ?? true
+    this.toolFormat = options.toolFormat ?? false
   }
 }
 
@@ -124,6 +128,21 @@ const short = (value: unknown, pattern: RegExp): string | undefined =>
 /** `error.param` names a request field ("tools[0].type"); anything else is dropped. */
 const PARAM = /^[A-Za-z0-9_.[\]]{1,64}$/
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,128}$/
+/** A field of the tool definitions, or a replayed call's namespace: the parts most likely to change. */
+const TOOL_PARAM = /^(tools($|[[.])|input\[\d+\]\.(namespace|name)$)/
+
+/**
+ * The tool grouping (one `namespace` of non-strict functions) is the least settled part of
+ * ChatGPT plan use, so a rejection of it gets its own message naming the field. The field
+ * path passed PARAM, so it is never provider text.
+ */
+export const toolFormatMessage = (param: string): string =>
+  `ChatGPT plan use did not accept this app’s tool format (${param}), so nothing was run. Please report this problem.`
+
+/** True for a rejection of the request's tool definitions (see toolFormatMessage). */
+export function isToolFormatError(error: unknown): error is ResponsesError & { param: string } {
+  return error instanceof ResponsesError && error.toolFormat
+}
 
 function requestIdOf(headers?: Headers): string | undefined {
   return short(headers?.get('x-request-id') ?? headers?.get('openai-request-id'), REQUEST_ID)
@@ -145,9 +164,22 @@ export function responsesError(
     ...(status !== undefined ? { status } : {}),
     ...(requestId ? { requestId } : {}),
   }
+  const param = short(e.param, PARAM)
+  // A rejected tool definition: an unsupported capability or an invalid request naming one.
+  const rejected =
+    providerCode === 'subscription_sharing_unsupported_capability' ||
+    (!Object.hasOwn(KNOWN, providerCode) &&
+      (status === undefined || status === 400 || status === 422))
+  if (param && rejected && TOOL_PARAM.test(param))
+    return new ResponsesError('invalid_request', toolFormatMessage(param), {
+      ...base,
+      ...(Object.hasOwn(KNOWN, providerCode) ? { providerCode } : {}),
+      param,
+      retryable: false,
+      toolFormat: true,
+    })
   const known = KNOWN[providerCode]
   if (known) {
-    const param = short(e.param, PARAM)
     return new ResponsesError(known.code, known.message, {
       ...base,
       providerCode,

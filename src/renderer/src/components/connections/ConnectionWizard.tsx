@@ -348,11 +348,13 @@ export function ConnectionWizard(props: ConnectionWizardProps): React.JSX.Elemen
       : flow.step === 'connect' && info
         ? info.capabilities.authKind === 'runtime-login'
           ? `Sign in to ${card?.name ?? info.title}`
-          : info.capabilities.authKind === 'api-key'
-            ? `Add your ${info.title} key`
-            : info.capabilities.authKind === 'local'
-              ? `Find ${info.title}`
-              : `Connect ${info.title}`
+          : info.capabilities.authKind === 'chatgpt-login'
+            ? 'Sign in with ChatGPT'
+            : info.capabilities.authKind === 'api-key'
+              ? `Add your ${info.title} key`
+              : info.capabilities.authKind === 'local'
+                ? `Find ${info.title}`
+                : `Connect ${info.title}`
         : flow.step === 'connect'
           ? 'Which one do you use?'
           : TITLES[flow.step]

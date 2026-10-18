@@ -4,5 +4,5 @@ export {
   type ChatGPTConnectionOptions,
   type ChatGPTResponsesClientOptions,
 } from './client'
-export { MANAGE_USAGE_URL, ResponsesError } from './errors'
+export { isToolFormatError, MANAGE_USAGE_URL, ResponsesError, toolFormatMessage } from './errors'
 export { listChatGPTModels, validateChatGPTToken, type ChatGPTModel } from './models'

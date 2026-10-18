@@ -204,6 +204,7 @@ function standing(row: ConnectionRow): string {
     case 'api-key':
       return 'Needs a key'
     case 'runtime-login':
+    case 'chatgpt-login':
       return 'Not signed in'
     case 'local':
       return 'Not running'
@@ -215,6 +216,7 @@ function standing(row: ConnectionRow): string {
 function ConfirmRemove({
   info,
   hasKey,
+  signsOut,
   busy,
   error,
   onCancel,
@@ -222,6 +224,8 @@ function ConfirmRemove({
 }: {
   info: ConnectionInfo
   hasKey: boolean
+  /** Removing it signs out and deletes its saved sign-in (Sign in with ChatGPT). */
+  signsOut: boolean
   busy: boolean
   error: string | null
   onCancel: () => void
@@ -276,7 +280,9 @@ function ConfirmRemove({
         </h2>
         <p id={textId}>
           It leaves your list of connections. Your chat history for it stays on this PC
-          {hasKey ? ', but its saved API key is deleted' : ''}. You can add it again later.
+          {hasKey ? ', but its saved API key is deleted' : ''}
+          {signsOut ? ', but you’re signed out of ChatGPT and its saved sign-in is deleted' : ''}.
+          You can add it again later.
         </p>
         {error && (
           <p className="settings-error" role="alert">
@@ -363,6 +369,8 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [removing, setRemoving] = useState<ConnectionRow | null>(null)
   const [removeError, setRemoveError] = useState<string | null>(null)
+  /** Something to know after a removal (sign-out at OpenAI not confirmed). */
+  const [removeNotice, setRemoveNotice] = useState<string | null>(null)
   const cards = overview.rows.filter((row) => row.configured || row.info.id === current)
 
   const switchTo = async (id: ConnectionId): Promise<void> => {
@@ -393,8 +401,10 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
           return
         }
       }
-      overview.applyState(await api.connections.remove(row.info.id))
+      const { notice, ...state } = await api.connections.remove(row.info.id)
+      overview.applyState(state)
       overview.refresh()
+      if (mounted.current) setRemoveNotice(notice ?? null)
       if (mounted.current) setRemoving(null)
     } catch {
       if (mounted.current) setRemoveError('Could not remove this connection. Try again.')
@@ -428,6 +438,11 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
             {error}
           </p>
         )}
+        {removeNotice && (
+          <p className="settings-hint" role="status">
+            {plainText(removeNotice)}
+          </p>
+        )}
         <ul className="connection-cards" aria-label="Connections">
           {cards.map((row) => {
             const { info } = row
@@ -448,7 +463,7 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
                 <p className="settings-hint">{info.description}</p>
                 {isCurrent ? (
                   <>
-                    {(kind === 'runtime-login' || kind === 'local') && (
+                    {(kind === 'runtime-login' || kind === 'chatgpt-login' || kind === 'local') && (
                       <ProviderPanel
                         connection={info}
                         status={props.provider ?? null}
@@ -470,7 +485,17 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
                         )}
                       </>
                     )}
-                    {info.capabilities.reportsUsage || info.capabilities.listsModels ? (
+                    {kind === 'chatgpt-login' ? (
+                      // No usage report exists for plan use: only the model, and a limit
+                      // shows as an error when it is reached.
+                      <>
+                        <ModelSection connection={info.id} />
+                        <p className="settings-hint">
+                          {info.shortLabel} doesn’t report usage here. If you reach your plan’s
+                          limit, you’ll see it when you send.
+                        </p>
+                      </>
+                    ) : info.capabilities.reportsUsage || info.capabilities.listsModels ? (
                       // Usage where the connection reports it, and its own model list.
                       <UsageSection key={info.id} provider={info.id} />
                     ) : (
@@ -511,6 +536,7 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
                     aria-describedby={isCurrent ? `${info.id}-remove-hint` : undefined}
                     onClick={() => {
                       setRemoveError(null)
+                      setRemoveNotice(null)
                       setRemoving(row)
                     }}
                   >
@@ -532,6 +558,7 @@ export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
         <ConfirmRemove
           info={removing.info}
           hasKey={removing.info.capabilities.authKind === 'api-key' && removing.keySaved !== false}
+          signsOut={removing.info.capabilities.authKind === 'chatgpt-login'}
           busy={busy !== null}
           error={removeError}
           onCancel={() => {

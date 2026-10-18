@@ -24,8 +24,11 @@ export const connectionsChannels = {
 export const VENDORS = ['anthropic', 'openai', 'google', 'local', 'openrouter'] as const
 export type Vendor = (typeof VENDORS)[number]
 
-/** How the user pays for it: nothing, a consumer plan, or their own API key. */
-export const ACCESS_TYPES = ['free', 'subscription', 'api-key'] as const
+/**
+ * How the user pays for it: nothing, a consumer subscription through a bundled runtime,
+ * a ChatGPT plan used directly (Sign in with ChatGPT), or their own API key.
+ */
+export const ACCESS_TYPES = ['free', 'subscription', 'plan', 'api-key'] as const
 export type AccessType = (typeof ACCESS_TYPES)[number]
 
 /**
@@ -40,6 +43,8 @@ export const CONNECTION_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 export const ANTHROPIC_API = 'anthropic-api'
 export const CLAUDE_SUBSCRIPTION = 'claude-subscription'
 export const CODEX_SUBSCRIPTION = 'codex-subscription'
+/** ChatGPT plan use over the Responses API, signed in with Sign in with ChatGPT. */
+export const CHATGPT_PLAN = 'chatgpt-plan'
 /** The direct API connections added after the first three. */
 export const OPENAI_API = 'openai-api'
 export const GEMINI_API = 'gemini-api'
@@ -50,6 +55,7 @@ export const LMSTUDIO = 'lmstudio'
 export const BUILTIN_CONNECTIONS: readonly ConnectionId[] = [
   CLAUDE_SUBSCRIPTION,
   CODEX_SUBSCRIPTION,
+  CHATGPT_PLAN,
   ANTHROPIC_API,
   OPENAI_API,
   GEMINI_API,
@@ -61,10 +67,11 @@ export const BUILTIN_CONNECTIONS: readonly ConnectionId[] = [
 export const DEFAULT_CONNECTION: ConnectionId = ANTHROPIC_API
 
 /**
- * How a connection signs in: through its bundled runtime's own login, with an
- * API key the user saves, a local server that needs neither, or not at all.
+ * How a connection signs in: through its bundled runtime's own login, with Sign in
+ * with ChatGPT (main runs the OAuth flow; the renderer only starts and cancels it),
+ * with an API key the user saves, a local server that needs neither, or not at all.
  */
-export type AuthKind = 'runtime-login' | 'api-key' | 'local' | 'none'
+export type AuthKind = 'runtime-login' | 'chatgpt-login' | 'api-key' | 'local' | 'none'
 
 export interface ConnectionCapabilities {
   authKind: AuthKind
@@ -119,6 +126,11 @@ export interface ConnectionsState {
   /** The connection chats go to. */
   current: ConnectionId
   showPersonalUse: boolean
+  /**
+   * From remove() only: something the user should know about the removal (sign-out
+   * at OpenAI could not be confirmed). Text written in main, never provider text.
+   */
+  notice?: string
 }
 
 export interface ConnectionsApi {
@@ -131,7 +143,8 @@ export interface ConnectionsApi {
     /** Adds a listed connection to the set-up ones. Rejects an unknown id. */
     add: (id: ConnectionId) => Promise<ConnectionsState>
     /**
-     * Takes a connection out of the set-up ones. Chat history and keys are not touched.
+     * Takes a connection out of the set-up ones. Chat history and API keys are not touched;
+     * a signed-in connection (ChatGPT plan) is signed out and its stored tokens deleted.
      * Rejects the connection chats go to: switch away first.
      */
     remove: (id: ConnectionId) => Promise<ConnectionsState>
