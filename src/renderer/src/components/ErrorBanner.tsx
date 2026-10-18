@@ -1,3 +1,4 @@
+import { plainText } from '../plain-text'
 import type { ChatErrorCode } from '../../../shared/ipc'
 import type { Banner } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
@@ -64,7 +65,7 @@ export function ErrorBanner({
         </span>
       )}
       <div className="banner-text">
-        <strong>{TITLES[banner.code]}.</strong> {banner.message}
+        <strong>{TITLES[banner.code]}.</strong> {plainText(banner.message)}
       </div>
       <div className="banner-actions">
         {SETTINGS_CODES.has(banner.code) && (

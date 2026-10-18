@@ -43,7 +43,7 @@ function renderSettings(key0: ApiKeyStatus, roots: string[] = []) {
 describe('SettingsPanel', () => {
   it('saves a key through a masked input and only ever shows "Key saved"', async () => {
     const { api, user } = renderSettings({ saved: false, error: null })
-    expect(screen.getByText('No key saved.')).toBeTruthy()
+    expect(await screen.findByText('No key saved.')).toBeTruthy()
     const input = screen.getByLabelText('API key')
     expect(input.getAttribute('type')).toBe('password')
     expect(input.getAttribute('autocomplete')).toBe('off')
@@ -57,7 +57,7 @@ describe('SettingsPanel', () => {
 
   it('replaces and clears a saved key', async () => {
     const { api, user } = renderSettings({ saved: true, error: null })
-    await user.click(screen.getByRole('button', { name: 'Replace key' }))
+    await user.click(await screen.findByRole('button', { name: 'Replace key' }))
     const input = screen.getByLabelText('API key')
     expect(input).toHaveProperty('value', '')
     await user.type(input, 'sk-new')
@@ -74,9 +74,22 @@ describe('SettingsPanel', () => {
       saved: false,
       error: 'OS encryption is unavailable. API key storage is disabled.',
     })
-    await user.type(screen.getByLabelText('API key'), 'sk-x')
+    await user.type(await screen.findByLabelText('API key'), 'sk-x')
     await user.click(screen.getByRole('button', { name: 'Save key' }))
     expect(screen.getByRole('alert').textContent).toContain('OS encryption is unavailable')
+  })
+
+  it('shows a refused key’s reason without bidi or invisible characters', async () => {
+    const { api, user } = renderSettings({ saved: false, error: null })
+    const RLO = String.fromCharCode(0x202e)
+    const ZWSP = String.fromCharCode(0x200b)
+    api.apiKey.set.mockResolvedValueOnce({
+      saved: false,
+      error: `OpenAI${RLO} rejected${ZWSP} the key.`,
+    })
+    await user.type(await screen.findByLabelText('API key'), 'sk-x')
+    await user.click(screen.getByRole('button', { name: 'Save key' }))
+    expect(screen.getByRole('alert').textContent).toBe('OpenAI rejected the key.')
   })
 
   it('adds folders only through the native picker and removes them', async () => {
@@ -378,9 +391,12 @@ describe('the new connections in Settings', () => {
 
   it('lists every connection as a card, without switching to any', async () => {
     const { api } = renderFor({ provider: 'anthropic-api', state: 'ready', message: 'Ready.' })
-    const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
+    const cards = await screen.findByRole('list', { name: 'Connections' })
+    // The set-up connections are cards; the others are added through the wizard.
+    for (const title of ['Claude · Subscription', 'Codex · ChatGPT', 'Anthropic API'])
+      expect(await within(cards).findByText(title)).toBeTruthy()
     for (const title of ['OpenAI API', 'Gemini API', 'OpenRouter API', 'Ollama', 'LM Studio'])
-      expect(within(cards).getByText(title)).toBeTruthy()
+      expect(within(cards).queryByText(title)).toBeNull()
     expect(api.provider.set).not.toHaveBeenCalled()
   })
 
@@ -395,7 +411,7 @@ describe('the new connections in Settings', () => {
     await user.click(screen.getByRole('button', { name: 'Save key' }))
     expect(api.apiKey.set).toHaveBeenCalledWith('secret-key', id)
     // Its own model list (provider.models), not the Claude list.
-    expect(await screen.findByLabelText(/model$/)).toBeTruthy()
+    expect(await screen.findByLabelText(/ model$/)).toBeTruthy()
     expect(api.model.get).not.toHaveBeenCalled()
   })
 

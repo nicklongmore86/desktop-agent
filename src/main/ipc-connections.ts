@@ -5,7 +5,9 @@ import {
   type ConnectionBaseUrl,
   type ConnectionId,
   type ConnectionInfo,
+  type ConnectionsState,
 } from '../shared/ipc-connections'
+import type { ProviderStatus } from '../shared/ipc'
 import type { IpcHandle } from './ipc-features'
 
 export interface ConnectionsService {
@@ -13,6 +15,16 @@ export interface ConnectionsService {
   list: () => ConnectionInfo[]
   /** True for a registered connection the user can choose now. */
   available: (id: ConnectionId) => boolean
+  /** The set-up connections, the current one, and whether personal-use ones are shown. */
+  state: () => ConnectionsState
+  /** A registered connection's status, whether or not chats go to it. Never throws. */
+  status: (id: ConnectionId) => Promise<ProviderStatus>
+  /** Adds an available connection to the set-up ones. */
+  add: (id: ConnectionId) => Promise<ConnectionsState>
+  /** Removes one; throws for the current connection (chats go there). History is untouched. */
+  remove: (id: ConnectionId) => Promise<ConnectionsState>
+  /** Throws when hiding would leave chats on a personal-use connection. */
+  setShowPersonalUse: (show: boolean) => Promise<ConnectionsState>
   /** A local connection's API root; rejects for one without. */
   baseUrl: (id: ConnectionId) => Promise<ConnectionBaseUrl>
   /** Validates (loopback only) and saves; a refused URL comes back as `error`. */
@@ -39,6 +51,27 @@ export function registerConnectionsHandlers(
   handle(connectionsChannels.connectionsList, (...args) => {
     if (args.length) throw new Error('Listing connections takes no arguments.')
     return connections.list()
+  })
+  handle(connectionsChannels.connectionsState, (...args) => {
+    if (args.length) throw new Error('Reading connections takes no arguments.')
+    return connections.state()
+  })
+  handle(connectionsChannels.connectionsStatus, (...args) => {
+    if (args.length !== 1) throw new Error('Unknown provider.')
+    return connections.status(parseConnectionId(args[0], connections))
+  })
+  handle(connectionsChannels.connectionsAdd, (...args) => {
+    if (args.length !== 1) throw new Error('Unknown provider.')
+    return connections.add(parseConnectionId(args[0], connections))
+  })
+  handle(connectionsChannels.connectionsRemove, (...args) => {
+    if (args.length !== 1) throw new Error('Unknown provider.')
+    return connections.remove(parseConnectionId(args[0], connections))
+  })
+  handle(connectionsChannels.connectionsSetShowPersonalUse, (...args) => {
+    const show = z.tuple([z.boolean()]).safeParse(args)
+    if (!show.success) throw new Error('Invalid choice.')
+    return connections.setShowPersonalUse(show.data[0])
   })
   handle(connectionsChannels.connectionsBaseUrl, (id) =>
     connections.baseUrl(parseConnectionId(id, connections)),

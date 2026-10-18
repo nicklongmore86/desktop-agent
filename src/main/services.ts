@@ -1,7 +1,13 @@
 import { homedir } from 'node:os'
+import type { ConnectionsService } from './ipc-connections'
 import { ConnectionService } from './providers/service'
 import type { ProviderResult } from '../shared/ipc'
-import { ANTHROPIC_API, DEFAULT_CONNECTION, type ConnectionId } from '../shared/ipc-connections'
+import {
+  ANTHROPIC_API,
+  DEFAULT_CONNECTION,
+  type ConnectionId,
+  type ConnectionsState,
+} from '../shared/ipc-connections'
 import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import type { FilesChanged } from '../shared/ipc-files'
@@ -208,9 +214,31 @@ export async function createAppServices(deps: AppServiceDeps) {
     },
     submitLoginCode: (code: string) => Promise.resolve(connections.submitLoginCode(code)),
   }
-  const connectionList = {
+  const connectionList: ConnectionsService = {
     list: () => connections.registry.list({ personalUse: settings.showPersonalUseConnections }),
     available,
+    state: (): ConnectionsState => ({
+      configured: settings.connections.map(({ id }) => id).filter(available),
+      current: settings.connection,
+      showPersonalUse: settings.showPersonalUseConnections,
+    }),
+    status: (id: ConnectionId) => connections.status(id),
+    async add(id: ConnectionId) {
+      if (!available(id)) throw new Error('Unknown provider.')
+      await settings.addConnection(id)
+      return connectionList.state()
+    },
+    async remove(id: ConnectionId) {
+      if (!available(id)) throw new Error('Unknown provider.')
+      await settings.removeConnection(id)
+      return connectionList.state()
+    },
+    async setShowPersonalUse(show: boolean) {
+      if (!show && connections.registry.get(settings.connection)?.personalUseOnly)
+        throw new Error('Switch to another connection before hiding this one.')
+      await settings.setShowPersonalUseConnections(show)
+      return connectionList.state()
+    },
     baseUrl: (id: ConnectionId) => Promise.resolve({ ...connections.baseUrl(id), error: null }),
     async setBaseUrl(id: ConnectionId, baseUrl: string | null) {
       try {

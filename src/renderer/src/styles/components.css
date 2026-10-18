@@ -2526,3 +2526,364 @@
     border: 1px solid CanvasText;
   }
 }
+
+/* Add connection: the wizard and the Accounts cards */
+
+.wizard-overlay {
+  position: fixed;
+  inset: 0;
+  /* Above Settings (90), below approvals and confirmations (100). */
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background: var(--color-overlay);
+}
+
+.wizard-overlay[hidden] {
+  display: none;
+}
+
+.wizard {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: min(720px, 94dvh);
+  background: var(--color-surface-0);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised);
+  overflow: hidden;
+}
+
+.wizard-header,
+.wizard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-6);
+}
+
+.wizard-header {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.wizard-footer {
+  border-top: 1px solid var(--color-border);
+  flex-wrap: wrap;
+}
+
+.wizard-footer p {
+  margin: 0;
+}
+
+.wizard-nav {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.wizard-progress {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.wizard-close {
+  border: none;
+  background: transparent;
+}
+
+.wizard-skip {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.wizard-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6);
+}
+
+.wizard-body h2 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-lg);
+  overflow-wrap: anywhere;
+}
+
+/* The heading takes focus only so a screen reader starts there; it is not a control. */
+.wizard-body h2:focus {
+  outline: none;
+}
+
+.wizard-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.wizard-section > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wizard-cards {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wizard-card {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+}
+
+.wizard-card:hover {
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent);
+}
+
+.wizard-segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.wizard-segment {
+  position: relative;
+  flex: 1 1 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.wizard-segment:has(input:checked) {
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent);
+}
+
+.wizard-segment:has(input:focus-visible) {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.wizard-segment[data-unavailable] {
+  color: var(--color-text-muted);
+  border-style: dashed;
+}
+
+.wizard-segment input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: inherit;
+}
+
+.wizard-segment-label {
+  font-weight: 600;
+}
+
+.wizard-detail {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-1);
+}
+
+.wizard-detail p {
+  margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.wizard-detail > :last-child {
+  margin-bottom: 0;
+}
+
+.wizard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.wizard-models {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.wizard-model {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.wizard-model-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wizard-done {
+  font-size: var(--font-size-md);
+}
+
+.chip {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.chip-ok {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.chip-off {
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+}
+
+.connection-notice {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  overflow-wrap: anywhere;
+}
+
+.key-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.key-form .settings-row {
+  flex-wrap: wrap;
+}
+
+.key-form .settings-hint,
+.key-form .settings-status {
+  margin: 0;
+}
+
+.connection-cards {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.connection-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+
+.connection-card[data-current] {
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent);
+}
+
+.connection-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.connection-card-head h4 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.connection-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.connection-card .settings-section {
+  margin: 0;
+}
+
+.connection-card-foot {
+  flex-wrap: wrap;
+}
+
+.connection-card-foot .button-danger {
+  background: transparent;
+  color: var(--color-danger-text);
+  border-color: var(--color-danger-text);
+}
+
+.connection-card-foot .button-danger:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+}
+
+.connection-card-foot .button-danger:disabled {
+  color: var(--color-text-muted);
+  border-color: var(--color-border-control);
+}
+
+.personal-use-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.personal-use-label input {
+  width: auto;
+  flex: none;
+}
+
+@media (max-width: 540px) {
+  .wizard-overlay {
+    padding: var(--space-2);
+  }
+
+  .wizard {
+    max-height: 98dvh;
+  }
+
+  .wizard-header,
+  .wizard-footer,
+  .wizard-body {
+    padding-inline: var(--space-4);
+  }
+}
+
+.advanced-field {
+  margin-top: var(--space-3);
+}
+.advanced-field summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.advanced-field .settings-row {
+  flex-wrap: wrap;
+}
+.advanced-field input[type='text'] {
+  flex: 1 1 14rem;
+  min-width: 0;
+}

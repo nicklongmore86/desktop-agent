@@ -293,8 +293,9 @@ it('offers both subscriptions without an API-key setup gate and keeps API mode a
   await user.click(screen.getByRole('button', { name: 'Settings' }))
   for (const provider of ['claude-subscription', 'codex-subscription']) {
     await user.click(
-      screen.getByRole('radio', {
-        name: provider === 'claude-subscription' ? /Claude · Subscription/ : /Codex · ChatGPT/,
+      await screen.findByRole('button', {
+        name:
+          provider === 'claude-subscription' ? /Use Claude · Subscription/ : /Use Codex · ChatGPT/,
       }),
     )
     expect(api.provider.set).toHaveBeenLastCalledWith(provider)
@@ -305,8 +306,10 @@ it('offers both subscriptions without an API-key setup gate and keeps API mode a
     expect(screen.queryByText(/Add your Anthropic API key/)).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Settings' }))
   }
-  await user.click(screen.getByRole('radio', { name: /Anthropic API/ }))
-  expect(screen.getByRole('heading', { name: 'Anthropic API key' })).toBeTruthy()
+  // Anthropic API has no key yet, so its card offers to set it up (the wizard's key step).
+  await user.click(await screen.findByRole('button', { name: /Set up Anthropic API/ }))
+  const wizard = screen.getByRole('dialog', { name: 'Add your Anthropic API key' })
+  expect(within(wizard).getByLabelText('Anthropic API key')).toBeTruthy()
 })
 
 it('does not let an old startup history response overwrite a provider switch', async () => {
@@ -371,7 +374,7 @@ describe('provider switch', () => {
         }),
     )
     await user.click(screen.getByRole('button', { name: 'Settings' }))
-    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await user.click(await screen.findByRole('button', { name: /Use Codex · ChatGPT/ }))
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
 
     expect(screen.queryByText('Old provider history')).toBeNull()
@@ -416,7 +419,7 @@ describe('provider switch', () => {
     const { api, user } = await renderApp({ chat: oldChat })
     api.provider.set.mockRejectedValueOnce(new Error('nope'))
     await user.click(screen.getByRole('button', { name: 'Settings' }))
-    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await user.click(await screen.findByRole('button', { name: /Use Codex · ChatGPT/ }))
     expect(await screen.findByText('Provider request failed. Try again.')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
     expect(screen.getByText('Old provider history')).toBeTruthy()
@@ -435,6 +438,8 @@ it('labels Codex replies and progress from the selected provider and shows live 
   )
   expect(screen.getByText('1 folder granted')).toBeTruthy()
   expect(screen.getByText('C:\\Users\\me\\Projects')).toBeTruthy()
+  // The picker lists what is ready, once the connection checks are in.
+  await screen.findByRole('option', { name: 'Claude · Subscription' })
   act(() => {
     pushChat({ type: 'run_started', runId: 'codex-run', text: 'Scan Downloads' })
   })
@@ -452,6 +457,10 @@ describe('connections from main', () => {
     setViewport(1280)
     const { api, user } = await renderApp()
     const picker = screen.getByRole('combobox', { name: 'Active provider' })
+    // The picker lists what is ready, once the checks are in.
+    await within(picker).findByRole('option', { name: 'Add or manage connections…' })
+    await within(picker).findByRole('option', { name: 'Claude · API' })
+    await within(picker).findByRole('option', { name: 'Claude · Subscription' })
     expect(
       within(picker)
         .getAllByRole('option')
@@ -460,29 +469,15 @@ describe('connections from main', () => {
       'Codex · ChatGPT',
       'Claude · Subscription',
       'Claude · API',
-      'OpenAI · API',
-      'Gemini · API',
-      'OpenRouter · API',
-      'Ollama · Local',
-      'LM Studio · Local',
+      'Add or manage connections…',
     ])
     await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
-    const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
+    const cards = await screen.findByRole('list', { name: 'Connections' })
     expect(
       within(cards)
-        .getAllByRole('radio')
-        .map((radio) => radio.getAttribute('value')),
-    ).toEqual([
-      'claude-subscription',
-      'codex-subscription',
-      'anthropic-api',
-      'openai-api',
-      'gemini-api',
-      'openrouter-api',
-      'ollama',
-      'lmstudio',
-    ])
-    expect(within(cards).getByText('Anthropic API')).toBeTruthy()
+        .getAllByRole('heading', { level: 4 })
+        .map((heading) => heading.textContent),
+    ).toEqual(['Claude · Subscription', 'Codex · ChatGPT', 'Anthropic API'])
     expect(api.connections.list).toHaveBeenCalledOnce()
   })
 
@@ -508,21 +503,14 @@ describe('connections from main', () => {
     )
     await screen.findByText('v0.1.0')
     const picker = screen.getByRole('combobox', { name: 'Active provider' })
+    await within(picker).findByRole('option', { name: 'Claude · API' })
     expect(
       within(picker)
         .getAllByRole('option')
         .map((option) => option.textContent),
-    ).toEqual([
-      'Renamed Codex',
-      'Claude · API',
-      'OpenAI · API',
-      'Gemini · API',
-      'OpenRouter · API',
-      'Ollama · Local',
-      'LM Studio · Local',
-    ])
+    ).toEqual(['Renamed Codex', 'Claude · API', 'Add or manage connections…'])
     await user.click(screen.getAllByRole('button', { name: 'Settings' })[0] as HTMLElement)
-    const cards = await screen.findByRole('radiogroup', { name: 'Access provider' })
+    const cards = await screen.findByRole('list', { name: 'Connections' })
     expect(within(cards).queryByText('Claude · Subscription')).toBeNull()
   })
 })

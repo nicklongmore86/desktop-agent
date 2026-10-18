@@ -276,7 +276,23 @@ it('offers the registry’s connections, and can hide the personal-use one', asy
   await expect(shown.apiKey.hasKey('not-a-connection')).rejects.toThrow('Unknown provider.')
   expect(await shown.apiKey.hasKey('openai-api')).toBe(false)
   expect(await shown.apiKey.hasKey()).toBe(false)
-  await shown.settings.setShowPersonalUseConnections(false)
+  // Set-up connections: add and remove persist; chats' connection cannot be removed.
+  expect(shown.connections.state()).toMatchObject({ current: 'claude-subscription' })
+  await expect(shown.connections.remove('claude-subscription')).rejects.toThrow('Switch to another')
+  await shown.connections.remove('codex-subscription')
+  expect(shown.connections.state().configured).toEqual(['claude-subscription', 'anthropic-api'])
+  await shown.connections.add('codex-subscription')
+  await expect(shown.connections.add('not-a-connection')).rejects.toThrow('Unknown provider.')
+  await expect(shown.connections.remove('not-a-connection')).rejects.toThrow('Unknown provider.')
+  // A newly registered connection can be added and taken out again.
+  expect((await shown.connections.add('openai-api')).configured).toContain('openai-api')
+  expect((await shown.connections.remove('openai-api')).configured).not.toContain('openai-api')
+  // Hiding personal-use connections is refused while chats go to one.
+  await expect(shown.connections.setShowPersonalUse(false)).rejects.toThrow('Switch to another')
+  await shown.provider.set('anthropic-api')
+  expect((await shown.connections.setShowPersonalUse(false)).showPersonalUse).toBe(false)
+  expect(shown.connections.state().configured).not.toContain('claude-subscription')
+  expect((await shown.connections.status('anthropic-api')).state).toBe('ready')
 
   // A shared build: the saved personal-use connection falls back to the default.
   const hidden = await open()

@@ -26,6 +26,10 @@ async function renderApp(options: FakeApiOptions = {}) {
     </ApiContext>,
   )
   await screen.findByText('v0.1.0')
+  // The picker lists what is ready, once the connection checks are in.
+  if (!options.configured && !options.statuses)
+    for (const name of ['Claude · Subscription', 'Codex · ChatGPT', 'Claude · API'])
+      await screen.findByRole('option', { name })
   return { ...fake, user, writeText }
 }
 
@@ -310,7 +314,7 @@ describe('Settings and the composer share state', () => {
   it('switches provider from Settings through chat.switchProvider and updates the composer', async () => {
     const { api, user } = await renderApp()
     await user.keyboard('{Control>},{/Control}')
-    await user.click(screen.getByRole('radio', { name: /Codex · ChatGPT/ }))
+    await user.click(await screen.findByRole('button', { name: /Use Codex · ChatGPT/ }))
     await waitFor(() => {
       expect(api.provider.set).toHaveBeenCalledWith('codex-subscription')
     })

@@ -33,8 +33,6 @@ let layout = {
 const layoutSaves = []
 const commandRuns = []
 const loginCalls = { open: 0, copy: 0, codes: [] }
-const savedKeys = new Set(['anthropic-api'])
-const keyCalls = []
 
 // The Files tree: one granted folder with every kind of entry the tree draws.
 const ROOT = 'C:\\Users\\me\\Projects'
@@ -75,7 +73,8 @@ let files = {
 }
 const filesCalls = { watch: [], reveal: [], copy: [], reference: [], search: [] }
 const filesRoots = () => (rootsGranted ? [{ id: ROOT_ID, name: 'Projects', path: ROOT }] : [])
-let rootsGranted = true
+// A first run (E2E_SCENARIO=first-run) starts with no folder granted.
+let rootsGranted = process.env.E2E_SCENARIO !== 'first-run'
 // The Git tab: the granted folder is a repository with every kind of change.
 const DAY = 86_400_000
 const gitRepo = { rootId: ROOT_ID, rel: '', name: 'Projects', path: ROOT, kind: 'repo' }
@@ -225,7 +224,7 @@ const organize = (chat, key, value) => {
 }
 // The built-in connections as main's registry lists them (src/shared/connections-fixture.ts).
 const runtimeLogin = { authKind: 'runtime-login', reportsUsage: false, needsRuntime: true }
-const connections = [
+const builtinConnections = [
   {
     id: 'claude-subscription',
     vendor: 'anthropic',
@@ -360,14 +359,64 @@ const connections = [
   },
 ]
 
+const allConnections = builtinConnections
+const customBaseUrl = {}
+const connectionInfo = (id) => allConnections.find((info) => info.id === id)
+let showPersonalUse = true
+const offered = () => allConnections.filter((info) => showPersonalUse || !info.personalUseOnly)
+let configured = ['claude-subscription', 'codex-subscription', 'anthropic-api']
+// Each connection's status as connections.status answers it; the current one is `provider`.
+const READY = (id) => ({ provider: id, state: 'ready', message: 'Ready.' })
+const SIGNED_OUT = (id) => ({
+  provider: id,
+  state: 'signed-out',
+  message: 'Sign in with your subscription.',
+})
+const NOT_RUNNING = (id) => ({
+  provider: id,
+  state: 'error',
+  message: `${connectionInfo(id)?.title ?? id} is not running. Start it, then check again.`,
+})
+const statuses = {}
+const statusOf = (id) => {
+  if (id === provider.provider) return provider
+  if (statuses[id]) return statuses[id]
+  const kind = connectionInfo(id)?.capabilities.authKind
+  if (kind === 'local') return NOT_RUNNING(id)
+  if (kind === 'runtime-login' && firstRun) return SIGNED_OUT(id)
+  return READY(id)
+}
+// API keys by connection; only Anthropic's is saved, as the old harness always claimed.
+const keys = { 'anthropic-api': true }
+const keyCalls = []
+const connectionCalls = { add: [], remove: [], status: [], set: [] }
+const connectionsState = () => ({
+  configured: configured.filter((id) => offered().some((info) => info.id === id)),
+  current: provider.provider,
+  showPersonalUse,
+})
+// A first run (E2E_SCENARIO=first-run): no key, nothing signed in, so the wizard opens.
+const firstRun = process.env.E2E_SCENARIO === 'first-run'
+if (firstRun) delete keys['anthropic-api']
+let loginSucceeds = false
+
 const model = {
   model: 'claude-sonnet-5-5',
   defaultModel: 'claude-sonnet-5-5',
   options: [{ id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }],
 }
 
+const localModels = [
+  { id: 'qwen3:8b', label: 'qwen3:8b' },
+  { id: 'llama3.2:3b', label: 'llama3.2:3b' },
+]
 const modelsResult = () => {
-  const options = provider.provider === 'codex-subscription' ? codexModels : []
+  const options =
+    provider.provider === 'codex-subscription'
+      ? codexModels
+      : provider.provider === 'ollama' || provider.provider === 'lmstudio'
+        ? localModels
+        : []
   return {
     ok: true,
     value: {
@@ -544,10 +593,18 @@ contextBridge.exposeInMainWorld('desktopApi', {
       Promise.resolve({ ok: true, value: { provider: provider.provider, ...allowance } }),
     get: () => Promise.resolve(provider),
     set: (next) => {
-      provider = { provider: next, state: 'ready', message: 'Ready.' }
+      connectionCalls.set.push(next)
+      if (!configured.includes(next)) configured = [...configured, next]
+      provider = statuses[next] ?? (firstRun ? statusOf(next) : READY(next))
       return Promise.resolve(provider)
     },
-    login: () => Promise.resolve(provider),
+    login: () => {
+      if (loginSucceeds) {
+        provider = { ...READY(provider.provider), message: 'Signed in.' }
+        statuses[provider.provider] = provider
+      }
+      return Promise.resolve(provider)
+    },
     cancelLogin: resolve(undefined),
     loginState: () => Promise.resolve(loginState),
     openLoginUrl: () => {
@@ -588,28 +645,39 @@ contextBridge.exposeInMainWorld('desktopApi', {
   // Anthropic API starts with a key; the other API-key connections without one. A key
   // starting "bad" is refused the way main refuses one its pinned host rejects.
   apiKey: {
-    status: (connection = 'anthropic-api') =>
-      Promise.resolve({ saved: savedKeys.has(connection), error: null }),
-    set: (key, connection = 'anthropic-api') => {
-      keyCalls.push(connection)
+    status: (id = 'anthropic-api') => Promise.resolve({ saved: keys[id] === true, error: null }),
+    set: (key, id = 'anthropic-api') => {
+      keyCalls.push(id)
+      // Stands in for main's validation: a refused key is not saved.
       if (key.startsWith('bad')) {
-        const label = connections.find((c) => c.id === connection)?.shortLabel ?? 'The service'
+        const label = connectionInfo(id)?.shortLabel ?? 'The service'
         return Promise.resolve({
-          saved: savedKeys.has(connection),
+          saved: keys[id] === true,
           error: `${label} rejected the API key. Update it in settings.`,
         })
       }
-      savedKeys.add(connection)
+      keys[id] = true
       return Promise.resolve({ saved: true, error: null })
     },
-    clear: (connection = 'anthropic-api') => {
-      savedKeys.delete(connection)
+    clear: (id = 'anthropic-api') => {
+      delete keys[id]
       return Promise.resolve({ saved: false, error: null })
     },
   },
   grants: {
     list: () => Promise.resolve({ roots: rootsGranted ? [ROOT] : [], loadError: null }),
-    add: resolve({ status: 'cancelled', grants: { roots: [], loadError: null } }),
+    add: () => {
+      // The first-run scenario can grant the folder; everywhere else the picker is cancelled.
+      if (process.env.E2E_SCENARIO === 'first-run') {
+        rootsGranted = true
+        return Promise.resolve({
+          status: 'added',
+          root: ROOT,
+          grants: { roots: [ROOT], loadError: null },
+        })
+      }
+      return Promise.resolve({ status: 'cancelled', grants: { roots: [], loadError: null } })
+    },
     remove: resolve({ roots: [], loadError: null }),
   },
   model: { get: resolve(model), set: resolve(model) },
@@ -660,19 +728,61 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
   },
   connections: {
-    list: () => Promise.resolve(structuredClone(connections)),
+    list: () => Promise.resolve(structuredClone(offered())),
+    state: () => Promise.resolve(connectionsState()),
+    status: (id) => {
+      connectionCalls.status.push(id)
+      return Promise.resolve(statusOf(id))
+    },
+    add: (id) => {
+      connectionCalls.add.push(id)
+      if (!offered().some((info) => info.id === id))
+        return Promise.reject(new Error('Unknown provider.'))
+      if (!configured.includes(id)) configured = [...configured, id]
+      return Promise.resolve(connectionsState())
+    },
+    remove: (id) => {
+      connectionCalls.remove.push(id)
+      if (!offered().some((info) => info.id === id))
+        return Promise.reject(new Error('Unknown provider.'))
+      if (id === provider.provider)
+        return Promise.reject(new Error('Switch to another connection before removing this one.'))
+      configured = configured.filter((entry) => entry !== id)
+      return Promise.resolve(connectionsState())
+    },
+    setShowPersonalUse: (show) => {
+      if (!show && connectionInfo(provider.provider)?.personalUseOnly)
+        return Promise.reject(new Error('Switch to another connection before hiding this one.'))
+      showPersonalUse = show
+      return Promise.resolve(connectionsState())
+    },
     baseUrl: (id) => {
-      const connection = connections.find((c) => c.id === id)
+      const connection = allConnections.find((c) => c.id === id)
       return connection?.defaultBaseUrl
-        ? Promise.resolve({ baseUrl: connection.defaultBaseUrl, custom: false, error: null })
+        ? Promise.resolve({
+            baseUrl: customBaseUrl[id] ?? connection.defaultBaseUrl,
+            custom: id in customBaseUrl,
+            error: null,
+          })
         : Promise.reject(new Error('This connection has no address to change.'))
     },
-    setBaseUrl: (id, baseUrl) =>
-      Promise.resolve({
-        baseUrl: baseUrl ?? connections.find((c) => c.id === id)?.defaultBaseUrl ?? '',
-        custom: baseUrl !== null,
-        error: null,
-      }),
+    setBaseUrl: (id, baseUrl) => {
+      const usual = allConnections.find((c) => c.id === id)?.defaultBaseUrl ?? ''
+      // Stands in for main's check: an address on this PC only.
+      if (
+        baseUrl !== null &&
+        !/^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\//.test(baseUrl)
+      ) {
+        return Promise.resolve({
+          baseUrl: customBaseUrl[id] ?? usual,
+          custom: id in customBaseUrl,
+          error: 'Only an address on this PC can be used (127.0.0.1 or localhost).',
+        })
+      }
+      if (baseUrl === null) delete customBaseUrl[id]
+      else customBaseUrl[id] = baseUrl
+      return Promise.resolve({ baseUrl: baseUrl ?? usual, custom: baseUrl !== null, error: null })
+    },
   },
   audit: {
     reveal: resolve(undefined),
@@ -708,7 +818,24 @@ contextBridge.exposeInMainWorld('e2e', {
     for (const listener of listeners.login) listener(state)
   },
   loginCalls: () => ({ ...loginCalls, codes: loginCalls.codes.slice() }),
-  // The connection each apiKey.set named, in order.
+  // What provider.login() does next: sign in (true) or leave the status as it is.
+  setLoginSucceeds: (next) => {
+    loginSucceeds = next
+  },
+  // What connections.status() answers for a connection, and provider.get() when it is the current one.
+  setStatus: (id, status) => {
+    statuses[id] = status
+    if (provider.provider === id) provider = status
+  },
+  // The local servers are found (true) or not running (false).
+  setLocalRunning: (running) => {
+    for (const id of ['ollama', 'lmstudio']) {
+      statuses[id] = running ? READY(id) : NOT_RUNNING(id)
+      if (provider.provider === id) provider = statuses[id]
+    }
+  },
+  // What the wizard and cards did through the connection and key calls.
+  connectionCalls: () => JSON.parse(JSON.stringify(connectionCalls)),
   keyCalls: () => keyCalls.slice(),
   // Replace the saved chats and push them like main does after a save.
   setHistory: (next) => {

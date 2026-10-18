@@ -1,27 +1,33 @@
+import { useEffect, useId, useRef, useState, type SubmitEvent } from 'react'
+import { KEY_HELP } from '../../../../shared/access-matrix'
+import type { ApiKeyStatus } from '../../../../shared/ipc'
 import {
-  useEffect,
-  useEffectEvent,
-  useId,
-  useRef,
-  useState,
-  type RefObject,
-  type SubmitEvent,
-} from 'react'
-import type { ApiKeyStatus, ProviderLoginState, ProviderStatus } from '../../../../shared/ipc'
-import { DEFAULT_CONNECTION, type ConnectionInfo } from '../../../../shared/ipc-connections'
+  ANTHROPIC_API,
+  DEFAULT_CONNECTION,
+  type ConnectionId,
+  type ConnectionInfo,
+} from '../../../../shared/ipc-connections'
 import { useApi } from '../../api'
-import { connectionOf, useConnections } from '../../connections'
+import { useConnectionOverview, type ConnectionRow } from '../../connections'
+import { plainText } from '../../plain-text'
+import { useProviderModels } from '../../provider-models'
+import { ProviderPanel } from '../connections/SignInPanel'
+import { useMounted } from '../connections/use-mounted'
+import type { SettingsPanelProps } from '../SettingsPanel'
 import { UsageSection } from './UsageSection'
 
-import { useProviderModels } from '../../provider-models'
-import type { SettingsPanelProps } from '../SettingsPanel'
 export function ApiKeySection({
   keyStatus,
   onKeyStatus,
-  connection,
+  connection = ANTHROPIC_API,
+  title = 'Anthropic API key',
+  notice,
 }: Pick<SettingsPanelProps, 'keyStatus' | 'onKeyStatus'> & {
-  /** The API-key connection the key is for; absent means Anthropic API. */
-  connection?: ConnectionInfo | undefined
+  /** The key's connection; Anthropic API is the one the key calls default to. */
+  connection?: ConnectionId
+  title?: string
+  /** Something to read before using the key (a free Gemini key's data use). */
+  notice?: string | undefined
 }): React.JSX.Element {
   const api = useApi()
   const inputId = useId()
@@ -50,18 +56,18 @@ export function ApiKeySection({
   const save = (event: SubmitEvent<HTMLFormElement>): void => {
     event.preventDefault()
     if (!draft.trim()) return
-    void run(() => (connection ? api.apiKey.set(draft, connection.id) : api.apiKey.set(draft)))
+    void run(() => api.apiKey.set(draft, connection))
   }
 
   return (
     <section className="settings-section" aria-labelledby={`${inputId}-title`}>
-      <h3 id={`${inputId}-title`}>{`${connection?.title ?? 'Anthropic API'} key`}</h3>
+      <h3 id={`${inputId}-title`}>{title}</h3>
       <p className="settings-status" role="status">
         {saved ? 'Key saved.' : 'No key saved.'}
       </p>
       {keyStatus?.error && (
         <p className="settings-error" role="alert">
-          {keyStatus.error}
+          {plainText(keyStatus.error)}
         </p>
       )}
       {showInput ? (
@@ -74,7 +80,7 @@ export function ApiKeySection({
             type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder={!connection || connection.vendor === 'anthropic' ? 'sk-ant-…' : undefined}
+            placeholder={KEY_HELP[connection]?.placeholder ?? 'Paste your key'}
             value={draft}
             onChange={(event) => {
               setDraft(event.target.value)
@@ -110,7 +116,7 @@ export function ApiKeySection({
             className="button-danger"
             disabled={busy}
             onClick={() => {
-              void run(() => (connection ? api.apiKey.clear(connection.id) : api.apiKey.clear()))
+              void run(() => api.apiKey.clear(connection))
             }}
           >
             Remove key
@@ -120,15 +126,15 @@ export function ApiKeySection({
       <p className="settings-hint">
         The key is encrypted by Windows and can&apos;t be viewed again.
       </p>
-      {connection?.notice && <p className="settings-hint">{connection.notice}</p>}
+      {notice && <p className="settings-hint">{notice}</p>}
     </section>
   )
 }
 
-function ModelSection({ provider }: { provider: string }): React.JSX.Element {
+function ModelSection({ connection }: { connection: ConnectionId }): React.JSX.Element {
   const selectId = useId()
   const [error, setError] = useState<string | null>(null)
-  const models = useProviderModels(provider)
+  const models = useProviderModels(connection)
   const choice = models.choice
   if (!choice) return <section className="settings-section">Loading…</section>
   return (
@@ -148,10 +154,11 @@ function ModelSection({ provider }: { provider: string }): React.JSX.Element {
       >
         {choice.options.map((option) => (
           <option key={option.id} value={option.id}>
-            {option.label}
+            {plainText(option.label)}
           </option>
         ))}
       </select>
+      {choice.warning && <p className="settings-hint">{plainText(choice.warning)}</p>}
       {error && (
         <p className="settings-error" role="alert">
           {error}
@@ -161,122 +168,183 @@ function ModelSection({ provider }: { provider: string }): React.JSX.Element {
   )
 }
 
-/** Claude prints `<code>#<state>`; main checks it again before passing it on. */
-const LOGIN_CODE = /^[^#\s]+#[^#\s]+$/
-
-/** False once the component has unmounted, so late replies never set its state. */
-function useMounted(): RefObject<boolean> {
-  const mounted = useRef(true)
+/** A non-Anthropic API-key connection's key: the app holds only Anthropic's status, so this loads its own. */
+function ConnectionKey({ info }: { info: ConnectionInfo }): React.JSX.Element {
+  const api = useApi()
+  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
   useEffect(() => {
-    mounted.current = true
+    let live = true
+    api.apiKey.status(info.id).then(
+      (status) => {
+        if (live) setKeyStatus(status)
+      },
+      () => {
+        if (live) setKeyStatus({ saved: false, error: 'The saved API key cannot be read.' })
+      },
+    )
     return () => {
-      mounted.current = false
+      live = false
     }
-  }, [])
-  return mounted
+  }, [api, info.id])
+  return (
+    <ApiKeySection
+      keyStatus={keyStatus}
+      onKeyStatus={setKeyStatus}
+      connection={info.id}
+      title={`${info.title} key`}
+      notice={info.notice}
+    />
+  )
 }
 
-function LoginLink({ url }: { url: string }): React.JSX.Element {
-  const api = useApi()
-  const linkId = useId()
-  const codeId = useId()
-  const mounted = useMounted()
-  const [code, setCode] = useState('')
-  const [note, setNote] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const request = (operation: () => Promise<void>, done: string, failed: string) => {
-    setError(null)
-    setNote(null)
-    operation().then(
-      () => {
-        if (mounted.current) setNote(done)
-      },
-      () => {
-        if (mounted.current) setError(failed)
-      },
-    )
+/** One word for the card: where this connection stands when it is not the one in use. */
+function standing(row: ConnectionRow): string {
+  if (row.ready) return 'Ready'
+  switch (row.info.capabilities.authKind) {
+    case 'api-key':
+      return 'Needs a key'
+    case 'runtime-login':
+      return 'Not signed in'
+    case 'local':
+      return 'Not running'
+    default:
+      return 'Not ready'
   }
-  const submit = (event: SubmitEvent<HTMLFormElement>): void => {
-    event.preventDefault()
-    setError(null)
-    setNote(null)
-    const value = code.trim()
-    if (!LOGIN_CODE.test(value)) {
-      setError('That does not look like a sign-in code. Copy the whole code.')
-      return
-    }
-    api.provider.submitLoginCode(value).then(
-      (result) => {
-        if (!mounted.current) return
-        if (result.ok) {
-          setCode('')
-          setNote('Code sent. Finishing sign-in…')
-        } else setError(result.error)
-      },
-      () => {
-        if (mounted.current) setError('Could not send the code. Try again.')
-      },
-    )
-  }
+}
+
+function ConfirmRemove({
+  info,
+  hasKey,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  info: ConnectionInfo
+  hasKey: boolean
+  busy: boolean
+  error: string | null
+  onCancel: () => void
+  onConfirm: () => void
+}): React.JSX.Element {
+  const titleId = useId()
+  const textId = useId()
+  const dialog = useRef<HTMLDivElement>(null)
+  // Focus goes back to the button that opened this when it closes.
+  // Read while rendering, before Cancel takes focus.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null)
+  useEffect(
+    () => () => {
+      if (opener?.isConnected) opener.focus()
+    },
+    [opener],
+  )
   return (
-    <div className="login-link">
-      <p className="settings-hint">
-        Your browser should have opened. If it didn&apos;t, use the link below, then paste the code
-        you&apos;re shown.
-      </p>
-      <label htmlFor={linkId}>Sign-in link</label>
-      <div className="settings-row">
+    <div className="modal-backdrop">
+      <div
+        ref={dialog}
+        className="confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={textId}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            onCancel()
+            return
+          }
+          if (event.key !== 'Tab') return
+          // Tab stays inside the dialog.
+          const items = [
+            ...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? []),
+          ]
+          const first = items[0]
+          const last = items.at(-1)
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault()
+            last?.focus()
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault()
+            first?.focus()
+          }
+        }}
+      >
+        <h2 id={titleId}>
+          Remove <bdi>{info.title}</bdi>?
+        </h2>
+        <p id={textId}>
+          It leaves your list of connections. Your chat history for it stays on this PC
+          {hasKey ? ', but its saved API key is deleted' : ''}. You can add it again later.
+        </p>
+        {error && (
+          <p className="settings-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="approval-actions">
+          <button
+            type="button"
+            className="button-secondary"
+            ref={(element) => element?.focus()}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button type="button" className="button-danger" disabled={busy} onClick={onConfirm}>
+            Remove connection
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PersonalUseToggle(): React.JSX.Element {
+  const api = useApi()
+  const overview = useConnectionOverview()
+  const mounted = useMounted()
+  const inputId = useId()
+  const [error, setError] = useState<string | null>(null)
+  const show = overview.state?.showPersonalUse ?? true
+  return (
+    <div className="personal-use">
+      <label htmlFor={inputId} className="personal-use-label">
         <input
-          id={linkId}
-          type="text"
-          readOnly
-          value={url}
-          spellCheck={false}
-          onFocus={(event) => {
-            event.target.select()
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => {
-            request(() => api.provider.copyLoginUrl(), 'Link copied.', 'Could not copy the link.')
-          }}
-        >
-          Copy
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            request(
-              () => api.provider.openLoginUrl(),
-              'Opened in your browser.',
-              'Could not open the browser. Copy the link instead.',
+          id={inputId}
+          type="checkbox"
+          checked={show}
+          disabled={!overview.state}
+          onChange={(event) => {
+            setError(null)
+            api.connections.setShowPersonalUse(event.target.checked).then(
+              (state) => {
+                overview.applyState(state)
+                overview.refresh({ relist: true })
+              },
+              (failure: unknown) => {
+                if (mounted.current)
+                  setError(
+                    plainText(
+                      failure instanceof Error && failure.message
+                        ? failure.message.replace(
+                            /^Error invoking remote method '[^']*': (Error: )?/,
+                            '',
+                          )
+                        : 'Could not change this setting.',
+                    ),
+                  )
+              },
             )
           }}
-        >
-          Open in browser
-        </button>
-      </div>
-      <form className="settings-row" onSubmit={submit}>
-        <label htmlFor={codeId} className="visually-hidden">
-          Paste code
-        </label>
-        <input
-          id={codeId}
-          type="text"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="Paste code"
-          value={code}
-          onChange={(event) => {
-            setCode(event.target.value)
-          }}
         />
-        <button type="submit" disabled={!code.trim()}>
-          Submit code
-        </button>
-      </form>
-      {note && <p className="settings-hint">{note}</p>}
+        Show personal-use connections
+      </label>
+      <p className="settings-hint">
+        Anthropic’s terms require approval before another app offers Claude.ai sign-in. Keep this on
+        only for your own use, and turn it off in a copy you share with other people.
+      </p>
       {error && (
         <p className="settings-error" role="alert">
           {error}
@@ -286,194 +354,193 @@ function LoginLink({ url }: { url: string }): React.JSX.Element {
   )
 }
 
-export function ProviderSection({
-  provider,
-  onProvider,
-  onSwitchProvider,
-}: Pick<SettingsPanelProps, 'provider' | 'onProvider' | 'onSwitchProvider'>): React.JSX.Element {
+export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
   const api = useApi()
-  const connections = useConnections()
+  const overview = useConnectionOverview()
   const mounted = useMounted()
-  const [busy, setBusy] = useState(false)
-  const [signingIn, setSigningIn] = useState(false)
-  /** Main's sign-in for this provider; survives Settings being closed and reopened. */
-  const [login, setLogin] = useState<{ active: boolean; url: string | null }>({
-    active: false,
-    url: null,
-  })
+  const current = props.provider?.provider ?? overview.state?.current ?? DEFAULT_CONNECTION
+  const [busy, setBusy] = useState<ConnectionId | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const current = provider?.provider
-  const reportResult = useEffectEvent((status: ProviderStatus) => {
-    onProvider?.(status)
-  })
-  useEffect(() => {
-    let live = true
-    const apply = (state: ProviderLoginState) => {
-      if (!live) return
-      // Another provider's sign-in is not this one's to show.
-      if (state.active && state.provider === current) {
-        setLogin({ active: true, url: state.url })
-        return
-      }
-      setLogin({ active: false, url: null })
-      if (state.result && state.result.provider === current) reportResult(state.result)
-    }
-    const unsubscribe = api.onProviderLoginState(apply)
-    api.provider.loginState().then(apply, () => {})
-    return () => {
-      live = false
-      unsubscribe()
-    }
-  }, [api, current])
-  useEffect(() => {
-    let live = true
-    api.provider.get().then(
-      (status) => {
-        if (live && status.provider === current) reportResult(status)
-      },
-      () => {
-        if (live) setError('Provider request failed. Try again.')
-      },
-    )
-    return () => {
-      live = false
-    }
-  }, [api, current])
-  const run = async (operation: () => Promise<ProviderStatus>) => {
-    setBusy(true)
+  const [removing, setRemoving] = useState<ConnectionRow | null>(null)
+  const [removeError, setRemoveError] = useState<string | null>(null)
+  const cards = overview.rows.filter((row) => row.configured || row.info.id === current)
+
+  const switchTo = async (id: ConnectionId): Promise<void> => {
+    setBusy(id)
     setError(null)
     try {
-      const status = await operation()
-      // The app keeps the status even if Settings was closed meanwhile.
-      onProvider?.(status)
+      props.onProvider?.(await props.onSwitchProvider(id))
+      overview.refresh()
     } catch {
       if (mounted.current) setError('Provider request failed. Try again.')
     } finally {
-      if (mounted.current) setBusy(false)
+      if (mounted.current) setBusy(null)
     }
   }
-  const signIn = async () => {
-    setSigningIn(true)
+  const remove = async (row: ConnectionRow): Promise<void> => {
+    setBusy(row.info.id)
+    setRemoveError(null)
     try {
-      await run(() => api.provider.login())
+      // Its key goes with it; chat history is never touched.
+      // Whatever the cached status says: main answers a failed delete with a status, not a throw.
+      if (row.info.capabilities.authKind === 'api-key') {
+        const cleared = await api.apiKey.clear(row.info.id)
+        if (cleared.error || cleared.saved) {
+          if (mounted.current)
+            setRemoveError(
+              plainText(cleared.error ?? 'The saved key could not be deleted, so it was kept.'),
+            )
+          return
+        }
+      }
+      overview.applyState(await api.connections.remove(row.info.id))
+      overview.refresh()
+      if (mounted.current) setRemoving(null)
+    } catch {
+      if (mounted.current) setRemoveError('Could not remove this connection. Try again.')
     } finally {
-      if (mounted.current) setSigningIn(false)
+      if (mounted.current) setBusy(null)
     }
   }
-  const waiting = signingIn || login.active
-  return (
-    <section className="settings-section">
-      <h3>Accounts &amp; providers</h3>
-      <div role="radiogroup" aria-label="Access provider" className="provider-cards">
-        {(connections ?? []).map(({ id, title, description }) => (
-          <label className="provider-card" key={id}>
-            <input
-              type="radio"
-              name="provider"
-              value={id}
-              checked={(current ?? DEFAULT_CONNECTION) === id}
-              disabled={busy}
-              onChange={() => {
-                void run(() => onSwitchProvider(id))
-              }}
-            />
-            <span>
-              <strong>{title}</strong>
-              <small>{description}</small>
-            </span>
-          </label>
-        ))}
-      </div>
-      <p className="settings-hint">
-        Each provider keeps its own chat history. Switching provider ends the current reply.
-      </p>
-      {waiting ? (
-        <p className="settings-status" role="status">
-          Waiting for sign-in…
-        </p>
-      ) : provider?.state === 'error' ? (
-        <p className="settings-error" role="alert">
-          {provider.message}
-        </p>
-      ) : (
-        <p role="status">
-          {provider?.signedIn || provider?.state === 'ready' || provider?.state === 'limited'
-            ? 'Connected'
-            : provider?.state === 'missing-runtime'
-              ? `Can’t start ${connectionOf(connections, provider.provider)?.runtimeLabel ?? 'the runtime'}`
-              : provider?.state === 'signed-out'
-                ? 'Not signed in'
-                : (provider?.message ?? 'Loading provider…')}
-        </p>
-      )}
-      {error && (
-        <p className="settings-error" role="alert">
-          {error}
-        </p>
-      )}
-      {(provider?.state === 'error' || provider?.state === 'missing-runtime' || error) && (
-        <button
-          className="settings-retry"
-          disabled={busy}
-          onClick={() => {
-            void run(() => api.provider.get())
-          }}
-        >
-          Retry
-        </button>
-      )}
-      {connectionOf(connections, provider?.provider)?.capabilities.authKind === 'runtime-login' && (
-        <>
-          <button
-            disabled={busy || login.active}
-            onClick={() => {
-              void signIn()
-            }}
-          >
-            Sign in
-          </button>
-          {(busy || login.active) && (
-            <button
-              onClick={() => {
-                void api.provider.cancelLogin()
-              }}
-            >
-              Cancel sign-in
-            </button>
-          )}
-          {waiting && login.url && <LoginLink url={login.url} />}
-        </>
-      )}
-    </section>
-  )
-}
 
-export function AccountsSection(props: SettingsPanelProps): React.JSX.Element {
-  const connections = useConnections()
-  const current = props.provider?.provider ?? DEFAULT_CONNECTION
-  const connection = connectionOf(connections, current)
-  // Before the list has loaded, the default connection (Anthropic API) is assumed.
-  const capabilities = connection?.capabilities ?? { authKind: 'api-key', listsModels: false }
   return (
     <>
-      <ProviderSection
-        provider={props.provider}
-        onProvider={props.onProvider}
-        onSwitchProvider={props.onSwitchProvider}
-      />
-      {capabilities.authKind === 'api-key' && (
-        <ApiKeySection
-          // Siblings: the key section and the usage section need different keys.
-          key={`key:${current}`}
-          keyStatus={props.keyStatus}
-          onKeyStatus={props.onKeyStatus}
-          connection={connection}
+      <section className="settings-section" aria-labelledby="accounts-title">
+        <div className="settings-row">
+          <h3 id="accounts-title">Accounts &amp; providers</h3>
+          {props.onAddConnection && (
+            <button
+              type="button"
+              className="button-primary"
+              onClick={() => {
+                props.onAddConnection?.()
+              }}
+            >
+              Add connection
+            </button>
+          )}
+        </div>
+        <p className="settings-hint">
+          Each connection keeps its own chat history. Switching connection ends the current reply.
+        </p>
+        {error && (
+          <p className="settings-error" role="alert">
+            {error}
+          </p>
+        )}
+        <ul className="connection-cards" aria-label="Connections">
+          {cards.map((row) => {
+            const { info } = row
+            const isCurrent = info.id === current
+            const kind = info.capabilities.authKind
+            return (
+              <li key={info.id} className="connection-card" data-current={isCurrent || undefined}>
+                <div className="connection-card-head">
+                  <h4>{info.title}</h4>
+                  {isCurrent ? (
+                    <span className="chip chip-ok">In use</span>
+                  ) : (
+                    <span className={row.ready ? 'chip chip-ok' : 'chip chip-off'}>
+                      {standing(row)}
+                    </span>
+                  )}
+                </div>
+                <p className="settings-hint">{info.description}</p>
+                {isCurrent ? (
+                  <>
+                    {(kind === 'runtime-login' || kind === 'local') && (
+                      <ProviderPanel
+                        connection={info}
+                        status={props.provider ?? null}
+                        onStatus={(status) => {
+                          props.onProvider?.(status)
+                          overview.refresh()
+                        }}
+                      />
+                    )}
+                    {kind === 'api-key' && (
+                      <>
+                        {info.id === ANTHROPIC_API ? (
+                          <ApiKeySection
+                            keyStatus={props.keyStatus}
+                            onKeyStatus={props.onKeyStatus}
+                          />
+                        ) : (
+                          <ConnectionKey info={info} />
+                        )}
+                      </>
+                    )}
+                    {info.capabilities.reportsUsage || info.capabilities.listsModels ? (
+                      // Usage where the connection reports it, and its own model list.
+                      <UsageSection key={info.id} provider={info.id} />
+                    ) : (
+                      info.id === ANTHROPIC_API && <ModelSection connection={info.id} />
+                    )}
+                  </>
+                ) : (
+                  <div className="settings-row">
+                    {row.ready ? (
+                      <button
+                        type="button"
+                        disabled={busy !== null}
+                        onClick={() => {
+                          void switchTo(info.id)
+                        }}
+                      >
+                        Use {info.title}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={!props.onAddConnection}
+                        onClick={() => {
+                          props.onAddConnection?.(info.id)
+                        }}
+                      >
+                        Set up {info.title}
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div className="settings-row connection-card-foot">
+                  <button
+                    type="button"
+                    className="button-danger"
+                    disabled={isCurrent || busy !== null}
+                    aria-label={`Remove ${info.title}`}
+                    aria-describedby={isCurrent ? `${info.id}-remove-hint` : undefined}
+                    onClick={() => {
+                      setRemoveError(null)
+                      setRemoving(row)
+                    }}
+                  >
+                    Remove
+                  </button>
+                  {isCurrent && (
+                    <small id={`${info.id}-remove-hint`} className="settings-hint">
+                      Switch to another connection to remove this one.
+                    </small>
+                  )}
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+        <PersonalUseToggle />
+      </section>
+      {removing && (
+        <ConfirmRemove
+          info={removing.info}
+          hasKey={removing.info.capabilities.authKind === 'api-key' && removing.keySaved !== false}
+          busy={busy !== null}
+          error={removeError}
+          onCancel={() => {
+            setRemoving(null)
+          }}
+          onConfirm={() => {
+            void remove(removing)
+          }}
         />
-      )}
-      {capabilities.authKind === 'api-key' && !capabilities.listsModels ? (
-        <ModelSection provider={current} />
-      ) : (
-        props.provider && <UsageSection key={`usage:${current}`} provider={current} />
       )}
     </>
   )

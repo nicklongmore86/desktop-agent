@@ -200,6 +200,42 @@ come back. The renderer only ever learns whether a key is saved. Model ids
 (`MODEL_ID` in `settings-store.ts`) allow `/`, `:` and `@` for OpenRouter, Ollama and LM
 Studio ids, but nothing shaped like a path.
 
+## Adding and choosing connections (the wizard)
+
+The renderer builds **Add connection** (the first-run wizard, the composer picker's last
+item "Add or manage connections…", and Settings → Accounts & providers → Add connection)
+from `connections.list()` and one small static table, `src/shared/access-matrix.ts`. The
+table maps a provider card (Claude, ChatGPT, Gemini, Local models, OpenRouter) and an
+access type (Free, Subscription, API key) to connection ids, or to a reason it cannot work
+and the next step (Claude Free; Gemini Free and Subscription). A segment that does not
+apply is left out; a connection main does not list is shown unavailable; a personal-use
+connection main hides is left out. **A new connection appears in the wizard by being
+registered**, as long as its id is named in that table.
+
+The flow is a reducer (`components/connections/flow.ts`): provider → access → connect →
+model → folder → done. Connecting uses the existing IPC only: `provider.set` makes the
+connection current, then `provider.login` / `cancelLogin` and the sign-in panel, or
+`apiKey.set(key, id)`, or `provider.get` for "Check again" on a local server. Cancelling
+before the connection is made puts back the connection chats went to, and takes the new
+one out of the set-up list again.
+
+Four small calls beside `connections.list()` make this possible (`ipc-connections.ts`):
+
+| Call                                   | Does                                                                       |
+| -------------------------------------- | -------------------------------------------------------------------------- |
+| `connections.state()`                  | The set-up connection ids, the current one, and `showPersonalUse`.         |
+| `connections.status(id)`               | Any listed connection's status, without switching to it.                   |
+| `connections.add(id)` / `remove(id)`   | Edit settings `connections`. `remove` refuses the current connection.      |
+| `connections.setShowPersonalUse(show)` | Sets `showPersonalUseConnections`; refuses to hide the current connection. |
+
+Every id is checked against the registry first (`parseConnectionId`), and removing a
+connection never touches chat history. The renderer deletes an API-key connection's saved
+key only after the user confirms. The composer lists the connections that are ready (a
+saved key for API-key ones, otherwise a ready status) plus the one in use.
+
+Everything the renderer shows from these (labels, model names, status messages) is
+rendered as text, never HTML.
+
 ## Personal-use connections
 
 **Claude subscription is marked `personalUseOnly`.** It signs in with the user's own
@@ -208,4 +244,5 @@ third-party product offers Claude.ai login, so a build shared with other people 
 able to leave it out. `showPersonalUseConnections` (in settings, default `true`) decides:
 when it is `false`, `connections.list()` leaves the connection out, main refuses to
 switch to it, and a saved choice of it falls back to the default. The default keeps the
-app as it was for its current user; there is no Settings toggle yet.
+app as it was for its current user. Settings → Accounts & providers has the
+"Show personal-use connections" toggle.

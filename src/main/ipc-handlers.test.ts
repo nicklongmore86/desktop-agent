@@ -98,6 +98,23 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
     connections: {
       list: vi.fn(() => []),
       available: vi.fn((id: string) => BUILTIN_CONNECTIONS.includes(id)),
+      state: vi.fn(() => ({
+        configured: ['anthropic-api'],
+        current: 'anthropic-api',
+        showPersonalUse: true,
+      })),
+      status: vi.fn((provider: string) =>
+        Promise.resolve({ provider, state: 'ready' as const, message: 'Ready.' }),
+      ),
+      add: vi.fn(() =>
+        Promise.resolve({ configured: [], current: 'anthropic-api', showPersonalUse: true }),
+      ),
+      remove: vi.fn(() =>
+        Promise.resolve({ configured: [], current: 'anthropic-api', showPersonalUse: true }),
+      ),
+      setShowPersonalUse: vi.fn(() =>
+        Promise.resolve({ configured: [], current: 'anthropic-api', showPersonalUse: false }),
+      ),
       baseUrl: vi.fn((_id: string) =>
         Promise.resolve({ baseUrl: 'http://127.0.0.1:11434/v1', custom: false, error: null }),
       ),
@@ -881,6 +898,49 @@ describe('provider IPC', () => {
       'takes no arguments',
     )
     expect(services.connections.list).toHaveBeenCalledOnce()
+  })
+  it('checks every id the connection calls take against the registry, and their arguments', async () => {
+    const { invoke, services } = setup()
+    for (const channel of [
+      connectionsChannels.connectionsStatus,
+      connectionsChannels.connectionsAdd,
+      connectionsChannels.connectionsRemove,
+    ]) {
+      for (const value of ['../x', 'C:\\Windows', 7, undefined, 'UPPER']) {
+        await expect(invoke(channel, appFrame, value)).rejects.toThrow('Unknown provider')
+      }
+      await expect(invoke(channel, appFrame, 'anthropic-api', 'extra')).rejects.toThrow(
+        'Unknown provider',
+      )
+      vi.mocked(services.connections.available).mockReturnValueOnce(false)
+      await expect(invoke(channel, appFrame, 'openai-api')).rejects.toThrow('Unknown provider')
+    }
+    expect(services.connections.status).not.toHaveBeenCalled()
+    expect(services.connections.add).not.toHaveBeenCalled()
+    expect(services.connections.remove).not.toHaveBeenCalled()
+    await invoke(connectionsChannels.connectionsStatus, appFrame, 'codex-subscription')
+    await invoke(connectionsChannels.connectionsAdd, appFrame, 'codex-subscription')
+    await invoke(connectionsChannels.connectionsRemove, appFrame, 'codex-subscription')
+    expect(services.connections.status).toHaveBeenCalledWith('codex-subscription')
+    expect(services.connections.add).toHaveBeenCalledWith('codex-subscription')
+    expect(services.connections.remove).toHaveBeenCalledWith('codex-subscription')
+  })
+  it('reads the connection state with no arguments and sets personal use from a boolean only', async () => {
+    const { invoke, services } = setup()
+    expect(await invoke(connectionsChannels.connectionsState, appFrame)).toMatchObject({
+      current: 'anthropic-api',
+    })
+    await expect(invoke(connectionsChannels.connectionsState, appFrame, 1)).rejects.toThrow(
+      'takes no arguments',
+    )
+    for (const value of ['false', 0, null, undefined]) {
+      await expect(
+        invoke(connectionsChannels.connectionsSetShowPersonalUse, appFrame, value),
+      ).rejects.toThrow('Invalid choice')
+    }
+    expect(services.connections.setShowPersonalUse).not.toHaveBeenCalled()
+    await invoke(connectionsChannels.connectionsSetShowPersonalUse, appFrame, false)
+    expect(services.connections.setShowPersonalUse).toHaveBeenCalledWith(false)
   })
   it('passes a key for each new API-key connection through by id', async () => {
     const { invoke, services } = setup()

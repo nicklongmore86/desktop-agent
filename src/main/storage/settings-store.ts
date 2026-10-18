@@ -65,6 +65,9 @@ export interface SettingsStore {
   /** Also adds it to the configured connections when it is not there yet. */
   setConnection: (connection: ConnectionId) => Promise<void>
   readonly connections: readonly ConfiguredConnection[]
+  addConnection: (connection: ConnectionId) => Promise<void>
+  /** Throws for the current connection: chats go there, so it cannot be taken out. */
+  removeConnection: (connection: ConnectionId) => Promise<void>
   /** A connection's saved API root, or null for its default. */
   baseUrl: (connection: ConnectionId) => string | null
   /** Saves an API root the caller has validated (null: back to the default). */
@@ -202,6 +205,24 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     },
     get connections() {
       return connections
+    },
+    async addConnection(next) {
+      if (!CONNECTION_ID.test(next)) throw new Error('Unknown provider.')
+      await serial(async () => {
+        const list = withConnection(connections, next)
+        await writeJsonFile(file, snapshot({ connections: list }))
+        connections = list
+      })
+    },
+    async removeConnection(id) {
+      if (!CONNECTION_ID.test(id)) throw new Error('Unknown provider.')
+      await serial(async () => {
+        if (id === connection)
+          throw new Error('Switch to another connection before removing this one.')
+        const list = connections.filter((entry) => entry.id !== id)
+        await writeJsonFile(file, snapshot({ connections: list }))
+        connections = list
+      })
     },
     baseUrl: (id) => connections.find((entry) => entry.id === id)?.baseUrl ?? null,
     async setBaseUrl(id, next) {

@@ -283,4 +283,39 @@ describe('settings v3 migration', () => {
       { id: 'codex-subscription' },
     ])
   })
+  it('adds and removes configured connections, keeping history and the current choice', async () => {
+    const file = await fileWith({
+      version: 3,
+      model: 'claude-opus-5-5',
+      connection: 'anthropic-api',
+      connectionModels: { 'codex-subscription': 'gpt-5.6-terra' },
+      connections: [{ id: 'anthropic-api' }],
+      showPersonalUseConnections: true,
+    })
+    const store = await openSettingsStore(file)
+    await store.addConnection('codex-subscription')
+    await store.addConnection('codex-subscription')
+    expect(store.connections).toEqual([{ id: 'anthropic-api' }, { id: 'codex-subscription' }])
+    await store.removeConnection('codex-subscription')
+    const reopened = await openSettingsStore(file)
+    expect(reopened.connections).toEqual([{ id: 'anthropic-api' }])
+    // Removing a connection leaves its saved model choice alone.
+    expect(reopened.selection('codex-subscription')).toBe('gpt-5.6-terra')
+  })
+
+  it('refuses to remove the current connection or to add a malformed id', async () => {
+    const file = await fileWith({
+      version: 3,
+      model: 'claude-opus-5-5',
+      connection: 'anthropic-api',
+      connectionModels: {},
+      connections: [{ id: 'anthropic-api' }],
+      showPersonalUseConnections: true,
+    })
+    const store = await openSettingsStore(file)
+    await expect(store.removeConnection('anthropic-api')).rejects.toThrow('Switch to another')
+    await expect(store.addConnection('../x')).rejects.toThrow('Unknown provider.')
+    await expect(store.removeConnection('../x')).rejects.toThrow('Unknown provider.')
+    expect(store.connections).toEqual([{ id: 'anthropic-api' }])
+  })
 })
