@@ -58,12 +58,9 @@ describe('Chat | Command switch', () => {
     expect(chatButton().getAttribute('aria-pressed')).toBe('true')
     expect(commandButton().getAttribute('aria-pressed')).toBe('false')
     expect(commandButton().getAttribute('aria-keyshortcuts')).toBe('Control+Alt+Backslash')
-    // It sits in the header, before Preferences.
+    // Settings is the sidebar gear, not a header button.
     const nav = screen.getByRole('navigation', { name: 'Header' })
-    const buttons = within(nav).getAllByRole('button')
-    expect(buttons.indexOf(commandButton())).toBeLessThan(
-      buttons.indexOf(within(nav).getByRole('button', { name: 'Preferences' })),
-    )
+    expect(within(nav).queryByRole('button', { name: /settings|preferences/i })).toBeNull()
   })
 
   it('swaps the composer for the command line, focused, and back; each keeps its own draft', async () => {

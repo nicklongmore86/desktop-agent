@@ -123,6 +123,7 @@
   --drawer-width: 320px;
   --drawer-gutter: 56px;
   /* Docked pane widths: the defaults; the shell sets the live values inline on .app. */
+  --rail-width: 48px;
   --sidebar-width-left: 272px;
   --sidebar-width-right: 320px;
 

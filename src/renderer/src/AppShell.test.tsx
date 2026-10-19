@@ -71,8 +71,11 @@ describe('docked panes (wide window)', () => {
     expect(isOpen(right())).toBe(true)
     await user.click(rightToggle())
     expect(isInert(right())).toBe(true)
-    // Preferences stays reachable with both collapsed.
-    expect(screen.getByRole('button', { name: 'Preferences' })).toBeTruthy()
+    // Settings stays reachable with both collapsed: the gear moves to the left rail.
+    const gear = screen
+      .getAllByRole('button', { name: 'Settings' })
+      .find((button) => !button.closest('[inert]'))
+    expect(gear?.closest('.shell-rail')).toBeTruthy()
     await user.click(leftToggle())
     await user.click(rightToggle())
     expect(isOpen(left()) && isOpen(right())).toBe(true)
@@ -113,7 +116,7 @@ describe('docked panes (wide window)', () => {
 
   it('leaves the shortcuts off while Settings is open', async () => {
     const { user } = await renderApp(1280)
-    await user.click(screen.getByRole('button', { name: 'Preferences' }))
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy()
     ctrlAlt('BracketLeft')
     expect(isOpen(left())).toBe(true)
@@ -202,7 +205,7 @@ describe('resizing', () => {
     rbar.focus()
     const before = Number(rbar.getAttribute('aria-valuenow'))
     await user.keyboard('{ArrowLeft}')
-    expect(Number(rbar.getAttribute('aria-valuenow'))).toBe(Math.min(before + 16, 1280 - 512 - 480))
+    expect(Number(rbar.getAttribute('aria-valuenow'))).toBe(Math.min(before + 16, 576))
     expect(api.layout.set).not.toHaveBeenCalled()
   })
 
@@ -246,19 +249,36 @@ describe('resizing', () => {
     expect(screen.getByRole('separator', { name: 'Resize workspace panel' })).toBeTruthy()
   })
 
-  it('keeps the chat column at 480px: the right pane shrinks, then steps aside', async () => {
-    const { user } = await renderApp(1100)
-    // 1100 - 272 - 480 leaves 348, so a 500px request is held at 348.
+  it('keeps the chat column at 400px: both panes shrink together, then the right steps aside', async () => {
+    const { user } = await renderApp(900)
+    // 900 - 400 leaves 500 for two panes that want 272 + 320: both give up width.
     const rbar = separator('Resize workspace panel')
-    expect(rbar.getAttribute('aria-valuemax')).toBe('348')
-    // A wider left pane takes the room: the right one becomes a drawer, still "open" in prefs.
-    separator('Resize chats sidebar').focus()
+    const lbar = separator('Resize chats sidebar')
+    const widths = (): number =>
+      Number(rbar.getAttribute('aria-valuenow')) + Number(lbar.getAttribute('aria-valuenow'))
+    expect(widths()).toBe(500)
+    expect(rbar.getAttribute('aria-valuemax')).toBe(String(900 - 400 - 220))
+    // Asking the left pane for its maximum squeezes both; the chat keeps its 400px.
+    lbar.focus()
     await user.keyboard('{End}')
+    expect(widths()).toBe(500)
+    expect(Number(rbar.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(240)
+    // A window too narrow for both minimums: the right one is a drawer, still "open" in prefs.
+    act(() => {
+      setViewport(800)
+    })
     expect(screen.queryByRole('separator', { name: 'Resize workspace panel' })).toBeNull()
     expect(screen.queryByRole('complementary', { name: 'Workspace' })).toBeNull()
     expect(rightToggle().getAttribute('aria-expanded')).toBe('false')
     await user.click(rightToggle())
     expect(screen.getByRole('dialog', { name: 'Workspace' })).toBeTruthy()
+  })
+
+  it('docks the chat, the left pane and the right pane together at 1024px', async () => {
+    await renderApp(1024)
+    expect(isOpen(left()) && isOpen(right())).toBe(true)
+    expect(rightToggle().getAttribute('aria-haspopup')).toBeNull()
+    expect(document.querySelector('.shell-drawer')).toBeNull()
   })
 })
 
@@ -338,8 +358,8 @@ describe('layout persistence', () => {
 
 describe('drawers (narrow windows)', () => {
   it.each([
-    [1000, 'right'],
-    [700, 'both'],
+    [800, 'right'],
+    [600, 'both'],
     [400, 'both'],
   ])('at %ipx the %s pane(s) are drawers, opened by the header buttons', async (width, which) => {
     const { user } = await renderApp(width)
@@ -555,5 +575,38 @@ describe('Escape order', () => {
     })
     await user.keyboard('{Escape}')
     expect(api.chat.stop).toHaveBeenCalledOnce()
+  })
+})
+
+describe('sidebar header and Settings entry', () => {
+  it('has one Settings gear, in the sidebar, with a tooltip and Ctrl+, still opening it', async () => {
+    const { user } = await renderApp(1280)
+    const gear = screen.getByRole('button', { name: 'Settings' })
+    expect(gear.closest('.left-sidebar')).toBeTruthy()
+    expect(gear.getAttribute('title')).toBe('Settings (Ctrl+,)')
+    expect(screen.queryByRole('button', { name: 'Preferences' })).toBeNull()
+    await user.click(gear)
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await user.keyboard('{Control>},{/Control}')
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy()
+  })
+
+  it('has the gear in the left drawer too', async () => {
+    const { user } = await renderApp(400)
+    await user.click(leftToggle())
+    const drawer = screen.getByRole('dialog', { name: 'Chats' })
+    await user.click(within(drawer).getByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy()
+  })
+
+  it('shows New chat as a row with its Ctrl+N hint, and Archived as a quiet toggle', async () => {
+    await renderApp(1280)
+    const sidebar = left()
+    const newChat = within(sidebar).getByRole('button', { name: 'New chat' })
+    expect(newChat.getAttribute('aria-keyshortcuts')).toBe('Control+N')
+    expect(newChat.textContent).toContain('Ctrl+N')
+    const archived = within(sidebar).getByRole('button', { name: /^Archived/ })
+    expect(archived.getAttribute('aria-pressed')).toBe('false')
   })
 })

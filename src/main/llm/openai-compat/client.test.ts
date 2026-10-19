@@ -449,6 +449,30 @@ describe('openai-compat client', () => {
     expect((await failure(finalOf())).code).toBe('protocol')
   })
 
+  it('maps an error body up to the 64 KiB cap by its text, and a longer one by status', async () => {
+    // Under the cap: unchanged, the body's text still decides (here a context limit).
+    const longError = `This model's maximum context length is 8192 tokens.${' '.repeat(60 * 1024)}`
+    server.reply(json(400, { error: longError }))
+    expect((await failure(finalOf())).code).toBe('context_limit')
+    // Past it: refused outright, so only the status is used.
+    server.reply(json(400, { error: `${longError}${' '.repeat(8 * 1024)}` }))
+    expect(await failure(finalOf())).toMatchObject({ code: 'invalid_request', status: 400 })
+  })
+
+  it('accepts an event stream whatever the Content-Type case and parameters', async () => {
+    for (const type of ['TEXT/EVENT-STREAM; charset=UTF-8', ' text/event-stream ;charset=utf-8']) {
+      server.reply((_req, res) => {
+        res.writeHead(200, { 'Content-Type': type })
+        res.write(`data: ${JSON.stringify(chunk({ content: 'Hi' }))}\n\n`)
+        res.end(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\ndata: [DONE]\n\n`)
+      })
+      expect((await finalOf()).content).toEqual([{ type: 'text', text: 'Hi', citations: null }])
+    }
+    // Still not a stream: unchanged.
+    server.reply(json(200, { choices: [] }, { 'Content-Type': 'text/plain' }))
+    expect((await failure(finalOf())).message).toMatch(/did not stream.*base URL/)
+  })
+
   it('maps connection failures and idle timeouts to network errors', async () => {
     const closed = await fakeServer()
     await closed.close()

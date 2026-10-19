@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Archive, SquarePen } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import type { HistoryState } from '../../../../shared/ipc'
 import type { ConnectionId } from '../../../../shared/ipc-connections'
@@ -57,8 +58,8 @@ interface Undo {
 const ref = (chat: ProviderChat): ChatRef => ({ provider: chat.provider, id: chat.id })
 
 /**
- * The chats in the left sidebar (and its drawer): New chat, the Archived
- * filter, then Pinned, Projects and Chats. Owns the chat actions' dialogs
+ * The chats in the left sidebar (and its drawer): the New chat row, then Pinned,
+ * Projects and Chats, and a quiet Archived toggle at the bottom. Owns the chat actions' dialogs
  * (rendered over everything, and hidden while an approval is open) and the
  * Undo toast for archive, unpin and move. The sidebar frame around it (brand,
  * footer, resizing, drawers) is the shell's.
@@ -309,24 +310,19 @@ export function ChatsPane({
 
   return (
     <>
-      <div className="sidebar-actions">
-        <button className="sidebar-new" type="button" disabled={switching} onClick={onNewChat}>
-          New chat
-        </button>
-        <button
-          type="button"
-          className="sidebar-filter"
-          aria-pressed={view === 'archived'}
-          onClick={() => {
-            setView((current) => (current === 'archived' ? 'chats' : 'archived'))
-          }}
-        >
-          Archived
-          {arranged.archived.length > 0 && (
-            <span className="filter-count">{arranged.archived.length}</span>
-          )}
-        </button>
-      </div>
+      <button
+        className="sidebar-new"
+        type="button"
+        disabled={switching}
+        aria-keyshortcuts="Control+N"
+        onClick={onNewChat}
+      >
+        <SquarePen className="sidebar-row-icon" aria-hidden="true" />
+        <span className="sidebar-row-label">New chat</span>
+        <kbd className="sidebar-row-hint" aria-hidden="true">
+          Ctrl+N
+        </kbd>
+      </button>
       {projects.error && (
         <p className="sidebar-error" role="alert">
           {projects.error}{' '}
@@ -354,6 +350,20 @@ export function ChatsPane({
         onToggleProject={toggleProject}
         actions={actions}
       />
+      <button
+        type="button"
+        className="sidebar-filter"
+        aria-pressed={view === 'archived'}
+        onClick={() => {
+          setView((current) => (current === 'archived' ? 'chats' : 'archived'))
+        }}
+      >
+        <Archive className="sidebar-row-icon" aria-hidden="true" />
+        <span className="sidebar-row-label">Archived</span>
+        {arranged.archived.length > 0 && (
+          <span className="filter-count">{arranged.archived.length}</span>
+        )}
+      </button>
       {renderDialog()}
       {undo &&
         createPortal(

@@ -6,25 +6,28 @@ import {
   type RightTabId,
 } from '../../shared/ipc-layout'
 
-/** The chat column is never narrower than this: the right pane shrinks, then gives way. */
-export const CHAT_MIN = 480
+/** The chat column is never narrower than this: the panes shrink, then give way. */
+export const CHAT_MIN = 400
 /** Pane maximums as a share of the window. */
 export const LEFT_MAX_SHARE = 0.4
 export const RIGHT_MAX_SHARE = 0.45
+/** The slim rail (holding the Settings gear) that stays where a collapsed left pane was. */
+export const LEFT_RAIL = 48
 /** One arrow-key press on a separator. */
 export const RESIZE_STEP = 16
 
 /**
- * Window width buckets (REPORT 4.2). The CSS media queries for the drawers use the
- * same numbers: keep `NARROW_MAX` in step with `@media (max-width: 540px)`.
- *   wide     >= 1100  both panes docked
- *   medium   760-1099 left docked, right is a drawer
- *   compact  541-759  both are drawers
+ * Window width buckets. The CSS media queries for the drawers use the same numbers:
+ * keep `NARROW_MAX` in step with `@media (max-width: 540px)`.
+ *   wide     >= 860   both panes can dock, each at its minimum, beside a 400px chat
+ *   medium   620-859  the left pane docks; the right one docks only while the left is collapsed
+ *                   (and then from 688px: LEFT_RAIL + CHAT_MIN + RIGHT_MIN)
+ *   compact  541-619  both are drawers
  *   narrow   <= 540   both are (nearly) full-width drawers
  */
 export type Viewport = 'wide' | 'medium' | 'compact' | 'narrow'
-export const WIDE_MIN = 1100
-export const MEDIUM_MIN = 760
+export const MEDIUM_MIN = LEFT_MIN + CHAT_MIN
+export const WIDE_MIN = LEFT_MIN + RIGHT_MIN + CHAT_MIN
 export const NARROW_MAX = 540
 
 export function viewportOf(width: number): Viewport {
@@ -54,27 +57,54 @@ export interface ShellGeometry {
 }
 
 /**
- * Where the panes go in a window `width` px wide. Pure, so the rules are testable:
- * the left pane docks from 760px; the right one from 1100px, and only while the chat
- * column keeps at least CHAT_MIN. It shrinks first (down to its minimum), and when even
- * that does not fit it is not dockable (its toggle opens a drawer instead). The stored
- * `rightOpen` is left alone, so the pane comes back when there is room again.
+ * Where the panes go in a window `width` px wide. Pure, so the rules are testable.
+ * The chat column keeps at least CHAT_MIN. Both panes push the chat (never overlay
+ * it): when their stored widths leave the chat too little, they give up width
+ * together, in proportion to how far each is above its minimum. A pane docks as long
+ * as the chat still gets CHAT_MIN with that pane at its minimum (and the other docked
+ * pane, or the collapsed left pane's rail, too); otherwise it is not dockable and its toggle opens a drawer. The stored
+ * open flags and widths are left alone, so a pane comes back when there is room again.
  */
 export function computeGeometry(width: number, prefs: LayoutPrefs): ShellGeometry {
   const viewport = viewportOf(width)
 
-  const leftDockable = viewport === 'wide' || viewport === 'medium'
+  const leftDockable = width >= MEDIUM_MIN
+  const leftDocked = leftDockable && prefs.leftOpen
+  // Collapsed, the left pane leaves only its rail.
+  const leftReserve = leftDockable ? (leftDocked ? LEFT_MIN : LEFT_RAIL) : 0
+  const rightRoom = width - CHAT_MIN - leftReserve
+  const rightDockable = rightRoom >= RIGHT_MIN
+  const rightDocked = rightDockable && prefs.rightOpen
+
+  // What each pane could take at most (leaving the other docked pane its minimum).
   const leftMax = Math.max(
     LEFT_MIN,
-    Math.min(PANE_MAX, Math.floor(width * LEFT_MAX_SHARE), width - CHAT_MIN),
+    Math.min(
+      PANE_MAX,
+      Math.floor(width * LEFT_MAX_SHARE),
+      width - CHAT_MIN - (rightDocked ? RIGHT_MIN : 0),
+    ),
   )
-  const leftWidth = clamp(prefs.leftWidth, LEFT_MIN, leftMax)
-  const leftDocked = leftDockable && prefs.leftOpen
+  const rightMax = Math.max(
+    RIGHT_MIN,
+    Math.min(PANE_MAX, Math.floor(width * RIGHT_MAX_SHARE), width - CHAT_MIN - leftReserve),
+  )
 
-  const room = width - (leftDocked ? leftWidth : 0) - CHAT_MIN
-  const rightMax = Math.min(PANE_MAX, Math.floor(width * RIGHT_MAX_SHARE), room)
-  const rightDockable = viewport === 'wide' && rightMax >= RIGHT_MIN
-  const rightWidth = clamp(prefs.rightWidth, RIGHT_MIN, Math.max(RIGHT_MIN, rightMax))
+  let leftWidth = clamp(prefs.leftWidth, LEFT_MIN, leftMax)
+  let rightWidth = clamp(prefs.rightWidth, RIGHT_MIN, rightMax)
+
+  // Both docked and too wide for the chat: shrink them together toward their minimums.
+  if (leftDocked && rightDocked) {
+    const excess = leftWidth + rightWidth + CHAT_MIN - width
+    if (excess > 0) {
+      const slackLeft = leftWidth - LEFT_MIN
+      const slackRight = rightWidth - RIGHT_MIN
+      const slack = slackLeft + slackRight
+      const takeLeft = slack > 0 ? Math.min(slackLeft, Math.ceil((excess * slackLeft) / slack)) : 0
+      leftWidth -= takeLeft
+      rightWidth -= Math.min(slackRight, excess - takeLeft)
+    }
+  }
 
   return {
     viewport,
@@ -87,10 +117,10 @@ export function computeGeometry(width: number, prefs: LayoutPrefs): ShellGeometr
     },
     right: {
       dockable: rightDockable,
-      docked: rightDockable && prefs.rightOpen,
+      docked: rightDocked,
       width: rightWidth,
       min: RIGHT_MIN,
-      max: Math.max(RIGHT_MIN, rightMax),
+      max: rightMax,
     },
   }
 }

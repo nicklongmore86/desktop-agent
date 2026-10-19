@@ -1,5 +1,6 @@
 import { _electron as electron, expect, test } from '@playwright/test'
 import { join } from 'node:path'
+import { clickSettings } from './open-settings'
 
 test('Settings adds an API-key connection through the wizard and saves its key by id', async () => {
   const app = await electron.launch({
@@ -12,7 +13,7 @@ test('Settings adds an API-key connection through the wizard and saves its key b
   })
   try {
     const page = await app.firstWindow()
-    await page.getByRole('button', { name: 'Preferences', exact: true }).click()
+    await clickSettings(page)
     const settings = page.getByRole('dialog', { name: 'Settings' })
     const cards = settings.getByRole('list', { name: 'Connections' })
     // Listing nothing new switches nobody: the Anthropic key section is still the one shown.

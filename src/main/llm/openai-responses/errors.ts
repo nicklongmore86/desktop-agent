@@ -1,6 +1,8 @@
 import type { AgentErrorCode } from '../../agent/types'
 import { MANAGE_USAGE_URL } from '../../../shared/chatgpt-plan'
-import { OpenAICompatError, retryAt } from '../openai-compat/errors'
+import { MAX_MESSAGE, OpenAICompatError, retryAt } from '../openai-compat/errors'
+import type { SecretCheck } from '../openai-compat/http'
+import { mediaType } from '../openai-compat/stream'
 
 export const LABEL = 'ChatGPT'
 /** Where ChatGPT plan users review and change their usage limits. */
@@ -20,6 +22,8 @@ export class ResponsesError extends OpenAICompatError {
   readonly retryable: boolean
   /** The request's tool definitions were rejected; `param` names the field. */
   readonly toolFormat: boolean
+  /** The message's diagnostics() suffix, so a caller that rewords the message can keep it. */
+  readonly details: string
   constructor(
     code: AgentErrorCode,
     message: string,
@@ -31,6 +35,7 @@ export class ResponsesError extends OpenAICompatError {
       requestId?: string
       retryable?: boolean
       toolFormat?: boolean
+      details?: string
     } = {},
   ) {
     super(code, message, {
@@ -43,6 +48,7 @@ export class ResponsesError extends OpenAICompatError {
     if (options.requestId) this.requestId = options.requestId
     this.retryable = options.retryable ?? true
     this.toolFormat = options.toolFormat ?? false
+    this.details = options.details ?? ''
   }
 }
 
@@ -126,16 +132,20 @@ const record = (value: unknown): Record<string, unknown> =>
 const short = (value: unknown, pattern: RegExp): string | undefined =>
   typeof value === 'string' && pattern.test(value) ? value : undefined
 
-/** `error.param` names a request field ("tools[0].type"); anything else is dropped. */
-const PARAM = /^[A-Za-z0-9_.[\]]{1,64}$/
-const REQUEST_ID = /^[A-Za-z0-9_-]{1,128}$/
+/**
+ * `error.param` names a request field ("tools[0].type", "input[4].namespace"): lowercase
+ * field names joined by `.` or indexed by `[n]`. Anything else (a token included) is dropped.
+ */
+const PARAM = /^(?=.{1,64}$)[a-z][a-z_]{0,31}(\[\d{1,4}\]|\.[a-z][a-z_]{0,31}){0,8}$/
+/** OpenAI's request ids: `req_` and a short alphanumeric id. */
+const REQUEST_ID = /^req_[A-Za-z0-9]{1,64}$/
 /** A field of the tool definitions, or a replayed call's namespace: the parts most likely to change. */
 const TOOL_PARAM = /^(tools($|[[.])|input\[\d+\]\.(namespace|name)$)/
 
 /**
  * The tool grouping (one `namespace` of non-strict functions) is the least settled part of
  * ChatGPT plan use, so a rejection of it gets its own message naming the field. The field
- * path passed PARAM, so it is never provider text.
+ * path passed PARAM and the secret check, so it is never provider text or the token.
  */
 export const toolFormatMessage = (param: string): string =>
   `ChatGPT plan use did not accept this app’s tool format (${param}), so nothing was run. Please report this problem.`
@@ -145,35 +155,160 @@ export function isToolFormatError(error: unknown): error is ResponsesError & { p
   return error instanceof ResponsesError && error.toolFormat
 }
 
-function requestIdOf(headers?: Headers): string | undefined {
-  return short(headers?.get('x-request-id') ?? headers?.get('openai-request-id'), REQUEST_ID)
+/**
+ * `error.code`: snake_case words ("invalid_value", "chatpass_v2_scope_not_authorized").
+ * Codes are not allowlisted, because an unknown code is exactly what a report needs; the
+ * shape (no upper case, no digits in the first word) and the secret check keep a token out.
+ */
+const CODE = /^(?=.{1,64}$)[a-z]{2,}(_[a-z0-9]+){0,7}$/
+/** `error.type`: OpenAI's small, stable set. Anything else is not shown. */
+const ERROR_TYPES = new Set([
+  'invalid_request_error',
+  'authentication_error',
+  'permission_error',
+  'not_found_error',
+  'rate_limit_error',
+  'insufficient_quota',
+  'server_error',
+  'api_error',
+  'requests',
+  'tokens',
+])
+/** A Responses object's `status`. */
+const RESPONSE_STATUS = /^[a-z_]{1,32}$/
+/** Media types shown by name; any other value could be anything, so it is not shown. */
+const MEDIA_TYPES = new Set([
+  'application/json',
+  'application/problem+json',
+  'application/x-ndjson',
+  'application/octet-stream',
+  'text/event-stream',
+  'text/html',
+  'text/plain',
+])
+
+/** A failed response's facts, each checked against a strict pattern before it is shown. */
+export interface Diagnostics {
+  /** The HTTP status, including a 2xx whose body was not a stream. */
+  status?: number
+  /** The response headers: their Content-Type and request id are shown. */
+  headers?: Headers
+  code?: unknown
+  type?: unknown
+  param?: unknown
+  /** What the body was, e.g. "body detail": app-written only. */
+  body?: string
+  /** A Responses object's `status`, shown after the body kind. */
+  responseStatus?: unknown
+  /** Drops any value that echoes the credential sent with the request. */
+  isSecret?: SecretCheck
+  /** Longest result; the least useful parts are left out to fit. */
+  max?: number
+}
+
+/**
+ * " Details: HTTP 400, application/json, code invalid_value, param model, request req_1."
+ * so a report says what OpenAI answered. Each provider value must match its pattern and
+ * share no run with the credential (see sharesSecret); provider text and other header
+ * values never appear. Empty when there is nothing to show.
+ */
+export function diagnostics(facts: Diagnostics): string {
+  const { isSecret = () => false } = facts
+  const safe = (value: unknown, ok: (v: string) => boolean): string | undefined =>
+    typeof value === 'string' && ok(value) && !isSecret(value) ? value : undefined
+  // [priority, text]: the lowest priority is left out first when the result must be shorter.
+  const parts: [number, string][] = []
+  if (facts.status !== undefined) parts.push([7, `HTTP ${String(facts.status)}`])
+  if (facts.headers) {
+    const type = mediaType(facts.headers.get('content-type'))
+    parts.push([
+      2,
+      type === undefined ? 'no content type' : MEDIA_TYPES.has(type) ? type : 'other content type',
+    ])
+  }
+  if (facts.body) {
+    const status = safe(facts.responseStatus, (v) => RESPONSE_STATUS.test(v))
+    parts.push([3, status ? `${facts.body} ${status}` : facts.body])
+  }
+  const code = safe(facts.code, (v) => CODE.test(v))
+  if (code) parts.push([5, `code ${code}`])
+  const type = safe(facts.type, (v) => ERROR_TYPES.has(v))
+  if (type) parts.push([1, `type ${type}`])
+  const param = safe(facts.param, (v) => PARAM.test(v))
+  if (param) parts.push([4, `param ${param}`])
+  const requestId = requestIdOf(facts.headers, isSecret)
+  if (requestId) parts.push([6, `request ${requestId}`])
+  const render = (): string =>
+    parts.length ? ` Details: ${parts.map(([, text]) => text).join(', ')}.` : ''
+  const max = facts.max ?? Infinity
+  while (parts.length && render().length > max) {
+    const lowest = Math.min(...parts.map(([priority]) => priority))
+    parts.splice(
+      parts.findIndex(([priority]) => priority === lowest),
+      1,
+    )
+  }
+  return render()
+}
+
+function requestIdOf(headers: Headers | undefined, isSecret: SecretCheck): string | undefined {
+  const id = short(headers?.get('x-request-id') ?? headers?.get('openai-request-id'), REQUEST_ID)
+  return id && !isSecret(id) ? id : undefined
 }
 
 /**
  * Maps a Responses error object (`{code, message, param}`) and/or HTTP status. `status`
- * is undefined for in-stream failures (response.failed, error events).
+ * is undefined for in-stream failures (response.failed, error events) and for an error
+ * body sent with a 2xx; `context.httpStatus` is then the 2xx, shown in the details.
+ * Every message ends with diagnostics(); `context.isSecret` keeps the credential out.
  */
 export function responsesError(
   error: unknown,
   status: number | undefined,
   headers?: Headers,
+  context: {
+    httpStatus?: number
+    body?: string
+    responseStatus?: unknown
+    isSecret?: SecretCheck
+  } = {},
 ): ResponsesError {
+  const { isSecret = () => false } = context
+  const httpStatus = context.httpStatus ?? status
   const e = record(error)
   const providerCode = typeof e.code === 'string' ? e.code : ''
-  const requestId = requestIdOf(headers)
+  const requestId = requestIdOf(headers, isSecret)
+  const param =
+    typeof e.param === 'string' && !isSecret(e.param) ? short(e.param, PARAM) : undefined
+  const facts: Diagnostics = {
+    ...(httpStatus !== undefined ? { status: httpStatus } : {}),
+    ...(headers ? { headers } : {}),
+    ...(context.body ? { body: context.body, responseStatus: context.responseStatus } : {}),
+    code: e.code,
+    type: e.type,
+    param,
+    isSecret,
+  }
   const base = {
     ...(status !== undefined ? { status } : {}),
     ...(requestId ? { requestId } : {}),
   }
-  const param = short(e.param, PARAM)
+  /** `message` plus as much of the diagnostics as fits in MAX_MESSAGE. */
+  const make = (
+    code: AgentErrorCode,
+    message: string,
+    options: ConstructorParameters<typeof ResponsesError>[2] = {},
+  ): ResponsesError => {
+    const details = diagnostics({ ...facts, max: MAX_MESSAGE - message.length })
+    return new ResponsesError(code, `${message}${details}`, { ...base, ...options, details })
+  }
   // A rejected tool definition: an unsupported capability or an invalid request naming one.
   const rejected =
     providerCode === 'subscription_sharing_unsupported_capability' ||
     (!Object.hasOwn(KNOWN, providerCode) &&
       (status === undefined || status === 400 || status === 422))
   if (param && rejected && TOOL_PARAM.test(param))
-    return new ResponsesError('invalid_request', toolFormatMessage(param), {
-      ...base,
+    return make('invalid_request', toolFormatMessage(param), {
       ...(Object.hasOwn(KNOWN, providerCode) ? { providerCode } : {}),
       param,
       retryable: false,
@@ -181,68 +316,58 @@ export function responsesError(
     })
   const known = KNOWN[providerCode]
   if (known) {
-    return new ResponsesError(known.code, known.message, {
-      ...base,
+    return make(known.code, known.message, {
       providerCode,
       retryable: known.retryable,
       ...(param && providerCode === 'subscription_sharing_unsupported_capability' ? { param } : {}),
     })
   }
   const kind = [e.code, e.type].filter((v) => typeof v === 'string').join(' ')
+  const fail = (code: AgentErrorCode, message: string, retryable: boolean, resetsAt?: string) =>
+    make(code, message, { retryable, ...(resetsAt ? { resetsAt } : {}) })
   if (CONTEXT_LIMIT.test(kind))
-    return new ResponsesError(
+    return fail(
       'context_limit',
       'Conversation exceeds the model context window. Start a shorter conversation.',
-      { ...base, retryable: false },
+      false,
     )
   if (MODEL_MISSING.test(kind) || status === 404)
-    return new ResponsesError(
+    return fail(
       'model_unavailable',
       'This model is not available on your ChatGPT plan. Choose another model.',
-      { ...base, retryable: false },
+      false,
     )
   // Direct-route admission failures answer `{"detail": "..."}` with no stable code.
   switch (status) {
     case 401:
-      return new ResponsesError(
-        'auth_expired',
-        `ChatGPT did not accept the sign-in. ${SIGN_IN_AGAIN}`,
-        {
-          ...base,
-          retryable: false,
-        },
-      )
+      return fail('auth_expired', `ChatGPT did not accept the sign-in. ${SIGN_IN_AGAIN}`, false)
     case 403:
-      return new ResponsesError(
+      return fail(
         'permission',
         'ChatGPT denied this request, for example because of your region or workspace policy.',
-        { ...base, retryable: false },
+        false,
       )
     case 408:
-      return new ResponsesError('network', 'The ChatGPT request timed out. Try again.', base)
-    case 429: {
-      const resetsAt = headers ? retryAt(headers) : undefined
-      return new ResponsesError('rate_limit', 'ChatGPT rate limit reached. Try again later.', {
-        ...base,
-        ...(resetsAt ? { resetsAt } : {}),
-      })
-    }
+      return fail('network', 'The ChatGPT request timed out. Try again.', true)
+    case 429:
+      return fail(
+        'rate_limit',
+        'ChatGPT rate limit reached. Try again later.',
+        true,
+        headers ? retryAt(headers) : undefined,
+      )
     case 400:
     case 413:
     case 422:
-      return new ResponsesError(
+      return fail(
         'invalid_request',
         'ChatGPT rejected the request. Check the model and the request size.',
-        { ...base, retryable: false },
+        false,
       )
     case 503:
-      return new ResponsesError(
-        'overloaded',
-        'ChatGPT plan use is unavailable right now. Try again later.',
-        base,
-      )
+      return fail('overloaded', 'ChatGPT plan use is unavailable right now. Try again later.', true)
   }
-  return new ResponsesError('api', 'The ChatGPT request failed. Please try again.', base)
+  return fail('api', 'The ChatGPT request failed. Please try again.', true)
 }
 
 /** The `statusError` hook for connect(): body is `{error:{...}}`, `{detail}` or text. */
@@ -251,6 +376,11 @@ export function responsesStatusError(
   body: unknown,
   _label: string,
   headers?: Headers,
+  isSecret?: SecretCheck,
 ): ResponsesError {
-  return responsesError(record(body).error, status, headers)
+  const outer = record(body)
+  return responsesError(outer.error, status, headers, {
+    body: typeof outer.detail === 'string' ? 'body detail' : '',
+    ...(isSecret ? { isSecret } : {}),
+  })
 }

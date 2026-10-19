@@ -1,6 +1,7 @@
 import { _electron as electron, expect, test, type Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { clickSettings } from './open-settings'
 
 /**
  * The ChatGPT · Plan screens in a real Electron window (fake main, real renderer): OpenAI's
@@ -64,7 +65,7 @@ for (const width of [1280, 360]) {
     test(`ChatGPT · Plan screens at ${String(width)}px, ${scheme}`, async () => {
       const { app, page, shot } = await launch(width, scheme)
       try {
-        await page.getByRole('button', { name: 'Preferences', exact: true }).click()
+        await clickSettings(page)
         await page
           .getByRole('dialog', { name: 'Settings' })
           .getByRole('button', { name: 'Add connection' })

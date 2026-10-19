@@ -18,6 +18,7 @@ describe('shell styles', () => {
       '--separator-size',
       '--drawer-width',
       '--drawer-gutter',
+      '--rail-width',
       '--sidebar-width-left',
       '--sidebar-width-right',
     ])
@@ -54,6 +55,12 @@ describe('shell styles', () => {
     expect(css.slice(start, start + 400)).toMatch(
       /\.shell-drawer\s*\{\s*width:\s*calc\(100% - var\(--drawer-gutter\)\)/,
     )
+  })
+
+  it('keeps a slim rail where a collapsed left pane was, and the chat column flexible', () => {
+    expect(rule('.shell-rail')).toMatch(/flex:\s*0 0 var\(--rail-width\)/)
+    expect(rule('.workspace-main')).toMatch(/flex:\s*1/)
+    expect(rule('.workspace-main')).toMatch(/min-width:\s*0/)
   })
 
   it('keeps the separator a 4px handle that does not take layout space', () => {

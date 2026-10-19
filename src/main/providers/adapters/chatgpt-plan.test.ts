@@ -358,6 +358,10 @@ describe('ChatGPT plan connection', () => {
     expect(error).toMatchObject({ code: expected })
     const shown = error && 'message' in error ? error.message : ''
     expect(shown).toMatch(message)
+    // The adapter's own wording keeps the client's diagnostics.
+    expect(shown).toContain(
+      `Details: HTTP ${String(status)}, application/json, code ${code}, request req_123.`,
+    )
     expect(shown).not.toContain('SECRET')
     expect(service.failure(ID, new Error('provider SECRET text')).message).not.toContain('SECRET')
     if (expected === 'plan_not_entitled')
@@ -381,7 +385,10 @@ describe('ChatGPT plan connection', () => {
       }),
     ]
     const { error } = await send(service)
-    expect(error).toMatchObject({ code: 'invalid_request', message: toolFormatMessage(param) })
+    expect(error).toMatchObject({ code: 'invalid_request' })
+    const shown = error && 'message' in error ? error.message : ''
+    expect(shown.startsWith(toolFormatMessage(param))).toBe(true)
+    expect(shown).toContain(`param ${param}, request req_123.`)
     expect(logs).toContain(`chatgpt-plan: tool format rejected (param=${param}, request=req_123)`)
     expect(logs.join('\n')).not.toContain('SECRET')
   })

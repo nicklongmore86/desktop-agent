@@ -2,7 +2,7 @@ import type { Message, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk
 import type { AgentClient, AgentStream } from '../../agent/types'
 import { OpenAICompatError, statusError } from './errors'
 import { connect, type Connection, type ConnectionOptions } from './http'
-import { ChunkAccumulator, sseData } from './stream'
+import { ChunkAccumulator, isEventStream, sseData } from './stream'
 import { toChatRequest } from './translate'
 
 export interface OpenAICompatClientOptions extends ConnectionOptions {
@@ -76,8 +76,7 @@ class CompatStream implements AgentStream {
     try {
       if (!response.body)
         throw new OpenAICompatError('protocol', `${connection.label} sent an empty response.`)
-      const type = response.headers.get('content-type') ?? ''
-      if (!type.includes('text/event-stream')) {
+      if (!isEventStream(response.headers.get('content-type'))) {
         // Some servers report a failure as a JSON body with a 200 status.
         const body: unknown = await response.json().catch(() => undefined)
         if (body && typeof body === 'object' && 'error' in body)
