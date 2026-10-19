@@ -27,12 +27,20 @@ const photo: AttachmentRef = {
   mime: 'image/png',
   size: 2048,
 }
+const report: AttachmentRef = {
+  id: 'd'.repeat(64),
+  name: 'report.docx',
+  kind: 'document',
+  mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  size: 4096,
+}
 const store: AttachmentStoreLike = {
-  has: (id) => Promise.resolve(id === notes.id || id === photo.id),
+  has: (id) => Promise.resolve([notes.id, photo.id, report.id].includes(id)),
   read: (id) => Promise.resolve(id === notes.id ? new TextEncoder().encode('Ship Friday') : null),
 }
 const NOTES = inlineText(notes, 'Ship Friday')
 const PHOTO = attachmentPlaceholder(photo)
+const REPORT = attachmentPlaceholder(report)
 
 /** Records each request body; answers 400 so the run ends after the first request. */
 function capture() {
@@ -66,7 +74,7 @@ async function send(runner: AgentRunner): Promise<void> {
     attachments: store,
   })
   await session.init()
-  expect(await session.send('Summarise these', [notes, photo])).toEqual({ ok: true })
+  expect(await session.send('Summarise these', [notes, photo, report])).toEqual({ ok: true })
   await session.idle()
 }
 
@@ -86,7 +94,8 @@ describe('a prompt with attachments reaches every provider as valid text', () =>
         content: [
           { type: 'text', text: 'Summarise these' },
           { type: 'text', text: NOTES },
-          { type: 'text', text: PHOTO, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: PHOTO },
+          { type: 'text', text: REPORT, cache_control: { type: 'ephemeral' } },
         ],
       },
     ])
@@ -105,7 +114,7 @@ describe('a prompt with attachments reaches every provider as valid text', () =>
     expect(bodies).toHaveLength(1)
     expectClean(body)
     expect(body.messages.filter((m) => m.role === 'user')).toEqual([
-      { role: 'user', content: ['Summarise these', NOTES, PHOTO].join('\n\n') },
+      { role: 'user', content: ['Summarise these', NOTES, PHOTO, REPORT].join('\n\n') },
     ])
   })
 
@@ -122,7 +131,7 @@ describe('a prompt with attachments reaches every provider as valid text', () =>
     expectClean(body)
     const text = JSON.stringify(body.input)
     expect(body.input).toHaveLength(1)
-    for (const part of ['Summarise these', NOTES, PHOTO])
+    for (const part of ['Summarise these', NOTES, PHOTO, REPORT])
       expect(text).toContain(JSON.stringify(part).slice(1, -1))
   })
 
@@ -134,7 +143,10 @@ describe('a prompt with attachments reaches every provider as valid text', () =>
     expect(bodies).toHaveLength(1)
     expectClean(body)
     expect(body.contents).toEqual([
-      { role: 'user', parts: [{ text: 'Summarise these' }, { text: NOTES }, { text: PHOTO }] },
+      {
+        role: 'user',
+        parts: [{ text: 'Summarise these' }, { text: NOTES }, { text: PHOTO }, { text: REPORT }],
+      },
     ])
   })
 
@@ -155,6 +167,7 @@ describe('a prompt with attachments reaches every provider as valid text', () =>
           { type: 'text', text: 'Summarise these' },
           { type: 'text', text: NOTES },
           { type: 'text', text: PHOTO },
+          { type: 'text', text: REPORT },
         ],
       },
     ])

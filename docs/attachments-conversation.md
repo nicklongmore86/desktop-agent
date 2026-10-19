@@ -17,15 +17,16 @@ A user prompt with attachments is saved as an array: its text (if any) as a `tex
 }
 ```
 
-The fields are `AttachmentRef` (`src/shared/attachments.ts`). A prompt without attachments is still saved as a plain string, exactly as before.
+The fields are `AttachmentRef` (`src/shared/attachments.ts`). An attachment derived from another one (a rendered PDF page, say) also has `source: { id, page?, region? }`. A prompt without attachments is still saved as a plain string, exactly as before.
 
 Loading checks every block strictly (`src/main/storage/conversation-store.ts`):
 
-- exactly these six fields, nothing else;
-- `id` matches `ATTACHMENT_ID_PATTERN`; `kind` is `text`, `image` or `pdf`;
+- exactly these six fields (plus an optional `source`), nothing else;
+- `id` matches `ATTACHMENT_ID_PATTERN`; `kind` is `text`, `image`, `pdf` or `document`;
 - `name` is what `sanitizeTitle` keeps unchanged (no control, bidi or zero-width characters, single spaces, trimmed), at most 255 characters, with no `/` or `\`;
-- `mime` is a bare `type/subtype`; images must be `image/*`, PDFs `application/pdf`;
-- `size` is a whole number within the kind's limit;
+- `mime` is a bare `type/subtype`. Images must be one of `MODEL_IMAGE_MIMES` (JPEG, PNG, WebP, GIF), PDFs `application/pdf`. Documents must be Office (Word, Excel, PowerPoint, OOXML), OpenDocument, RTF, mail (`message/rfc822`, Outlook), or an image a model cannot read as-is (HEIC/HEIF, TIFF, BMP);
+- `source`, when present: `id` matches the pattern and is not the attachment's own; `page` is a positive whole number; `region` is exactly `{x, y, width, height}`, each a finite number ≥ 0; no other fields;
+- `size` is a whole number within the kind's limit (documents: `documentBytes`);
 - only in user prompts (never in assistant messages or next to tool results), at most 10 per prompt, no id twice, 20 MB in all.
 
 A chat that fails any check is unreadable, like any other malformed chat file.
@@ -44,7 +45,7 @@ A chat that fails any check is unreadable, like any other malformed chat file.
 Before a run, `toModelConversation` (`src/main/chat/attachments.ts`) turns every attachment block into a text block, for every provider (Claude API, Claude and Codex subscriptions, ChatGPT plan, OpenAI-compatible, Gemini):
 
 - a text file the store can `read` is inlined in a fenced block, introduced as user-provided, untrusted file data; the fence is longer than any backtick run in the file;
-- anything else is the placeholder `[Attached file (user-provided, untrusted): name, kind, size — not sent to this model yet]`;
+- anything else (images, PDFs and documents, until extraction and per-provider translators land) is the placeholder `[Attached file (user-provided, untrusted): name, kind, size — not sent to this model yet]`;
 - a file the store no longer holds is `[Attachment no longer available (user-provided, untrusted): …]`.
 
 The saved history keeps the attachment blocks; only the request copy is translated.

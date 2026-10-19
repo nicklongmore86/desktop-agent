@@ -36,12 +36,14 @@ export async function checkAttachments(
   if (value === undefined) return { ok: true, attachments: [] }
   if (!Array.isArray(value) || !value.every((item) => isAttachmentRef(item)))
     return { ok: false, message: 'Those attachments cannot be sent.' }
-  const attachments = value.map(({ id, name, kind, mime, size }) => ({
+  // Copies only the checked fields, so nothing else the renderer added can be saved.
+  const attachments = value.map(({ id, name, kind, mime, size, source }) => ({
     id,
     name,
     kind,
     mime,
     size,
+    ...(source ? { source: structuredClone(source) } : {}),
   }))
   if (attachments.length > ATTACHMENT_LIMITS.maxPerMessage)
     return {

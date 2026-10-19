@@ -2,6 +2,7 @@ import type { ContentBlockParam, MessageParam } from '@anthropic-ai/sdk/resource
 import {
   ATTACHMENT_ID_PATTERN,
   ATTACHMENT_LIMITS,
+  MODEL_IMAGE_MIMES,
   type AttachmentKind,
   type AttachmentRef,
 } from '../../shared/attachments'
@@ -74,12 +75,36 @@ function isToolResult(block: Obj): boolean {
 /** The longest attachment name kept (a file name, as most file systems allow). */
 export const MAX_ATTACHMENT_NAME = 255
 
-const ATTACHMENT_KEYS = new Set(['type', 'id', 'name', 'kind', 'mime', 'size'])
+const REQUIRED_KEYS = ['id', 'name', 'kind', 'mime', 'size']
+const OPTIONAL_KEYS = ['source']
 const KIND_BYTES = new Map<string, number>([
   ['text', ATTACHMENT_LIMITS.textBytes],
   ['image', ATTACHMENT_LIMITS.imageBytes],
   ['pdf', ATTACHMENT_LIMITS.pdfBytes],
+  ['document', ATTACHMENT_LIMITS.documentBytes],
 ])
+const IMAGE_MIMES: ReadonlySet<string> = new Set(MODEL_IMAGE_MIMES)
+/** Files that need converting before a model can read them: Office, OpenDocument, RTF, mail, other images. */
+const DOCUMENT_MIMES: ReadonlySet<string> = new Set([
+  'application/msword',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint',
+  'application/rtf',
+  'text/rtf',
+  'message/rfc822',
+  'application/vnd.ms-outlook',
+  'image/heic',
+  'image/heif',
+  'image/tiff',
+  'image/bmp',
+])
+const DOCUMENT_MIME_PREFIXES = [
+  'application/vnd.openxmlformats-officedocument.',
+  'application/vnd.ms-word.',
+  'application/vnd.ms-excel.',
+  'application/vnd.ms-powerpoint.',
+  'application/vnd.oasis.opendocument.',
+]
 // type/subtype, RFC 6838 characters only: no parameters, spaces or quotes.
 const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/
 
@@ -97,14 +122,41 @@ export function isAttachmentName(name: unknown): name is string {
   )
 }
 
+/** Exactly `required`, plus any of `optional`: no other fields. */
+function hasKeys(value: Obj, required: readonly string[], optional: readonly string[]): boolean {
+  const keys = Object.keys(value)
+  return (
+    required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || optional.includes(key))
+  )
+}
+
+const isMeasure = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0
+
+/** Where a derived attachment came from: an id, and optionally a page and region of it. */
+function isSource(value: unknown, own: unknown): boolean {
+  if (!isObject(value) || !hasKeys(value, ['id'], ['page', 'region'])) return false
+  const { id, page, region } = value
+  return (
+    typeof id === 'string' &&
+    ATTACHMENT_ID_PATTERN.test(id) &&
+    id !== own &&
+    (page === undefined || (Number.isSafeInteger(page) && (page as number) > 0)) &&
+    (region === undefined ||
+      (isObject(region) &&
+        hasKeys(region, ['x', 'y', 'width', 'height'], []) &&
+        Object.values(region).every(isMeasure)))
+  )
+}
+
 /** An attachment's metadata, exactly: no other fields, every value within the limits. */
 export function isAttachmentRef(value: unknown, type?: 'attachment'): value is AttachmentRef {
   if (!isObject(value)) return false
-  const keys = Object.keys(value)
-  const expected = type === undefined ? ATTACHMENT_KEYS.size - 1 : ATTACHMENT_KEYS.size
-  if (keys.length !== expected || !keys.every((key) => ATTACHMENT_KEYS.has(key))) return false
+  const required = type === undefined ? REQUIRED_KEYS : [...REQUIRED_KEYS, 'type']
+  if (!hasKeys(value, required, OPTIONAL_KEYS)) return false
   if (value['type'] !== type) return false
-  const { id, name, kind, mime, size } = value
+  const { id, name, kind, mime, size, source } = value
   const max = typeof kind === 'string' ? KIND_BYTES.get(kind) : undefined
   return (
     typeof id === 'string' &&
@@ -117,13 +169,16 @@ export function isAttachmentRef(value: unknown, type?: 'attachment'): value is A
     typeof size === 'number' &&
     Number.isSafeInteger(size) &&
     size >= 0 &&
-    size <= max
+    size <= max &&
+    (source === undefined || isSource(source, id))
   )
 }
 
 function mimeFits(kind: AttachmentKind, mime: string): boolean {
-  if (kind === 'image') return mime.startsWith('image/')
+  if (kind === 'image') return IMAGE_MIMES.has(mime)
   if (kind === 'pdf') return mime === 'application/pdf'
+  if (kind === 'document')
+    return DOCUMENT_MIMES.has(mime) || DOCUMENT_MIME_PREFIXES.some((p) => mime.startsWith(p))
   return true
 }
 

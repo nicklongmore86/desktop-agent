@@ -74,6 +74,13 @@ describe('checkAttachments', () => {
     expect(await checkAttachments(value, store)).toMatchObject({ ok: false })
   })
 
+  it('keeps a valid source and drops nothing else', async () => {
+    const page = { ...image(2), source: { id: hex(1), page: 2 } }
+    expect(await checkAttachments([page], store)).toEqual({ ok: true, attachments: [page] })
+    const forged = { ...image(2), source: { id: hex(1), page: 2, path: 'C:\\a.pdf' } }
+    expect(await checkAttachments([forged], store)).toMatchObject({ ok: false })
+  })
+
   it('refuses attachments when there is no store, or it fails', async () => {
     expect(await checkAttachments([ref(1)], undefined)).toMatchObject({ ok: false })
     const failing = { has: () => Promise.reject(new Error('io')) }
@@ -112,6 +119,24 @@ describe('toModelConversation', () => {
       '[Attached file (user-provided, untrusted): p2.png, image, 5 B — not sent to this model yet]',
     )
     expect(gone).toContain(ATTACHMENT_UNAVAILABLE)
+  })
+
+  it('sends a document as the untrusted-file placeholder, never its bytes', async () => {
+    const docx = ref(4, {
+      kind: 'document',
+      mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      name: 'plan.docx',
+      size: 2048,
+    })
+    const store = fakeStore({ [hex(4)]: 'PK binary' })
+    const sent = await toModelConversation(
+      [{ role: 'user', content: [{ type: 'attachment', ...docx }] }],
+      store,
+    )
+    expect(texts(sent)).toEqual([
+      '[Attached file (user-provided, untrusted): plan.docx, document, 2.0 KB — not sent to this model yet]',
+    ])
+    expect(store.read).not.toHaveBeenCalled()
   })
 
   it('uses the placeholder without a reader, or when reading fails', async () => {

@@ -81,6 +81,8 @@ describe('attachment blocks in saved chats', () => {
     ['a too-long name', block(1, { name: 'x'.repeat(MAX_ATTACHMENT_NAME + 1) })],
     ['a mime with parameters', block(1, { mime: 'text/plain; charset=utf-8' })],
     ['an image that is not image/*', block(1, { kind: 'image', mime: 'text/plain' })],
+    ['an image a model cannot read', block(1, { kind: 'image', mime: 'image/heic' })],
+    ['a document of an unknown format', block(1, { kind: 'document', mime: 'application/zip' })],
     ['a pdf that is not application/pdf', block(1, { kind: 'pdf', mime: 'image/png' })],
     ['a negative size', block(1, { size: -1 })],
     ['a fractional size', block(1, { size: 1.5 })],
@@ -96,6 +98,64 @@ describe('attachment blocks in saved chats', () => {
     ],
   ])('refuses a block with %s', async (_name, forged) => {
     expect(await loads([{ role: 'user', content: [forged] }])).toBe(false)
+  })
+
+  const doc = (mime: string, extra: Partial<AttachmentBlock> = {}) =>
+    block(1, { kind: 'document', mime, name: 'a.docx', ...extra })
+  const derived = (source: unknown) => ({
+    ...block(2, { kind: 'image', mime: 'image/png' }),
+    source,
+  })
+
+  it.each([
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/msword',
+    'application/vnd.oasis.opendocument.text',
+    'application/rtf',
+    'text/rtf',
+    'message/rfc822',
+    'image/heic',
+    'image/tiff',
+  ])('accepts a document of %s', async (mime) => {
+    expect(await loads([prompt('a', doc(mime))])).toBe(true)
+  })
+
+  it('limits documents and model images to their own formats and sizes', async () => {
+    expect(await loads([prompt('a', doc('application/zip'))])).toBe(false)
+    expect(await loads([prompt('a', doc('application/x-msdownload'))])).toBe(false)
+    expect(await loads([prompt('a', doc('application/pdf', { size: 9 }))])).toBe(false)
+    const big = doc('application/msword', { size: ATTACHMENT_LIMITS.documentBytes })
+    expect(await loads([prompt('a', big)])).toBe(false) // over the per-message total
+    expect([...attachmentIdsIn(big)]).toEqual([hex(1)])
+    for (const mime of ['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+      expect(await loads([prompt('a', block(1, { kind: 'image', mime }))])).toBe(true)
+    for (const mime of ['image/heic', 'image/tiff', 'image/svg+xml', 'image/bmp'])
+      expect(await loads([prompt('a', block(1, { kind: 'image', mime }))])).toBe(false)
+  })
+
+  it('accepts a derived attachment with a valid source', async () => {
+    const full = { id: hex(1), page: 3, region: { x: 0, y: 10.5, width: 200, height: 100 } }
+    expect(await loads([prompt('a', block(1), derived(full) as never)])).toBe(true)
+    expect(await loads([prompt('a', derived({ id: hex(1) }) as never)])).toBe(true)
+  })
+
+  it.each<[string, unknown]>([
+    ['a non-object', 'C:\\a.pdf'],
+    ['a forged id', { id: '../a' }],
+    ['no id', { page: 1 }],
+    ['its own id', { id: hex(2) }],
+    ['an extra field', { id: hex(1), path: 'C:\\a.pdf' }],
+    ['page 0', { id: hex(1), page: 0 }],
+    ['a fractional page', { id: hex(1), page: 1.5 }],
+    ['a string page', { id: hex(1), page: '1' }],
+    ['a negative region', { id: hex(1), region: { x: -1, y: 0, width: 1, height: 1 } }],
+    ['an infinite region', { id: hex(1), region: { x: 0, y: 0, width: Infinity, height: 1 } }],
+    ['a region missing height', { id: hex(1), region: { x: 0, y: 0, width: 1 } }],
+    ['a region extra field', { id: hex(1), region: { x: 0, y: 0, width: 1, height: 1, z: 0 } }],
+    ['a string region value', { id: hex(1), region: { x: '0', y: 0, width: 1, height: 1 } }],
+  ])('refuses a source with %s', async (_name, source) => {
+    expect(await loads([prompt('a', derived(source) as never)])).toBe(false)
   })
 
   it('refuses attachments outside a prompt, too many, repeated or too large in all', async () => {
