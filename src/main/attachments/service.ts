@@ -11,7 +11,7 @@ import {
 import {
   ATTACHMENT_MAX_NAME,
   type AttachOutcome,
-  type AttachmentSource,
+  type AttachVia,
   type CopyIntoFolderResult,
 } from '../../shared/ipc-attachments'
 import type { FileLocation } from '../../shared/ipc-files'
@@ -30,7 +30,14 @@ import type { PathGuard } from '../permissions/guard'
 import { defineTool } from '../tools/define'
 import { decodeText } from '../tools/text'
 import type { AgentTool, ToolResult } from '../tools/types'
-import { CLASSIFY_BYTES, classifyAttachment, KIND_LIMITS, MAX_ATTACHMENT_BYTES } from './classify'
+import {
+  CLASSIFY_BYTES,
+  CLASSIFY_MAX_BYTES,
+  classifyAttachment,
+  KIND_LIMITS,
+  MAX_ATTACHMENT_BYTES,
+  type Classification,
+} from './classify'
 import { copyIntoFolderTool, type AttachmentSourceRecord } from './copy-tool'
 import { prepareImage, type ImageScaler } from './image'
 import { pdfPageCount } from './pdf'
@@ -63,6 +70,23 @@ const EXTENSIONS: Record<string, string> = {
   'image/webp': 'webp',
   'application/pdf': 'pdf',
   'text/plain': 'txt',
+  'application/rtf': 'rtf',
+  'application/msword': 'doc',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.ms-outlook': 'msg',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'application/vnd.oasis.opendocument.text': 'odt',
+  'application/vnd.oasis.opendocument.spreadsheet': 'ods',
+  'application/vnd.oasis.opendocument.presentation': 'odp',
+  'message/rfc822': 'eml',
+  'image/tiff': 'tiff',
+  'image/bmp': 'bmp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/avif': 'avif',
 }
 
 /** What the audit entry records about an attempt (never contents). */
@@ -108,7 +132,7 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
     }
   }
 
-  const audited = async (source: AttachmentSource, attempt: () => Promise<Attempt>) => {
+  const audited = async (source: AttachVia, attempt: () => Promise<Attempt>) => {
     const started = now()
     let result: Attempt
     try {
@@ -158,7 +182,7 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
       if (!prepared.ok) return prepared
       stored = prepared.bytes
       storedMime = prepared.mime
-    } else {
+    } else if (kind === 'pdf') {
       const pages = pdfPageCount(bytes)
       if (pages !== null && pages > ATTACHMENT_LIMITS.pdfMaxPages)
         return refuse(
@@ -166,6 +190,7 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
           `This PDF has ${String(pages)} pages; at most ${String(ATTACHMENT_LIMITS.pdfMaxPages)} can be attached.`,
         )
     }
+    // Documents are stored as they are; extracting them is a separate step.
     const id = await store.put(stored)
     return {
       ok: true,
@@ -202,10 +227,8 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
     const handle = await openChecked(checked.path, checked.identity)
     if ('ok' in handle) return { outcome: handle, facts }
     try {
-      const head = await readUpTo(handle, CLASSIFY_BYTES)
-      const kind = classifyAttachment(head.bytes)
-      if (!kind.ok)
-        return { outcome: refuse('binary', 'This kind of file cannot be attached.'), facts }
+      const kind = await classify((n) => readUpTo(handle, n))
+      if (!kind.ok) return { outcome: kind, facts }
       facts.kind = kind.kind
       facts.mime = kind.mime
       // Inside a grant, text is referenced, not copied: the agent reads it with its tools.
@@ -247,9 +270,10 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
         return { outcome: refuse('blocked', SECRET_REFERENCE), facts }
     }
     const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    const kind = classifyAttachment(buffer.subarray(0, CLASSIFY_BYTES))
-    if (!kind.ok)
-      return { outcome: refuse('binary', 'This kind of file cannot be attached.'), facts }
+    const kind = await classify((n) =>
+      Promise.resolve({ bytes: buffer.subarray(0, n), whole: n >= buffer.length }),
+    )
+    if (!kind.ok) return { outcome: kind, facts }
     facts.kind = kind.kind
     facts.mime = kind.mime
     const fallback = `Pasted ${kind.kind === 'pdf' ? 'PDF' : kind.kind}.${EXTENSIONS[kind.mime] ?? 'bin'}`
@@ -310,10 +334,26 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
   }
 }
 
+/**
+ * classifyAttachment over the start of a file, giving it more bytes when it asks
+ * (`read(n)` returns the first n bytes and whether that is the whole file).
+ */
+async function classify(
+  read: (n: number) => Promise<{ bytes: Buffer; whole: boolean }>,
+): Promise<Extract<Classification, { ok: true }> | Refusal> {
+  let head = await read(CLASSIFY_BYTES)
+  let result = classifyAttachment(head.bytes)
+  if (!result.ok && result.code === 'need-more' && !head.whole) {
+    head = await read(Math.min(result.bytes, CLASSIFY_MAX_BYTES))
+    result = classifyAttachment(head.bytes)
+  }
+  return result.ok ? result : refuse('binary', 'This kind of file cannot be attached.')
+}
+
 function tooLarge(kind: AttachmentKind): Refusal {
   const mb = (n: number) => `${String(Math.round((n / (1024 * 1024)) * 10) / 10)} MB`
   const limit = KIND_LIMITS[kind]
   const size = limit < 1024 * 1024 ? `${String(limit / 1024)} KB` : mb(limit)
-  const what = kind === 'pdf' ? 'PDFs' : kind === 'image' ? 'Images' : 'Text files'
+  const what = { text: 'Text files', image: 'Images', pdf: 'PDFs', document: 'Documents' }[kind]
   return refuse('too-large', `${what} can be at most ${size}.`)
 }

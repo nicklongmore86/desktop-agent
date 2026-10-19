@@ -3,7 +3,7 @@ import { ATTACHMENT_LIMITS } from '../../shared/attachments'
 import { classifyAttachment } from './classify'
 import { imageSize, MAX_IMAGE_PIXELS, prepareImage, type ImageScaler } from './image'
 import { pdfPageCount } from './pdf'
-import { pngHeader } from './test-support'
+import { docx, MSI_CLSID, oleFile, pngHeader, WORD_CLSID, zipEntries } from './test-support'
 
 function jpegHeader(width: number, height: number): Buffer {
   const app0 = Buffer.from([
@@ -46,7 +46,7 @@ describe('classifyAttachment', () => {
   })
 
   it.each([
-    ['zip (and so docx/xlsx/pptx)', Buffer.from('PK\x03\x04\x14\x00\x00\x00\x08\x00', 'latin1')],
+    ['a bare zip header', Buffer.from('PK\x03\x04\x14\x00\x00\x00\x08\x00', 'latin1')],
     ['Windows executable', Buffer.from('MZ\x90\x00\x03\x00\x00\x00\x04\x00', 'latin1')],
     ['ELF binary', Buffer.from('\x7fELF\x02\x01\x01\x00\x00\x00', 'latin1')],
     ['control characters', Buffer.from('\x01\x02\x03\x04\x05abc\x06\x07', 'latin1')],
@@ -58,6 +58,103 @@ describe('classifyAttachment', () => {
     // A PNG signature in a .txt is an image; text in a .png is text.
     expect(classifyAttachment(pngHeader(1, 1))).toMatchObject({ kind: 'image' })
     expect(classifyAttachment(Buffer.from('not really a png'))).toMatchObject({ kind: 'text' })
+  })
+})
+
+describe('classifyAttachment: documents', () => {
+  const OOXML = 'application/vnd.openxmlformats-officedocument'
+  it.each([
+    ['docx', docx(), `${OOXML}.wordprocessingml.document`],
+    [
+      'xlsx',
+      zipEntries([
+        ['[Content_Types].xml', '<Types/>'],
+        ['xl/workbook.xml', '<w/>'],
+      ]),
+      `${OOXML}.spreadsheetml.sheet`,
+    ],
+    [
+      'pptx',
+      zipEntries([
+        ['[Content_Types].xml', '<Types/>'],
+        ['_rels/.rels', '<r/>'],
+        ['ppt/p.xml', '<p/>'],
+      ]),
+      `${OOXML}.presentationml.presentation`,
+    ],
+    [
+      'odt',
+      zipEntries([
+        ['mimetype', 'application/vnd.oasis.opendocument.text'],
+        ['content.xml', '<c/>'],
+      ]),
+      'application/vnd.oasis.opendocument.text',
+    ],
+    ['doc (class id)', oleFile({ classId: WORD_CLSID }), 'application/msword'],
+    ['xls (stream name)', oleFile({ streams: ['Workbook'] }), 'application/vnd.ms-excel'],
+    [
+      'ppt (stream name)',
+      oleFile({ streams: ['PowerPoint Document'] }),
+      'application/vnd.ms-powerpoint',
+    ],
+    ['msg', oleFile({ streams: ['__substg1.0_0037001F'] }), 'application/vnd.ms-outlook'],
+    ['rtf', Buffer.from('{\\rtf1\\ansi Hello}'), 'application/rtf'],
+    [
+      'eml',
+      Buffer.from('Received: by mx\r\nFrom: a@example.com\r\nSubject: Hi\r\n\r\nBody\r\n'),
+      'message/rfc822',
+    ],
+    ['TIFF', Buffer.from([0x49, 0x49, 0x2a, 0x00, 8, 0, 0, 0]), 'image/tiff'],
+    [
+      'BMP',
+      Buffer.concat([Buffer.from('BM'), Buffer.alloc(12), Buffer.from([40, 0, 0, 0])]),
+      'image/bmp',
+    ],
+    ['HEIC', Buffer.from('\0\0\0\x18ftypheic\0\0\0\0mif1heic', 'latin1'), 'image/heic'],
+    ['AVIF', Buffer.from('\0\0\0\x1cftypavif\0\0\0\0avifmif1', 'latin1'), 'image/avif'],
+  ])('%s is a document', (_name, bytes, mime) => {
+    expect(classifyAttachment(bytes)).toEqual({ ok: true, kind: 'document', mime })
+  })
+
+  it.each([
+    ['an .msi installer', oleFile({ classId: MSI_CLSID })],
+    ['an unknown compound file', oleFile({ streams: ['Thumbs'] })],
+    ['a jar', zipEntries([['META-INF/MANIFEST.MF', 'Manifest-Version: 1.0']])],
+    ['an epub', zipEntries([['mimetype', 'application/epub+zip']])],
+    [
+      'a .vsix/.nupkg package (given its first MB)',
+      zipEntries([
+        ['[Content_Types].xml', '<T/>'],
+        ['extension/a.js', Buffer.alloc(1024 * 1024, 1)],
+      ]),
+    ],
+    ['an MP4 video', Buffer.from('\0\0\0\x18ftypisom\0\0\x02\0isomiso2', 'latin1')],
+  ])('refuses %s', (_name, bytes) => {
+    expect(classifyAttachment(bytes)).toEqual({ ok: false, code: 'binary' })
+  })
+
+  it('asks for more bytes when a container is not decided by its start', () => {
+    const late = docx(20_000)
+    expect(classifyAttachment(late.subarray(0, 8000))).toEqual({
+      ok: false,
+      code: 'need-more',
+      bytes: 1024 * 1024,
+    })
+    expect(classifyAttachment(late)).toMatchObject({ ok: true, kind: 'document' })
+    const ole = oleFile({ classId: WORD_CLSID, directorySector: 20 })
+    expect(classifyAttachment(ole.subarray(0, 8000))).toEqual({
+      ok: false,
+      code: 'need-more',
+      bytes: 22 * 512,
+    })
+    expect(classifyAttachment(ole)).toMatchObject({ kind: 'document', mime: 'application/msword' })
+  })
+
+  it('keeps plain text that only looks a bit like mail headers as text', () => {
+    expect(classifyAttachment(Buffer.from('Note: buy milk\nTodo: call\n\nmore'))).toMatchObject({
+      kind: 'text',
+    })
+    expect(classifyAttachment(Buffer.from('{ "rtf": true }'))).toMatchObject({ kind: 'text' })
   })
 })
 

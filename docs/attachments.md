@@ -16,15 +16,27 @@ an `@"path"` reference to insert.
 ## What a file becomes
 
 - Inside a grant: text files and folders → `{ kind: 'reference', text: '@"path"' }` (via
-  `referenceFor`, no size limit: the agent reads it with its tools). Images and PDFs →
-  an attachment.
+  `referenceFor`, no size limit: the agent reads it with its tools). Images, PDFs and
+  documents → an attachment.
 - Outside the grants: files → a one-time read-only snapshot (`outsideGrant: true`).
   Folders → refused with `grant-folder` (grant it in Settings → Folders).
 - Kinds and binary refusal are decided in one place, `classifyAttachment`
-  (`src/main/attachments/classify.ts`), by content only. Per-kind limits are `KIND_LIMITS`
-  there. Text is stored as UTF-8. Images over 1568px are scaled with Electron's
-  `nativeImage` (PNG/JPEG; a bigger GIF/WebP is refused). PDF page counts are best effort:
-  the page tree's `/Count` when stored uncompressed, otherwise only the size limit applies.
+  (`src/main/attachments/classify.ts`), by content only (magic bytes and container
+  entries, never the name). Per-kind limits are `KIND_LIMITS` there.
+  - `image`: model-ready formats (`MODEL_IMAGE_MIMES`). Over 1568px they are scaled with
+    Electron's `nativeImage` (PNG/JPEG; a bigger GIF/WebP is refused).
+  - `pdf`: page count is best effort (the page tree's `/Count` when stored uncompressed,
+    otherwise only the size limit applies).
+  - `document`: originals that need extraction, stored as they are (up to 50 MB): Office
+    Open XML (a zip with `[Content_Types].xml` and `word/`, `xl/` or `ppt/` parts),
+    OpenDocument (zip whose first entry is an `application/vnd.oasis.opendocument.*`
+    `mimetype`), legacy Office and Outlook `.msg` (OLE2 by root class id or stream name;
+    `.msi` and unknown compound files are refused), RTF, `.eml` (a mail header block),
+    and HEIC/HEIF/AVIF/TIFF/BMP images. When the first 8000 bytes do not decide a
+    container, the classifier asks for up to 1 MB more.
+  - `text`: anything else passing read_file's binary check; stored as UTF-8.
+  - Other zips (jar, apk, epub, vsix), executables and binaries are refused.
+    Extraction is a separate step (feat/doc-worker).
 - The 20 MB per-message total is the composer's to enforce (main sees one file at a time).
 
 ## Checks (`validate.ts`)

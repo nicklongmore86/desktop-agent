@@ -25,7 +25,7 @@ import type { ApprovalRequest } from '../tools/types'
 import type { ImageScaler } from './image'
 import { createAttachmentsService, displayName } from './service'
 import { AttachmentStore } from './store'
-import { pngHeader } from './test-support'
+import { docx, oleFile, pngHeader, WORD_CLSID, zipEntries } from './test-support'
 
 let box: Sandbox
 let guard: PathGuard
@@ -185,6 +185,73 @@ describe('outside the granted folders', () => {
     refused(outcome, 'grant-folder')
     expect(outcome).toMatchObject({
       reason: expect.stringContaining('Settings → Folders') as unknown,
+    })
+  })
+})
+
+describe('documents', () => {
+  it('attaches Office files inline even inside a grant, stored as they are', async () => {
+    const file = path.join(box.root, 'report.docx')
+    await put(file, docx())
+    const result = attachment(await attach(file))
+    expect(result).toMatchObject({
+      outsideGrant: false,
+      attachment: { kind: 'document', name: 'report.docx' },
+    })
+    expect(result.attachment.mime).toBe(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    )
+    expect(await store.read(result.attachment.id)).toEqual(docx())
+    expect(lastAudit().args).toMatchObject({ kind: 'document', inGrant: true })
+  })
+
+  it('reads further into a file when the first bytes do not decide it', async () => {
+    await put(path.join(box.outside, 'late.docx'), docx(20_000))
+    await put(
+      path.join(box.outside, 'old.doc'),
+      oleFile({ classId: WORD_CLSID, directorySector: 20 }),
+    )
+    expect(attachment(await attach(path.join(box.outside, 'late.docx'))).attachment.kind).toBe(
+      'document',
+    )
+    expect(attachment(await attach(path.join(box.outside, 'old.doc'))).attachment.mime).toBe(
+      'application/msword',
+    )
+  })
+
+  it('detects by content: a renamed zip is refused, a renamed docx is a document', async () => {
+    await put(path.join(box.outside, 'tool.docx'), zipEntries([['META-INF/MANIFEST.MF', 'x']]))
+    await put(path.join(box.outside, 'notes.bin'), docx())
+    refused(await attach(path.join(box.outside, 'tool.docx')), 'binary')
+    expect(attachment(await attach(path.join(box.outside, 'notes.bin'))).attachment.kind).toBe(
+      'document',
+    )
+  })
+
+  it('refuses a small package that is not an Office file once all of it has been read', async () => {
+    await put(
+      path.join(box.outside, 'ext.vsix'),
+      zipEntries([
+        ['[Content_Types].xml', '<T/>'],
+        ['extension/a.js', 'x'],
+      ]),
+    )
+    refused(await attach(path.join(box.outside, 'ext.vsix')), 'binary')
+  })
+
+  it(`refuses documents over ${String(ATTACHMENT_LIMITS.documentBytes / (1024 * 1024))} MB before reading them`, async () => {
+    const file = path.join(box.outside, 'huge.docx')
+    await put(file, docx())
+    await fs.truncate(file, ATTACHMENT_LIMITS.documentBytes + 1)
+    refused(await attach(file), 'too-large')
+  })
+
+  it('attaches a pasted document with a document name', async () => {
+    const outcome = attachment(await service.fromPaste(Buffer.from('{\\rtf1 hi}'), 'text/rtf'))
+    expect(outcome.attachment).toMatchObject({
+      kind: 'document',
+      mime: 'application/rtf',
+      name: 'Pasted document.rtf',
     })
   })
 })

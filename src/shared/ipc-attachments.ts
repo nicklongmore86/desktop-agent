@@ -29,7 +29,7 @@ export const ATTACHMENT_MAX_MIME = 100
 export const ATTACHMENT_MAX_NAME = 255
 
 /** Where an attachment came from (audit `args.source`). */
-export type AttachmentSource = 'drop' | 'picker' | 'paste'
+export type AttachVia = 'drop' | 'picker' | 'paste'
 
 /**
  * Why an attachment was refused; also the audit `error` code. `grant-folder`: a folder
