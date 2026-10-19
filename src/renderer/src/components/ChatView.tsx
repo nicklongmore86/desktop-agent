@@ -14,6 +14,7 @@ import { ActivityGroup } from './ActivityGroup'
 import { CommandCard } from './CommandCard'
 import { Composer } from './Composer'
 import { ErrorBanner } from './ErrorBanner'
+import { useExternalFileDrop } from './files/external-drop'
 import { Markdown } from './Markdown'
 import { MessageActions } from './MessageActions'
 import { PromptRail } from './PromptRail'
@@ -76,6 +77,7 @@ export function ChatView({
 
   const usage = useProviderUsage(provider?.provider)
   const models = useProviderModels(provider?.provider)
+  const externalDrop = useExternalFileDrop()
   const refreshUsage = usage.refresh
   const refreshModels = models.refresh
 
@@ -150,7 +152,8 @@ export function ChatView({
   )
 
   return (
-    <div className="chat">
+    <div className="chat" {...externalDrop.zoneProps}>
+      {externalDrop.hint}
       {/* Keyed by conversation: another chat starts with fresh scroll-spy, preview and flash
           state, even when it has as many prompts as the last one. */}
       <PromptRail
