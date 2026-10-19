@@ -48,6 +48,43 @@ A tool-format rejection is a 400/422 (or an in-stream failure) whose `error.para
 against a strict pattern before it is shown; the provider's own text never is. Main also
 logs `chatgpt-plan: tool format rejected (param=…, request=…)`.
 
+### Details in error messages
+
+Every ChatGPT error message, including the ones above, ends with app-written details, for
+example `Details: HTTP 400, application/json, code invalid_value, param model, request req_123.`
+Only these appear:
+
+- the HTTP status;
+- the media type, by name only for well-known ones, otherwise "other content type" or
+  "no content type";
+- what the body was when it was not a stream ("body detail", "body other JSON", "body
+  not JSON", "body empty", "body too large", "body response in_progress"), or for a
+  failure inside the stream, "stream event response.failed" / "stream event error" with
+  the stream's own status and request id, so the details are never empty;
+- `error.code` (snake_case words), `error.type` (OpenAI's fixed set only), `error.param`
+  (a lowercase field path such as `tools[0].type`);
+- the request id (`req_` plus up to 64 letters and digits).
+
+A value is also dropped when it contains the access token sent with that request, or
+shares any 8-character run with it (ignoring case). Refresh and id tokens are never sent
+to `api.openai.com`, so a response cannot echo them. OpenAI's own text never appears. The
+details are trimmed to fit the 300-character message, leaving out the type, then the
+media type, the body kind and the param before the code, request id and status.
+
+### Responses that are not a plain event stream
+
+- `text/event-stream` is matched in any case and with any parameters (`; charset=utf-8`).
+  The OpenAI-compatible client (`openai-compat/client.ts`) uses the same check.
+- No `Content-Type`: the first bytes are checked, and a body that starts like SSE
+  (`data:`, `event:`, `id:`, `retry:` or a `:` comment) is still read as a stream.
+- A complete Responses object (`object: "response"`) sent as JSON is accepted on the same
+  terms as the stream's terminal event: `completed` or `incomplete` only; `failed` maps its
+  error code.
+- A 2xx JSON `error` object maps by its code. Anything else is "ChatGPT did not stream its
+  response …" with the details above.
+- A non-stream body is read whole up to 8 MiB; a longer one is refused ("body too large"),
+  never cut and parsed. Error bodies (any client) are capped at 64 KiB the same way.
+
 ## Screens (Sign in with ChatGPT UI)
 
 Follows OpenAI's published guidance: <https://developers.openai.com/siwc/ui-ux-guidelines>,
@@ -97,11 +134,14 @@ holding every function, each with `strict: false`. To check it:
    (…)"**, note the field in brackets (for example `tools[0].type`) and report it. With
    `pnpm dev`, the terminal also shows the `chatgpt-plan: tool format rejected (param=…,
 request=…)` line; the request id helps OpenAI find the request.
-8. Also check: ask it to create a file in the folder (an approval appears; approve it), and
+8. If the chat shows an error instead, copy the whole message, including the
+   `Details: …` part (HTTP status, content type, body kind, code, param, request id). It
+   holds no token or OpenAI text and tells us what OpenAI answered.
+9. Also check: ask it to create a file in the folder (an approval appears; approve it), and
    Settings shows the model picker and no usage bars.
-9. Remove the connection (switch to another first): Settings → ChatGPT · Plan → Remove.
-   `%APPDATA%\desktop-agent\secrets\chatgpt-plan.enc` is gone, your ChatGPT chats are
-   still in the history, and ChatGPT → Settings → Connected apps no longer lists Desktop
-   Agent (if it does, the app said it could not confirm sign-out).
+10. Remove the connection (switch to another first): Settings → ChatGPT · Plan → Remove.
+    `%APPDATA%\desktop-agent\secrets\chatgpt-plan.enc` is gone, your ChatGPT chats are
+    still in the history, and ChatGPT → Settings → Connected apps no longer lists Desktop
+    Agent (if it does, the app said it could not confirm sign-out).
 
 Nothing in these steps puts a token in a URL, `settings.json`, the renderer or a log.

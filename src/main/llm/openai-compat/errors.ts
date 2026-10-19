@@ -1,7 +1,8 @@
 import type { AgentErrorCode, AgentEvent } from '../../agent/types'
 import { plausibleReset } from '../../providers/errors'
 
-const MAX_MESSAGE = 300
+/** Longest error message; longer text is cut. */
+export const MAX_MESSAGE = 300
 
 /**
  * The only error this client throws. Messages are fixed, app-written text (capped), never
