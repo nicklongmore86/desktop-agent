@@ -34,6 +34,8 @@ export interface AppShellProps {
   suspended: boolean
   /** Another dialog is open (the delete confirmation): the sidebar shortcuts are off. */
   blocked?: boolean
+  /** Shown at the bottom-left while the docked left pane is collapsed (the Settings gear). */
+  collapsedFooter?: React.ReactNode
   shellRef?: React.Ref<ShellHandle>
   /** The chat column: header, banners and the conversation. */
   children: React.ReactNode
@@ -51,10 +53,11 @@ type Drawn = { side: 'left' | 'right'; key: string } | null
 
 /**
  * The two-pane shell: a chats sidebar on the left, the chat in the middle and the
- * Workspace panel on the right. Both panes collapse (header buttons, Ctrl+Alt+[ and
+ * Workspace panel on the right. Both panes push the chat column rather than overlay
+ * it, and it flexes as either opens, collapses or resizes. Both panes collapse (header buttons, Ctrl+Alt+[ and
  * ]), resize (drag or arrow keys on the separator) and remember their state. Where
  * the window is too narrow to dock a pane (see layout.ts) its toggle opens it as a
- * drawer instead. The chat column keeps at least 480px.
+ * drawer instead. The chat column keeps at least CHAT_MIN.
  */
 export function AppShell({
   left,
@@ -62,6 +65,7 @@ export function AppShell({
   inert,
   suspended,
   blocked = false,
+  collapsedFooter,
   shellRef,
   children,
 }: AppShellProps): React.JSX.Element {
@@ -175,6 +179,11 @@ export function AppShell({
             >
               <div className="shell-pane-inner">{left('docked')}</div>
             </aside>
+            {!geometry.left.docked && (
+              <div className="shell-rail" inert={inert}>
+                {collapsedFooter}
+              </div>
+            )}
             {geometry.left.docked && (
               <div
                 className="shell-separator"

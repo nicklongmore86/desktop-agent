@@ -9,6 +9,7 @@ import {
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ApprovalPrompt, ProviderStatus } from '../src/shared/ipc'
+import { clickSettings } from './open-settings'
 
 /**
  * The Add connection wizard in a real Electron window (fake main, real renderer):
@@ -317,7 +318,7 @@ test('the composer picker ends with Add or manage connections…', async () => {
 test('Settings lists the connections, adds one, and turns personal-use ones off', async () => {
   const { app, page } = await launch(1280, 'set-up')
   try {
-    await page.getByRole('button', { name: 'Preferences', exact: true }).click()
+    await clickSettings(page)
     const cards = page.getByRole('list', { name: 'Connections' })
     await expect(cards.getByRole('heading', { level: 4 })).toHaveText([
       'Claude · Subscription',
@@ -453,7 +454,7 @@ for (const width of [1280, 360]) {
           .getByRole('button', { name: 'Start chatting' })
           .click()
 
-        await page.getByRole('button', { name: 'Preferences', exact: true }).click()
+        await clickSettings(page)
         await expect(page.getByRole('list', { name: 'Connections' })).toBeVisible()
         await shot('9-settings-accounts')
       } finally {

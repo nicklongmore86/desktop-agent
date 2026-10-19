@@ -93,6 +93,9 @@ for (const viewport of [1280, 400]) {
           await expect(left).toBeVisible()
           await expect(right).toBeVisible()
           await expect(right.getByRole('heading', { name: 'Folder access' })).toBeVisible()
+          // One Settings entry: the sidebar gear, not the header.
+          await expect(page.getByRole('button', { name: 'Settings' })).toHaveCount(1)
+          await expect(left.getByRole('button', { name: 'Settings' })).toBeVisible()
           await expect.poll(() => width(page, '.shell-pane-left')).toBe(272)
           await expect.poll(() => width(page, '.shell-pane-right')).toBe(320)
           expect(await noSidewaysScroll()).toBe(true)
@@ -104,7 +107,11 @@ for (const viewport of [1280, 400]) {
           await rightToggle.click()
           await expect(right).toBeHidden()
           await expect(leftToggle).toHaveAttribute('aria-expanded', 'false')
-          await expect(page.getByRole('button', { name: 'Preferences' })).toBeVisible()
+          // The gear stays in reach, on the rail where the left pane was.
+          await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible()
+          await expect(
+            page.locator('.shell-rail').getByRole('button', { name: 'Settings' }),
+          ).toBeVisible()
           expect(await noSidewaysScroll()).toBe(true)
           await shot('shell-collapsed')
           await page.keyboard.press('Control+Alt+BracketLeft')
@@ -127,11 +134,11 @@ for (const viewport of [1280, 400]) {
           await expect.poll(() => width(page, '.shell-pane-left')).toBe(288)
           await page.keyboard.press('End')
           await expect.poll(() => width(page, '.shell-pane-left')).toBe(512)
-          // The chat column never drops under 480px, whatever the panes ask for.
+          // The chat column never drops under 400px, whatever the panes ask for.
           const rbar = page.getByRole('separator', { name: 'Resize workspace panel' })
           await rbar.focus()
           await page.keyboard.press('End')
-          await expect.poll(() => width(page, '.workspace-main')).toBeGreaterThanOrEqual(480)
+          await expect.poll(() => width(page, '.workspace-main')).toBeGreaterThanOrEqual(400)
           await page.keyboard.press('Home')
           await expect.poll(() => width(page, '.shell-pane-right')).toBe(240)
 
@@ -183,6 +190,13 @@ for (const viewport of [1280, 400]) {
           // A strip of the chat stays visible beside the drawer.
           const drawer = await chats.boundingBox()
           expect(drawer && drawer.width <= viewport - 56 + 1).toBe(true)
+          // The Settings gear is in the drawer, and the header has no second Settings button.
+          await expect(chats.getByRole('button', { name: 'Settings' })).toBeVisible()
+          await expect(
+            page
+              .getByRole('navigation', { name: 'Header' })
+              .getByRole('button', { name: 'Settings' }),
+          ).toHaveCount(0)
           await shot('shell-left-drawer')
           await page.keyboard.press('Escape')
           await expect(chats).toBeHidden()

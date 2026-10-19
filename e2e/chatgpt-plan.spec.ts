@@ -1,5 +1,6 @@
 import { _electron as electron, expect, test, type Page } from '@playwright/test'
 import { join } from 'node:path'
+import { clickSettings } from './open-settings'
 
 /**
  * Sign in with ChatGPT through the Add connection wizard in a real Electron window
@@ -33,7 +34,7 @@ async function launch() {
 }
 
 async function toPlanSignIn(page: Page) {
-  await page.getByRole('button', { name: 'Preferences', exact: true }).click()
+  await clickSettings(page)
   await page
     .getByRole('dialog', { name: 'Settings' })
     .getByRole('button', { name: 'Add connection' })
