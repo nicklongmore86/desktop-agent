@@ -24,7 +24,7 @@ Loading checks every block strictly (`src/main/storage/conversation-store.ts`):
 - exactly these six fields (plus an optional `source`), nothing else;
 - `id` matches `ATTACHMENT_ID_PATTERN`; `kind` is `text`, `image`, `pdf` or `document`;
 - `name` is what `sanitizeTitle` keeps unchanged (no control, bidi or zero-width characters, single spaces, trimmed), at most 255 characters, with no `/` or `\`;
-- `mime` is a bare `type/subtype`. Images must be one of `MODEL_IMAGE_MIMES` (JPEG, PNG, WebP, GIF), PDFs `application/pdf`. Documents must be Office (Word, Excel, PowerPoint, OOXML), OpenDocument, RTF, mail (`message/rfc822`, Outlook), or an image a model cannot read as-is (HEIC/HEIF, TIFF, BMP);
+- `mime` is a bare `type/subtype`. Text files must be `text/*` or one of a short list (`application/json`, `xml`, `yaml`/`x-yaml`, `toml`, `javascript`, `x-sh`, `sql`). Images must be one of `MODEL_IMAGE_MIMES` (JPEG, PNG, WebP, GIF), PDFs `application/pdf`. Documents must be Office (Word, Excel, PowerPoint, OOXML), OpenDocument, RTF, mail (`message/rfc822`, Outlook), or an image a model cannot read as-is (HEIC/HEIF, TIFF, BMP);
 - `source`, when present: `id` matches the pattern and is not the attachment's own; `page` is a positive whole number; `region` is exactly `{x, y, width, height}`, each a finite number ≥ 0; no other fields;
 - `size` is a whole number within the kind's limit (documents: `documentBytes`);
 - only in user prompts (never in assistant messages or next to tool results), at most 10 per prompt, no id twice, 20 MB in all.
@@ -38,7 +38,19 @@ A chat that fails any check is unreadable, like any other malformed chat file.
 
 ## Sending
 
-`ChatSession.send(text, attachments?)` checks the renderer's references again in main: the exact shape above, the per-message limits, and that the store still holds each id (`has`). Nothing is saved or run unless every check passes. A prompt may be files only.
+`ChatSession.send(text, attachments?)` reads only the ids the renderer sends: each item is an id, or an object whose `id` is one. Everything else the renderer sends (name, kind, mime, size, source, any other field) is ignored, never compared. Each id must be one the store issued to the renderer (`isIssued`) and still describes (`describe` non-null). The saved block is built from `describe()`'s metadata, which must itself pass the checks above, and the per-message limits apply to it. Nothing is saved or run unless every check passes. A prompt may be files only. With no store wired, every attachment is refused.
+
+The store interface (`AttachmentStoreLike`, `src/main/chat/attachments.ts`):
+
+```ts
+interface AttachmentStoreLike {
+  has(id: string): Promise<boolean>
+  read?(id: string): Promise<Uint8Array | null>
+  release?(ids: string[]): Promise<void>
+  describe(id: string): Promise<AttachmentRef | null>
+  isIssued(id: string): boolean
+}
+```
 
 ## What models receive
 
@@ -56,4 +68,6 @@ When a chat is opened, each referenced id is checked with `has`. A missing file 
 
 ## Forks and deletes
 
-A fork copies the attachment blocks with the rest of the history; fork points still never split a tool call from its result. When a chat file is deleted, the ids it referenced are offered for release: the store's `release` is called only with ids that no saved chat of any connection (including forks) and not the open conversation still references. Chat files are read loosely for this, so a chat this version cannot load still keeps its files.
+A fork copies the attachment blocks with the rest of the history; fork points still never split a tool call from its result. When a chat file is deleted, the ids it referenced are offered for release. The store's `release` is called only with ids that no saved chat of any connection (forks included), no send in flight and not the open conversation still references. Chat files are read loosely for this, so a chat this version cannot load still keeps its files. If any chat file cannot be read or parsed at all, its references are unknown: nothing is released on that pass, and a warning gives the count.
+
+A send pins its ids synchronously, before its first await, and unpins them once the prompt is in the open conversation (or the send fails). A release works out what is free with no await between reading the pins and starting to free files. A send waits for any release in flight before it checks its files, so a file freed just before the send pinned it reads as gone and the send is refused (`AttachmentPins`).

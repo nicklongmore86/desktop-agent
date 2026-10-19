@@ -19,7 +19,7 @@ import { createFilesService } from './files/service'
 import { createGitService } from './git/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
 import { createKeyStore, type SafeStorage } from './secrets'
-import type { AttachmentStoreLike } from './chat/attachments'
+import { AttachmentPins, type AttachmentStoreLike } from './chat/attachments'
 import {
   openHistory,
   referencedAttachmentIds,
@@ -136,17 +136,30 @@ export async function createAppServices(deps: AppServiceDeps) {
   // Only a registered id ever becomes part of a path.
   const histories = new Map<ConnectionId, Promise<ConversationHistory>>()
   const historyRoot = join(userData, 'history')
+  // Shared by the chat session (sends pin their files) and releases (see AttachmentPins).
+  const pins = new AttachmentPins()
   /**
    * A deleted chat's attachments go back to the store only when no saved chat
-   * of any connection (a fork, say), and not the open one, still references them.
+   * of any connection (a fork, say), no send in flight and not the open
+   * conversation still references them. If any chat file cannot be read, its
+   * references are unknown, so nothing is released on that pass.
    */
   const releaseAttachments = async (ids: string[]): Promise<void> => {
-    const release = deps.attachments?.release
-    if (!release) return
-    const referenced = await referencedAttachmentIds(historyRoot)
-    for (const id of chat.attachmentIds()) referenced.add(id)
-    const free = ids.filter((id) => !referenced.has(id))
-    if (free.length > 0) await release.call(deps.attachments, free)
+    const store = deps.attachments
+    if (!store?.release) return
+    await pins.release(
+      ids,
+      async () => {
+        const scan = await referencedAttachmentIds(historyRoot)
+        if (scan.unreadable > 0)
+          console.warn(
+            `kept ${String(ids.length)} attachment file(s): ${String(scan.unreadable)} chat file(s) could not be read`,
+          )
+        return { ids: scan.ids, skip: scan.unreadable > 0 }
+      },
+      () => chat.attachmentIds(),
+      (free) => store.release?.(free) ?? Promise.resolve(),
+    )
   }
   const historyFor = (provider: ConnectionId): Promise<ConversationHistory> => {
     if (!connections.registry.has(provider)) return Promise.reject(new Error('Unknown chat.'))
@@ -193,6 +206,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     // Commands typed in the command bar go through this same tool (no other spawn path).
     ...(userShell ? { userShell } : {}),
     ...(deps.attachments ? { attachments: deps.attachments } : {}),
+    pins,
     onSaveError: (error) => {
       console.error('could not save the conversation', error)
     },

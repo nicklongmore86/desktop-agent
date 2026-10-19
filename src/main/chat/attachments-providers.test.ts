@@ -34,8 +34,11 @@ const report: AttachmentRef = {
   mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   size: 4096,
 }
+const files = [notes, photo, report]
 const store: AttachmentStoreLike = {
-  has: (id) => Promise.resolve([notes.id, photo.id, report.id].includes(id)),
+  has: (id) => Promise.resolve(files.some((file) => file.id === id)),
+  describe: (id) => Promise.resolve(files.find((file) => file.id === id) ?? null),
+  isIssued: (id) => files.some((file) => file.id === id),
   read: (id) => Promise.resolve(id === notes.id ? new TextEncoder().encode('Ship Friday') : null),
 }
 const NOTES = inlineText(notes, 'Ship Friday')

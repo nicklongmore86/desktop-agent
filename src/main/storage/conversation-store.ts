@@ -98,6 +98,17 @@ const DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   'image/tiff',
   'image/bmp',
 ])
+/** Text files that are not `text/*`: kept small on purpose. */
+const TEXT_MIMES: ReadonlySet<string> = new Set([
+  'application/json',
+  'application/xml',
+  'application/x-yaml',
+  'application/yaml',
+  'application/toml',
+  'application/javascript',
+  'application/x-sh',
+  'application/sql',
+])
 const DOCUMENT_MIME_PREFIXES = [
   'application/vnd.openxmlformats-officedocument.',
   'application/vnd.ms-word.',
@@ -179,7 +190,7 @@ function mimeFits(kind: AttachmentKind, mime: string): boolean {
   if (kind === 'pdf') return mime === 'application/pdf'
   if (kind === 'document')
     return DOCUMENT_MIMES.has(mime) || DOCUMENT_MIME_PREFIXES.some((p) => mime.startsWith(p))
-  return true
+  return mime.startsWith('text/') || TEXT_MIMES.has(mime)
 }
 
 const isAttachmentBlock = (block: Obj): boolean => isAttachmentRef(block, 'attachment')

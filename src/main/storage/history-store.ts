@@ -454,38 +454,43 @@ async function scan(dir: string): Promise<ConversationSummary[]> {
   return found
 }
 
+/** What `referencedAttachmentIds` found. */
+export interface AttachmentScan {
+  /** Every attachment id a readable chat file references. */
+  ids: Set<string>
+  /** Chat files that could not be read or parsed: their references are unknown. */
+  unreadable: number
+}
+
 /**
  * Every attachment id that any saved chat under `root` (one folder per
  * connection) still references. Files are read loosely, so a chat this
- * version cannot load still keeps its files; a file that cannot be read at
- * all (other than a missing or corrupt one) throws, so nothing is released
- * on a guess.
+ * version cannot load still keeps its files. A chat file that cannot be read
+ * or parsed is counted in `unreadable`: its references are unknown, so a
+ * caller should release nothing on that pass.
  */
-export async function referencedAttachmentIds(root: string): Promise<Set<string>> {
-  const ids = new Set<string>()
+export async function referencedAttachmentIds(root: string): Promise<AttachmentScan> {
+  const scan: AttachmentScan = { ids: new Set(), unreadable: 0 }
   let providers: string[]
   try {
     providers = await fs.readdir(root)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ids
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return scan
     throw error
   }
   for (const provider of providers) {
     const dir = join(root, provider)
     if (!(await stat(dir))?.isDirectory()) continue
     for (const name of await fs.readdir(dir)) {
-      if (!CONVERSATION_ID.test(name.slice(0, -'.json'.length)) || !name.endsWith('.json')) continue
-      let parsed: unknown
+      if (!name.endsWith('.json') || !CONVERSATION_ID.test(name.slice(0, -'.json'.length))) continue
       try {
-        parsed = await readJsonFile(join(dir, name))
-      } catch (error) {
-        if (error instanceof SyntaxError) continue
-        throw error
+        attachmentIdsIn(await readJsonFile(join(dir, name)), scan.ids)
+      } catch {
+        scan.unreadable += 1
       }
-      attachmentIdsIn(parsed, ids)
     }
   }
-  return ids
+  return scan
 }
 
 type Migration =

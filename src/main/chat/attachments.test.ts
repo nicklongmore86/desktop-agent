@@ -4,6 +4,7 @@ import { ATTACHMENT_LIMITS, type AttachmentRef } from '../../shared/attachments'
 import { ATTACHMENT_UNAVAILABLE, type ChatEvent } from '../../shared/ipc'
 import type { StoredMessage } from '../storage/conversation-store'
 import {
+  AttachmentPins,
   attachmentPlaceholder,
   checkAttachments,
   inlineText,
@@ -24,11 +25,20 @@ const ref = (n = 1, extra: Partial<AttachmentRef> = {}): AttachmentRef => ({
 })
 const image = (n: number) => ref(n, { kind: 'image', mime: 'image/png', name: `p${String(n)}.png` })
 
-/** A store holding `files` (id -> text); `read` can be left out. */
-function fakeStore(files: Record<string, string>, withRead = true) {
+/**
+ * A store holding `files` (id -> text) and describing `refs`, all of them
+ * issued to the renderer (`issued` can be changed); `read` can be left out.
+ */
+function fakeStore(files: Record<string, string>, withRead = true, refs: AttachmentRef[] = []) {
+  const issued = new Set(refs.map(({ id }) => id))
   const store = {
+    issued,
     has: vi.fn((id: string) => Promise.resolve(id in files)),
     release: vi.fn(() => Promise.resolve()),
+    describe: vi.fn((id: string) =>
+      Promise.resolve(structuredClone(refs.find((r) => r.id === id) ?? null)),
+    ),
+    isIssued: vi.fn((id: string) => issued.has(id)),
     ...(withRead
       ? {
           read: vi.fn((id: string) =>
@@ -36,55 +46,79 @@ function fakeStore(files: Record<string, string>, withRead = true) {
           ),
         }
       : {}),
-  } satisfies AttachmentStoreLike
+  } satisfies AttachmentStoreLike & { issued: Set<string> }
   return store
 }
 
 describe('checkAttachments', () => {
-  const store = fakeStore({ [hex(1)]: 'hello', [hex(2)]: 'x' })
+  const page = { ...image(2), source: { id: hex(1), page: 2 } }
+  const pdf = (n: number) =>
+    ref(n, { kind: 'pdf', mime: 'application/pdf', size: ATTACHMENT_LIMITS.pdfBytes })
+  const store = fakeStore({ [hex(1)]: 'hello', [hex(2)]: 'x' }, true, [
+    ref(1),
+    page,
+    pdf(5),
+    pdf(6),
+    pdf(7),
+    ...Array.from({ length: 11 }, (_, i) => ref(i + 10)),
+  ])
 
-  it('accepts exact references the store holds, and nothing at all', async () => {
-    expect(await checkAttachments([ref(1), image(2)], store)).toEqual({
+  it("saves the store's metadata for ids it issued, and accepts nothing at all", async () => {
+    expect(await checkAttachments([hex(1), { id: hex(2) }], store)).toEqual({
       ok: true,
-      attachments: [ref(1), image(2)],
+      attachments: [ref(1), page],
     })
     expect(await checkAttachments(undefined, undefined)).toEqual({ ok: true, attachments: [] })
+    expect(await checkAttachments([], undefined)).toEqual({ ok: true, attachments: [] })
+  })
+
+  it('ignores the metadata the renderer sends: name, kind, mime, size and source', async () => {
+    const forged = {
+      ...ref(1),
+      name: 'invoice.pdf',
+      kind: 'pdf',
+      mime: 'application/pdf',
+      size: 1,
+      source: { id: hex(9) },
+      path: 'C:\\secret.txt',
+    }
+    expect(await checkAttachments([forged], store)).toEqual({ ok: true, attachments: [ref(1)] })
   })
 
   it.each<[string, unknown]>([
     ['a non-list', ref(1)],
-    ['an extra field', [{ ...ref(1), path: 'C:\\x' }]],
-    ['a type field', [{ ...ref(1), type: 'attachment' }]],
+    ['an item without an id', [{ name: 'a.txt' }]],
     ['a forged id', [ref(1, { id: '../../x' })]],
-    ['an unsafe name', [ref(1, { name: 'a\u202Eb' })]],
-    ['an oversized text', [ref(1, { size: ATTACHMENT_LIMITS.textBytes + 1 })]],
-    ['a repeated file', [ref(1), ref(1)]],
-    ['an unknown id', [ref(3)]],
-    [
-      'too many files',
-      Array.from({ length: ATTACHMENT_LIMITS.maxPerMessage + 1 }, (_, i) => ref(i + 1)),
-    ],
-    [
-      'too much in all',
-      [1, 2, 3].map((n) =>
-        ref(n, { kind: 'pdf', mime: 'application/pdf', size: ATTACHMENT_LIMITS.pdfBytes }),
-      ),
-    ],
+    ['a path as id', ['C:\\secret.txt']],
+    ['a repeated file', [hex(1), hex(1)]],
+    ['an id the store does not describe', [hex(3)]],
+    ['too many files', Array.from({ length: 11 }, (_, i) => hex(i + 10))],
+    ['too much in all', [hex(5), hex(6), hex(7)]],
   ])('refuses %s', async (_name, value) => {
     expect(await checkAttachments(value, store)).toMatchObject({ ok: false })
   })
 
-  it('keeps a valid source and drops nothing else', async () => {
-    const page = { ...image(2), source: { id: hex(1), page: 2 } }
-    expect(await checkAttachments([page], store)).toEqual({ ok: true, attachments: [page] })
-    const forged = { ...image(2), source: { id: hex(1), page: 2, path: 'C:\\a.pdf' } }
-    expect(await checkAttachments([forged], store)).toMatchObject({ ok: false })
+  it('refuses an id the store holds but never issued to the renderer', async () => {
+    const own = fakeStore({}, true, [ref(1), ref(4)])
+    own.issued.delete(hex(4))
+    expect(await checkAttachments([hex(4)], own)).toMatchObject({ ok: false })
+    expect(own.describe).not.toHaveBeenCalled()
+    expect(await checkAttachments([hex(1)], own)).toMatchObject({ ok: true })
+  })
+
+  it('refuses metadata the store describes wrongly', async () => {
+    const odd = fakeStore({}, true, [ref(1, { name: 'a\u202Eb' })])
+    expect(await checkAttachments([hex(1)], odd)).toMatchObject({ ok: false })
+    const other = fakeStore({}, true, [ref(1)])
+    other.describe.mockImplementation(() => Promise.resolve(ref(2)))
+    expect(await checkAttachments([hex(1)], other)).toMatchObject({ ok: false })
   })
 
   it('refuses attachments when there is no store, or it fails', async () => {
-    expect(await checkAttachments([ref(1)], undefined)).toMatchObject({ ok: false })
-    const failing = { has: () => Promise.reject(new Error('io')) }
-    expect(await checkAttachments([ref(1)], failing)).toMatchObject({ ok: false })
+    expect(await checkAttachments([hex(1)], undefined)).toMatchObject({ ok: false })
+    const failing = fakeStore({}, true, [ref(1)])
+    failing.describe.mockImplementation(() => Promise.reject(new Error('io')))
+    expect(await checkAttachments([hex(1)], failing)).toMatchObject({ ok: false })
   })
 })
 
@@ -142,7 +176,8 @@ describe('toModelConversation', () => {
   it('uses the placeholder without a reader, or when reading fails', async () => {
     const plain = await toModelConversation(messages.slice(0, 1), fakeStore({}, false))
     expect(texts(plain)[1]).toBe(attachmentPlaceholder(ref(1)))
-    const failing = { has: () => Promise.resolve(true), read: () => Promise.reject(new Error()) }
+    const failing = fakeStore({ [hex(1)]: 'x' })
+    failing.read?.mockImplementation(() => Promise.reject(new Error('io')))
     expect(texts(await toModelConversation(messages.slice(0, 1), failing))[1]).toBe(
       attachmentPlaceholder(ref(1)),
     )
@@ -157,7 +192,11 @@ describe('toModelConversation', () => {
 })
 
 describe('ChatSession with attachments', () => {
-  function setup(initial: StoredMessage[] = [], store = fakeStore({ [hex(1)]: 'hello' })) {
+  function setup(
+    initial: StoredMessage[] = [],
+    store = fakeStore({ [hex(1)]: 'hello' }, true, [ref(1)]),
+    pins?: AttachmentPins,
+  ) {
     const seen: MessageParam[][] = []
     const runner: AgentRunner = {
       run(conversation) {
@@ -178,6 +217,7 @@ describe('ChatSession with attachments', () => {
       promptApproval: () => {},
       newId: () => `id-${String(++n)}`,
       attachments: store,
+      ...(pins ? { pins } : {}),
     })
     return { session, saved, seen, events, store }
   }
@@ -234,7 +274,7 @@ describe('ChatSession with attachments', () => {
   it.each<[string, unknown]>([
     ['an unknown id', [ref(2)]],
     ['too many files', Array.from({ length: 11 }, () => ref(1))],
-    ['a forged block', [{ ...ref(1), extra: true }]],
+    ['a repeated file', [ref(1), hex(1)]],
     ['a non-list', 'C:\\secret.txt'],
   ])('refuses %s without saving or starting a run', async (_name, attachments) => {
     const { session, saved, seen } = setup()
@@ -260,7 +300,10 @@ describe('ChatSession with attachments', () => {
       },
       { role: 'assistant', content: 'Seen' },
     ]
-    const { session, seen, store } = setup(earlier)
+    const { session, seen, store } = setup(
+      earlier,
+      fakeStore({ [hex(1)]: 'hello' }, true, [ref(1), ref(9)]),
+    )
     await session.init()
     expect(session.state()).toMatchObject({
       loadError: null,
@@ -282,5 +325,121 @@ describe('ChatSession with attachments', () => {
     expect(session.state().items[0]).toMatchObject({ attachments: [{ available: true }] })
     const resent = seen[1]?.[0]?.content as { text: string }[]
     expect(resent[1]?.text).toBe(inlineText(ref(9), 'back'))
+  })
+
+  it("saves the store's metadata, not what the renderer claims", async () => {
+    const { session, saved } = setup()
+    await session.init()
+    const forged = { ...ref(1), name: 'payroll.xlsx', size: 0, kind: 'pdf' }
+    expect(await session.send('Hi', [forged])).toEqual({ ok: true })
+    await session.idle()
+    expect(saved.saved()[0]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Hi' },
+        { type: 'attachment', ...ref(1) },
+      ],
+    })
+  })
+
+  it('refuses a stored file that was never issued to the renderer', async () => {
+    const store = fakeStore({ [hex(1)]: 'hello', [hex(2)]: 'x' }, true, [ref(1), ref(2)])
+    store.issued.delete(hex(2))
+    const { session, saved } = setup([], store)
+    await session.init()
+    expect(await session.send('Hi', [hex(2)])).toMatchObject({ ok: false, code: 'invalid_request' })
+    expect(saved.save).not.toHaveBeenCalled()
+  })
+})
+
+/** A promise and the function that resolves it. */
+function deferred<T = void>() {
+  let resolve: (value: T) => void = () => {}
+  const promise = new Promise<T>((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
+
+describe('a release racing a send', () => {
+  const none = () => Promise.resolve({ ids: new Set<string>(), skip: false })
+
+  function setup() {
+    const pins = new AttachmentPins()
+    const gone = new Set<string>()
+    const runnerGate = deferred()
+    const store: AttachmentStoreLike = {
+      has: (id) => Promise.resolve(id === hex(1) && !gone.has(id)),
+      describe: (id) => Promise.resolve(id === hex(1) && !gone.has(id) ? ref(1) : null),
+      isIssued: (id) => id === hex(1),
+    }
+    const runner: AgentRunner = {
+      run: (conversation) => Promise.resolve({ conversation, stopReason: 'end_turn' }),
+    }
+    const session = new ChatSession({
+      history: memoryHistory(memoryStore()),
+      createRunner: async () => {
+        await runnerGate.promise
+        return { ok: true, runner }
+      },
+      emit: () => {},
+      promptApproval: () => {},
+      attachments: store,
+      pins,
+    })
+    return { pins, gone, runnerGate, session }
+  }
+
+  it('never frees a file a send has pinned, before or after its prompt is in the chat', async () => {
+    const { pins, runnerGate, session } = setup()
+    await session.init()
+    const release = vi.fn(() => Promise.resolve())
+    // The send pins synchronously, then waits in createRunner (prompt not added yet).
+    const sending = session.send('Hi', [hex(1)])
+    expect(pins.isPinned(hex(1))).toBe(true)
+    expect(await pins.release([hex(1)], none, () => session.attachmentIds(), release)).toEqual([])
+    runnerGate.resolve()
+    expect(await sending).toEqual({ ok: true })
+    await session.idle()
+    expect(pins.isPinned(hex(1))).toBe(false)
+    // Now the open conversation uses it.
+    expect(await pins.release([hex(1)], none, () => session.attachmentIds(), release)).toEqual([])
+    expect(release).not.toHaveBeenCalled()
+  })
+
+  it('a send that starts while a release is freeing its file waits, then sees it gone', async () => {
+    const { pins, gone, runnerGate, session } = setup()
+    await session.init()
+    runnerGate.resolve()
+    const freeing = deferred()
+    const releasing = pins.release(
+      [hex(1)],
+      none,
+      () => session.attachmentIds(),
+      async (ids) => {
+        await freeing.promise
+        for (const id of ids) gone.add(id)
+      },
+    )
+    // Let the release finish its scan and start freeing.
+    await Promise.resolve()
+    await Promise.resolve()
+    const sending = session.send('Hi', [hex(1)])
+    freeing.resolve()
+    expect(await releasing).toEqual([hex(1)])
+    expect(await sending).toEqual({
+      ok: false,
+      code: 'invalid_request',
+      message: 'An attachment is no longer available. Attach it again.',
+    })
+    expect(pins.isPinned(hex(1))).toBe(false)
+  })
+
+  it('a skipped scan frees nothing', async () => {
+    const pins = new AttachmentPins()
+    const release = vi.fn(() => Promise.resolve())
+    const skip = () => Promise.resolve({ ids: new Set<string>(), skip: true })
+    expect(await pins.release([hex(1)], skip, () => [], release)).toEqual([])
+    expect(release).not.toHaveBeenCalled()
   })
 })

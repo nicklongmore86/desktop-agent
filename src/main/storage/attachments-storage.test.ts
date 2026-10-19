@@ -82,6 +82,10 @@ describe('attachment blocks in saved chats', () => {
     ['a mime with parameters', block(1, { mime: 'text/plain; charset=utf-8' })],
     ['an image that is not image/*', block(1, { kind: 'image', mime: 'text/plain' })],
     ['an image a model cannot read', block(1, { kind: 'image', mime: 'image/heic' })],
+    ['a binary labelled text', block(1, { mime: 'application/octet-stream' })],
+    ['an executable labelled text', block(1, { mime: 'application/x-msdownload' })],
+    ['a zip labelled text', block(1, { mime: 'application/zip' })],
+    ['an image labelled text', block(1, { mime: 'image/png' })],
     ['a document of an unknown format', block(1, { kind: 'document', mime: 'application/zip' })],
     ['a pdf that is not application/pdf', block(1, { kind: 'pdf', mime: 'image/png' })],
     ['a negative size', block(1, { size: -1 })],
@@ -181,6 +185,19 @@ describe('attachment blocks in saved chats', () => {
     ).toBe(false)
   })
 
+  it.each([
+    'text/plain',
+    'text/markdown',
+    'text/csv',
+    'application/json',
+    'application/xml',
+    'application/x-yaml',
+    'application/javascript',
+    'application/x-sh',
+  ])('accepts a text file of %s', async (mime) => {
+    expect(await loads([prompt('a', block(1, { mime }))])).toBe(true)
+  })
+
   it('names: what a title keeps, without path separators', () => {
     expect(isAttachmentName('Report (final) — v2.pdf')).toBe(true)
     expect(isAttachmentName('a  b.txt')).toBe(false)
@@ -220,7 +237,8 @@ describe('forks and deletes', () => {
     const root = join(await tempDir(), 'history')
     const released: string[][] = []
     const release = vi.fn(async (candidates: string[]) => {
-      const referenced = await referencedAttachmentIds(root)
+      const { ids: referenced, unreadable } = await referencedAttachmentIds(root)
+      if (unreadable > 0) return
       const free = candidates.filter((id) => !referenced.has(id))
       if (free.length > 0) released.push(free)
     })
@@ -293,9 +311,22 @@ describe('forks and deletes', () => {
         messages: [{ role: 'user', content: [{ type: 'future' }, block(5)] }],
       }),
     )
+    // The index is not a chat file: never counted.
     await writeFile(join(root, 'p', 'index.json'), '{')
-    expect([...(await referencedAttachmentIds(root))]).toEqual([hex(5)])
-    expect(await referencedAttachmentIds(join(root, 'missing'))).toEqual(new Set())
+    expect(await referencedAttachmentIds(root)).toEqual({ ids: new Set([hex(5)]), unreadable: 0 })
+    expect(await referencedAttachmentIds(join(root, 'missing'))).toEqual({
+      ids: new Set(),
+      unreadable: 0,
+    })
+  })
+
+  it('counts chat files it cannot read, so the caller releases nothing', async () => {
+    const { root, history, release, released } = await setup([prompt('a', block(1))])
+    await writeFile(join(root, 'p', `${ID_D}.json`), '{"version":1,"messa')
+    expect(await referencedAttachmentIds(root)).toMatchObject({ unreadable: 1 })
+    await history.remove(ID_A)
+    expect(release).toHaveBeenCalledWith([hex(1)])
+    expect(released).toEqual([])
   })
 
   it('a failing release never fails the delete', async () => {

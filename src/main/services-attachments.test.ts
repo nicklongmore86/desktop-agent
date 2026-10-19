@@ -20,7 +20,8 @@ const notes: AttachmentRef = {
   size: 4,
 }
 
-it('releases a file only when the last chat that references it is deleted', async () => {
+/** App services on a temp userData with a fake attachment store holding `notes`. */
+async function setup() {
   const userData = await mkdtemp(join(tmpdir(), 'attach-services-'))
   dirs.push(userData)
   const provider = 'claude-subscription'
@@ -36,6 +37,8 @@ it('releases a file only when the last chat that references it is deleted', asyn
   )
   const attachments = {
     has: vi.fn((id: string) => Promise.resolve(id === notes.id)),
+    describe: vi.fn((id: string) => Promise.resolve(id === notes.id ? notes : null)),
+    isIssued: (id: string) => id === notes.id,
     release: vi.fn(() => Promise.resolve()),
   }
   const { chat, projects } = await createAppServices({
@@ -51,11 +54,16 @@ it('releases a file only when the last chat that references it is deleted', asyn
     onAuditStatus: vi.fn(),
     attachments,
   })
-  expect(await chat.send('Read this', [notes])).toEqual({ ok: true })
+  // A chat that attaches `notes`, and a fork of it.
+  expect(await chat.send('Read this', [notes.id])).toEqual({ ok: true })
   await chat.idle()
   const source = chat.historyState().activeId ?? ''
   const { chat: fork } = await projects.fork({ provider, id: source }, null)
+  return { userData, provider, attachments, chat, projects, source, fork }
+}
 
+it('releases a file only when the last chat that references it is deleted', async () => {
+  const { attachments, chat, projects, source, fork } = await setup()
   await chat.remove(source)
   expect(attachments.release).not.toHaveBeenCalled()
   // Opened, the fork shows the file; deleting it frees the file.
@@ -63,4 +71,45 @@ it('releases a file only when the last chat that references it is deleted', asyn
   expect(chat.state().items[0]).toMatchObject({ attachments: [{ id: notes.id, available: true }] })
   await projects.removeChat(fork)
   expect(attachments.release).toHaveBeenCalledExactlyOnceWith([notes.id])
+})
+
+it('releases nothing while any chat file cannot be read, and says so', async () => {
+  const { userData, provider, attachments, chat, projects, source, fork } = await setup()
+  await writeFile(
+    join(userData, 'history', provider, '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f.json'),
+    '{',
+  )
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  await chat.remove(source)
+  await projects.removeChat(fork)
+  expect(attachments.release).not.toHaveBeenCalled()
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 chat file(s) could not be read'))
+})
+
+it('refuses attachments when no store is wired', async () => {
+  const userData = await mkdtemp(join(tmpdir(), 'attach-none-'))
+  dirs.push(userData)
+  await writeFile(
+    join(userData, 'settings.json'),
+    JSON.stringify({ version: 2, provider: 'claude-subscription' }),
+  )
+  const runner = vi.spyOn(ConnectionService.prototype, 'runner')
+  const { chat } = await createAppServices({
+    userData,
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      encryptString: (text) => Buffer.from(text),
+      decryptString: (value) => value.toString(),
+    },
+    trash: () => Promise.resolve(),
+    emit: vi.fn(),
+    promptApproval: vi.fn(),
+    onAuditStatus: vi.fn(),
+  })
+  expect(await chat.send('Read this', [notes.id])).toMatchObject({
+    ok: false,
+    message: 'Attachments are unavailable.',
+  })
+  expect(runner).not.toHaveBeenCalled()
+  expect(chat.historyState().conversations).toEqual([])
 })

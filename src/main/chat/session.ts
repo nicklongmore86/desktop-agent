@@ -26,7 +26,9 @@ import {
 } from '../storage/conversation-store'
 import type { ConversationHistory } from '../storage/history-store'
 import {
+  AttachmentPins,
   checkAttachments,
+  requestedIds,
   toModelConversation,
   unavailableAttachments,
   type AttachmentStoreLike,
@@ -67,6 +69,8 @@ export interface ChatSessionDeps {
   userShell?: AgentTool
   /** Holds attached files. Without it, sending attachments is refused. */
   attachments?: AttachmentStoreLike
+  /** Shared with whatever releases attachment files (see AttachmentPins). */
+  pins?: AttachmentPins
 }
 
 interface PendingApproval {
@@ -108,6 +112,7 @@ export class ChatSession {
   private active: ActiveRun | null = null
   private readonly pending = new Map<string, PendingApproval>()
   private readonly newId: () => string
+  private readonly pins: AttachmentPins
   /** Bumped by every switch; a run or save from an older generation never touches history. */
   private generation = 0
   /** Loads and switches in flight. While > 0, send() is refused. */
@@ -116,6 +121,7 @@ export class ChatSession {
 
   constructor(private readonly deps: ChatSessionDeps) {
     this.newId = deps.newId ?? randomUUID
+    this.pins = deps.pins ?? new AttachmentPins()
     this.history = deps.history
     this.store = deps.history.current()
   }
@@ -172,8 +178,10 @@ export class ChatSession {
 
   /**
    * Starts a run. Resolves once it has started, not when it finishes (see `idle`).
-   * `attachments` are references the renderer was given; each is checked again
-   * here (shape, limits, and that the store holds it) before the prompt is saved.
+   * `attachments` are ids the renderer was given (see checkAttachments): only the
+   * ids are read, and the saved metadata is the store's. They are pinned before
+   * the first await, so a release cannot free them, until the prompt is in the
+   * open conversation or the send fails.
    */
   async send(text: unknown, attachments?: unknown): Promise<SendResult> {
     const attaching = Array.isArray(attachments) && attachments.length > 0
@@ -199,35 +207,45 @@ export class ChatSession {
       }),
     }
 
-    const checked = await checkAttachments(attachments, this.deps.attachments)
-    if (!checked.ok || cancelled()) {
-      this.active = null
-      release()
-      return checked.ok
-        ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
-        : { ok: false, code: 'invalid_request', message: checked.message }
-    }
-
+    const unpin = this.pins.pin(requestedIds(attachments) ?? [])
+    let checked: Extract<Awaited<ReturnType<typeof checkAttachments>>, { ok: true }>
     let built: RunnerResult
     try {
-      built = await this.deps.createRunner(controller.signal)
-    } catch {
-      built = { ok: false, code: 'internal', message: 'Could not start the agent.' }
-    }
-    if (!built.ok || cancelled()) {
-      this.active = null
-      release()
-      return built.ok
-        ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
-        : {
-            ok: false,
-            code: built.code,
-            message: built.message,
-            ...(built.resetsAt ? { resetsAt: built.resetsAt } : {}),
-          }
-    }
+      // A release already freeing files finishes first, so a freed file reads as gone.
+      await this.pins.settled()
+      const check = await checkAttachments(attachments, this.deps.attachments)
+      if (!check.ok || cancelled()) {
+        this.active = null
+        release()
+        return check.ok
+          ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
+          : { ok: false, code: 'invalid_request', message: check.message }
+      }
+      checked = check
 
-    this.conversation = [...this.conversation, promptMessage(text, checked.attachments)]
+      try {
+        built = await this.deps.createRunner(controller.signal)
+      } catch {
+        built = { ok: false, code: 'internal', message: 'Could not start the agent.' }
+      }
+      if (!built.ok || cancelled()) {
+        this.active = null
+        release()
+        return built.ok
+          ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
+          : {
+              ok: false,
+              code: built.code,
+              message: built.message,
+              ...(built.resetsAt ? { resetsAt: built.resetsAt } : {}),
+            }
+      }
+
+      this.conversation = [...this.conversation, promptMessage(text, checked.attachments)]
+    } finally {
+      // Referenced by the open conversation now (or never will be).
+      unpin()
+    }
     // A file attached again (same contents, same id) is available again.
     if (checked.attachments.some(({ id }) => this.unavailable.has(id))) {
       const sent = new Set(checked.attachments.map(({ id }) => id))
