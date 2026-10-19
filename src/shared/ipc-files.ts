@@ -7,6 +7,8 @@
  * `/`-separated relative path made of names main listed. Main re-resolves both
  * against the current grants through PathGuard on every call.
  */
+import type { FilesAttachApi } from './ipc-attachments'
+
 export const filesChannels = {
   filesRoots: 'files:roots',
   filesList: 'files:list',
@@ -111,7 +113,7 @@ export interface FilesChanged extends FileLocation {
 }
 
 export interface FilesApi {
-  files: {
+  files: FilesAttachApi & {
     /** The granted folders, with the ids every other call takes. */
     roots: () => Promise<FilesRoot[]>
     /** One level of a folder, listed through PathGuard. Links are listed, never followed. */

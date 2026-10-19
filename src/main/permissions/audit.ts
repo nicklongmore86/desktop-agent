@@ -14,7 +14,10 @@ export interface AuditEntry {
   /** The resolved paths the call touched or was refused. */
   paths: string[]
   approval: AuditApproval
-  /** Who asked: the agent, or the user in the command bar (`user-terminal`). */
+  /**
+   * Who asked: the agent, the user in the command bar (`user-terminal`), or the user in the
+   * app itself (`user`: attachments).
+   */
   origin: ToolOrigin
   outcome: 'ok' | 'error'
   /**

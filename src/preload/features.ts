@@ -4,6 +4,7 @@
  */
 import type { FeatureApis } from '../shared/ipc-features'
 import type { PushChannel, PushPayloads } from '../shared/ipc'
+import { attachmentsApi } from './attachments'
 import { commandApi } from './command'
 import { connectionsApi } from './connections'
 import { filesApi } from './files'
@@ -20,6 +21,7 @@ export type Subscribe = <C extends PushChannel>(
 ) => () => void
 
 export const featureApis = (invoke: Invoke, subscribe: Subscribe): FeatureApis => ({
+  ...attachmentsApi(invoke),
   ...commandApi(invoke),
   ...connectionsApi(invoke),
   ...filesApi(invoke, subscribe),

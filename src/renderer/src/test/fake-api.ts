@@ -335,6 +335,18 @@ export function fakeApi(options: FakeApiOptions = {}) {
         return Promise.resolve({ ok: true as const, text: `@"${path}"` })
       }),
       onChanged: vi.fn(subscribe(filesListeners)),
+      attachDropped: vi.fn((_file: File) =>
+        Promise.resolve({ ok: false as const, code: 'invalid' as const, reason: 'Not a file.' }),
+      ),
+    },
+    attachments: {
+      pick: vi.fn(() => Promise.resolve([])),
+      fromPaste: vi.fn((_bytes: Uint8Array, _mime: string, _name?: string) =>
+        Promise.resolve({ ok: false as const, code: 'binary' as const, reason: 'Not attached.' }),
+      ),
+      copyIntoFolder: vi.fn((_id: string, _folder: FileLocation) =>
+        Promise.resolve({ ok: false as const, reason: 'Not copied.' }),
+      ),
     },
     git: {
       overview: vi.fn((): Promise<GitOverview> =>

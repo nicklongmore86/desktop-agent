@@ -16,8 +16,11 @@ export interface ApprovalRequest {
   detail?: string
 }
 
-/** Who asked for a call: the agent, or the user typing in the command bar. */
-export type ToolOrigin = 'agent' | 'user-terminal'
+/**
+ * Who asked for a call: the agent, the user typing in the command bar, or the user acting
+ * in the app itself (attaching a file, "Copy into folder…").
+ */
+export type ToolOrigin = 'agent' | 'user-terminal' | 'user'
 
 export interface ToolContext {
   requestApproval(req: ApprovalRequest): Promise<boolean>

@@ -802,3 +802,55 @@ describe('provider switching', () => {
     expect(session.state().items[0]).toMatchObject({ text: 'two' })
   })
 })
+
+describe('runUserAction', () => {
+  /** A tool that asks for one write approval and reports the answer. */
+  const approvingTool = (): AgentTool & { origins: unknown[] } => {
+    const origins: unknown[] = []
+    return {
+      name: 'copy_into_folder',
+      description: '',
+      inputSchema: { type: 'object', properties: {} },
+      origins,
+      async execute(_input, ctx) {
+        origins.push(ctx.origin)
+        const approved = await ctx.requestApproval({
+          tool: 'copy_into_folder',
+          kind: 'write',
+          summary: 'Copy a.png into /granted',
+        })
+        return approved ? { content: 'copied' } : { content: 'declined', isError: true }
+      },
+    }
+  }
+
+  it("asks with the user's origin, resolves with the result and saves nothing", async () => {
+    const { session, prompts, events, store } = setup(scriptedRunner((h) => Promise.resolve(h)))
+    await session.init()
+    const tool = approvingTool()
+    const result = session.runUserAction(tool, {})
+    await until(() => prompts.length === 1)
+    expect(prompts[0]).toMatchObject({ tool: 'copy_into_folder', origin: 'user', toolUseId: null })
+    expect(tool.origins).toEqual(['user'])
+    expect(session.respondApproval(prompts[0]?.id, true)).toBe(true)
+    expect(await result).toEqual({ content: 'copied' })
+    expect(events.map((e) => e.type)).toEqual(['approval_closed'])
+    expect((await store.load()).messages).toEqual([])
+  })
+
+  it('is denied by stop(), and refused while a reply runs', async () => {
+    const { runner } = approvalRunner()
+    const { session, prompts } = setup(runner)
+    await session.init()
+    const result = session.runUserAction(approvingTool(), {})
+    await until(() => prompts.length === 1)
+    await session.stop()
+    expect(await result).toMatchObject({ isError: true })
+
+    await session.send('hi')
+    await until(() => prompts.length === 2)
+    expect(await session.runUserAction(approvingTool(), {})).toMatchObject({ isError: true })
+    expect(prompts).toHaveLength(2)
+    await session.stop()
+  })
+})

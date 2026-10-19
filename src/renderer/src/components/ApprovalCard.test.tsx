@@ -36,6 +36,17 @@ function renderCard(prompt: ApprovalPrompt, queued = 0) {
 }
 
 describe('ApprovalCard', () => {
+  it('says who asked: the agent, or the user copying an attachment', () => {
+    const { unmount } = render(
+      <ApprovalCard prompt={writePrompt} queued={0} onRespond={() => Promise.resolve()} />,
+    )
+    expect(screen.getByText('Requested by the agent.')).toBeTruthy()
+    unmount()
+    renderCard({ ...writePrompt, tool: 'copy_into_folder', origin: 'user' })
+    expect(screen.getByText(/Requested from an attachment \(Copy into folder\)/)).toBeTruthy()
+    expect(screen.queryByText('Requested by the agent.')).toBeNull()
+  })
+
   it('focuses Deny by default and approves only on an explicit click', async () => {
     const { onRespond, user, dialog } = renderCard(writePrompt)
     expect(dialog.getAttribute('aria-modal')).toBe('true')

@@ -171,7 +171,9 @@ export function ApprovalCard({ prompt, queued, onRespond }: ApprovalCardProps): 
           <p className="approval-origin">
             {prompt.origin === 'user-terminal'
               ? 'Typed in the command bar. Approve only if you typed or pasted this yourself.'
-              : 'Requested by the agent.'}
+              : prompt.origin === 'user'
+                ? 'Requested from an attachment (Copy into folder). Approve only if you chose this yourself.'
+                : 'Requested by the agent.'}
           </p>
           <Detail prompt={prompt} latinContext={latinContext} />
         </div>
