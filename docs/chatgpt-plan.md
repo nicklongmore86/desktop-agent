@@ -50,13 +50,24 @@ logs `chatgpt-plan: tool format rejected (param=…, request=…)`.
 
 ### Details in error messages
 
-Failures without a documented code (above) end with app-written details, for example
-`Details: HTTP 400, application/json, code invalid_value, param model, request req_123.`
-Only these appear, each checked against a strict pattern: the HTTP status, the media type
-(only well-known ones by name, otherwise "other content type" or "no content type"), what
-the body was when it was not a stream ("body detail", "body other JSON", "body not JSON",
-"body empty", "body response in_progress"), `error.code`, `error.type`, `error.param` and
-the request id. OpenAI's own text and the token never do.
+Every ChatGPT error message, including the ones above, ends with app-written details, for
+example `Details: HTTP 400, application/json, code invalid_value, param model, request req_123.`
+Only these appear:
+
+- the HTTP status;
+- the media type, by name only for well-known ones, otherwise "other content type" or
+  "no content type";
+- what the body was when it was not a stream ("body detail", "body other JSON", "body
+  not JSON", "body empty", "body too large", "body response in_progress");
+- `error.code` (snake_case words), `error.type` (OpenAI's fixed set only), `error.param`
+  (a lowercase field path such as `tools[0].type`);
+- the request id (`req_` plus up to 64 letters and digits).
+
+A value is also dropped when it contains the access token sent with that request, or
+shares any 8-character run with it (ignoring case). Refresh and id tokens are never sent
+to `api.openai.com`, so a response cannot echo them. OpenAI's own text never appears. The
+details are trimmed to fit the 300-character message, leaving out the type, then the
+media type, the body kind and the param before the code, request id and status.
 
 ### Responses that are not a plain event stream
 
@@ -69,6 +80,8 @@ the request id. OpenAI's own text and the token never do.
   error code.
 - A 2xx JSON `error` object maps by its code. Anything else is "ChatGPT did not stream its
   response …" with the details above.
+- A non-stream body is read whole up to 8 MiB; a longer one is refused ("body too large"),
+  never cut and parsed. Error bodies (any client) are capped at 64 KiB the same way.
 
 ## Screens (Sign in with ChatGPT UI)
 

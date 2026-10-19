@@ -975,14 +975,179 @@ describe('openai-responses client', () => {
       const prose = await failure(finalOf())
       expect(prose.message).toContain('Details: HTTP 400, application/json.')
       clean(prose)
-      // A documented code keeps its own message.
-      server.reply(json(403, { error: { code: 'subscription_sharing_user_not_eligible' } }))
-      expect((await failure(finalOf())).message).not.toContain('Details')
+      // A documented code keeps its own message, with the details after it.
+      server.reply(
+        json(
+          403,
+          { error: { code: 'subscription_sharing_user_not_eligible' } },
+          { 'x-request-id': 'req_7' },
+        ),
+      )
+      expect((await failure(finalOf())).message).toMatch(
+        /^Needs ChatGPT Plus or Pro\..* Details: HTTP 403, application\/json, code subscription_sharing_user_not_eligible, request req_7\.$/,
+      )
       // Admission failures say they were `{detail}`, without its text.
       server.reply(json(401, { detail: `secret words ${TOKEN}` }))
       const admission = await failure(finalOf())
       expect(admission.message).toContain('Details: HTTP 401, application/json, body detail.')
       clean(admission)
+    })
+
+    it('refuses a body past the size cap instead of parsing a cut copy of it', async () => {
+      // Valid JSON within the cap, then bytes past it in the same write: never parsed.
+      const valid = JSON.stringify({ id: 'resp_big', object: 'response', status: 'completed' })
+      server.reply(
+        write(
+          { 'Content-Type': 'application/json' },
+          `${valid}${' '.repeat(MAX_EVENT_BYTES - valid.length)}x`,
+        ),
+      )
+      const error = await failure(finalOf())
+      expect(error.code).toBe('protocol')
+      expect(error.message).toContain('Details: HTTP 200, application/json, body too large.')
+    })
+
+    it('runs only offered tool calls from a complete non-streamed response', async () => {
+      const callResponse = (name: string) => ({
+        id: 'resp_c',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            status: 'completed',
+            call_id: 'call_1',
+            namespace: TOOL_NAMESPACE,
+            name,
+            arguments: '{"path":"a.txt"}',
+          },
+        ],
+      })
+      server.reply(json(200, callResponse('read')))
+      expect(await finalOf(client(), withTools)).toMatchObject({
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', name: 'read', input: { path: 'a.txt' } }],
+      })
+      server.reply(json(200, callResponse('delete_everything')))
+      expect(await failure(finalOf(client(), withTools))).toMatchObject({
+        code: 'protocol',
+        message: expect.stringMatching(/did not offer/) as unknown,
+      })
+    })
+  })
+
+  describe('diagnostics never show the credential', () => {
+    // Token-shaped values that each field's pattern alone would accept, so only the check
+    // against the credential sent with the request keeps them out.
+    const SHAPED = 'opaque_token_value_abcdef'
+    const REQ_TOKEN = 'req_0123456789abcdefXYZ'
+    const OTHERS = [
+      TOKEN,
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+      'sk-proj-AbCdEf0123456789GhIjKl',
+      'a3f9c2e1d4b5a6f7e8d9c0b1a2f3e4d5',
+    ]
+    const tokenClient = (token: string) => client({ getAccessToken: () => Promise.resolve(token) })
+    const shows = (error: Error, value: string) =>
+      `${error.message} ${JSON.stringify(error)}`.toLowerCase().includes(value.toLowerCase())
+
+    it.each([
+      [
+        'x-request-id',
+        REQ_TOKEN,
+        (v: string) => json(400, { error: { code: 'x_y' } }, { 'x-request-id': v }),
+      ],
+      [
+        'openai-request-id',
+        REQ_TOKEN,
+        (v: string) => json(400, { error: {} }, { 'openai-request-id': v }),
+      ],
+      ['error.code', SHAPED, (v: string) => json(400, { error: { code: v } })],
+      [
+        'error.code (a run of it)',
+        SHAPED,
+        (v: string) => json(400, { error: { code: `zz_${v.slice(0, 12)}` } }),
+      ],
+      ['error.type', SHAPED, (v: string) => json(400, { error: { type: v } })],
+      ['error.param', SHAPED, (v: string) => json(400, { error: { param: v } })],
+      [
+        'error.param (tool field)',
+        SHAPED,
+        (v: string) => json(400, { error: { param: `tools[0].${v}` } }),
+      ],
+      ['a 2xx error body', SHAPED, (v: string) => json(200, { error: { code: v, param: v } })],
+      [
+        'a non-stream response status',
+        'in_progress_token_value',
+        (v: string) => json(200, { object: 'response', status: v }),
+      ],
+      [
+        'an in-stream failure',
+        SHAPED,
+        (v: string) =>
+          responsesSse([{ type: 'response.failed', response: { error: { code: v, param: v } } }]),
+      ],
+      [
+        'an in-stream error event',
+        SHAPED,
+        (v: string) => responsesSse([{ type: 'error', code: v, param: v }]),
+      ],
+    ] as const)('drops the token from %s', async (_field, token, reply) => {
+      server.reply(reply(token))
+      const error = (await failure(finalOf(tokenClient(token)))) as ResponsesError
+      expect(shows(error, token)).toBe(false)
+      expect(shows(error, token.slice(0, 12))).toBe(false)
+      expect(error.requestId).toBeUndefined()
+      if (error.param) expect(shows(error, error.param)).toBe(true)
+      expect(server.requests.at(-1)?.headers.authorization).toBe(`Bearer ${token}`)
+    })
+
+    it.each(OTHERS)('never shows the token-like value %s in any field', async (value) => {
+      server.reply(
+        json(
+          400,
+          { error: { code: value, type: value, param: value, message: value } },
+          { 'x-request-id': value, 'content-type': value },
+        ),
+      )
+      const error = await failure(finalOf())
+      expect(shows(error, value)).toBe(false)
+      expect(error.message).toContain('Details: HTTP 400, other content type.')
+    })
+
+    it('still shows ordinary values when a different token was sent', async () => {
+      server.reply(
+        json(
+          400,
+          { error: { code: 'invalid_value', type: 'invalid_request_error', param: 'model' } },
+          {
+            'x-request-id': 'req_abc123',
+          },
+        ),
+      )
+      const error = await failure(finalOf(tokenClient(SHAPED)))
+      expect(error.message).toContain(
+        'Details: HTTP 400, application/json, code invalid_value, type invalid_request_error, param model, request req_abc123.',
+      )
+    })
+
+    it('fits the details into the message cap, keeping status and request id', async () => {
+      server.reply(
+        json(
+          503,
+          {
+            error: {
+              code: `a${'_b'.repeat(7)}`.padEnd(40, 'c'),
+              type: 'invalid_request_error',
+              param: 'tools[0].tools[12].parameters.properties.path.description',
+            },
+          },
+          { 'x-request-id': `req_${'A'.repeat(64)}`, 'content-type': 'application/problem+json' },
+        ),
+      )
+      const error = await failure(finalOf())
+      expect(error.message.length).toBeLessThanOrEqual(300)
+      expect(error.message).toMatch(/Details: HTTP 503, .*request req_A{64}\.$/)
     })
   })
 })

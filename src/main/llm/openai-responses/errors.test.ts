@@ -14,7 +14,8 @@ describe('tool-format rejections', () => {
     const mapped = responsesError({ ...error, message: 'Bad tool: SECRET' }, status)
     expect(isToolFormatError(mapped)).toBe(true)
     expect(mapped).toMatchObject({ code: 'invalid_request', retryable: false })
-    expect(mapped.message).toBe(toolFormatMessage(error.param))
+    expect(mapped.message.startsWith(toolFormatMessage(error.param))).toBe(true)
+    expect(mapped.message).toContain(`param ${error.param}`)
     expect(mapped.message).not.toContain('SECRET')
   })
 

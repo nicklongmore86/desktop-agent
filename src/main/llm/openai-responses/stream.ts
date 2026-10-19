@@ -1,5 +1,6 @@
 import type { ContentBlock, Message, StopReason, Usage } from '@anthropic-ai/sdk/resources/messages'
 import { OpenAICompatError } from '../openai-compat/errors'
+import type { SecretCheck } from '../openai-compat/http'
 import { transcriptToolId } from '../openai-compat/translate'
 import { LABEL, responsesError } from './errors'
 import { TOOL_NAMESPACE } from './translate'
@@ -41,6 +42,8 @@ export class ResponsesAccumulator {
     private readonly model: string,
     /** The names offered in the request; a call to any other name is never returned. */
     private readonly offered: ReadonlySet<string>,
+    /** Keeps the credential out of in-stream error details. */
+    private readonly isSecret: SecretCheck = () => false,
   ) {}
 
   /** True once a terminal event has arrived; later events are ignored. */
@@ -75,9 +78,11 @@ export class ResponsesAccumulator {
         return ''
       case 'response.failed':
         // A usage limit can arrive this way after text has already streamed.
-        throw responsesError(record(e.response).error, undefined)
+        throw responsesError(record(e.response).error, undefined, undefined, {
+          isSecret: this.isSecret,
+        })
       case 'error':
-        throw responsesError(e, undefined)
+        throw responsesError(e, undefined, undefined, { isSecret: this.isSecret })
       default:
         // Argument deltas, content-part and reasoning events: the done item carries it all.
         return ''

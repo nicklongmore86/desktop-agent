@@ -7,6 +7,7 @@ import {
   createChatGPTResponsesClient,
   isToolFormatError,
   listChatGPTModels,
+  ResponsesError,
   type ChatGPTModel,
 } from '../../llm/openai-responses'
 import {
@@ -141,7 +142,9 @@ export const chatgptPlanAdapter =
       if (event.code === 'auth_expired') rejected = { code: event.code, message: event.message }
       if (event.code === 'plan_not_entitled') {
         notEntitled = { code: 'plan_not_entitled', message: NOT_ENTITLED }
-        return { ...event, message: NOT_ENTITLED }
+        // The run's own error keeps the client's diagnostics (status, code, request id).
+        const details = error instanceof ResponsesError ? error.details : ''
+        return { ...event, message: `${NOT_ENTITLED}${details}` }
       }
       return event
     }

@@ -1,10 +1,12 @@
 import type { Message, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/messages'
 import type { AgentClient, AgentStream } from '../../agent/types'
-import { OpenAICompatError } from '../openai-compat/errors'
+import { MAX_MESSAGE, OpenAICompatError } from '../openai-compat/errors'
 import {
   connect,
   readText,
   type Connection,
+  type ReadText,
+  type SecretCheck,
   type ConnectionOptions,
   type FetchLike,
 } from '../openai-compat/http'
@@ -107,7 +109,7 @@ class ResponsesStream implements AgentStream {
     signal: AbortSignal,
   ): Promise<Message> {
     const body = toResponsesRequest({ ...params, model })
-    const { response, touch, done, mapError } = await connection.request('responses', {
+    const { response, touch, done, mapError, isSecret } = await connection.request('responses', {
       method: 'POST',
       body,
       accept: 'text/event-stream',
@@ -116,14 +118,14 @@ class ResponsesStream implements AgentStream {
     let stream = response.body
     try {
       if (!stream) throw new OpenAICompatError('protocol', `${LABEL} sent an empty response.`)
-      const acc = new ResponsesAccumulator(model, offeredToolNames(body))
+      const acc = new ResponsesAccumulator(model, offeredToolNames(body), isSecret)
       const type = mediaType(response.headers.get('content-type'))
       if (type !== 'text/event-stream') {
         // No Content-Type at all: still a stream if the body starts like one.
         const peeked = type === undefined ? await peek(stream) : undefined
         if (peeked) stream = peeked.body
         if (!peeked?.sse) {
-          const message = await notStreamed(response, stream, touch, acc)
+          const message = await notStreamed(response, stream, touch, acc, isSecret)
           stream = null
           if (signal.aborted) throw new Error('aborted')
           for (const block of message.content) if (block.type === 'text') this.emit(block.text)
@@ -219,16 +221,19 @@ async function notStreamed(
   body: ReadableStream<Uint8Array>,
   touch: () => void,
   acc: ResponsesAccumulator,
+  isSecret: SecretCheck,
 ): Promise<Message> {
-  const text = await readText(body, MAX_EVENT_BYTES, touch)
+  const read = await readText(body, MAX_EVENT_BYTES, touch)
   let json: unknown
-  try {
-    json = text ? JSON.parse(text) : undefined
-  } catch {
-    json = undefined
+  if (read.ok && read.text.trim()) {
+    try {
+      json = JSON.parse(read.text)
+    } catch {
+      json = undefined
+    }
   }
   const r = record(json)
-  const context = { httpStatus: response.status }
+  const context = { httpStatus: response.status, isSecret }
   if (r.object === 'response') {
     switch (r.status) {
       case 'completed':
@@ -240,31 +245,35 @@ async function notStreamed(
       case 'failed':
         throw responsesError(r.error, undefined, response.headers, {
           ...context,
-          body: 'body response failed',
+          body: 'body response',
+          responseStatus: 'failed',
         })
     }
   }
   if (Object.keys(record(r.error)).length)
     throw responsesError(r.error, undefined, response.headers, context)
+  const message = `${LABEL} did not stream its response. Try again, and report this problem if it continues.`
   throw new OpenAICompatError(
     'protocol',
-    `${LABEL} did not stream its response. Try again, and report this problem if it continues.${diagnostics(
-      { status: response.status, headers: response.headers, body: bodyKind(text, json) },
-    )}`,
+    `${message}${diagnostics({
+      status: response.status,
+      headers: response.headers,
+      body: bodyKind(read, json),
+      ...(r.object === 'response' ? { responseStatus: r.status } : {}),
+      isSecret,
+      max: MAX_MESSAGE - message.length,
+    })}`,
     { status: response.status },
   )
 }
 
 /** What a non-stream body was, in app-written words only. */
-function bodyKind(text: string | undefined, json: unknown): string {
-  if (text === undefined) return 'body unreadable'
-  if (text.trim() === '') return 'body empty'
+function bodyKind(read: ReadText, json: unknown): string {
+  if (!read.ok) return read.reason === 'too_large' ? 'body too large' : 'body unreadable'
+  if (read.text.trim() === '') return 'body empty'
   if (json === undefined) return 'body not JSON'
   const r = record(json)
-  if (r.object === 'response')
-    return typeof r.status === 'string' && /^[a-z_]{1,32}$/.test(r.status)
-      ? `body response ${r.status}`
-      : 'body response'
+  if (r.object === 'response') return 'body response'
   if (typeof r.detail === 'string') return 'body detail'
   return 'body other JSON'
 }

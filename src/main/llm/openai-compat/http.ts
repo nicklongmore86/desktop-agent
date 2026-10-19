@@ -2,6 +2,16 @@ import { endpointUrl, FLAVOR_LABELS, resolveBaseUrl, type OpenAICompatFlavor } f
 import { OpenAICompatError, statusError } from './errors'
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>
+/** True when a value shares a meaningful run with the credential sent on this request. */
+export type SecretCheck = (value: string) => boolean
+/** Maps a non-2xx response. `isSecret` lets it drop values that echo the credential. */
+export type StatusErrorMapper = (
+  status: number,
+  body: unknown,
+  label: string,
+  headers?: Headers,
+  isSecret?: SecretCheck,
+) => OpenAICompatError
 
 export interface ConnectionOptions {
   /** API root, e.g. https://api.openai.com/v1. A bare origin gets the flavor's default path. */
@@ -17,7 +27,7 @@ export interface ConnectionOptions {
   /** Overrides the flavor's name in error text. */
   label?: string
   /** Overrides how a non-2xx response is mapped. */
-  statusError?: typeof statusError
+  statusError?: StatusErrorMapper
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -25,6 +35,23 @@ const MAX_ERROR_BODY = 64 * 1024
 const KEY_FORMAT = /^[\x21-\x7e]{1,1024}$/
 // OAuth access tokens are JWTs, which run longer than API keys.
 const TOKEN_FORMAT = /^[\x21-\x7e]{1,16384}$/
+/** Shorter runs of a credential are too common to treat as an echo of it. */
+const SECRET_RUN = 8
+
+/**
+ * True when `value` contains `secret`, or shares any run of SECRET_RUN characters with it,
+ * ignoring case (a header value may have been lowercased on the way).
+ */
+export function sharesSecret(value: string, secret: string | undefined): boolean {
+  if (!secret || !value) return false
+  const v = value.toLowerCase()
+  const s = secret.toLowerCase()
+  if (v.includes(s)) return true
+  if (s.length < SECRET_RUN) return false
+  for (let i = 0; i + SECRET_RUN <= v.length; i++)
+    if (s.includes(v.slice(i, i + SECRET_RUN))) return true
+  return false
+}
 
 export interface Connection {
   label: string
@@ -43,6 +70,8 @@ export interface Connection {
     touch: () => void
     done: () => void
     mapError: (e: unknown) => Error
+    /** Checks a value from the response against the credential this request sent. */
+    isSecret: SecretCheck
   }>
 }
 
@@ -107,10 +136,13 @@ export function connect(options: ConnectionOptions): Connection {
           `Could not connect to ${label}. Check that it is running and reachable.`,
         )
       }
+      let sent: string | undefined
+      const isSecret: SecretCheck = (value) => sharesSecret(value, sent)
       touch()
       try {
         if (init.signal?.aborted) throw new Error('aborted')
         const token = await bearer()
+        sent = token
         if (init.signal?.aborted) throw new Error('aborted')
         const headers: Record<string, string> = { Accept: init.accept }
         if (token) headers.Authorization = `Bearer ${token}`
@@ -134,9 +166,9 @@ export function connect(options: ConnectionOptions): Connection {
         }
         if (!response.ok) {
           const body = await readErrorBody(response)
-          throw mapStatus(response.status, body, label, response.headers)
+          throw mapStatus(response.status, body, label, response.headers, isSecret)
         }
-        return { response, touch, done, mapError }
+        return { response, touch, done, mapError, isSecret }
       } catch (error) {
         done()
         throw mapError(error)
@@ -147,39 +179,44 @@ export function connect(options: ConnectionOptions): Connection {
 
 async function readErrorBody(response: Response): Promise<unknown> {
   if (!response.body) return undefined
-  const text = await readText(response.body, MAX_ERROR_BODY)
-  if (text === undefined) return undefined
+  const read = await readText(response.body, MAX_ERROR_BODY)
+  if (!read.ok) return undefined
   try {
-    return JSON.parse(text) as unknown
+    return JSON.parse(read.text) as unknown
   } catch {
-    return { error: { message: text } }
+    return { error: { message: read.text } }
   }
 }
 
+export type ReadText =
+  { ok: true; text: string } | { ok: false; reason: 'too_large' | 'unreadable' }
+
 /**
- * Reads up to `limit` bytes of a body as text and cancels the rest. Undefined when the
- * body cannot be read. `onBytes` is called per chunk, e.g. to reset an idle timer.
+ * Reads a whole body as text. A body longer than `limit` bytes is refused outright, never
+ * cut short (a cut body can still parse), and the rest is cancelled. `onBytes` is called
+ * per chunk, e.g. to reset an idle timer.
  */
 export async function readText(
   body: ReadableStream<Uint8Array>,
   limit: number,
   onBytes?: () => void,
-): Promise<string | undefined> {
+): Promise<ReadText> {
   const reader = body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
   try {
-    while (size < limit) {
+    for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       onBytes?.()
-      chunks.push(value)
       size += value.byteLength
+      if (size > limit) return { ok: false, reason: 'too_large' }
+      chunks.push(value)
     }
   } catch {
-    return undefined
+    return { ok: false, reason: 'unreadable' }
   } finally {
     reader.cancel().catch(() => {})
   }
-  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, limit))
+  return { ok: true, text: new TextDecoder().decode(Buffer.concat(chunks)) }
 }
