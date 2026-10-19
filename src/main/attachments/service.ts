@@ -30,19 +30,12 @@ import type { PathGuard } from '../permissions/guard'
 import { defineTool } from '../tools/define'
 import { decodeText } from '../tools/text'
 import type { AgentTool, ToolResult } from '../tools/types'
-import {
-  CLASSIFY_BYTES,
-  CLASSIFY_MAX_BYTES,
-  classifyAttachment,
-  KIND_LIMITS,
-  MAX_ATTACHMENT_BYTES,
-  type Classification,
-} from './classify'
+import { classifyFile, KIND_LIMITS, MAX_ATTACHMENT_BYTES } from './classify'
 import { copyIntoFolderTool, type AttachmentSourceRecord } from './copy-tool'
 import { prepareImage, type ImageScaler } from './image'
 import { pdfPageCount } from './pdf'
 import { attachmentId, isAttachmentId, type AttachmentStore } from './store'
-import { checkSource, openChecked, readUpTo, refuse, type Refusal } from './validate'
+import { checkSource, openChecked, readAt, readUpTo, refuse, type Refusal } from './validate'
 
 export interface AttachmentsServiceDeps {
   guard: PathGuard
@@ -227,8 +220,11 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
     const handle = await openChecked(checked.path, checked.identity)
     if ('ok' in handle) return { outcome: handle, facts }
     try {
-      const kind = await classify((n) => readUpTo(handle, n))
-      if (!kind.ok) return { outcome: kind, facts }
+      const kind = await classifyFile(checked.size, (position, length) =>
+        readAt(handle, position, length),
+      )
+      if (!kind.ok)
+        return { outcome: refuse('binary', 'This kind of file cannot be attached.'), facts }
       facts.kind = kind.kind
       facts.mime = kind.mime
       // Inside a grant, text is referenced, not copied: the agent reads it with its tools.
@@ -270,10 +266,11 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
         return { outcome: refuse('blocked', SECRET_REFERENCE), facts }
     }
     const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    const kind = await classify((n) =>
-      Promise.resolve({ bytes: buffer.subarray(0, n), whole: n >= buffer.length }),
+    const kind = await classifyFile(buffer.length, (position, length) =>
+      Promise.resolve(buffer.subarray(position, position + length)),
     )
-    if (!kind.ok) return { outcome: kind, facts }
+    if (!kind.ok)
+      return { outcome: refuse('binary', 'This kind of file cannot be attached.'), facts }
     facts.kind = kind.kind
     facts.mime = kind.mime
     const fallback = `Pasted ${kind.kind === 'pdf' ? 'PDF' : kind.kind}.${EXTENSIONS[kind.mime] ?? 'bin'}`
@@ -332,22 +329,6 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
         : { ok: false, reason: 'The file was copied, but it cannot be referenced here.' }
     },
   }
-}
-
-/**
- * classifyAttachment over the start of a file, giving it more bytes when it asks
- * (`read(n)` returns the first n bytes and whether that is the whole file).
- */
-async function classify(
-  read: (n: number) => Promise<{ bytes: Buffer; whole: boolean }>,
-): Promise<Extract<Classification, { ok: true }> | Refusal> {
-  let head = await read(CLASSIFY_BYTES)
-  let result = classifyAttachment(head.bytes)
-  if (!result.ok && result.code === 'need-more' && !head.whole) {
-    head = await read(Math.min(result.bytes, CLASSIFY_MAX_BYTES))
-    result = classifyAttachment(head.bytes)
-  }
-  return result.ok ? result : refuse('binary', 'This kind of file cannot be attached.')
 }
 
 function tooLarge(kind: AttachmentKind): Refusal {

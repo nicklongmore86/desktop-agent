@@ -170,3 +170,19 @@ export async function readUpTo(
     ? { bytes: bytes.subarray(0, max), whole: false }
     : { bytes, whole: true }
 }
+
+/** Reads up to `length` bytes at `position` (fewer if the file ends first). */
+export async function readAt(
+  handle: FileHandle,
+  position: number,
+  length: number,
+): Promise<Buffer> {
+  const buf = Buffer.alloc(length)
+  let total = 0
+  while (total < length) {
+    const { bytesRead } = await handle.read(buf, total, length - total, position + total)
+    if (bytesRead === 0) break
+    total += bytesRead
+  }
+  return buf.subarray(0, total)
+}

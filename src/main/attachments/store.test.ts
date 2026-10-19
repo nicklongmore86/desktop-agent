@@ -95,6 +95,19 @@ describe('AttachmentStore', () => {
     expect(await store.read(id)).toBeNull()
   })
 
+  it('shares one blob between identical attachments, so release removes it for all', async () => {
+    // The same screenshot attached in two chats.
+    const inChatA = await store.put(Buffer.from('same screenshot'))
+    const inChatB = await store.put(Buffer.from('same screenshot'))
+    expect(inChatA).toBe(inChatB)
+    expect(await fs.readdir(store.dir)).toEqual([inChatA])
+    // Chat A is deleted and releases its id: chat B's attachment is gone too. This is why
+    // callers must only release ids that no saved chat references.
+    await store.release([inChatA])
+    expect(await store.has(inChatB)).toBe(false)
+    expect(await store.read(inChatB)).toBeNull()
+  })
+
   it('releases valid ids only', async () => {
     const a = await store.put(Buffer.from('a'))
     const b = await store.put(Buffer.from('b'))

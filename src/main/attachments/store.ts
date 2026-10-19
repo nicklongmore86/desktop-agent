@@ -87,8 +87,10 @@ export class AttachmentStore implements AttachmentStoreLike {
   }
 
   /**
-   * Deletes blobs. Content-addressed: the caller must only release ids that nothing
-   * it keeps (any saved chat) still refers to. Invalid ids are ignored.
+   * Deletes the blobs outright; there is no reference counting. The store is
+   * content-addressed, so the same bytes attached in two chats (or twice in one) are
+   * ONE blob under one id: releasing that id removes it for every chat. Callers must
+   * only pass ids that no saved chat references any more. Invalid ids are ignored.
    */
   async release(ids: string[]): Promise<void> {
     await Promise.all(ids.filter(isAttachmentId).map((id) => fs.rm(this.file(id), { force: true })))

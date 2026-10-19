@@ -27,13 +27,17 @@ an `@"path"` reference to insert.
     Electron's `nativeImage` (PNG/JPEG; a bigger GIF/WebP is refused).
   - `pdf`: page count is best effort (the page tree's `/Count` when stored uncompressed,
     otherwise only the size limit applies).
-  - `document`: originals that need extraction, stored as they are (up to 50 MB): Office
-    Open XML (a zip with `[Content_Types].xml` and `word/`, `xl/` or `ppt/` parts),
-    OpenDocument (zip whose first entry is an `application/vnd.oasis.opendocument.*`
-    `mimetype`), legacy Office and Outlook `.msg` (OLE2 by root class id or stream name;
+  - `document`: originals that need extraction, stored as they are (up to 50 MB). Zip
+    packages are recognised by their central directory (the end record found from the end
+    of the file, every entry bounds-checked, at most 10,000 entries; ZIP64, multi-disk,
+    duplicate names and inconsistent records refused): Office Open XML needs real
+    `[Content_Types].xml` and `word/document.xml`, `xl/workbook.xml` or
+    `ppt/presentation.xml` entries; OpenDocument a stored `mimetype` first entry naming an
+    `application/vnd.oasis.opendocument.*` type. Also legacy Office and Outlook `.msg` (OLE2 by root class id or stream name;
     `.msi` and unknown compound files are refused), RTF, `.eml` (a mail header block),
     and HEIC/HEIF/AVIF/TIFF/BMP images. When the first 8000 bytes do not decide a
-    container, the classifier asks for up to 1 MB more.
+    container, the classifier asks for more of its start or end (up to 1 MB each), read
+    through the same verified handle.
   - `text`: anything else passing read_file's binary check; stored as UTF-8.
   - Other zips (jar, apk, epub, vsix), executables and binaries are refused.
     Extraction is a separate step (feat/doc-worker).
@@ -53,7 +57,10 @@ following links and matched to the checked device/inode.
 `userData/attachments/<sha256>` (`store.ts`). Ids are checked against
 `ATTACHMENT_ID_PATTERN` before any path join; writes go to an owner-only temp file and are
 renamed into place; `read` returns null if the bytes no longer match the id. `release(ids)`
-deletes blobs (callers must only release ids no saved chat refers to); `sweep(keep,
+deletes blobs outright, with no reference counting. Because the store is content-addressed,
+identical bytes attached in several chats are one blob under one id, and releasing it
+removes it for all of them: callers must only pass ids that no saved chat references any
+more. `sweep(keep,
 minAgeMs)` removes unreferenced blobs and stale temp files.
 
 ## Audit

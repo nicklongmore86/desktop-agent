@@ -1,9 +1,21 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ATTACHMENT_LIMITS } from '../../shared/attachments'
-import { classifyAttachment } from './classify'
+import { classifyAttachment, classifyFile, MAX_ZIP_ENTRIES } from './classify'
 import { imageSize, MAX_IMAGE_PIXELS, prepareImage, type ImageScaler } from './image'
 import { pdfPageCount } from './pdf'
-import { docx, MSI_CLSID, oleFile, pngHeader, WORD_CLSID, zipEntries } from './test-support'
+import {
+  docx,
+  MSI_CLSID,
+  oleFile,
+  pngHeader,
+  whole,
+  WORD_CLSID,
+  zipEntries,
+  zipFile,
+} from './test-support'
+
+/** classifyAttachment on a file read in full. */
+const classifyBytes = (bytes: Buffer) => classifyAttachment(whole(bytes))
 
 function jpegHeader(width: number, height: number): Buffer {
   const app0 = Buffer.from([
@@ -42,7 +54,7 @@ describe('classifyAttachment', () => {
     ['UTF-16 text with BOM', Buffer.from('﻿hi there', 'utf16le'), 'text', 'text/plain'],
     ['empty file', Buffer.alloc(0), 'text', 'text/plain'],
   ])('%s', (_name, bytes, kind, mime) => {
-    expect(classifyAttachment(bytes)).toEqual({ ok: true, kind, mime })
+    expect(classifyBytes(bytes)).toEqual({ ok: true, kind, mime })
   })
 
   it.each([
@@ -51,45 +63,48 @@ describe('classifyAttachment', () => {
     ['ELF binary', Buffer.from('\x7fELF\x02\x01\x01\x00\x00\x00', 'latin1')],
     ['control characters', Buffer.from('\x01\x02\x03\x04\x05abc\x06\x07', 'latin1')],
   ])('refuses %s as binary, like read_file', (_name, bytes) => {
-    expect(classifyAttachment(bytes)).toEqual({ ok: false, code: 'binary' })
+    expect(classifyBytes(bytes)).toEqual({ ok: false, code: 'binary' })
   })
 
   it('ignores names and claimed types: only the bytes decide', () => {
     // A PNG signature in a .txt is an image; text in a .png is text.
-    expect(classifyAttachment(pngHeader(1, 1))).toMatchObject({ kind: 'image' })
-    expect(classifyAttachment(Buffer.from('not really a png'))).toMatchObject({ kind: 'text' })
+    expect(classifyBytes(pngHeader(1, 1))).toMatchObject({ kind: 'image' })
+    expect(classifyBytes(Buffer.from('not really a png'))).toMatchObject({ kind: 'text' })
   })
 })
 
 describe('classifyAttachment: documents', () => {
   const OOXML = 'application/vnd.openxmlformats-officedocument'
+  const xlsx = zipFile([
+    ['[Content_Types].xml', '<Types/>'],
+    ['_rels/.rels', '<r/>'],
+    ['xl/workbook.xml', '<w/>'],
+  ])
+  const pptx = zipFile([
+    ['[Content_Types].xml', '<Types/>'],
+    ['ppt/presentation.xml', '<p/>'],
+    ['ppt/slides/slide1.xml', '<s/>'],
+  ])
+  const odt = zipFile([
+    ['mimetype', 'application/vnd.oasis.opendocument.text'],
+    ['content.xml', '<c/>'],
+  ])
   it.each([
     ['docx', docx(), `${OOXML}.wordprocessingml.document`],
     [
-      'xlsx',
-      zipEntries([
-        ['[Content_Types].xml', '<Types/>'],
-        ['xl/workbook.xml', '<w/>'],
-      ]),
-      `${OOXML}.spreadsheetml.sheet`,
+      'docx with an archive comment',
+      zipFile(
+        [
+          ['[Content_Types].xml', '<T/>'],
+          ['word/document.xml', '<w/>'],
+        ],
+        { comment: 'made by a tool' },
+      ),
+      `${OOXML}.wordprocessingml.document`,
     ],
-    [
-      'pptx',
-      zipEntries([
-        ['[Content_Types].xml', '<Types/>'],
-        ['_rels/.rels', '<r/>'],
-        ['ppt/p.xml', '<p/>'],
-      ]),
-      `${OOXML}.presentationml.presentation`,
-    ],
-    [
-      'odt',
-      zipEntries([
-        ['mimetype', 'application/vnd.oasis.opendocument.text'],
-        ['content.xml', '<c/>'],
-      ]),
-      'application/vnd.oasis.opendocument.text',
-    ],
+    ['xlsx', xlsx, `${OOXML}.spreadsheetml.sheet`],
+    ['pptx', pptx, `${OOXML}.presentationml.presentation`],
+    ['odt', odt, 'application/vnd.oasis.opendocument.text'],
     ['doc (class id)', oleFile({ classId: WORD_CLSID }), 'application/msword'],
     ['xls (stream name)', oleFile({ streams: ['Workbook'] }), 'application/vnd.ms-excel'],
     [
@@ -113,48 +128,172 @@ describe('classifyAttachment: documents', () => {
     ['HEIC', Buffer.from('\0\0\0\x18ftypheic\0\0\0\0mif1heic', 'latin1'), 'image/heic'],
     ['AVIF', Buffer.from('\0\0\0\x1cftypavif\0\0\0\0avifmif1', 'latin1'), 'image/avif'],
   ])('%s is a document', (_name, bytes, mime) => {
-    expect(classifyAttachment(bytes)).toEqual({ ok: true, kind: 'document', mime })
+    expect(classifyBytes(bytes)).toEqual({ ok: true, kind: 'document', mime })
   })
 
+  // A payload that, scanned naively, looks like an Office package's local headers.
+  const decoy = Buffer.concat([
+    zipEntries([['[Content_Types].xml', '<T/>']]),
+    zipEntries([['word/document.xml', '<w/>']]),
+    zipEntries([['mimetype', 'application/vnd.oasis.opendocument.text']]),
+  ])
+  const docxBytes = docx()
+  const cdStart = docxBytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
   it.each([
     ['an .msi installer', oleFile({ classId: MSI_CLSID })],
     ['an unknown compound file', oleFile({ streams: ['Thumbs'] })],
-    ['a jar', zipEntries([['META-INF/MANIFEST.MF', 'Manifest-Version: 1.0']])],
-    ['an epub', zipEntries([['mimetype', 'application/epub+zip']])],
+    ['a jar', zipFile([['META-INF/MANIFEST.MF', 'Manifest-Version: 1.0']])],
     [
-      'a .vsix/.nupkg package (given its first MB)',
-      zipEntries([
+      'a jar whose data holds Office entry names',
+      zipFile([
+        ['META-INF/MANIFEST.MF', 'Manifest-Version: 1.0'],
+        ['payload.bin', decoy],
+      ]),
+    ],
+    [
+      'an apk whose first entry data holds Office entry names',
+      zipFile([
+        ['AndroidManifest.xml', decoy],
+        ['classes.dex', 'dex\n035'],
+      ]),
+    ],
+    ['a zip with only local headers (no central directory)', Buffer.concat([decoy, decoy])],
+    ['an epub', zipFile([['mimetype', 'application/epub+zip']])],
+    [
+      'a .vsix/.nupkg package',
+      zipFile([
         ['[Content_Types].xml', '<T/>'],
-        ['extension/a.js', Buffer.alloc(1024 * 1024, 1)],
+        ['extension/a.js', 'x'],
+      ]),
+    ],
+    ['an OOXML-looking zip without [Content_Types].xml', zipFile([['word/document.xml', '<w/>']])],
+    [
+      'an ODF mimetype that is not the first entry',
+      zipFile([
+        ['content.xml', '<c/>'],
+        ['mimetype', 'application/vnd.oasis.opendocument.text'],
+      ]),
+    ],
+    ['an ODF mimetype with a bad value', zipFile([['mimetype', 'application/x-evil']])],
+    ['a truncated central directory', docxBytes.subarray(0, cdStart + 20)],
+    [
+      'a garbage central directory',
+      Buffer.concat([
+        docxBytes.subarray(0, cdStart),
+        Buffer.from('JUNKJUNK'),
+        docxBytes.subarray(cdStart + 8),
+      ]),
+    ],
+    [
+      'an end record pointing past the directory',
+      zipFile(
+        [
+          ['[Content_Types].xml', '<T/>'],
+          ['word/document.xml', '<w/>'],
+        ],
+        { eocd: { cdOffset: 1 } },
+      ),
+    ],
+    [
+      'an end record with the wrong entry count',
+      zipFile(
+        [
+          ['[Content_Types].xml', '<T/>'],
+          ['word/document.xml', '<w/>'],
+        ],
+        { eocd: { count: 3 } },
+      ),
+    ],
+    [
+      'a ZIP64 archive',
+      zipFile(
+        [
+          ['[Content_Types].xml', '<T/>'],
+          ['word/document.xml', '<w/>'],
+        ],
+        { eocd: { count: 0xffff } },
+      ),
+    ],
+    [
+      'a multi-disk archive',
+      zipFile(
+        [
+          ['[Content_Types].xml', '<T/>'],
+          ['word/document.xml', '<w/>'],
+        ],
+        { eocd: { disk: 1 } },
+      ),
+    ],
+    [
+      'duplicate entry names',
+      zipFile([
+        ['[Content_Types].xml', '<T/>'],
+        ['word/document.xml', '<w/>'],
+        ['word/document.xml', '<x/>'],
       ]),
     ],
     ['an MP4 video', Buffer.from('\0\0\0\x18ftypisom\0\0\x02\0isomiso2', 'latin1')],
   ])('refuses %s', (_name, bytes) => {
-    expect(classifyAttachment(bytes)).toEqual({ ok: false, code: 'binary' })
+    expect(classifyBytes(bytes)).toEqual({ ok: false, code: 'binary' })
   })
 
-  it('asks for more bytes when a container is not decided by its start', () => {
+  it(`refuses a zip with more than ${String(MAX_ZIP_ENTRIES)} entries`, () => {
+    const many = Array.from(
+      { length: MAX_ZIP_ENTRIES + 1 },
+      (_, i) => [`f${String(i)}`, ''] as const,
+    )
+    const bytes = zipFile([['[Content_Types].xml', '<T/>'], ['word/document.xml', '<w/>'], ...many])
+    expect(classifyBytes(bytes)).toEqual({ ok: false, code: 'binary' })
+    expect(
+      classifyBytes(
+        zipFile([
+          ['[Content_Types].xml', '<T/>'],
+          ['word/document.xml', '<w/>'],
+          ...many.slice(0, 100),
+        ]),
+      ),
+    ).toMatchObject({ ok: true })
+  })
+
+  it('asks for the end of a zip, and for more of an OLE file, before deciding', () => {
     const late = docx(20_000)
-    expect(classifyAttachment(late.subarray(0, 8000))).toEqual({
+    const head = late.subarray(0, 8000)
+    expect(classifyAttachment({ head, tail: Buffer.alloc(0), size: late.length })).toEqual({
       ok: false,
       code: 'need-more',
-      bytes: 1024 * 1024,
+      tail: late.length,
     })
-    expect(classifyAttachment(late)).toMatchObject({ ok: true, kind: 'document' })
     const ole = oleFile({ classId: WORD_CLSID, directorySector: 20 })
-    expect(classifyAttachment(ole.subarray(0, 8000))).toEqual({
+    expect(
+      classifyAttachment({ head: ole.subarray(0, 8000), tail: Buffer.alloc(0), size: ole.length }),
+    ).toEqual({
       ok: false,
       code: 'need-more',
-      bytes: 22 * 512,
+      head: 22 * 512,
     })
-    expect(classifyAttachment(ole)).toMatchObject({ kind: 'document', mime: 'application/msword' })
+  })
+
+  it('classifyFile reads only the start and the end of a big package', async () => {
+    const big = docx(3 * 1024 * 1024)
+    const reads: [number, number][] = []
+    const result = await classifyFile(big.length, (position, length) => {
+      reads.push([position, length])
+      return Promise.resolve(big.subarray(position, position + length))
+    })
+    expect(result).toMatchObject({ ok: true, kind: 'document' })
+    expect(reads.every(([, length]) => length <= 1024 * 1024)).toBe(true)
+    expect(reads.some(([position]) => position > 2 * 1024 * 1024)).toBe(true)
+    const ole = oleFile({ classId: WORD_CLSID, directorySector: 20 })
+    expect(
+      await classifyFile(ole.length, (p, l) => Promise.resolve(ole.subarray(p, p + l))),
+    ).toMatchObject({ mime: 'application/msword' })
   })
 
   it('keeps plain text that only looks a bit like mail headers as text', () => {
-    expect(classifyAttachment(Buffer.from('Note: buy milk\nTodo: call\n\nmore'))).toMatchObject({
+    expect(classifyBytes(Buffer.from('Note: buy milk\nTodo: call\n\nmore'))).toMatchObject({
       kind: 'text',
     })
-    expect(classifyAttachment(Buffer.from('{ "rtf": true }'))).toMatchObject({ kind: 'text' })
+    expect(classifyBytes(Buffer.from('{ "rtf": true }'))).toMatchObject({ kind: 'text' })
   })
 })
 

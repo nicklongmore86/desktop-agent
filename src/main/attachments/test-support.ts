@@ -68,11 +68,57 @@ export function oleFile(options: {
 export const WORD_CLSID = '00020906-0000-0000-C000-000000000046'
 export const MSI_CLSID = '000C1084-0000-0000-C000-000000000046'
 
-/** A minimal .docx: [Content_Types].xml, then a word/ part after `padding` bytes of other parts. */
+export interface ZipOptions {
+  /** Archive comment after the end record. */
+  comment?: string
+  /** Overrides written into the end record (for broken or ZIP64 archives). */
+  eocd?: Partial<{ count: number; cdSize: number; cdOffset: number; disk: number }>
+}
+
+/** A real (stored) zip: local entries, the central directory and the end record. */
+export function zipFile(
+  entries: readonly (readonly [string, string | Buffer])[],
+  options: ZipOptions = {},
+): Buffer {
+  const locals: Buffer[] = []
+  const centrals: Buffer[] = []
+  let offset = 0
+  for (const [name, data] of entries) {
+    const local = zipEntries([[name, data]])
+    const body = Buffer.from(data)
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(0x02014b50, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt32LE(body.length, 20)
+    central.writeUInt32LE(body.length, 24)
+    central.writeUInt16LE(Buffer.byteLength(name, 'latin1'), 28)
+    central.writeUInt32LE(offset, 42)
+    centrals.push(Buffer.concat([central, Buffer.from(name, 'latin1')]))
+    locals.push(local)
+    offset += local.length
+  }
+  const cd = Buffer.concat(centrals)
+  const comment = Buffer.from(options.comment ?? '', 'latin1')
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(options.eocd?.disk ?? 0, 4)
+  eocd.writeUInt16LE(options.eocd?.count ?? entries.length, 8)
+  eocd.writeUInt16LE(options.eocd?.count ?? entries.length, 10)
+  eocd.writeUInt32LE(options.eocd?.cdSize ?? cd.length, 12)
+  eocd.writeUInt32LE(options.eocd?.cdOffset ?? offset, 16)
+  eocd.writeUInt16LE(comment.length, 20)
+  return Buffer.concat([...locals, cd, eocd, comment])
+}
+
+/** A minimal .docx: [Content_Types].xml, `padding` bytes of other parts, then word/document.xml. */
 export function docx(padding = 0): Buffer {
-  return zipEntries([
+  return zipFile([
     ['[Content_Types].xml', '<?xml version="1.0"?><Types/>'],
     ...(padding > 0 ? [['docProps/thumbnail.jpeg', Buffer.alloc(padding, 1)] as const] : []),
     ['word/document.xml', '<w:document/>'],
   ])
 }
+
+/** The sample classifyAttachment gets for a file read in full. */
+export const whole = (bytes: Buffer) => ({ head: bytes, tail: bytes, size: bytes.length })

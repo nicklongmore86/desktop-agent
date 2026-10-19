@@ -25,7 +25,7 @@ import type { ApprovalRequest } from '../tools/types'
 import type { ImageScaler } from './image'
 import { createAttachmentsService, displayName } from './service'
 import { AttachmentStore } from './store'
-import { docx, oleFile, pngHeader, WORD_CLSID, zipEntries } from './test-support'
+import { docx, oleFile, pngHeader, WORD_CLSID, zipEntries, zipFile } from './test-support'
 
 let box: Sandbox
 let guard: PathGuard
@@ -220,7 +220,7 @@ describe('documents', () => {
   })
 
   it('detects by content: a renamed zip is refused, a renamed docx is a document', async () => {
-    await put(path.join(box.outside, 'tool.docx'), zipEntries([['META-INF/MANIFEST.MF', 'x']]))
+    await put(path.join(box.outside, 'tool.docx'), zipFile([['META-INF/MANIFEST.MF', 'x']]))
     await put(path.join(box.outside, 'notes.bin'), docx())
     refused(await attach(path.join(box.outside, 'tool.docx')), 'binary')
     expect(attachment(await attach(path.join(box.outside, 'notes.bin'))).attachment.kind).toBe(
@@ -228,10 +228,25 @@ describe('documents', () => {
     )
   })
 
+  it('refuses a jar whose compressed data holds Office entry names', async () => {
+    const decoy = Buffer.concat([
+      zipEntries([['[Content_Types].xml', '<T/>']]),
+      zipEntries([['word/document.xml', '<w/>']]),
+    ])
+    await put(
+      path.join(box.outside, 'tool.jar'),
+      zipFile([
+        ['META-INF/MANIFEST.MF', 'Manifest-Version: 1.0'],
+        ['payload.bin', decoy],
+      ]),
+    )
+    refused(await attach(path.join(box.outside, 'tool.jar')), 'binary')
+  })
+
   it('refuses a small package that is not an Office file once all of it has been read', async () => {
     await put(
       path.join(box.outside, 'ext.vsix'),
-      zipEntries([
+      zipFile([
         ['[Content_Types].xml', '<T/>'],
         ['extension/a.js', 'x'],
       ]),
@@ -241,9 +256,10 @@ describe('documents', () => {
 
   it(`refuses documents over ${String(ATTACHMENT_LIMITS.documentBytes / (1024 * 1024))} MB before reading them`, async () => {
     const file = path.join(box.outside, 'huge.docx')
-    await put(file, docx())
-    await fs.truncate(file, ATTACHMENT_LIMITS.documentBytes + 1)
+    // A valid package (its central directory is at the end), just too big.
+    await put(file, docx(ATTACHMENT_LIMITS.documentBytes))
     refused(await attach(file), 'too-large')
+    expect(lastAudit().args).toMatchObject({ kind: 'document' })
   })
 
   it('attaches a pasted document with a document name', async () => {
