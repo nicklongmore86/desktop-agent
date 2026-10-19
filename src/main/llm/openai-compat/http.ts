@@ -146,14 +146,33 @@ export function connect(options: ConnectionOptions): Connection {
 }
 
 async function readErrorBody(response: Response): Promise<unknown> {
-  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader()
-  if (!reader) return undefined
+  if (!response.body) return undefined
+  const text = await readText(response.body, MAX_ERROR_BODY)
+  if (text === undefined) return undefined
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return { error: { message: text } }
+  }
+}
+
+/**
+ * Reads up to `limit` bytes of a body as text and cancels the rest. Undefined when the
+ * body cannot be read. `onBytes` is called per chunk, e.g. to reset an idle timer.
+ */
+export async function readText(
+  body: ReadableStream<Uint8Array>,
+  limit: number,
+  onBytes?: () => void,
+): Promise<string | undefined> {
+  const reader = body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
   try {
-    while (size < MAX_ERROR_BODY) {
+    while (size < limit) {
       const { done, value } = await reader.read()
       if (done) break
+      onBytes?.()
       chunks.push(value)
       size += value.byteLength
     }
@@ -162,10 +181,5 @@ async function readErrorBody(response: Response): Promise<unknown> {
   } finally {
     reader.cancel().catch(() => {})
   }
-  const text = new TextDecoder().decode(Buffer.concat(chunks).subarray(0, MAX_ERROR_BODY))
-  try {
-    return JSON.parse(text) as unknown
-  } catch {
-    return { error: { message: text } }
-  }
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, limit))
 }

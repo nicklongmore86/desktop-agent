@@ -48,6 +48,28 @@ A tool-format rejection is a 400/422 (or an in-stream failure) whose `error.para
 against a strict pattern before it is shown; the provider's own text never is. Main also
 logs `chatgpt-plan: tool format rejected (param=…, request=…)`.
 
+### Details in error messages
+
+Failures without a documented code (above) end with app-written details, for example
+`Details: HTTP 400, application/json, code invalid_value, param model, request req_123.`
+Only these appear, each checked against a strict pattern: the HTTP status, the media type
+(only well-known ones by name, otherwise "other content type" or "no content type"), what
+the body was when it was not a stream ("body detail", "body other JSON", "body not JSON",
+"body empty", "body response in_progress"), `error.code`, `error.type`, `error.param` and
+the request id. OpenAI's own text and the token never do.
+
+### Responses that are not a plain event stream
+
+- `text/event-stream` is matched in any case and with any parameters (`; charset=utf-8`).
+  The OpenAI-compatible client (`openai-compat/client.ts`) uses the same check.
+- No `Content-Type`: the first bytes are checked, and a body that starts like SSE
+  (`data:`, `event:`, `id:`, `retry:` or a `:` comment) is still read as a stream.
+- A complete Responses object (`object: "response"`) sent as JSON is accepted on the same
+  terms as the stream's terminal event: `completed` or `incomplete` only; `failed` maps its
+  error code.
+- A 2xx JSON `error` object maps by its code. Anything else is "ChatGPT did not stream its
+  response …" with the details above.
+
 ## Screens (Sign in with ChatGPT UI)
 
 Follows OpenAI's published guidance: <https://developers.openai.com/siwc/ui-ux-guidelines>,
@@ -97,11 +119,14 @@ holding every function, each with `strict: false`. To check it:
    (…)"**, note the field in brackets (for example `tools[0].type`) and report it. With
    `pnpm dev`, the terminal also shows the `chatgpt-plan: tool format rejected (param=…,
 request=…)` line; the request id helps OpenAI find the request.
-8. Also check: ask it to create a file in the folder (an approval appears; approve it), and
+8. If the chat shows an error instead, copy the whole message, including the
+   `Details: …` part (HTTP status, content type, body kind, code, param, request id). It
+   holds no token or OpenAI text and tells us what OpenAI answered.
+9. Also check: ask it to create a file in the folder (an approval appears; approve it), and
    Settings shows the model picker and no usage bars.
-9. Remove the connection (switch to another first): Settings → ChatGPT · Plan → Remove.
-   `%APPDATA%\desktop-agent\secrets\chatgpt-plan.enc` is gone, your ChatGPT chats are
-   still in the history, and ChatGPT → Settings → Connected apps no longer lists Desktop
-   Agent (if it does, the app said it could not confirm sign-out).
+10. Remove the connection (switch to another first): Settings → ChatGPT · Plan → Remove.
+    `%APPDATA%\desktop-agent\secrets\chatgpt-plan.enc` is gone, your ChatGPT chats are
+    still in the history, and ChatGPT → Settings → Connected apps no longer lists Desktop
+    Agent (if it does, the app said it could not confirm sign-out).
 
 Nothing in these steps puts a token in a URL, `settings.json`, the renderer or a log.

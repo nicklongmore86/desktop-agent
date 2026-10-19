@@ -449,6 +449,20 @@ describe('openai-compat client', () => {
     expect((await failure(finalOf())).code).toBe('protocol')
   })
 
+  it('accepts an event stream whatever the Content-Type case and parameters', async () => {
+    for (const type of ['TEXT/EVENT-STREAM; charset=UTF-8', ' text/event-stream ;charset=utf-8']) {
+      server.reply((_req, res) => {
+        res.writeHead(200, { 'Content-Type': type })
+        res.write(`data: ${JSON.stringify(chunk({ content: 'Hi' }))}\n\n`)
+        res.end(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\ndata: [DONE]\n\n`)
+      })
+      expect((await finalOf()).content).toEqual([{ type: 'text', text: 'Hi', citations: null }])
+    }
+    // Still not a stream: unchanged.
+    server.reply(json(200, { choices: [] }, { 'Content-Type': 'text/plain' }))
+    expect((await failure(finalOf())).message).toMatch(/did not stream.*base URL/)
+  })
+
   it('maps connection failures and idle timeouts to network errors', async () => {
     const closed = await fakeServer()
     await closed.close()

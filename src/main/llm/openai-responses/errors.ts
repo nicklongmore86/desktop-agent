@@ -1,6 +1,7 @@
 import type { AgentErrorCode } from '../../agent/types'
 import { MANAGE_USAGE_URL } from '../../../shared/chatgpt-plan'
 import { OpenAICompatError, retryAt } from '../openai-compat/errors'
+import { mediaType } from '../openai-compat/stream'
 
 export const LABEL = 'ChatGPT'
 /** Where ChatGPT plan users review and change their usage limits. */
@@ -145,19 +146,74 @@ export function isToolFormatError(error: unknown): error is ResponsesError & { p
   return error instanceof ResponsesError && error.toolFormat
 }
 
+/** A provider identifier (`error.code`, `error.type`, a response `status`): never prose. */
+const IDENT = /^[A-Za-z0-9_.-]{1,64}$/
+/** Media types shown by name; any other value could be anything, so it is not shown. */
+const MEDIA_TYPES = new Set([
+  'application/json',
+  'application/problem+json',
+  'application/x-ndjson',
+  'application/octet-stream',
+  'text/event-stream',
+  'text/html',
+  'text/plain',
+])
+
+/** A failed response's facts, each checked against a strict pattern before it is shown. */
+export interface Diagnostics {
+  /** The HTTP status, including a 2xx whose body was not a stream. */
+  status?: number
+  /** The response headers: their Content-Type and request id are shown. */
+  headers?: Headers
+  code?: unknown
+  type?: unknown
+  param?: string
+  /** What the body was, e.g. "body detail": app-written only. */
+  body?: string
+}
+
+/**
+ * " Details: HTTP 400, application/json, code invalid_value, param model, request req_1."
+ * so a report says what OpenAI answered. Provider text, header values other than the
+ * media type and request id, and the token never appear. Empty when there is nothing.
+ */
+export function diagnostics(facts: Diagnostics): string {
+  const parts: string[] = []
+  if (facts.status !== undefined) parts.push(`HTTP ${String(facts.status)}`)
+  if (facts.headers) {
+    const type = mediaType(facts.headers.get('content-type'))
+    parts.push(
+      type === undefined ? 'no content type' : MEDIA_TYPES.has(type) ? type : 'other content type',
+    )
+  }
+  if (facts.body) parts.push(facts.body)
+  const code = short(facts.code, IDENT)
+  if (code) parts.push(`code ${code}`)
+  const type = short(facts.type, IDENT)
+  if (type) parts.push(`type ${type}`)
+  if (facts.param) parts.push(`param ${facts.param}`)
+  const requestId = requestIdOf(facts.headers)
+  if (requestId) parts.push(`request ${requestId}`)
+  return parts.length ? ` Details: ${parts.join(', ')}.` : ''
+}
+
 function requestIdOf(headers?: Headers): string | undefined {
   return short(headers?.get('x-request-id') ?? headers?.get('openai-request-id'), REQUEST_ID)
 }
 
 /**
  * Maps a Responses error object (`{code, message, param}`) and/or HTTP status. `status`
- * is undefined for in-stream failures (response.failed, error events).
+ * is undefined for in-stream failures (response.failed, error events) and for an error
+ * body sent with a 2xx; `context.httpStatus` is then the 2xx, shown in the details.
+ * Messages for undocumented failures end with diagnostics(); documented codes keep theirs.
  */
 export function responsesError(
   error: unknown,
   status: number | undefined,
   headers?: Headers,
+  context: { httpStatus?: number; body?: string } = {},
 ): ResponsesError {
+  const httpStatus = context.httpStatus ?? status
   const e = record(error)
   const providerCode = typeof e.code === 'string' ? e.code : ''
   const requestId = requestIdOf(headers)
@@ -188,61 +244,64 @@ export function responsesError(
       ...(param && providerCode === 'subscription_sharing_unsupported_capability' ? { param } : {}),
     })
   }
+  const details = diagnostics({
+    ...(httpStatus !== undefined ? { status: httpStatus } : {}),
+    ...(headers ? { headers } : {}),
+    ...(context.body ? { body: context.body } : {}),
+    code: e.code,
+    type: e.type,
+    ...(param ? { param } : {}),
+  })
   const kind = [e.code, e.type].filter((v) => typeof v === 'string').join(' ')
+  const fail = (code: AgentErrorCode, message: string, retryable: boolean, resetsAt?: string) =>
+    new ResponsesError(code, `${message}${details}`, {
+      ...base,
+      retryable,
+      ...(resetsAt ? { resetsAt } : {}),
+    })
   if (CONTEXT_LIMIT.test(kind))
-    return new ResponsesError(
+    return fail(
       'context_limit',
       'Conversation exceeds the model context window. Start a shorter conversation.',
-      { ...base, retryable: false },
+      false,
     )
   if (MODEL_MISSING.test(kind) || status === 404)
-    return new ResponsesError(
+    return fail(
       'model_unavailable',
       'This model is not available on your ChatGPT plan. Choose another model.',
-      { ...base, retryable: false },
+      false,
     )
   // Direct-route admission failures answer `{"detail": "..."}` with no stable code.
   switch (status) {
     case 401:
-      return new ResponsesError(
-        'auth_expired',
-        `ChatGPT did not accept the sign-in. ${SIGN_IN_AGAIN}`,
-        {
-          ...base,
-          retryable: false,
-        },
-      )
+      return fail('auth_expired', `ChatGPT did not accept the sign-in. ${SIGN_IN_AGAIN}`, false)
     case 403:
-      return new ResponsesError(
+      return fail(
         'permission',
         'ChatGPT denied this request, for example because of your region or workspace policy.',
-        { ...base, retryable: false },
+        false,
       )
     case 408:
-      return new ResponsesError('network', 'The ChatGPT request timed out. Try again.', base)
-    case 429: {
-      const resetsAt = headers ? retryAt(headers) : undefined
-      return new ResponsesError('rate_limit', 'ChatGPT rate limit reached. Try again later.', {
-        ...base,
-        ...(resetsAt ? { resetsAt } : {}),
-      })
-    }
+      return fail('network', 'The ChatGPT request timed out. Try again.', true)
+    case 429:
+      return fail(
+        'rate_limit',
+        'ChatGPT rate limit reached. Try again later.',
+        true,
+        headers ? retryAt(headers) : undefined,
+      )
     case 400:
     case 413:
     case 422:
-      return new ResponsesError(
+      return fail(
         'invalid_request',
         'ChatGPT rejected the request. Check the model and the request size.',
-        { ...base, retryable: false },
+        false,
       )
     case 503:
-      return new ResponsesError(
-        'overloaded',
-        'ChatGPT plan use is unavailable right now. Try again later.',
-        base,
-      )
+      return fail('overloaded', 'ChatGPT plan use is unavailable right now. Try again later.', true)
   }
-  return new ResponsesError('api', 'The ChatGPT request failed. Please try again.', base)
+  return fail('api', 'The ChatGPT request failed. Please try again.', true)
 }
 
 /** The `statusError` hook for connect(): body is `{error:{...}}`, `{detail}` or text. */
@@ -252,5 +311,8 @@ export function responsesStatusError(
   _label: string,
   headers?: Headers,
 ): ResponsesError {
-  return responsesError(record(body).error, status, headers)
+  const outer = record(body)
+  return responsesError(outer.error, status, headers, {
+    body: typeof outer.detail === 'string' ? 'body detail' : '',
+  })
 }

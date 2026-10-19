@@ -789,4 +789,200 @@ describe('openai-responses client', () => {
       })
     }, 60_000)
   })
+
+  describe('responses that are not a plain event stream', () => {
+    const write =
+      (headers: Record<string, string>, body: string): Handler =>
+      (_req, res) => {
+        res.writeHead(200, headers)
+        res.end(body)
+      }
+    const events = [ev.created(), ev.textDelta('Hi'), ev.message('Hi'), ev.completed()]
+    const sseBody = events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')
+    /** No token, and none of the provider's own words, anywhere in the error. */
+    const clean = (error: Error) => {
+      expect(leaks(error)).toBe(false)
+      expect(error.message).not.toMatch(/PROVIDER|secret/i)
+      expect(error.message.length).toBeLessThanOrEqual(300)
+    }
+
+    it.each([
+      'text/event-stream; charset=utf-8',
+      'Text/Event-Stream; Charset=UTF-8',
+      'TEXT/EVENT-STREAM',
+      ' text/event-stream ;charset="utf-8"',
+    ])('streams with Content-Type %j', async (type) => {
+      server.reply(write({ 'Content-Type': type }, sseBody))
+      const deltas: string[] = []
+      const stream = client().messages.stream(params, { signal: new AbortController().signal })
+      stream.on('text', (d) => deltas.push(d))
+      expect((await stream.finalMessage()).content).toMatchObject([{ type: 'text', text: 'Hi' }])
+      expect(deltas).toEqual(['Hi'])
+    })
+
+    it('streams with no Content-Type when the body starts like SSE', async () => {
+      for (const body of [sseBody, `: keep-alive\n\n${sseBody}`, `\uFEFF${sseBody}`]) {
+        server.reply(write({}, body))
+        expect((await finalOf()).content).toMatchObject([{ type: 'text', text: 'Hi' }])
+      }
+      // Split across writes: the first bytes are peeked, then the rest still streams.
+      server.reply((_req, res) => {
+        res.writeHead(200)
+        for (const part of [sseBody.slice(0, 3), sseBody.slice(3, 40), sseBody.slice(40)])
+          res.write(part)
+        res.end()
+      })
+      expect((await finalOf()).content).toMatchObject([{ type: 'text', text: 'Hi' }])
+    })
+
+    it('accepts a complete non-streamed Responses object on the same terms', async () => {
+      const response = {
+        id: 'resp_9',
+        object: 'response',
+        status: 'completed',
+        error: null,
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'Whole', annotations: [] }],
+          },
+        ],
+        usage: { input_tokens: 3, output_tokens: 1 },
+      }
+      server.reply(json(200, response))
+      const deltas: string[] = []
+      const stream = client().messages.stream(params, { signal: new AbortController().signal })
+      stream.on('text', (d) => deltas.push(d))
+      expect(await stream.finalMessage()).toMatchObject({
+        id: 'resp_9',
+        content: [{ type: 'text', text: 'Whole' }],
+        stop_reason: 'end_turn',
+      })
+      expect(deltas).toEqual(['Whole'])
+      server.reply(
+        json(200, {
+          ...response,
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+        }),
+      )
+      expect((await finalOf()).stop_reason).toBe('max_tokens')
+      server.reply(
+        json(200, {
+          ...response,
+          status: 'failed',
+          error: { code: 'subscription_sharing_usage_limit_exceeded', message: 'PROVIDER' },
+        }),
+      )
+      expect((await failure(finalOf())).code).toBe('usage_limit')
+      // Only a finished response counts.
+      server.reply(json(200, { ...response, status: 'in_progress' }, { 'x-request-id': 'req_9' }))
+      const error = await failure(finalOf())
+      expect(error).toMatchObject({ code: 'protocol', status: 200 })
+      expect(error.message).toBe(
+        'ChatGPT did not stream its response. Try again, and report this problem if it continues. Details: HTTP 200, application/json, body response in_progress, request req_9.',
+      )
+    })
+
+    it.each([
+      [
+        { 'Content-Type': 'application/json' },
+        '{"detail":"secret words"}',
+        'application/json, body detail',
+      ],
+      [
+        { 'Content-Type': 'application/json' },
+        '{"output":[]}',
+        'application/json, body other JSON',
+      ],
+      [
+        { 'Content-Type': 'text/html; charset=utf-8' },
+        '<html>secret words</html>',
+        'text/html, body not JSON',
+      ],
+      [{}, '{"detail":"secret words"}', 'no content type, body detail'],
+      [{}, 'secret words', 'no content type, body not JSON'],
+      [{ 'Content-Type': 'application/json' }, '', 'application/json, body empty'],
+      [{ 'Content-Type': TOKEN }, '{}', 'other content type, body other JSON'],
+      [{ 'Content-Type': `text/${TOKEN}` }, '{}', 'other content type, body other JSON'],
+    ])('reports %j %j as a protocol error with diagnostics only', async (headers, body, facts) => {
+      server.reply(write(headers, body))
+      const error = await failure(finalOf())
+      expect(error).toMatchObject({ code: 'protocol', status: 200 })
+      expect(error.message).toContain(`did not stream its response`)
+      expect(error.message).toContain(`Details: HTTP 200, ${facts}.`)
+      clean(error)
+    })
+
+    it.each([
+      [
+        400,
+        { code: 'invalid_value', param: 'model' },
+        'invalid_request',
+        'code invalid_value, param model',
+      ],
+      [
+        400,
+        { type: 'invalid_request_error', param: 'input[0].content' },
+        'invalid_request',
+        'type invalid_request_error, param input[0].content',
+      ],
+      [401, { code: 'invalid_api_key' }, 'auth_expired', 'code invalid_api_key'],
+      [
+        403,
+        { code: 'unsupported_country_region_territory' },
+        'permission',
+        'code unsupported_country_region_territory',
+      ],
+      [
+        429,
+        { code: 'rate_limit_exceeded', type: 'requests' },
+        'rate_limit',
+        'code rate_limit_exceeded, type requests',
+      ],
+      [500, { code: 'server_error' }, 'api', 'code server_error'],
+    ] as const)(
+      'shows HTTP %i %j as %s with its code and param',
+      async (status, error, code, facts) => {
+        server.reply(
+          json(
+            status,
+            { error: { ...error, message: `PROVIDER says ${TOKEN}` } },
+            { 'x-request-id': 'req_1' },
+          ),
+        )
+        const mapped = await failure(finalOf())
+        expect(mapped).toMatchObject({ code, status })
+        expect(mapped.message).toContain(
+          `Details: HTTP ${String(status)}, application/json, ${facts}, request req_1.`,
+        )
+        clean(mapped)
+      },
+    )
+
+    it('shows the 2xx status of an error body, and never a code or type that is prose', async () => {
+      server.reply(json(200, { error: { code: 'brand_new_code', message: 'PROVIDER' } }))
+      const mapped = await failure(finalOf())
+      expect(mapped.code).toBe('api')
+      expect(mapped.message).toContain('Details: HTTP 200, application/json, code brand_new_code.')
+      server.reply(
+        json(400, {
+          error: { code: 'secret words here', type: `x ${TOKEN}`, param: 'PROVIDER text' },
+        }),
+      )
+      const prose = await failure(finalOf())
+      expect(prose.message).toContain('Details: HTTP 400, application/json.')
+      clean(prose)
+      // A documented code keeps its own message.
+      server.reply(json(403, { error: { code: 'subscription_sharing_user_not_eligible' } }))
+      expect((await failure(finalOf())).message).not.toContain('Details')
+      // Admission failures say they were `{detail}`, without its text.
+      server.reply(json(401, { detail: `secret words ${TOKEN}` }))
+      const admission = await failure(finalOf())
+      expect(admission.message).toContain('Details: HTTP 401, application/json, body detail.')
+      clean(admission)
+    })
+  })
 })

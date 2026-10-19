@@ -3,12 +3,13 @@ import type { AgentClient, AgentStream } from '../../agent/types'
 import { OpenAICompatError } from '../openai-compat/errors'
 import {
   connect,
+  readText,
   type Connection,
   type ConnectionOptions,
   type FetchLike,
 } from '../openai-compat/http'
-import { sseData } from '../openai-compat/stream'
-import { LABEL, responsesError, responsesStatusError } from './errors'
+import { MAX_EVENT_BYTES, mediaType, sseData } from '../openai-compat/stream'
+import { diagnostics, LABEL, responsesError, responsesStatusError } from './errors'
 import { ResponsesAccumulator } from './stream'
 import { offeredToolNames, toResponsesRequest } from './translate'
 
@@ -112,18 +113,24 @@ class ResponsesStream implements AgentStream {
       accept: 'text/event-stream',
       signal,
     })
+    let stream = response.body
     try {
-      if (!response.body)
-        throw new OpenAICompatError('protocol', `${LABEL} sent an empty response.`)
-      const type = response.headers.get('content-type') ?? ''
-      if (!type.includes('text/event-stream')) {
-        const json: unknown = await response.json().catch(() => undefined)
-        if (json && typeof json === 'object' && 'error' in json)
-          throw responsesError(json.error, undefined, response.headers)
-        throw new OpenAICompatError('protocol', `${LABEL} did not stream its response.`)
-      }
+      if (!stream) throw new OpenAICompatError('protocol', `${LABEL} sent an empty response.`)
       const acc = new ResponsesAccumulator(model, offeredToolNames(body))
-      for await (const data of sseData(response.body, touch)) {
+      const type = mediaType(response.headers.get('content-type'))
+      if (type !== 'text/event-stream') {
+        // No Content-Type at all: still a stream if the body starts like one.
+        const peeked = type === undefined ? await peek(stream) : undefined
+        if (peeked) stream = peeked.body
+        if (!peeked?.sse) {
+          const message = await notStreamed(response, stream, touch, acc)
+          stream = null
+          if (signal.aborted) throw new Error('aborted')
+          for (const block of message.content) if (block.type === 'text') this.emit(block.text)
+          return message
+        }
+      }
+      for await (const data of sseData(stream, touch)) {
         let event: unknown
         try {
           event = JSON.parse(data)
@@ -138,7 +145,7 @@ class ResponsesStream implements AgentStream {
       if (signal.aborted) throw new Error('aborted')
       return acc.finalMessage()
     } catch (error) {
-      await response.body?.cancel().catch(() => {})
+      await stream?.cancel().catch(() => {})
       throw mapError(error)
     } finally {
       done()
@@ -154,4 +161,110 @@ class ResponsesStream implements AgentStream {
       }
     }
   }
+}
+
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+
+/** The first bytes of a stream begin an SSE field (`data:`, `event:`, `id:`, `retry:`) or comment. */
+const SSE_START = /^\uFEFF?(data|event|id|retry)?:/
+
+/**
+ * Reads the first bytes of a body that has no Content-Type, and returns a body that still
+ * yields them, plus whether they look like SSE.
+ */
+async function peek(
+  source: ReadableStream<Uint8Array>,
+): Promise<{ sse: boolean; body: ReadableStream<Uint8Array> }> {
+  const reader = source.getReader()
+  const head: Uint8Array[] = []
+  let size = 0
+  let ended = false
+  while (size < 16) {
+    const { done, value } = await reader.read()
+    if (done) {
+      ended = true
+      break
+    }
+    head.push(value)
+    size += value.byteLength
+  }
+  const first = Buffer.concat(head)
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (first.byteLength) controller.enqueue(new Uint8Array(first))
+      if (ended) controller.close()
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read()
+      if (done) controller.close()
+      else controller.enqueue(value)
+    },
+    cancel: (reason) => reader.cancel(reason),
+  })
+  return { sse: SSE_START.test(new TextDecoder().decode(first)), body }
+}
+
+/**
+ * A 2xx response that is not an event stream. A complete Responses object (`object:
+ * "response"`) is accepted on the same terms as the stream's terminal event; an error
+ * body is mapped by its code; anything else is a protocol error. Every failure message
+ * carries diagnostics() (status, media type, body kind, code, param, request id) and
+ * never the body's own text.
+ */
+async function notStreamed(
+  response: Response,
+  body: ReadableStream<Uint8Array>,
+  touch: () => void,
+  acc: ResponsesAccumulator,
+): Promise<Message> {
+  const text = await readText(body, MAX_EVENT_BYTES, touch)
+  let json: unknown
+  try {
+    json = text ? JSON.parse(text) : undefined
+  } catch {
+    json = undefined
+  }
+  const r = record(json)
+  const context = { httpStatus: response.status }
+  if (r.object === 'response') {
+    switch (r.status) {
+      case 'completed':
+        acc.add({ type: 'response.completed', response: r })
+        return acc.finalMessage()
+      case 'incomplete':
+        acc.add({ type: 'response.incomplete', response: r })
+        return acc.finalMessage()
+      case 'failed':
+        throw responsesError(r.error, undefined, response.headers, {
+          ...context,
+          body: 'body response failed',
+        })
+    }
+  }
+  if (Object.keys(record(r.error)).length)
+    throw responsesError(r.error, undefined, response.headers, context)
+  throw new OpenAICompatError(
+    'protocol',
+    `${LABEL} did not stream its response. Try again, and report this problem if it continues.${diagnostics(
+      { status: response.status, headers: response.headers, body: bodyKind(text, json) },
+    )}`,
+    { status: response.status },
+  )
+}
+
+/** What a non-stream body was, in app-written words only. */
+function bodyKind(text: string | undefined, json: unknown): string {
+  if (text === undefined) return 'body unreadable'
+  if (text.trim() === '') return 'body empty'
+  if (json === undefined) return 'body not JSON'
+  const r = record(json)
+  if (r.object === 'response')
+    return typeof r.status === 'string' && /^[a-z_]{1,32}$/.test(r.status)
+      ? `body response ${r.status}`
+      : 'body response'
+  if (typeof r.detail === 'string') return 'body detail'
+  return 'body other JSON'
 }

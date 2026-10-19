@@ -5,6 +5,16 @@ import { transcriptToolId } from './translate'
 export const MAX_EVENT_BYTES = 8 * 1024 * 1024
 export const MAX_STREAM_BYTES = 64 * 1024 * 1024
 
+/** The media type of a Content-Type header, lowercased and without parameters. */
+export function mediaType(contentType: string | null): string | undefined {
+  const type = contentType?.split(';')[0]?.trim().toLowerCase()
+  return type || undefined
+}
+
+/** True for `text/event-stream` in any case, with or without parameters such as charset. */
+export const isEventStream = (contentType: string | null): boolean =>
+  mediaType(contentType) === 'text/event-stream'
+
 /**
  * Yields each SSE `data:` payload (joined across lines) until `[DONE]` or end of body.
  * Comment lines (": OPENROUTER PROCESSING") and other fields are ignored. One event's
