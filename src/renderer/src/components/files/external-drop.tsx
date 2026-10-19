@@ -76,7 +76,7 @@ export function useExternalFileDrop() {
   }
 
   const hint = over ? (
-    <div className="drop-hint" aria-hidden="true" data-testid="external-drop-hint">
+    <div className="external-drop-hint" aria-hidden="true" data-testid="external-drop-hint">
       <p>{EXTERNAL_DROP_MESSAGE}</p>
     </div>
   ) : null

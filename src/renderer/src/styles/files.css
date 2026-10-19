@@ -350,7 +350,7 @@
 
 /* Hint over a drop zone while files from outside the app hover it (nothing is attached). */
 
-.drop-hint {
+.external-drop-hint {
   position: absolute;
   inset: var(--space-1);
   z-index: 5;
@@ -367,7 +367,7 @@
   pointer-events: none;
 }
 
-.drop-hint p {
+.external-drop-hint p {
   max-width: 36ch;
   margin: 0;
 }
