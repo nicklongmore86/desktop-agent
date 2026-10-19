@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
+import type { AttachmentRef } from '../../shared/attachments'
 import type {
   ApprovalOrigin,
   ApprovalPrompt,
@@ -17,8 +18,21 @@ import type {
   RunResult,
   ToolResult,
 } from '../agent'
-import type { ConversationStore } from '../storage/conversation-store'
+import {
+  attachmentsOf,
+  type AttachmentBlock,
+  type ConversationStore,
+  type StoredMessage,
+} from '../storage/conversation-store'
 import type { ConversationHistory } from '../storage/history-store'
+import {
+  AttachmentPins,
+  checkAttachments,
+  requestedIds,
+  toModelConversation,
+  unavailableAttachments,
+  type AttachmentStoreLike,
+} from './attachments'
 import { toTranscript } from './transcript'
 import { userCommandMessage } from './user-command'
 
@@ -53,6 +67,10 @@ export interface ChatSessionDeps {
   onSaveError?: (error: unknown) => void
   /** The agent's run_shell tool, for commands the user types in the command bar. */
   userShell?: AgentTool
+  /** Holds attached files. Without it, sending attachments is refused. */
+  attachments?: AttachmentStoreLike
+  /** Shared with whatever releases attachment files (see AttachmentPins). */
+  pins?: AttachmentPins
 }
 
 interface PendingApproval {
@@ -85,13 +103,16 @@ const toChatCode = (code: AgentErrorEvent['code']): ChatErrorCode => code
  * (it saves to the conversation it belongs to) before loading the next one.
  */
 export class ChatSession {
-  private conversation: MessageParam[] = []
+  private conversation: StoredMessage[] = []
+  /** Attachment ids in the open conversation whose stored file is gone. */
+  private unavailable: ReadonlySet<string> = new Set()
   private history: ConversationHistory
   private store: ConversationStore
   private loadError: string | null = null
   private active: ActiveRun | null = null
   private readonly pending = new Map<string, PendingApproval>()
   private readonly newId: () => string
+  private readonly pins: AttachmentPins
   /** Bumped by every switch; a run or save from an older generation never touches history. */
   private generation = 0
   /** Loads and switches in flight. While > 0, send() is refused. */
@@ -100,6 +121,7 @@ export class ChatSession {
 
   constructor(private readonly deps: ChatSessionDeps) {
     this.newId = deps.newId ?? randomUUID
+    this.pins = deps.pins ?? new AttachmentPins()
     this.history = deps.history
     this.store = deps.history.current()
   }
@@ -114,7 +136,9 @@ export class ChatSession {
     const loaded = this.resetQueue.then(async () => {
       try {
         const { messages, error } = await this.store.load()
+        const unavailable = await unavailableAttachments(messages, this.deps.attachments)
         this.conversation = messages
+        this.unavailable = unavailable
         this.loadError = error
       } finally {
         this.resets -= 1
@@ -135,7 +159,7 @@ export class ChatSession {
 
   state(): ChatState {
     return {
-      items: toTranscript(this.conversation),
+      items: toTranscript(this.conversation, this.unavailable),
       running: this.running,
       loadError: this.loadError,
       history: this.history.state(),
@@ -147,9 +171,21 @@ export class ChatSession {
     return this.history.state()
   }
 
-  /** Starts a run. Resolves once it has started, not when it finishes (see `idle`). */
-  async send(text: unknown): Promise<SendResult> {
-    if (typeof text !== 'string' || !text.trim())
+  /** Every attachment id the open conversation references (still in use, even unsaved). */
+  attachmentIds(): string[] {
+    return this.conversation.flatMap((message) => attachmentsOf(message).map(({ id }) => id))
+  }
+
+  /**
+   * Starts a run. Resolves once it has started, not when it finishes (see `idle`).
+   * `attachments` are ids the renderer was given (see checkAttachments): only the
+   * ids are read, and the saved metadata is the store's. They are pinned before
+   * the first await, so a release cannot free them, until the prompt is in the
+   * open conversation or the send fails.
+   */
+  async send(text: unknown, attachments?: unknown): Promise<SendResult> {
+    const attaching = Array.isArray(attachments) && attachments.length > 0
+    if (typeof text !== 'string' || (!text.trim() && !attaching))
       return { ok: false, code: 'invalid_request', message: 'Type a message first.' }
     if (this.resets > 0)
       return { ok: false, code: 'busy', message: 'Chat is busy. Try again in a moment.' }
@@ -171,35 +207,67 @@ export class ChatSession {
       }),
     }
 
+    const unpin = this.pins.pin(requestedIds(attachments) ?? [])
+    let checked: Extract<Awaited<ReturnType<typeof checkAttachments>>, { ok: true }>
     let built: RunnerResult
     try {
-      built = await this.deps.createRunner(controller.signal)
-    } catch {
-      built = { ok: false, code: 'internal', message: 'Could not start the agent.' }
-    }
-    if (!built.ok || cancelled()) {
-      this.active = null
-      release()
-      return built.ok
-        ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
-        : {
-            ok: false,
-            code: built.code,
-            message: built.message,
-            ...(built.resetsAt ? { resetsAt: built.resetsAt } : {}),
-          }
-    }
+      // A release already freeing files finishes first, so a freed file reads as gone.
+      await this.pins.settled()
+      const check = await checkAttachments(attachments, this.deps.attachments)
+      if (!check.ok || cancelled()) {
+        this.active = null
+        release()
+        return check.ok
+          ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
+          : { ok: false, code: 'invalid_request', message: check.message }
+      }
+      checked = check
 
-    this.conversation = [...this.conversation, { role: 'user', content: text }]
+      try {
+        built = await this.deps.createRunner(controller.signal)
+      } catch {
+        built = { ok: false, code: 'internal', message: 'Could not start the agent.' }
+      }
+      if (!built.ok || cancelled()) {
+        this.active = null
+        release()
+        return built.ok
+          ? { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
+          : {
+              ok: false,
+              code: built.code,
+              message: built.message,
+              ...(built.resetsAt ? { resetsAt: built.resetsAt } : {}),
+            }
+      }
+
+      this.conversation = [...this.conversation, promptMessage(text, checked.attachments)]
+    } finally {
+      // Referenced by the open conversation now (or never will be).
+      unpin()
+    }
+    // A file attached again (same contents, same id) is available again.
+    if (checked.attachments.some(({ id }) => this.unavailable.has(id))) {
+      const sent = new Set(checked.attachments.map(({ id }) => id))
+      this.unavailable = new Set([...this.unavailable].filter((id) => !sent.has(id)))
+    }
     this.loadError = null
     await this.persist()
+    // The saved history keeps its attachment blocks; the runner gets their text form.
+    const stored = this.conversation
+    const sent = await toModelConversation(stored, this.deps.attachments, this.unavailable)
     if (cancelled()) {
       this.active = null
       release()
       return { ok: false, code: 'aborted', message: 'Stopped before the reply started.' }
     }
-    this.notify({ type: 'run_started', runId: id, text })
-    void this.execute(built.runner, id, controller, generation).finally(() => {
+    this.notify({
+      type: 'run_started',
+      runId: id,
+      text,
+      ...(checked.attachments.length > 0 ? { attachments: checked.attachments } : {}),
+    })
+    void this.execute(built.runner, id, controller, generation, stored, sent).finally(() => {
       this.denyPending(id)
       this.active = null
       release()
@@ -212,13 +280,15 @@ export class ChatSession {
     runId: string,
     controller: AbortController,
     generation: number,
+    stored: StoredMessage[],
+    sent: MessageParam[],
   ): Promise<void> {
     // The agent emits approval_requested synchronously right before calling
     // requestApproval, which lets the prompt name its tool call.
     let approvalToolUseId: string | null = null
     let result: RunResult
     try {
-      result = await runner.run(this.conversation, {
+      result = await runner.run(sent, {
         signal: controller.signal,
         onEvent: (event) => {
           if (generation !== this.generation || controller.signal.aborted) return
@@ -243,7 +313,8 @@ export class ChatSession {
     }
     // A New chat started meanwhile: this run's history belongs to the old conversation.
     if (generation === this.generation) {
-      this.conversation = result.conversation
+      // A run only ever appends to the history it was given.
+      this.conversation = [...stored, ...result.conversation.slice(sent.length)]
       await this.persist()
     }
     this.notify({ type: 'run_finished', runId, stopReason: result.stopReason })
@@ -551,11 +622,13 @@ export class ChatSession {
         await this.stop()
         const next = await prepare()
         const loaded = await next.store.load()
+        const unavailable = await unavailableAttachments(loaded.messages, this.deps.attachments)
         await next.commit()
         this.generation += 1
         if (next.history) this.history = next.history
         this.store = next.store
         this.conversation = loaded.messages
+        this.unavailable = unavailable
         this.loadError = loaded.error
         this.notify({ type: 'conversation_reset', state: this.state() })
         return this.state()
@@ -589,5 +662,19 @@ export class ChatSession {
     }
     // A first save adds the chat to the list; any save moves it to the top.
     this.notifyHistory()
+  }
+}
+
+/**
+ * A prompt as it is saved: plain text as before (a command-bar header typed in
+ * the composer never makes a card, see user-command.ts), or, with attachments,
+ * the text (if any) and then one block per attachment.
+ */
+function promptMessage(text: string, attachments: readonly AttachmentRef[]): StoredMessage {
+  if (attachments.length === 0) return { role: 'user', content: text }
+  const blocks: AttachmentBlock[] = attachments.map((ref) => ({ type: 'attachment', ...ref }))
+  return {
+    role: 'user',
+    content: [...(text.trim() ? [{ type: 'text' as const, text }] : []), ...blocks],
   }
 }

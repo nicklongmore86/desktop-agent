@@ -709,10 +709,13 @@ describe('registerIpcHandlers', () => {
   it('passes chat calls and approval answers through to the session', async () => {
     const { invoke, services } = setup()
     await invoke(IpcChannels.chatSend, appFrame, 'hello')
+    await invoke(IpcChannels.chatSend, appFrame, 'with files', [{ id: 'x' }])
     await invoke(IpcChannels.chatStop, appFrame)
     await invoke(IpcChannels.chatNew, appFrame)
     await invoke(IpcChannels.approvalRespond, appFrame, 'id-1', true)
-    expect(services.chat.send).toHaveBeenCalledWith('hello')
+    expect(services.chat.send).toHaveBeenCalledWith('hello', undefined)
+    // Main checks the attachments itself (ChatSession.send); IPC passes them on as they came.
+    expect(services.chat.send).toHaveBeenCalledWith('with files', [{ id: 'x' }])
     expect(services.chat.stop).toHaveBeenCalledOnce()
     expect(services.chat.newChat).toHaveBeenCalledOnce()
     expect(services.chat.respondApproval).toHaveBeenCalledWith('id-1', true)

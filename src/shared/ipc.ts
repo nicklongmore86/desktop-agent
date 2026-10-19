@@ -1,3 +1,4 @@
+import type { AttachmentRef } from './attachments'
 import type { ConnectionId } from './ipc-connections'
 import type { FeatureApis } from './ipc-features'
 import { filesPushChannels, type FilesChanged } from './ipc-files'
@@ -216,9 +217,24 @@ export interface ToolResultView {
   declined?: boolean
 }
 
+/** Shown in place of an attachment whose stored file is gone. */
+export const ATTACHMENT_UNAVAILABLE = 'Attachment no longer available'
+
+/** A file attached to a prompt, as the chat view shows it. */
+export interface ChatAttachment extends AttachmentRef {
+  /** False when the stored file is gone: show ATTACHMENT_UNAVAILABLE instead of opening it. */
+  available: boolean
+}
+
 /** What the chat view shows for a saved conversation. Built in main from Messages-API history. */
 export type ChatItem =
-  | { kind: 'user'; id: string; text: string }
+  | {
+      kind: 'user'
+      id: string
+      text: string
+      /** The prompt's attachments, in order. Unset: none. */
+      attachments?: ChatAttachment[]
+    }
   | { kind: 'assistant'; id: string; text: string }
   | {
       kind: 'tool'
@@ -268,7 +284,7 @@ export type SendResult =
 
 /** Streamed main -> renderer while a run is in flight. */
 export type ChatEvent =
-  | { type: 'run_started'; runId: string; text: string }
+  | { type: 'run_started'; runId: string; text: string; attachments?: AttachmentRef[] }
   /** A command typed in the command bar started; its result comes as a tool_result. */
   | { type: 'command_started'; runId: string; id: string; command: string; cwd: string }
   | { type: 'text_delta'; runId: string; turn: number; text: string }

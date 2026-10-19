@@ -1,11 +1,20 @@
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import { z } from 'zod'
 import type { ConversationSummary, HistoryState } from '../../shared/ipc'
-import { createConversationStore, isWellFormed, type ConversationStore } from './conversation-store'
+import {
+  attachmentIdsIn,
+  attachmentsOf,
+  createConversationStore,
+  isWellFormed,
+  type ConversationStore,
+  type StoredMessage,
+} from './conversation-store'
 import { readJsonFile, removeFile, writeJsonFile } from './json-file'
+import { sanitizeTitle } from './plain-text'
+
+export { MAX_TITLE_LENGTH, sanitizeTitle } from './plain-text'
 
 /**
  * Conversation ids are random v4 UUIDs, made in main. A file path is only
@@ -16,8 +25,6 @@ export const CONVERSATION_ID =
 
 /** Titles made from the first message are cut to this many characters. */
 export const TITLE_LENGTH = 60
-/** The longest title a rename keeps. */
-export const MAX_TITLE_LENGTH = 100
 
 export const MESSAGES = {
   legacyUnreadable: 'The saved conversation could not be read, so a new one was started.',
@@ -26,31 +33,15 @@ export const MESSAGES = {
   indexUnsaved: 'The chat history could not be saved to disk.',
 } as const
 
-// Controls, format characters (bidi overrides and isolates, zero-width), lone
-// surrogates, private use, and line/paragraph separators: none belong in a title.
-const UNSAFE_TITLE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/gu
-
-/** One line of plain text: unsafe characters become spaces, runs of space collapse. */
-export function sanitizeTitle(text: string, max = MAX_TITLE_LENGTH): string {
-  const clean = text.replace(UNSAFE_TITLE_CHARS, ' ').replace(/\s+/gu, ' ').trim()
-  const chars = Array.from(clean)
-  return chars.length <= max
-    ? clean
-    : `${chars
-        .slice(0, max - 1)
-        .join('')
-        .trimEnd()}…`
-}
-
-/** The first thing the user typed, as a title. */
-export function titleFrom(messages: readonly MessageParam[]): string {
+/** The first thing the user typed (or, for a prompt of files only, attached), as a title. */
+export function titleFrom(messages: readonly StoredMessage[]): string {
   for (const message of messages) {
     if (message.role !== 'user') continue
     const text =
       typeof message.content === 'string'
         ? message.content
         : message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join(' ')
-    const title = sanitizeTitle(text, TITLE_LENGTH)
+    const title = sanitizeTitle(text || (attachmentsOf(message)[0]?.name ?? ''), TITLE_LENGTH)
     if (title) return title
   }
   return 'New chat'
@@ -127,8 +118,14 @@ export interface HistoryOptions {
   legacyFile?: string
   newId?: () => string
   now?: () => number
-  /** Index writes that fail where nobody is waiting for them (setActive). */
+  /** Index writes that fail where nobody is waiting for them (setActive), and failed releases. */
   onError?: (error: unknown) => void
+  /**
+   * Called after a chat file is deleted with the attachment ids it referenced.
+   * Other chats (forks, other connections) may still use them: the callee
+   * decides which are free (see `referencedAttachmentIds`).
+   */
+  releaseAttachments?: (ids: string[]) => Promise<void>
 }
 
 /** A summary without its unset optional fields, as the renderer and the index hold it. */
@@ -144,7 +141,7 @@ function withoutUnset(entry: z.infer<typeof entrySchema>): ConversationSummary {
 }
 
 /** The first `prompts` prompts and their replies: everything before the next prompt. */
-export function keepPrompts(messages: MessageParam[], prompts: number): MessageParam[] | null {
+export function keepPrompts(messages: StoredMessage[], prompts: number): StoredMessage[] | null {
   let seen = 0
   for (const [index, message] of messages.entries()) {
     if (!isPrompt(message)) continue
@@ -155,7 +152,7 @@ export function keepPrompts(messages: MessageParam[], prompts: number): MessageP
 }
 
 /** A user message the user typed, not one that carries tool results back. */
-function isPrompt(message: MessageParam): boolean {
+function isPrompt(message: StoredMessage): boolean {
   if (message.role !== 'user') return false
   if (typeof message.content === 'string') return true
   return message.content.every((block) => block.type !== 'tool_result')
@@ -300,7 +297,16 @@ class FileHistory implements ConversationHistory {
       if (wasActive && this.active === null) this.active = id
       throw error
     }
-    await removeFile(this.file(id))
+    const file = this.file(id)
+    // Read before the file goes: an unreadable one simply has nothing to report.
+    const ids = this.options.releaseAttachments
+      ? [...attachmentIdsIn(await readJsonFile(file).catch(() => undefined))]
+      : []
+    await removeFile(file)
+    if (ids.length > 0)
+      await this.options.releaseAttachments?.(ids).catch((error: unknown) => {
+        this.options.onError?.(error)
+      })
   }
 
   async organize(id: string, change: Organize): Promise<void> {
@@ -446,6 +452,45 @@ async function scan(dir: string): Promise<ConversationSummary[]> {
     })
   }
   return found
+}
+
+/** What `referencedAttachmentIds` found. */
+export interface AttachmentScan {
+  /** Every attachment id a readable chat file references. */
+  ids: Set<string>
+  /** Chat files that could not be read or parsed: their references are unknown. */
+  unreadable: number
+}
+
+/**
+ * Every attachment id that any saved chat under `root` (one folder per
+ * connection) still references. Files are read loosely, so a chat this
+ * version cannot load still keeps its files. A chat file that cannot be read
+ * or parsed is counted in `unreadable`: its references are unknown, so a
+ * caller should release nothing on that pass.
+ */
+export async function referencedAttachmentIds(root: string): Promise<AttachmentScan> {
+  const scan: AttachmentScan = { ids: new Set(), unreadable: 0 }
+  let providers: string[]
+  try {
+    providers = await fs.readdir(root)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return scan
+    throw error
+  }
+  for (const provider of providers) {
+    const dir = join(root, provider)
+    if (!(await stat(dir))?.isDirectory()) continue
+    for (const name of await fs.readdir(dir)) {
+      if (!name.endsWith('.json') || !CONVERSATION_ID.test(name.slice(0, -'.json'.length))) continue
+      try {
+        attachmentIdsIn(await readJsonFile(join(dir, name)), scan.ids)
+      } catch {
+        scan.unreadable += 1
+      }
+    }
+  }
+  return scan
 }
 
 type Migration =

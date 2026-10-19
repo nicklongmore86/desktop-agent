@@ -50,7 +50,8 @@ export interface GrantService {
 
 export interface ChatService {
   state: () => ChatState
-  send: (text: unknown) => Promise<SendResult>
+  /** Checks `attachments` itself (see ChatSession.send). */
+  send: (text: unknown, attachments?: unknown) => Promise<SendResult>
   stop: () => Promise<void>
   newChat: () => Promise<ChatState>
   historyState: () => HistoryState
@@ -216,7 +217,7 @@ export function registerIpcHandlers(
   })
 
   handle(IpcChannels.chatLoad, () => services.chat.state())
-  handle(IpcChannels.chatSend, (text) => services.chat.send(text))
+  handle(IpcChannels.chatSend, (text, attachments) => services.chat.send(text, attachments))
   handle(IpcChannels.chatStop, () => services.chat.stop())
   handle(IpcChannels.chatNew, () => services.chat.newChat())
   handle(IpcChannels.chatHistory, () => services.chat.historyState())
