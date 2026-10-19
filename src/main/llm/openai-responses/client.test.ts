@@ -1115,6 +1115,34 @@ describe('openai-responses client', () => {
       expect(error.message).toContain('Details: HTTP 400, other content type.')
     })
 
+    it.each([
+      ['response.failed', { type: 'response.failed', response: { id: 'r', status: 'failed' } }],
+      ['response.failed', ev.failed('', `PROVIDER ${TOKEN}`)],
+      ['error', { type: 'error', message: `PROVIDER ${TOKEN}` }],
+      ['error', { type: 'error', code: SHAPED, param: SHAPED, message: 'PROVIDER' }],
+    ] as const)(
+      'ends an in-stream %s with no safe code, type or param with fixed details',
+      async (name, event) => {
+        server.reply((_req, res) => {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'x-request-id': 'req_s1',
+          })
+          res.write(`data: ${JSON.stringify(ev.textDelta('Hi'))}\n\n`)
+          res.end(`data: ${JSON.stringify(event)}\n\n`)
+        })
+        const error = await failure(finalOf(tokenClient(SHAPED)))
+        expect(error.message).toMatch(
+          new RegExp(
+            ` Details: HTTP 200, text/event-stream, stream event ${name.replace('.', '\\.')}, request req_s1\\.$`,
+          ),
+        )
+        expect(shows(error, TOKEN)).toBe(false)
+        expect(shows(error, SHAPED)).toBe(false)
+        expect(error.message).not.toMatch(/PROVIDER/)
+      },
+    )
+
     it('still shows ordinary values when a different token was sent', async () => {
       server.reply(
         json(

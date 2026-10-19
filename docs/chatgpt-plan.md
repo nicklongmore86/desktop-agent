@@ -58,7 +58,9 @@ Only these appear:
 - the media type, by name only for well-known ones, otherwise "other content type" or
   "no content type";
 - what the body was when it was not a stream ("body detail", "body other JSON", "body
-  not JSON", "body empty", "body too large", "body response in_progress");
+  not JSON", "body empty", "body too large", "body response in_progress"), or for a
+  failure inside the stream, "stream event response.failed" / "stream event error" with
+  the stream's own status and request id, so the details are never empty;
 - `error.code` (snake_case words), `error.type` (OpenAI's fixed set only), `error.param`
   (a lowercase field path such as `tools[0].type`);
 - the request id (`req_` plus up to 64 letters and digits).

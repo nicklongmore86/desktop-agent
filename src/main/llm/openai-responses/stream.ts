@@ -42,9 +42,26 @@ export class ResponsesAccumulator {
     private readonly model: string,
     /** The names offered in the request; a call to any other name is never returned. */
     private readonly offered: ReadonlySet<string>,
-    /** Keeps the credential out of in-stream error details. */
-    private readonly isSecret: SecretCheck = () => false,
+    /**
+     * The stream's own response, for in-stream failures' details: its HTTP status and
+     * headers (media type, request id), and the check that keeps the credential out.
+     */
+    private readonly response: {
+      status?: number
+      headers?: Headers
+      isSecret?: SecretCheck
+    } = {},
   ) {}
+
+  /** A failure event's error. Its details always name the event, so they are never empty. */
+  private failure(error: unknown, event: string): Error {
+    const { status, headers, isSecret } = this.response
+    return responsesError(error, undefined, headers, {
+      ...(status !== undefined ? { httpStatus: status } : {}),
+      body: `stream event ${event}`,
+      ...(isSecret ? { isSecret } : {}),
+    })
+  }
 
   /** True once a terminal event has arrived; later events are ignored. */
   get done(): boolean {
@@ -78,11 +95,9 @@ export class ResponsesAccumulator {
         return ''
       case 'response.failed':
         // A usage limit can arrive this way after text has already streamed.
-        throw responsesError(record(e.response).error, undefined, undefined, {
-          isSecret: this.isSecret,
-        })
+        throw this.failure(record(e.response).error, 'response.failed')
       case 'error':
-        throw responsesError(e, undefined, undefined, { isSecret: this.isSecret })
+        throw this.failure(e, 'error')
       default:
         // Argument deltas, content-part and reasoning events: the done item carries it all.
         return ''

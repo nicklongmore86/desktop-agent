@@ -118,7 +118,11 @@ class ResponsesStream implements AgentStream {
     let stream = response.body
     try {
       if (!stream) throw new OpenAICompatError('protocol', `${LABEL} sent an empty response.`)
-      const acc = new ResponsesAccumulator(model, offeredToolNames(body), isSecret)
+      const acc = new ResponsesAccumulator(model, offeredToolNames(body), {
+        status: response.status,
+        headers: response.headers,
+        isSecret,
+      })
       const type = mediaType(response.headers.get('content-type'))
       if (type !== 'text/event-stream') {
         // No Content-Type at all: still a stream if the body starts like one.

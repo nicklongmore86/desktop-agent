@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isToolFormatError, responsesError, toolFormatMessage } from './errors'
+import { isToolFormatError, ResponsesError, responsesError, toolFormatMessage } from './errors'
+import { ResponsesAccumulator } from './stream'
 
 describe('tool-format rejections', () => {
   it.each([
@@ -31,5 +32,24 @@ describe('tool-format rejections', () => {
     const mapped = responsesError(error, status)
     expect(isToolFormatError(mapped)).toBe(false)
     expect(mapped.message).not.toMatch(/tool format/)
+  })
+})
+
+describe('in-stream failure details', () => {
+  it.each([
+    [{ type: 'response.failed', response: {} }, ' Details: stream event response.failed.'],
+    [{ type: 'error', message: 'provider SECRET' }, ' Details: stream event error.'],
+  ])('are never empty, even with no response facts: %j', (event, details) => {
+    const acc = new ResponsesAccumulator('m', new Set())
+    let thrown: unknown
+    try {
+      acc.add(event)
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(ResponsesError)
+    expect((thrown as ResponsesError).details).toBe(details)
+    expect((thrown as Error).message.endsWith(details)).toBe(true)
+    expect((thrown as Error).message).not.toContain('SECRET')
   })
 })
