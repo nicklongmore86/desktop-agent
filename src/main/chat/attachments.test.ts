@@ -411,19 +411,20 @@ describe('a release racing a send', () => {
     const { pins, gone, runnerGate, session } = setup()
     await session.init()
     runnerGate.resolve()
+    const started = deferred()
     const freeing = deferred()
     const releasing = pins.release(
       [hex(1)],
       none,
       () => session.attachmentIds(),
       async (ids) => {
+        started.resolve()
         await freeing.promise
         for (const id of ids) gone.add(id)
       },
     )
-    // Let the release finish its scan and start freeing.
-    await Promise.resolve()
-    await Promise.resolve()
+    // The store is already freeing the file when the send pins it.
+    await started.promise
     const sending = session.send('Hi', [hex(1)])
     freeing.resolve()
     expect(await releasing).toEqual([hex(1)])
@@ -433,6 +434,52 @@ describe('a release racing a send', () => {
       message: 'An attachment is no longer available. Attach it again.',
     })
     expect(pins.isPinned(hex(1))).toBe(false)
+  })
+
+  it('a send that pins after the free list was worked out, before the store is called, keeps its file', async () => {
+    const { pins, gone, runnerGate, session } = setup()
+    await session.init()
+    runnerGate.resolve()
+    const free = (ids: string[]) => {
+      for (const id of ids) gone.add(id)
+      return Promise.resolve()
+    }
+    // An earlier release holds the queue, so the next one waits between working
+    // out its free list and calling the store.
+    const earlier = deferred()
+    const first = pins.release(
+      [hex(2)],
+      none,
+      () => [],
+      async (ids) => {
+        await earlier.promise
+        await free(ids)
+      },
+    )
+    const computed = deferred()
+    const store = vi.fn(free)
+    const second = pins.release(
+      [hex(1)],
+      none,
+      () => {
+        computed.resolve()
+        return session.attachmentIds()
+      },
+      store,
+    )
+    // The second release has worked out that hex(1) is free and is queued.
+    await computed.promise
+    expect(pins.isPinned(hex(1))).toBe(false)
+    const sending = session.send('Hi', [hex(1)])
+    expect(pins.isPinned(hex(1))).toBe(true)
+    earlier.resolve()
+    expect(await first).toEqual([hex(2)])
+    expect(await second).toEqual([])
+    expect(store).not.toHaveBeenCalled()
+    expect(gone.has(hex(1))).toBe(false)
+    expect(await sending).toEqual({ ok: true })
+    await session.idle()
+    expect(session.attachmentIds()).toEqual([hex(1)])
   })
 
   it('a skipped scan frees nothing', async () => {

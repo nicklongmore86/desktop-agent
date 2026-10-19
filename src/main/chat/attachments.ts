@@ -110,10 +110,12 @@ export async function checkAttachments(
  *
  * A send pins its ids synchronously, before it awaits anything, and unpins
  * them once the prompt is in the open conversation (or the send failed). A
- * release reads every saved chat, then, with no await in between, drops the
- * pinned ids and those the open conversation uses, and only then frees the
- * rest. A send waits for a release in flight (`settled`) before it checks its
- * files, so a file freed just before it was pinned reads as gone.
+ * release reads every saved chat, then queues the free step. That step drops
+ * the pinned ids and those the open conversation uses, and calls the store
+ * with what is left, with no await between the two, so a pin taken at any
+ * point before the store is called keeps its file. Releases run one at a
+ * time, and a send waits for any queued or running release (`settled`)
+ * before it checks its files: a file freed before it was pinned reads as gone.
  */
 export class AttachmentPins {
   private readonly pins = new Map<string, number>()
@@ -145,8 +147,9 @@ export class AttachmentPins {
 
   /**
    * Frees those of `candidates` that no saved chat references (`referenced`),
-   * no send has pinned and the open conversation does not use (`inUse`).
-   * Resolves to the ids passed to `release` (none when the scan says skip).
+   * no send has pinned and the open conversation does not use (`inUse`), as
+   * they stand at the moment `release` is called. Resolves to the ids passed
+   * to `release` (none when the scan says skip).
    */
   async release(
     candidates: readonly string[],
@@ -156,14 +159,24 @@ export class AttachmentPins {
   ): Promise<string[]> {
     const scan = await referenced()
     if (scan.skip) return []
-    // From here to the release call there is no await: no send can pin in between.
-    const used = new Set(inUse())
-    const free = candidates.filter((id) => !scan.ids.has(id) && !this.pins.has(id) && !used.has(id))
-    if (free.length === 0) return []
-    const releasing = this.releasing.then(() => release(free))
-    this.releasing = releasing.catch(() => {})
-    await releasing
-    return free
+    const unused = (): string[] => {
+      const used = new Set(inUse())
+      return candidates.filter((id) => !scan.ids.has(id) && !this.pins.has(id) && !used.has(id))
+    }
+    if (unused().length === 0) return []
+    // Marked in flight now, so a send that pins from here on waits for it (settled).
+    // The free list is worked out again inside the queued step, synchronously right
+    // before the store is called: a send that pinned while this waited keeps its file.
+    const releasing = this.releasing.then(async () => {
+      const free = unused()
+      if (free.length > 0) await release(free)
+      return free
+    })
+    this.releasing = releasing.then(
+      () => {},
+      () => {},
+    )
+    return releasing
   }
 }
 
