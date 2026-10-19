@@ -63,6 +63,16 @@ removes it for all of them: callers must only pass ids that no saved chat refere
 more. `sweep(keep,
 minAgeMs)` removes unreferenced blobs and stale temp files.
 
+Metadata: `issue(bytes, meta)` stores the blob and writes `<id>.json` next to it (same
+atomic, owner-only write) with the `AttachmentRef` main issued (name, kind, mime, size,
+source). `describe(id)` re-validates the sidecar on every read (zod, at most 4 KB, plain
+file, id and size must match the blob) and returns null for anything else. A blob stored
+again under another name keeps one sidecar, holding the latest metadata. `isIssued(id)` is
+true only for ids this session issued via drop, picker or paste, plus ids saved chats
+register with `registerIssued(ids)`; `release` and `sweep` forget them. The type the
+conversation and provider code use is `AttachmentBlobs` (`has`, `read`, `release`,
+`describe`, `isIssued`); `createAppServices` returns the store as `attachmentStore`.
+
 ## Audit
 
 One entry per attempt: `tool: 'attach'`, `origin: 'user'`, `args: { source, kind, mime,

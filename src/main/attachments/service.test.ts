@@ -103,6 +103,8 @@ describe('inside a granted folder', () => {
     const file = path.join(box.root, 'notes.md')
     await put(file, 'TOP SECRET CONTENT\n')
     expect(await attach(file)).toEqual({ ok: true, kind: 'reference', text: `@"${file}"` })
+    // A reference stores and issues nothing.
+    expect(await exists(store.dir)).toBe(false)
     const entry = lastAudit()
     expect(entry).toMatchObject({
       tool: 'attach',
@@ -170,6 +172,8 @@ describe('outside the granted folders', () => {
       size: 19,
     })
     expect((await store.read(result.attachment.id))?.toString()).toBe('hello from outside\n')
+    expect(store.isIssued(result.attachment.id)).toBe(true)
+    expect(await store.describe(result.attachment.id)).toEqual(result.attachment)
     expect(lastAudit().args).toMatchObject({ inGrant: false, kind: 'text' })
   })
 

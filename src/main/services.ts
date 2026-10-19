@@ -15,7 +15,11 @@ import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
 import { createAttachmentsService } from './attachments/service'
 import type { ImageScaler } from './attachments/image'
-import { AttachmentStore } from './attachments/store'
+import {
+  AttachmentStore,
+  type AttachmentBlobs,
+  type AttachmentStoreLike,
+} from './attachments/store'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
@@ -186,9 +190,10 @@ export async function createAppServices(deps: AppServiceDeps) {
 
   // Snapshots of attached files: userData/attachments/<sha256>. userData is a protected
   // path, so the agent's tools can never reach the blobs directly.
+  const attachmentStore = new AttachmentStore(join(userData, 'attachments'))
   const attachments = createAttachmentsService({
     guard,
-    store: new AttachmentStore(join(userData, 'attachments')),
+    store: attachmentStore,
     audit,
     scaler: deps.imageScaler ?? { scale: () => Promise.resolve(null) },
     pickFiles: deps.pickFiles ?? (() => Promise.resolve([])),
@@ -313,6 +318,8 @@ export async function createAppServices(deps: AppServiceDeps) {
   return {
     apiKey,
     attachments,
+    /** Blobs, their metadata and issued ids, for the conversation and provider code. */
+    attachmentStore: attachmentStore as AttachmentBlobs & AttachmentStoreLike,
     grants,
     settings,
     chat,

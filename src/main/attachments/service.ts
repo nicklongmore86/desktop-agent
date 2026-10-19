@@ -184,10 +184,9 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
         )
     }
     // Documents are stored as they are; extracting them is a separate step.
-    const id = await store.put(stored)
     return {
       ok: true,
-      ref: { id, name: displayName(name), kind, mime: storedMime, size: stored.length },
+      ref: await store.issue(stored, { name: displayName(name), kind, mime: storedMime }),
     }
   }
 
