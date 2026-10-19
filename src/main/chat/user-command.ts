@@ -1,5 +1,6 @@
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import type { ChatItem } from '../../shared/ipc'
+import type { StoredMessage } from '../storage/conversation-store'
 
 /**
  * A command the user ran from the command bar is saved as a user message: the model
@@ -31,7 +32,9 @@ export function userCommandMessage(record: UserCommandRecord): MessageParam {
 const isString = (value: unknown): value is string => typeof value === 'string'
 
 /** The card for a saved user command, or null if `message` is not one. */
-export function userCommandItem(message: MessageParam): Extract<ChatItem, { kind: 'tool' }> | null {
+export function userCommandItem(
+  message: StoredMessage,
+): Extract<ChatItem, { kind: 'tool' }> | null {
   if (message.role !== 'user' || !Array.isArray(message.content)) return null
   const [block, ...rest] = message.content
   if (!block || rest.length > 0 || block.type !== 'text') return null

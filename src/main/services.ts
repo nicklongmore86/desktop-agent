@@ -19,7 +19,12 @@ import { createFilesService } from './files/service'
 import { createGitService } from './git/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
 import { createKeyStore, type SafeStorage } from './secrets'
-import { openHistory, type ConversationHistory } from './storage/history-store'
+import type { AttachmentStoreLike } from './chat/attachments'
+import {
+  openHistory,
+  referencedAttachmentIds,
+  type ConversationHistory,
+} from './storage/history-store'
 import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
@@ -41,6 +46,8 @@ export interface AppServiceDeps {
   onGitChanged?: (change: GitChanged) => void
   /** Replaces the built-in connections (tests). */
   adapters?: readonly AdapterFactory[]
+  /** Holds attached files. Without it, sending attachments is refused. */
+  attachments?: AttachmentStoreLike
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
@@ -128,17 +135,31 @@ export async function createAppServices(deps: AppServiceDeps) {
   // per conversation. Opened (and migrated from the old single file) on first use.
   // Only a registered id ever becomes part of a path.
   const histories = new Map<ConnectionId, Promise<ConversationHistory>>()
+  const historyRoot = join(userData, 'history')
+  /**
+   * A deleted chat's attachments go back to the store only when no saved chat
+   * of any connection (a fork, say), and not the open one, still references them.
+   */
+  const releaseAttachments = async (ids: string[]): Promise<void> => {
+    const release = deps.attachments?.release
+    if (!release) return
+    const referenced = await referencedAttachmentIds(historyRoot)
+    for (const id of chat.attachmentIds()) referenced.add(id)
+    const free = ids.filter((id) => !referenced.has(id))
+    if (free.length > 0) await release.call(deps.attachments, free)
+  }
   const historyFor = (provider: ConnectionId): Promise<ConversationHistory> => {
     if (!connections.registry.has(provider)) return Promise.reject(new Error('Unknown chat.'))
     let history = histories.get(provider)
     if (!history) {
-      history = openHistory(join(userData, 'history', provider), {
+      history = openHistory(join(historyRoot, provider), {
+        releaseAttachments,
         legacyFile: join(
           userData,
           provider === ANTHROPIC_API ? 'conversation.json' : `conversation-${provider}.json`,
         ),
         onError: (error) => {
-          console.error('could not save the chat history list', error)
+          console.error('could not update the chat history', error)
         },
       })
       histories.set(provider, history)
@@ -171,6 +192,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     promptApproval: deps.promptApproval,
     // Commands typed in the command bar go through this same tool (no other spawn path).
     ...(userShell ? { userShell } : {}),
+    ...(deps.attachments ? { attachments: deps.attachments } : {}),
     onSaveError: (error) => {
       console.error('could not save the conversation', error)
     },

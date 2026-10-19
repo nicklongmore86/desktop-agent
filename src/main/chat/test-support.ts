@@ -1,16 +1,15 @@
 // Helpers for the chat session tests. Not imported by app code.
-import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import { vi } from 'vitest'
-import type { ConversationStore } from '../storage/conversation-store'
+import type { ConversationStore, StoredMessage } from '../storage/conversation-store'
 import type { ConversationHistory } from '../storage/history-store'
 
-export type MemoryStore = ConversationStore & { saved: () => MessageParam[] }
+export type MemoryStore = ConversationStore & { saved: () => StoredMessage[] }
 
-export function memoryStore(initial: MessageParam[] = []): MemoryStore {
+export function memoryStore(initial: StoredMessage[] = []): MemoryStore {
   let saved = structuredClone(initial)
   return {
     load: vi.fn(() => Promise.resolve({ messages: structuredClone(saved), error: null })),
-    save: vi.fn((messages: MessageParam[]) => {
+    save: vi.fn((messages: StoredMessage[]) => {
       saved = structuredClone(messages)
       return Promise.resolve()
     }),
