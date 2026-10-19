@@ -296,8 +296,8 @@ export type ChatEvent =
 
 export type ApprovalKind = 'write' | 'move' | 'delete' | 'shell'
 
-/** Who asked: the agent, or the user typing in the command bar. */
-export type ApprovalOrigin = 'agent' | 'user-terminal'
+/** Who asked: the agent, the user typing in the command bar, or the user acting in the app. */
+export type ApprovalOrigin = 'agent' | 'user-terminal' | 'user'
 
 export interface ApprovalPrompt {
   /** Random per request; the response must quote it. */

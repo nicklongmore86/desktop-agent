@@ -13,6 +13,9 @@ import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
+import { createAttachmentsService } from './attachments/service'
+import type { ImageScaler } from './attachments/image'
+import { AttachmentStore } from './attachments/store'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
@@ -39,6 +42,10 @@ export interface AppServiceDeps {
   revealPath?: (path: string) => void
   onFilesChanged?: (change: FilesChanged) => void
   onGitChanged?: (change: GitChanged) => void
+  /** Shows the native multi-select file picker for attachments; [] when cancelled. */
+  pickFiles?: () => Promise<string[]>
+  /** Scales attached images down (Electron's nativeImage at wiring time). */
+  imageScaler?: ImageScaler
   /** Replaces the built-in connections (tests). */
   adapters?: readonly AdapterFactory[]
 }
@@ -177,6 +184,18 @@ export async function createAppServices(deps: AppServiceDeps) {
   })
   await chat.init()
 
+  // Snapshots of attached files: userData/attachments/<sha256>. userData is a protected
+  // path, so the agent's tools can never reach the blobs directly.
+  const attachments = createAttachmentsService({
+    guard,
+    store: new AttachmentStore(join(userData, 'attachments')),
+    audit,
+    scaler: deps.imageScaler ?? { scale: () => Promise.resolve(null) },
+    pickFiles: deps.pickFiles ?? (() => Promise.resolve([])),
+    runUserAction: (tool, input) => chat.runUserAction(tool, input),
+    onAuditFailure: reportAudit,
+  })
+
   const metadataResult = async <T>(operation: () => Promise<T>): Promise<ProviderResult<T>> => {
     const selected = settings.connection
     try {
@@ -293,6 +312,7 @@ export async function createAppServices(deps: AppServiceDeps) {
   })
   return {
     apiKey,
+    attachments,
     grants,
     settings,
     chat,

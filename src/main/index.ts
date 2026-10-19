@@ -12,6 +12,7 @@ import {
 import { IpcChannels, type PushChannel, type PushPayloads } from '../shared/ipc'
 import { filesPushChannels } from '../shared/ipc-files'
 import { gitPushChannels } from '../shared/ipc-git'
+import { nativeImageScaler } from './attachments/native-image'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { registerIpcHandlers } from './ipc-handlers'
 import { isTrustedIpcSender } from './security'
@@ -90,6 +91,19 @@ void app.whenReady().then(async () => {
     onProviderLoginState: (state) => {
       push(IpcChannels.providerLoginStateChanged, state)
     },
+    imageScaler: nativeImageScaler,
+    async pickFiles() {
+      const options: Electron.OpenDialogOptions = {
+        title: 'Attach files',
+        buttonLabel: 'Attach',
+        properties: ['openFile', 'multiSelections'],
+      }
+      const result =
+        mainWindow && !mainWindow.isDestroyed()
+          ? await dialog.showOpenDialog(mainWindow, options)
+          : await dialog.showOpenDialog(options)
+      return result.canceled ? [] : result.filePaths
+    },
   })
   const { chat } = services
 
@@ -118,6 +132,7 @@ void app.whenReady().then(async () => {
       ),
     }),
     apiKey: services.apiKey,
+    attachments: services.attachments,
     grants: services.grants,
     async pickFolder() {
       const options: Electron.OpenDialogOptions = {

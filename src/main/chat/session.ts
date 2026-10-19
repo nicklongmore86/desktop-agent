@@ -416,6 +416,45 @@ export class ChatSession {
   }
 
   /**
+   * Runs a tool call the user asked for in the app (an attachment's "Copy into folder…"),
+   * with this session's approval prompts, audited as `origin: 'user'`. Like a typed
+   * command it takes the send slot, so it is refused while a reply, command or switch is
+   * in flight, and stop() cancels it (denying its approval). Nothing is added to the
+   * conversation. Resolves with the tool's result once it has finished.
+   */
+  async runUserAction(tool: AgentTool, input: unknown): Promise<ToolResult> {
+    if (this.resets > 0 || this.active)
+      return {
+        content: 'Wait for the current reply or command to finish, or stop it, then try again.',
+        isError: true,
+      }
+    const runId = this.newId()
+    const controller = new AbortController()
+    let release: () => void = () => {}
+    this.active = {
+      id: runId,
+      origin: 'user',
+      controller,
+      done: new Promise((resolve) => {
+        release = resolve
+      }),
+    }
+    try {
+      return await tool.execute(input, {
+        signal: controller.signal,
+        origin: 'user',
+        requestApproval: (request) => this.requestApproval(runId, controller.signal, null, request),
+      })
+    } catch {
+      return { content: 'That could not be done.', isError: true }
+    } finally {
+      this.denyPending(runId)
+      this.active = null
+      release()
+    }
+  }
+
+  /**
    * Answers a pending approval. Only an exact pending id resolves anything,
    * and only `approved === true` approves; everything else is ignored.
    */

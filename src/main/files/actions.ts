@@ -56,7 +56,7 @@ export async function referenceFor(
     }
   // The reference is one quoted line of the message: a name must not end the quote,
   // start a new line or reorder the text around it (prompt injection through a name).
-  if (entry.path.includes('"') || CONTROL_CHARS.test(entry.path) || BIDI_CONTROLS.test(entry.path))
+  if (hasUnsafeReferenceChars(entry.path))
     return {
       ok: false,
       reason: 'This path contains a quote mark or control characters and cannot be referenced.',
@@ -68,7 +68,12 @@ export const SECRET_REFERENCE = 'Secret files (like .env) are not added to the c
 export const SECRET_REVEAL = 'Secret files cannot be opened or revealed.'
 
 /** Bidirectional formatting characters, which can make text read differently from what it is. */
-const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+export const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+
+/** A quote mark, control or bidi character: text that cannot be shown or quoted as it is. */
+export function hasUnsafeReferenceChars(text: string): boolean {
+  return text.includes('"') || CONTROL_CHARS.test(text) || BIDI_CONTROLS.test(text)
+}
 
 /**
  * Runs `act` on the entry's real path once it has been checked.
