@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_LAYOUT, LEFT_MIN, RIGHT_MIN, type LayoutPrefs } from '../../shared/ipc-layout'
-import { CHAT_MIN, clamp, computeGeometry, viewportOf } from './layout'
+import { CHAT_MIN, LEFT_RAIL, clamp, computeGeometry, viewportOf } from './layout'
 
 const prefs = (changes: Partial<LayoutPrefs> = {}): LayoutPrefs => ({
   ...DEFAULT_LAYOUT,
@@ -10,10 +10,10 @@ const prefs = (changes: Partial<LayoutPrefs> = {}): LayoutPrefs => ({
 describe('viewportOf', () => {
   it.each([
     [1920, 'wide'],
-    [1100, 'wide'],
-    [1099, 'medium'],
-    [760, 'medium'],
-    [759, 'compact'],
+    [860, 'wide'],
+    [859, 'medium'],
+    [620, 'medium'],
+    [619, 'compact'],
     [541, 'compact'],
     [540, 'narrow'],
     [400, 'narrow'],
@@ -22,6 +22,12 @@ describe('viewportOf', () => {
   })
 })
 
+/** The chat column's width: what the docked panes (and the collapsed left pane's rail) leave. */
+const chatWidth = (width: number, g: ReturnType<typeof computeGeometry>): number =>
+  width -
+  (g.left.docked ? g.left.width : g.left.dockable ? LEFT_RAIL : 0) -
+  (g.right.docked ? g.right.width : 0)
+
 describe('computeGeometry', () => {
   it('docks both panes at 1280px with the saved widths', () => {
     const { left, right } = computeGeometry(1280, prefs())
@@ -29,12 +35,23 @@ describe('computeGeometry', () => {
     expect(right).toMatchObject({ dockable: true, docked: true, width: 320 })
   })
 
-  it('docks only the left pane from 760px, and only drawers below that', () => {
-    expect(computeGeometry(900, prefs())).toMatchObject({
+  it('docks both panes from 860px (chat 400px beside both at their minimums)', () => {
+    expect(computeGeometry(860, prefs())).toMatchObject({
+      left: { docked: true, width: LEFT_MIN },
+      right: { dockable: true, docked: true, width: RIGHT_MIN },
+    })
+    expect(computeGeometry(1024, prefs())).toMatchObject({
+      left: { docked: true, width: 272 },
+      right: { docked: true, width: 320 },
+    })
+  })
+
+  it('docks only the left pane from 620px, and only drawers below that', () => {
+    expect(computeGeometry(859, prefs())).toMatchObject({
       left: { dockable: true, docked: true },
       right: { dockable: false, docked: false },
     })
-    for (const width of [759, 600, 400])
+    for (const width of [619, 540, 400])
       expect(computeGeometry(width, prefs())).toMatchObject({
         left: { dockable: false, docked: false },
         right: { dockable: false, docked: false },
@@ -52,44 +69,58 @@ describe('computeGeometry', () => {
     const small = computeGeometry(1280, prefs({ leftWidth: 100, rightWidth: 100 }))
     expect([small.left.width, small.right.width]).toEqual([LEFT_MIN, RIGHT_MIN])
     const large = computeGeometry(1280, prefs({ leftWidth: 1200, rightWidth: 1200 }))
-    expect(large.left.width).toBe(Math.floor(1280 * 0.4))
     expect(large.left.max).toBe(512)
-    // The right pane gets what the left leaves, never taking the chat under 480px.
-    expect(large.right.width).toBe(1280 - 512 - CHAT_MIN)
-    expect(large.right.width).toBe(large.right.max)
+    expect(large.right.max).toBe(Math.floor(1280 * 0.45))
+    // Together they still leave the chat its minimum.
+    expect(chatWidth(1280, large)).toBe(CHAT_MIN)
+    expect(large.left.width).toBeGreaterThan(LEFT_MIN)
+    expect(large.right.width).toBeGreaterThan(RIGHT_MIN)
   })
 
-  it('never lets the chat column drop under 480px while docked', () => {
-    for (let width = 760; width <= 2200; width += 7)
-      for (const leftWidth of [220, 272, 500, 1200])
-        for (const rightWidth of [240, 320, 600, 1200]) {
-          const { left, right } = computeGeometry(width, prefs({ leftWidth, rightWidth }))
-          const chat = width - (left.docked ? left.width : 0) - (right.docked ? right.width : 0)
-          expect(
-            chat,
-            `${String(width)} ${String(leftWidth)} ${String(rightWidth)}`,
-          ).toBeGreaterThanOrEqual(CHAT_MIN)
-        }
+  it('never lets the chat column drop under CHAT_MIN while docked', () => {
+    for (let width = 560; width <= 2200; width += 7)
+      for (const leftOpen of [true, false])
+        for (const leftWidth of [220, 272, 500, 1200])
+          for (const rightWidth of [240, 320, 600, 1200]) {
+            const g = computeGeometry(width, prefs({ leftWidth, rightWidth, leftOpen }))
+            expect(
+              chatWidth(width, g),
+              `${String(width)} ${String(leftWidth)} ${String(rightWidth)} ${String(leftOpen)}`,
+            ).toBeGreaterThanOrEqual(CHAT_MIN)
+            for (const pane of [g.left, g.right]) {
+              expect(pane.width).toBeGreaterThanOrEqual(pane.min)
+              expect(pane.width).toBeLessThanOrEqual(pane.max)
+            }
+          }
   })
 
-  it('shrinks the right pane first, then makes it a drawer, keeping the saved state', () => {
-    // 1100px: left 272 + chat 480 leaves 348 for the right pane.
-    const wide = computeGeometry(1100, prefs({ rightWidth: 500 }))
-    expect(wide.right).toMatchObject({ dockable: true, docked: true, width: 348 })
-    // A wider left pane leaves less than the 240px minimum: the right one gives way.
-    const crowded = computeGeometry(1100, prefs({ leftWidth: 440, rightWidth: 320 }))
-    expect(crowded.right).toMatchObject({ dockable: false, docked: false })
-    // Collapsing the left pane brings it back (rightOpen was never touched).
-    expect(computeGeometry(1100, prefs({ leftWidth: 440, leftOpen: false })).right).toMatchObject({
+  it('shrinks both panes together (not just one) as the window narrows, then gives way', () => {
+    // 1000px: 272 + 320 + 400 = 992 fits; the saved widths are kept.
+    expect(computeGeometry(1000, prefs())).toMatchObject({
+      left: { width: 272 },
+      right: { docked: true, width: 320 },
+    })
+    // 900px: 40px over, taken from both in proportion to their slack.
+    const tight = computeGeometry(900, prefs())
+    expect(tight.left.width).toBeLessThan(272)
+    expect(tight.right.width).toBeLessThan(320)
+    expect(chatWidth(900, tight)).toBe(CHAT_MIN)
+    // 859px: not even both minimums fit, the right pane is a drawer (rightOpen stays set).
+    expect(computeGeometry(859, prefs()).right).toMatchObject({ dockable: false, docked: false })
+    // Collapsing the left pane brings the right one back, beside the rail.
+    expect(computeGeometry(700, prefs({ leftOpen: false })).right).toMatchObject({
       dockable: true,
       docked: true,
     })
+    expect(
+      computeGeometry(LEFT_RAIL + CHAT_MIN + RIGHT_MIN - 1, prefs({ leftOpen: false })).right,
+    ).toMatchObject({ dockable: false })
   })
 
   it('gives the separators their limits', () => {
     const { left, right } = computeGeometry(1280, prefs())
     expect([left.min, left.max]).toEqual([LEFT_MIN, 512])
-    expect([right.min, right.max]).toEqual([RIGHT_MIN, 1280 - 272 - CHAT_MIN])
+    expect([right.min, right.max]).toEqual([RIGHT_MIN, Math.floor(1280 * 0.45)])
   })
 })
 

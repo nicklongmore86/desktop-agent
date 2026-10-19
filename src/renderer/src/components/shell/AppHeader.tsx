@@ -1,4 +1,4 @@
-import { GearIcon, PanelIcon } from './PanelIcon'
+import { PanelIcon } from './PanelIcon'
 import { useShell, type PaneControl } from './shell-context'
 
 function PanelToggle({
@@ -33,19 +33,17 @@ function PanelToggle({
 /**
  * The chat column's header: the sidebar toggles at either end, the title, and the
  * actions. `actions` is the extension point for other features' header controls
- * (for example the Chat | Command switch); they sit before Preferences.
+ * (for example the Chat | Command switch). Settings is not here: it is the gear in the sidebar.
  */
 export function AppHeader({
   subtitle,
   switching,
   onNewChat,
-  onOpenSettings,
   actions,
 }: {
   subtitle: string
   switching: boolean
   onNewChat: () => void
-  onOpenSettings: () => void
   actions?: React.ReactNode
 }): React.JSX.Element {
   const shell = useShell()
@@ -71,17 +69,6 @@ export function AppHeader({
           onClick={onNewChat}
         >
           ＋
-        </button>
-        <button
-          type="button"
-          className="header-settings"
-          aria-label="Preferences"
-          onClick={onOpenSettings}
-        >
-          <GearIcon />
-          <span className="header-settings-label" aria-hidden="true">
-            Preferences
-          </span>
         </button>
         <PanelToggle
           side="right"

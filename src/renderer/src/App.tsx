@@ -35,7 +35,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { AppHeader } from './components/shell/AppHeader'
 import { AppShell, type ShellHandle } from './components/shell/AppShell'
 import { ChatsPane } from './components/shell/ChatsPane'
-import { LeftSidebar } from './components/shell/LeftSidebar'
+import { LeftSidebar, SettingsButton } from './components/shell/LeftSidebar'
 import { RightPanel } from './components/shell/RightPanel'
 import { FilesTab } from './components/shell/tabs/FilesTab'
 import { GitTab } from './components/shell/tabs/GitTab'
@@ -293,6 +293,13 @@ function AppWindow(): React.JSX.Element {
         inert={settingsSection !== null || wizard !== null || showPlanNotice}
         suspended={Boolean(approval)}
         blocked={listDialog}
+        collapsedFooter={
+          <SettingsButton
+            onOpenSettings={() => {
+              openSettings()
+            }}
+          />
+        }
         left={(variant) => (
           <LeftSidebar
             variant={variant}
@@ -349,9 +356,6 @@ function AppWindow(): React.JSX.Element {
           }
           switching={chat.state.switching}
           onNewChat={startNewChat}
-          onOpenSettings={() => {
-            openSettings()
-          }}
           actions={
             <ViewModeToggle view={view} onChange={changeView} disabled={chat.state.switching} />
           }

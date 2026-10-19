@@ -7,6 +7,7 @@ import {
 } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { clickSettings } from './open-settings'
 import type {
   ApprovalPrompt,
   ChatEvent,
@@ -130,7 +131,7 @@ for (const width of [1280, 400]) {
         expect(await noSidewaysScroll(page)).toBe(true)
 
         // Settings, API mode.
-        await page.getByRole('button', { name: 'Preferences' }).click()
+        await clickSettings(page)
         await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
         await shot('settings-api')
 

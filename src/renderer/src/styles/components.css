@@ -87,7 +87,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-3);
   min-height: 0;
   padding: var(--space-6) var(--space-4) var(--space-4);
   overflow-y: auto;
@@ -110,9 +110,46 @@
   font-weight: 700;
 }
 
-.sidebar-new {
-  padding: var(--space-3);
+/* New chat (top) and Archived (bottom): quiet full-width rows with an icon, label and hint. */
+.sidebar-new,
+.sidebar-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2);
+  border-color: transparent;
+  background: transparent;
   text-align: left;
+}
+
+.sidebar-new {
+  font-weight: 500;
+}
+
+.sidebar-new:hover:not(:disabled),
+.sidebar-filter:hover:not(:disabled) {
+  background: var(--color-surface-2);
+}
+
+.sidebar-row-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.sidebar-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-row-hint {
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--font-size-xs);
 }
 
 .sidebar-section {
@@ -189,11 +226,14 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-top: auto;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
 }
 
 .sidebar-footer p {
+  order: -1;
   width: 100%;
   margin: 0;
   color: var(--color-text-muted);
@@ -201,6 +241,38 @@
 }
 
 .sidebar-footer .app-version {
+  margin-left: auto;
+}
+
+/* The Settings gear: borderless until hovered, the same in the footer and the collapsed rail. */
+.settings-button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.settings-button:hover:not(:disabled) {
+  color: var(--color-text);
+}
+
+/* Collapsed, the rail has the gear: the pane's own copy must not be a second Settings button. */
+.shell-pane[data-open='false'] .settings-button {
+  display: none;
+}
+
+/* Where a collapsed left pane was: a slim rail that keeps the gear in reach. */
+.shell-rail {
+  display: flex;
+  flex: 0 0 var(--rail-width);
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--space-3) 0;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+}
+
+.app-version {
   margin-left: auto;
 }
 
@@ -248,12 +320,6 @@
 .icon-button[aria-expanded='true'] {
   background: var(--color-accent-bg);
   color: var(--color-accent-text);
-}
-
-.header-settings {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
 }
 
 .app-header h1 {
@@ -485,27 +551,14 @@
   cursor: default;
 }
 
-/* Chat list sections: Pinned, Projects (folders), Chats; New chat and the Archived filter. */
-
-.sidebar-actions {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.sidebar-actions .sidebar-new {
-  flex: 1;
-  min-width: 0;
-}
+/* Chat list sections: Pinned, Projects (folders), Chats; the New chat row and the Archived toggle. */
 
 .sidebar-filter {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
+  color: var(--color-text-muted);
   font-size: var(--font-size-sm);
 }
 
 .sidebar-filter[aria-pressed='true'] {
-  border-color: var(--color-accent);
   background: var(--color-accent-bg);
   color: var(--color-accent-text);
 }
@@ -2232,10 +2285,6 @@
   /* Drawers fill the window, leaving a strip of the chat visible to tap. */
   .shell-drawer {
     width: calc(100% - var(--drawer-gutter));
-  }
-
-  .header-settings-label {
-    display: none;
   }
 
   .message-user {
