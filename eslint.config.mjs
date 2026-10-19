@@ -35,6 +35,11 @@ export default defineConfig([
     languageOptions: { globals: globals.node },
   },
   {
+    // The document worker page runs in a sandboxed browser context, not in Node.
+    files: ['src/main/documents/worker/**/*.ts'],
+    languageOptions: { globals: globals.browser },
+  },
+  {
     files: ['src/renderer/**/*.{ts,tsx}'],
     extends: [reactHooks.configs.flat['recommended-latest']],
     languageOptions: { globals: globals.browser },

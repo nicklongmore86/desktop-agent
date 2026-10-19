@@ -11,5 +11,7 @@
     "src/shared/**/*",
     "electron.vite.config.ts",
     "vitest.config.ts"
-  ]
+  ],
+  // The document worker page runs in a browser context: see tsconfig.worker.json.
+  "exclude": ["src/main/documents/worker/**/*"]
 }

@@ -15,7 +15,7 @@
     "start": "electron-vite preview",
     "build": "electron-vite build",
     "build:helpers": "node scripts/build-job-helper.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.e2e.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.e2e.json && tsc --noEmit -p tsconfig.worker.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -37,6 +37,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@embedpdf/pdfium": "2.15.1",
     "@eslint/js": "^10.0.1",
     "@openai/codex": "0.162.1",
     "@playwright/test": "^1.64.0",
