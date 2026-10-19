@@ -1,12 +1,22 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import type { FileEntry } from '../../shared/ipc-files'
 import { ApiContext } from './api'
 import { App } from './App'
 import { FILE_DRAG_TYPE } from './components/files/drag'
+import { EXTERNAL_DROP_MESSAGE } from './components/files/external-drop'
 import { fileKind } from './components/files/file-kind'
 import { WINDOW_THRESHOLD } from './components/files/FileTree'
+import { ToastProvider } from './components/Toast'
 import { FAKE_FILES, fakeApi, fakeRootId, type FakeApiOptions } from './test/fake-api'
 import { setViewport } from './test/viewport'
 
@@ -19,7 +29,9 @@ async function renderApp(options: FakeApiOptions = {}) {
   const user = userEvent.setup()
   render(
     <ApiContext value={fake.api}>
-      <App />
+      <ToastProvider>
+        <App />
+      </ToastProvider>
     </ApiContext>,
   )
   await screen.findByRole('heading', { name: 'Workspace chat' })
@@ -307,6 +319,63 @@ describe('Files tree: drag to chat', () => {
     fireEvent.dragStart(item(/^README\.md/), { dataTransfer: transfer })
     expect(fireEvent.dragOver(item(/^src/), { dataTransfer: transfer })).toBe(true)
     expect(fireEvent.drop(item(/^src/), { dataTransfer: transfer })).toBe(true)
+  })
+})
+
+describe('Files from outside the app', () => {
+  const external = () => {
+    const transfer = dataTransfer()
+    transfer.setData('Files', '')
+    return transfer
+  }
+  const chat = () => composer().closest<HTMLElement>('.chat') as HTMLElement
+  const pane = () => tree().closest<HTMLElement>('.files-tab') as HTMLElement
+
+  it.each([
+    ['the message box', composer],
+    ['the chat column', chat],
+    ['the file tree pane', pane],
+  ])('hints over %s, refuses with a toast on drop, and inserts nothing', async (_name, zone) => {
+    const { api } = await renderApp()
+    const transfer = external()
+    expect(fireEvent.dragEnter(zone(), { dataTransfer: transfer })).toBe(false)
+    expect(fireEvent.dragOver(zone(), { dataTransfer: transfer })).toBe(false) // accepted so `drop` fires
+    expect(transfer.dropEffect).toBe('copy')
+    expect(screen.getAllByTestId('external-drop-hint')).toHaveLength(1)
+    expect(fireEvent.drop(zone(), { dataTransfer: transfer })).toBe(false) // no navigation
+    expect(screen.queryByTestId('external-drop-hint')).toBeNull()
+    expect((await screen.findByRole('status')).textContent).toBe(EXTERNAL_DROP_MESSAGE)
+    expect(EXTERNAL_DROP_MESSAGE).toContain('Settings → Folders')
+    expect(composer().value).toBe('')
+    expect(api.files.reference).not.toHaveBeenCalled()
+  })
+
+  it('clears the hint when the drag leaves the zone', async () => {
+    await renderApp()
+    fireEvent.dragEnter(chat(), { dataTransfer: external() })
+    const leave = (from: HTMLElement, to: Element) => {
+      const event = createEvent.dragLeave(from, { dataTransfer: external() })
+      Object.defineProperty(event, 'relatedTarget', { value: to })
+      fireEvent(from, event)
+    }
+    leave(composer(), chat()) // moved between children: still over the zone
+    expect(screen.getByTestId('external-drop-hint')).toBeTruthy()
+    leave(chat(), document.body)
+    expect(screen.queryByTestId('external-drop-hint')).toBeNull()
+  })
+
+  it('leaves the tree drag and other drags alone', async () => {
+    await renderApp()
+    const own = dataTransfer()
+    fireEvent.dragStart(item(/^README\.md/), { dataTransfer: own })
+    // A tree token never shows the hint, even with a 'Files' type alongside it.
+    own.setData('Files', '')
+    fireEvent.dragEnter(chat(), { dataTransfer: own })
+    expect(screen.queryByTestId('external-drop-hint')).toBeNull()
+    const text = dataTransfer()
+    text.setData('text/plain', 'hello')
+    expect(fireEvent.dragOver(pane(), { dataTransfer: text })).toBe(true)
+    expect(fireEvent.drop(pane(), { dataTransfer: text })).toBe(true)
   })
 })
 

@@ -176,20 +176,14 @@ export function useComposerReferences({
       if (isFileDrag(event.dataTransfer)) {
         event.preventDefault()
         event.dataTransfer.dropEffect = 'link'
-      } else if (event.dataTransfer.types.includes('Files')) {
-        // Files from outside the app are never attached or opened.
-        event.preventDefault()
-        event.dataTransfer.dropEffect = 'none'
       }
+      // Files from outside the app bubble to the chat column, which refuses them with a hint.
     },
     onDrop: (event: React.DragEvent<HTMLTextAreaElement>) => {
       const location = takeFileDrop(event.dataTransfer)
       if (location) {
         event.preventDefault()
         void insertReference(location)
-      } else if (event.dataTransfer.types.includes('Files')) {
-        event.preventDefault()
-        notify('Drag files from the Files panel. Add their folder first.')
       }
     },
   }

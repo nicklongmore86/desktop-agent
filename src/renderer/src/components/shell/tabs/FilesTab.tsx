@@ -1,5 +1,6 @@
 import type { GrantsState } from '../../../../../shared/ipc'
 import type { OpenSettings } from '../../../open-settings'
+import { useExternalFileDrop } from '../../files/external-drop'
 import { FileTree } from '../../files/FileTree'
 import { useFileTree } from '../../files/use-file-tree'
 import { useGrantActions } from '../../settings/use-grant-actions'
@@ -20,9 +21,15 @@ export function FilesTab({
 }): React.JSX.Element {
   const { message, busy, add, remove } = useGrantActions(onGrants)
   const tree = useFileTree(grants)
+  const externalDrop = useExternalFileDrop()
   const granted = (grants?.roots.length ?? 0) > 0
   return (
-    <section className="files-tab" aria-labelledby="folder-access-title">
+    <section
+      className="files-tab"
+      aria-labelledby="folder-access-title"
+      {...externalDrop.zoneProps}
+    >
+      {externalDrop.hint}
       <div className="files-header">
         <h2 id="folder-access-title" className="sidebar-label">
           Folder access
