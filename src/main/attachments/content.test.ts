@@ -232,8 +232,65 @@ describe('classifyAttachment: documents', () => {
         ['word/document.xml', '<x/>'],
       ]),
     ],
+    [
+      'an entry on another disk (end record disk fields zeroed)',
+      zipFile([
+        ['[Content_Types].xml', '<T/>'],
+        ['word/document.xml', '<w/>', { disk: 1 }],
+      ]),
+    ],
+    [
+      'an encrypted entry (traditional)',
+      zipFile([
+        ['[Content_Types].xml', '<T/>'],
+        ['word/document.xml', '<w/>', { flags: 0x0001 }],
+      ]),
+    ],
+    [
+      'an encrypted entry (strong encryption)',
+      zipFile([
+        ['[Content_Types].xml', '<T/>', { flags: 0x0041 }],
+        ['word/document.xml', '<w/>'],
+      ]),
+    ],
+    [
+      'an encrypted central directory',
+      zipFile([
+        ['[Content_Types].xml', '<T/>', { flags: 0x2000 }],
+        ['word/document.xml', '<w/>'],
+      ]),
+    ],
+    [
+      'an AES-encrypted entry',
+      zipFile([
+        ['[Content_Types].xml', '<T/>'],
+        ['word/document.xml', '<w/>', { method: 99 }],
+      ]),
+    ],
+    [
+      'an encrypted ODF mimetype',
+      zipFile([['mimetype', 'application/vnd.oasis.opendocument.text', { flags: 0x0001 }]]),
+    ],
     ['an MP4 video', Buffer.from('\0\0\0\x18ftypisom\0\0\x02\0isomiso2', 'latin1')],
   ])('refuses %s', (_name, bytes) => {
+    expect(classifyBytes(bytes)).toEqual({ ok: false, code: 'binary' })
+  })
+
+  it('accepts entries using a data descriptor or UTF-8 names (flags that are not encryption)', () => {
+    const bytes = zipFile([
+      ['[Content_Types].xml', '<T/>', { flags: 0x0008 }],
+      ['word/document.xml', '<w/>', { flags: 0x0800 }],
+    ])
+    expect(classifyBytes(bytes)).toMatchObject({ ok: true, kind: 'document' })
+  })
+
+  it('refuses a local header marked encrypted even when the central directory is not', () => {
+    const bytes = zipFile([
+      ['[Content_Types].xml', '<T/>'],
+      ['word/document.xml', '<w/>'],
+    ])
+    // The first local header's flags (offset 6): set the encryption bit there only.
+    bytes.writeUInt16LE(0x0001, 6)
     expect(classifyBytes(bytes)).toEqual({ ok: false, code: 'binary' })
   })
 

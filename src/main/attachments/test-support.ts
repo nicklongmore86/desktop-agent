@@ -75,21 +75,36 @@ export interface ZipOptions {
   eocd?: Partial<{ count: number; cdSize: number; cdOffset: number; disk: number }>
 }
 
+/** Per-entry fields of zipFile, written to both the local and the central header. */
+export interface ZipEntryOptions {
+  /** Central directory "disk number start". */
+  disk?: number
+  /** General-purpose bit flags (bit 0: encrypted). */
+  flags?: number
+  /** Compression method (99: AES). */
+  method?: number
+}
+
 /** A real (stored) zip: local entries, the central directory and the end record. */
 export function zipFile(
-  entries: readonly (readonly [string, string | Buffer])[],
+  entries: readonly (readonly [string, string | Buffer, ZipEntryOptions?])[],
   options: ZipOptions = {},
 ): Buffer {
   const locals: Buffer[] = []
   const centrals: Buffer[] = []
   let offset = 0
-  for (const [name, data] of entries) {
+  for (const [name, data, entry = {}] of entries) {
     const local = zipEntries([[name, data]])
+    local.writeUInt16LE(entry.flags ?? 0, 6)
+    local.writeUInt16LE(entry.method ?? 0, 8)
     const body = Buffer.from(data)
     const central = Buffer.alloc(46)
     central.writeUInt32LE(0x02014b50, 0)
     central.writeUInt16LE(20, 4)
     central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(entry.flags ?? 0, 8)
+    central.writeUInt16LE(entry.method ?? 0, 10)
+    central.writeUInt16LE(entry.disk ?? 0, 34)
     central.writeUInt32LE(body.length, 20)
     central.writeUInt32LE(body.length, 24)
     central.writeUInt16LE(Buffer.byteLength(name, 'latin1'), 28)

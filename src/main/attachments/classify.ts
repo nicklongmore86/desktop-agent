@@ -142,6 +142,14 @@ const EOCD_SIZE = 22
 const ZIP64_LOCATOR = 0x07064b50
 const CENTRAL_ENTRY = 0x02014b50
 const LOCAL_ENTRY = 0x04034b50
+/**
+ * General-purpose flags of an encrypted entry: traditional encryption (bit 0), strong
+ * encryption (bit 6) and an encrypted central directory with masked local headers (bit 13).
+ */
+const ENCRYPTED_FLAGS = 0x0001 | 0x0040 | 0x2000
+/** Compression method of WinZip AES encryption. */
+const AES_METHOD = 99
+
 /** The end record plus the longest comment it may have: where EOCD must be. */
 const EOCD_SEARCH = EOCD_SIZE + 0xffff
 
@@ -169,7 +177,8 @@ function slice(sample: FileSample, start: number, end: number): Buffer | null {
 /**
  * Reads a zip's central directory from the end of the file: the end record (the
  * comment length must end it exactly at the end of the file), then each entry with
- * bounds checks. Multi-disk and ZIP64 archives, duplicate names, more than
+ * bounds checks. Multi-disk (in the end record or any entry), ZIP64 and encrypted
+ * archives, duplicate names, more than
  * MAX_ZIP_ENTRIES entries, and anything inconsistent are refused.
  */
 function zipDirectory(sample: FileSample): ZipEntry[] | Classification {
@@ -214,12 +223,17 @@ function zipDirectory(sample: FileSample): ZipEntry[] | Classification {
     const nameLength = cd.readUInt16LE(at + 28)
     const next = at + 46 + nameLength + cd.readUInt16LE(at + 30) + cd.readUInt16LE(at + 32)
     if (next > cd.length) return BINARY
+    // Every entry on disk 0 (the end record's disk fields alone can be zeroed), and none
+    // encrypted: an encrypted package cannot be read, so it is not a document here.
+    if (cd.readUInt16LE(at + 34) !== 0) return BINARY
+    if ((cd.readUInt16LE(at + 8) & ENCRYPTED_FLAGS) !== 0) return BINARY
     const entry: ZipEntry = {
       name: cd.toString('latin1', at + 46, at + 46 + nameLength),
       method: cd.readUInt16LE(at + 10),
       compressedSize: cd.readUInt32LE(at + 20),
       localOffset: cd.readUInt32LE(at + 42),
     }
+    if (entry.method === AES_METHOD) return BINARY
     if (names.has(entry.name) || entry.localOffset + 30 > cdOffset) return BINARY
     names.add(entry.name)
     entries.push(entry)
@@ -236,6 +250,8 @@ function localHeaderMatches(sample: FileSample, entry: ZipEntry): boolean {
   if (!header) return true // Not in the bytes read; the directory checks still hold.
   return (
     header.readUInt32LE(0) === LOCAL_ENTRY &&
+    (header.readUInt16LE(6) & ENCRYPTED_FLAGS) === 0 &&
+    header.readUInt16LE(8) !== AES_METHOD &&
     header.readUInt16LE(26) === name.length &&
     header.subarray(30).equals(name)
   )
