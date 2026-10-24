@@ -1,0 +1,58 @@
+name: Stress UI flakes (temporary)
+
+# Temporary: repeats the formerly flaky UI tests on Ubuntu and Windows. Not for main.
+on:
+  push:
+    branches: [stress/ui-test-flakes]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.18.1
+
+jobs:
+  stress:
+    name: Stress (${{ matrix.os }}, shard ${{ matrix.shard }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 10 runs per shard x 3 shards = 30 runs of each file per OS. Runs every repeat and
+      # fails at the end if any failed.
+      - name: Unit tests x10
+        shell: bash
+        run: |
+          failed=0
+          for i in $(seq 10); do
+            echo "::group::run $i"
+            if ! pnpm exec vitest run src/renderer/src/components/connections/ConnectionWizard.test.tsx src/renderer/src/ChatPolish.test.tsx; then
+              failed=$((failed+1)); echo "::error::unit run $i failed"
+            fi
+            echo "::endgroup::"
+          done
+          echo "unit failures: $failed/10"
+          test "$failed" = 0
+      - run: pnpm build
+        if: always()
+      - name: Raise the display resolution
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - name: E2E chat-polish x10 (Linux)
+        if: always() && runner.os == 'Linux'
+        run: xvfb-run -a pnpm exec playwright test e2e/chat-polish.spec.ts e2e/chat-workspace.spec.ts --repeat-each=10
+      - name: E2E chat-polish x10 (Windows)
+        if: always() && runner.os == 'Windows'
+        run: pnpm exec playwright test e2e/chat-polish.spec.ts e2e/chat-workspace.spec.ts --repeat-each=10
