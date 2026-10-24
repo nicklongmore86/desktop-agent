@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { ATTACHMENT_LIMITS, type AttachmentRef } from '../../shared/attachments'
 import { ATTACHMENT_UNAVAILABLE, type ChatEvent } from '../../shared/ipc'
 import { pngShell } from '../documents/fixtures.test-util'
-import { DocumentError, type DocumentReader, type DocumentView } from '../documents/types'
+import { IMAGE_BUDGET } from '../agent/images'
+import {
+  DocumentError,
+  type DocumentReader,
+  type DocumentView,
+  type ExtractOptions,
+} from '../documents/types'
 import type { StoredMessage } from '../storage/conversation-store'
 import {
   AttachmentPins,
@@ -11,7 +17,9 @@ import {
   cachedPdfReading,
   checkAttachments,
   inlineText,
+  PDF_PAGE_IMAGES,
   toModelConversation,
+  viewBytes,
   type AttachmentStoreLike,
 } from './attachments'
 import { ChatSession, type AgentRunner } from './session'
@@ -218,7 +226,9 @@ describe('PDF attachments', () => {
     ...over,
   })
   const reader = (answer: () => Promise<DocumentView>) => {
-    const documents = { extract: vi.fn(answer) } satisfies DocumentReader
+    const documents = {
+      extract: vi.fn((_bytes: Uint8Array, _options?: ExtractOptions) => answer()),
+    } satisfies DocumentReader
     return { documents, readPdf: cachedPdfReading(documents) }
   }
   const blocksOf = (sent: MessageParam[]) => sent[0]?.content as { type: string; text?: string }[]
@@ -255,11 +265,12 @@ describe('PDF attachments', () => {
     })
     expect(documents.extract).toHaveBeenCalledWith(new TextEncoder().encode('%PDF-1.7'), {
       mime: 'application/pdf',
+      budget: { maxImages: PDF_PAGE_IMAGES },
     })
   })
 
-  it('notes drawn pages in place of their images when the model cannot see images', async () => {
-    const { readPdf } = reader(() => Promise.resolve(view()))
+  it('renders no page, and notes drawn pages, when the model cannot see images', async () => {
+    const { documents, readPdf } = reader(() => Promise.resolve(view({ images: [] })))
     const sent = await toModelConversation(prompt, fakeStore({ [hex(7)]: '%PDF' }), new Set(), {
       readPdf,
       vision: false,
@@ -269,6 +280,10 @@ describe('PDF attachments', () => {
     expect(blocks[1]?.text).toContain(
       '--- Page 2 (little or no text; its image is not sent to this model) ---',
     )
+    expect(documents.extract).toHaveBeenCalledWith(expect.anything(), {
+      mime: 'application/pdf',
+      view: 'text',
+    })
   })
 
   it('sends page images when vision is not known yet, for the runner to strip', async () => {
@@ -361,7 +376,126 @@ describe('PDF attachments', () => {
       (conversation?.[0]?.content as { type: string }[]).map((block) => block.type)
     expect(types(seen[0])).toEqual(['text', 'text'])
     expect(types(seen[1])).toEqual(['text', 'text', 'text', 'image'])
-    expect(documents.extract).toHaveBeenCalledTimes(1)
+    // Text only for the model that cannot see images, then read again with its pages.
+    expect(documents.extract.mock.calls.map(([, options]) => options)).toEqual([
+      { mime: 'application/pdf', view: 'text' },
+      { mime: 'application/pdf', budget: { maxImages: PDF_PAGE_IMAGES } },
+    ])
+  })
+
+  it('renders no more page images in all than the request can carry, newest first', async () => {
+    // A fake reader that renders every page it may: 12 drawn pages per PDF.
+    const drawn = (options?: ExtractOptions): DocumentView => {
+      const count = options?.view === 'text' ? 0 : Math.min(12, options?.budget?.maxImages ?? 8)
+      return view({
+        sections: Array.from({ length: 12 }, (_, i) => ({ page: i + 1, text: '' })),
+        images: Array.from({ length: count }, (_, i) => ({
+          bytes: PAGE_2,
+          mime: 'image/png' as const,
+          width: 10,
+          height: 20,
+          source: { page: i + 1 },
+        })),
+      })
+    }
+    const documents = {
+      extract: vi.fn((_: Uint8Array, options?: ExtractOptions) => Promise.resolve(drawn(options))),
+    } satisfies DocumentReader
+    const pdfs = Array.from({ length: 10 }, (_, i) =>
+      ref(20 + i, { kind: 'pdf', mime: 'application/pdf', name: `p${String(i)}.pdf` }),
+    )
+    const many: StoredMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Compare' },
+          ...pdfs.map((p) => ({ type: 'attachment' as const, ...p })),
+        ],
+      },
+    ]
+    const store = fakeStore(Object.fromEntries(pdfs.map((p) => [p.id, '%PDF'])))
+    const sent = await toModelConversation(many, store, new Set(), {
+      readPdf: cachedPdfReading(documents),
+      vision: true,
+    })
+    const rendered = documents.extract.mock.calls.map(
+      ([, options]) => options?.budget?.maxImages ?? 0,
+    )
+    // The newest (last) PDFs are read first and take the budget.
+    expect(rendered).toEqual([8, 8, 4, 0, 0, 0, 0, 0, 0, 0])
+    expect(blocksOf(sent).filter((block) => block.type === 'image')).toHaveLength(
+      IMAGE_BUDGET.maxImages,
+    )
+    expect(blocksOf(sent).at(-1)?.type).toBe('image')
+    expect(blocksOf(sent)[1]?.text).toContain(
+      '--- Page 1 (little or no text; its image is not sent, to keep the request small) ---',
+    )
+  })
+})
+
+describe('cachedPdfReading', () => {
+  const pageImage = (size: number, page = 1) => ({
+    bytes: new Uint8Array(size),
+    mime: 'image/png' as const,
+    width: 1,
+    height: 1,
+    source: { page },
+  })
+  const viewOf = (images: DocumentView['images']): DocumentView => ({
+    meta: { kind: 'pdf', mime: 'application/pdf' },
+    sections: [],
+    images,
+    position: { unit: 'page', total: 1, shown: { from: 1, to: 1 }, next: null },
+    warnings: [],
+  })
+  const id = (n: number) => hex(100 + n)
+  const bytes = new Uint8Array([1])
+  const MB = 1024 * 1024
+
+  it('keeps no more than its byte cap, least recently used out first', async () => {
+    const documents = {
+      extract: vi.fn(() => Promise.resolve(viewOf([pageImage(4 * MB)]))),
+    } satisfies DocumentReader
+    const read = cachedPdfReading(documents, { bytes: 10 * MB })
+    for (const n of [1, 2, 3]) await read(id(n), bytes, 8)
+    expect(documents.extract).toHaveBeenCalledTimes(3)
+    // 2 and 3 (8 MB) are kept; 1 went out to stay within 10 MB.
+    await read(id(3), bytes, 8)
+    await read(id(2), bytes, 8)
+    expect(documents.extract).toHaveBeenCalledTimes(3)
+    await read(id(1), bytes, 8)
+    expect(documents.extract).toHaveBeenCalledTimes(4)
+    // 1 is in now, so 3 (least recently used) went out; 2 stayed.
+    await read(id(2), bytes, 8)
+    expect(documents.extract).toHaveBeenCalledTimes(4)
+    await read(id(3), bytes, 8)
+    expect(documents.extract).toHaveBeenCalledTimes(5)
+  })
+
+  it('uses a view larger than the cap once, without keeping it', async () => {
+    const big = viewOf([pageImage(3 * MB), pageImage(3 * MB, 2)])
+    const documents = { extract: vi.fn(() => Promise.resolve(big)) } satisfies DocumentReader
+    const read = cachedPdfReading(documents, { bytes: 5 * MB })
+    expect(viewBytes(big)).toBeGreaterThan(5 * MB)
+    expect(await read(id(1), bytes, 8)).toBe(big)
+    expect(await read(id(1), bytes, 8)).toBe(big)
+    expect(documents.extract).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads a text-only view again when a send can use its pages, and not the other way', async () => {
+    const documents = {
+      extract: vi.fn((_: Uint8Array, options?: ExtractOptions) =>
+        Promise.resolve(viewOf(options?.view === 'text' ? [] : [pageImage(10)])),
+      ),
+    } satisfies DocumentReader
+    const read = cachedPdfReading(documents)
+    expect((await read(id(1), bytes, 0)).images).toHaveLength(0)
+    expect((await read(id(1), bytes, 0)).images).toHaveLength(0)
+    expect((await read(id(1), bytes, 8)).images).toHaveLength(1)
+    expect((await read(id(1), bytes, 0)).images).toHaveLength(1)
+    // It rendered fewer pages than it was allowed: it already holds every one it has.
+    expect((await read(id(1), bytes, 20)).images).toHaveLength(1)
+    expect(documents.extract).toHaveBeenCalledTimes(2)
   })
 })
 

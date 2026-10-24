@@ -117,9 +117,14 @@ PDF attachment with the same host: its text page by page in a fenced block marke
 user-provided, untrusted data, and pages with little or no text (drawings, scans) as
 image blocks for every connection whose model can see images (`AgentRunner.vision`, see
 `docs/provider-images.md`: each client sends them in its own form, within the request's
-image budget), a note in their place for the rest. Results are cached per attachment id (16 PDFs), so sending a
-chat again does not parse its PDFs again; a PDF that cannot be read is sent as a
-placeholder saying why. PDF chips are no longer greyed in the composer.
+image budget), a note in their place for the rest. Pages are rendered only while the
+request's image budget (20) is not spent, newest attachment first as the runner budgets
+them, 8 per PDF at most; older PDFs are sent as text. A connection known not to see
+images has its PDFs read as text only, with no page rendered. Results are cached per
+attachment id (at most 16 PDFs and 64 MB, least recently used out first; a view larger
+than that is used once and not kept), so sending a chat again does not parse its PDFs
+again. A text-only view is read again, with its pages, when a send can use them. A PDF
+that cannot be read is sent as a placeholder saying why. PDF chips are no longer greyed in the composer.
 
 ## Limits
 
