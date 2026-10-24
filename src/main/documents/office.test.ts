@@ -13,6 +13,7 @@ import {
   makePpt,
   makePptx,
   makeWorkbook,
+  makeXlsFormula,
   wimage,
   wp,
   wtbl,
@@ -404,6 +405,91 @@ describe('Excel and CSV', () => {
       '| 3 | =A1+1 (no saved value) | =A1+1 (no saved value) |  |  |',
     ])
     expect(view.warnings.join(' ')).toMatch(/recalculate in Excel and save/)
+  })
+
+  it('finds every unsaved formula in a large sheet, never falling back to a number', async () => {
+    // 150,000 formulas with no <v>, written as Excel writes a filled-down formula.
+    const count = 150_000
+    let rows = '<row r="1"><c r="A1"><f t="shared" ref="A1:A150000" si="0">ROW()*2</f></c></row>'
+    for (let r = 2; r <= count; r++)
+      rows += `<row r="${String(r)}"><c r="A${String(r)}"><f t="shared" si="0"/></c></row>`
+    const sheet =
+      '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+      rows +
+      '</sheetData></worksheet>'
+    const xlsx = await repack(makeWorkbook({ Calc: [[1]] }), (name, data) =>
+      name === 'xl/worksheets/sheet1.xml' ? sheet : data,
+    )
+    const tail = await read(xlsx, { select: { range: 'Calc!A149999:A150000' } })
+    expect(tail.sections[0]?.text.split('\n').slice(2)).toEqual([
+      '| 149999 | =ROW()*2 (no saved value) |',
+      '| 150000 | =ROW()*2 (no saved value) |',
+    ])
+
+    // 600,000 in OpenDocument, from one repeated cell, then one more past them.
+    const content =
+      '<table:table-row table:number-rows-repeated="200000"><table:table-cell table:formula="of:=[.A1]+1" table:number-columns-repeated="3"/></table:table-row>' +
+      '<table:table-row><table:table-cell table:formula="of:=SUM([.A1:.A3])"/></table:table-row>'
+    const ods = await repack(makeWorkbook({ S: [[1]] }, 'ods'), (name, data) =>
+      name === 'content.xml'
+        ? data.replace(/<table:table-row>[\s\S]*?<\/table:table-row>/, content)
+        : data,
+    )
+    const view = await read(ods, { select: { range: 'S!A200000:C200001' } })
+    expect(view.sections[0]?.text.split('\n').slice(2)).toEqual([
+      '| 200000 | =A1+1 (no saved value) | =A1+1 (no saved value) | =A1+1 (no saved value) |',
+      '| 200001 | =SUM(A1:A3) (no saved value) |  |  |',
+    ])
+  })
+
+  it('reads OpenDocument cells repeated past the sheet in time linear in the file', async () => {
+    const hostile =
+      '<table:table-row table:number-rows-repeated="1048576"><table:table-cell table:formula="of:=1" table:number-columns-repeated="16384"/><table:table-cell table:formula="of:=2" table:number-columns-repeated="999999999"/></table:table-row>'
+    const content =
+      '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell><table:table-cell table:formula="of:=[.A1]*2" table:number-columns-repeated="4"/></table:table-row>' +
+      hostile.repeat(3000)
+    const ods = await repack(makeWorkbook({ S: [[1]] }, 'ods'), (name, data) =>
+      name === 'content.xml'
+        ? data.replace(/<table:table-row>[\s\S]*?<\/table:table-row>/, content)
+        : data,
+    )
+    const started = Date.now()
+    const view = await read(ods)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(view.meta.sheets).toEqual([{ name: 'S', used: 'A1:XFD1048576' }])
+    expect(view.sections[0]?.text.split('\n')[2]).toMatch(
+      /^\| 1 \| 1 \| =A1\*2 \(no saved value\) \| =A1\*2 \(no saved value\) \|/,
+    )
+    expect(view.sections[0]?.text.split('\n')[3]).toMatch(/^\| 2 \| =1 \(no saved value\) \|/)
+  })
+
+  it('shows formulas as formulas, trusting no value, in a sheet it could not check', async () => {
+    // Rows out of order: the scan cannot vouch for the cells after the step back.
+    const sheet =
+      '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+      '<row r="2"><c r="A2"><f>A1*3</f></c></row>' +
+      '<row r="1"><c r="A1"><f>1-1</f><v>0</v></c><c r="B1"><f>A1*2</f></c><c r="C1"><v>5</v></c></row>' +
+      '</sheetData></worksheet>'
+    const book = await repack(makeWorkbook({ Calc: [[1]] }), (name, data) =>
+      name === 'xl/worksheets/sheet1.xml' ? sheet : data,
+    )
+    const view = await read(book)
+    const text = view.sections[0]?.text ?? ''
+    expect(text).toContain('| 1 | =1-1 | =A1*2 (no saved value) | 5 |')
+    expect(text).toContain('| 2 | =A1*3 (no saved value) |')
+    expect(view.warnings).toContain(
+      'The sheet "Calc" has too many formulas to check which have saved values; its formulas are shown as formulas, not values.',
+    )
+  })
+
+  it('never shows a number an .xls formula did not store', async () => {
+    // BIFF8 always stores a result; a non-calculating writer's placeholder is an empty
+    // string, or a string whose STRING record is missing (SheetJS then drops the cell).
+    const empty = await read(makeXlsFormula([3, 0, 0, 0, 0, 0, 0xff, 0xff]))
+    expect(empty.meta.kind).toBe('xls')
+    expect(empty.sections[0]?.text.split('\n')[2]).toBe('| 1 | 1 | =A1*2 |')
+    const missing = await read(makeXlsFormula([0, 0, 0, 0, 0, 0, 0xff, 0xff]))
+    expect(missing.sections[0]?.text.split('\n')[2]).toBe('| 1 | 1 |  |')
   })
 
   it('reads CSV and tab-separated text by name, with quoted fields', async () => {

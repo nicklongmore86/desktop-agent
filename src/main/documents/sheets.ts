@@ -13,7 +13,6 @@ import {
   type SheetPart,
 } from './types'
 import {
-  cellKey,
   MAX_COLUMNS,
   MAX_ROWS,
   unsavedOds,
@@ -87,7 +86,7 @@ export async function extractPackageWorkbook(
   limits: DocumentLimits,
 ): Promise<DocumentView> {
   const container = CFB.utils.cfb_new()
-  const recorder: Recorder = { count: 0 }
+  const recorder: Recorder = { runs: 0 }
   const byPart = new Map<string, UnsavedCells>()
   let unsaved = new Map<string, UnsavedCells>()
   for (const name of pkg.names()) {
@@ -137,12 +136,19 @@ async function sheetsByName(
     const id = sheet.attrs['r:id']
     const part = id === undefined ? undefined : rels.get(id)?.target.toLowerCase()
     const found = part === undefined ? undefined : byPart.get(part)
-    if (name !== undefined && found && found.cells.size > 0) out.set(name.slice(0, 200), found)
+    if (name !== undefined && found && (found.used || found.unchecked))
+      out.set(name.slice(0, 200), found)
   }
   return out
 }
 
-/** Reads an Excel 97-2003 workbook (.xls) from its OLE container's bytes. */
+/**
+ * Reads an Excel 97-2003 workbook (.xls) from its OLE container's bytes. A BIFF8 FORMULA
+ * record always holds a result, so there is no raw scan: a non-calculating writer's
+ * placeholder of an empty string, or of a string with no STRING record (which SheetJS
+ * drops), shows as the formula or as blank, never as 0 (office.test.ts has both). A writer
+ * that stores 0 as its placeholder (as xlwt does) cannot be told from a computed 0.
+ */
 export function extractXls(
   bytes: Uint8Array,
   options: ExtractOptions,
@@ -232,7 +238,12 @@ function readWorkbook(
   const target = targetOf(options, names)
   const budget = effectiveBudget(options.budget, limits)
   const cells = limits.office.maxCellsPerCall
-  const formulas = { include: options.includeFormulas === true, unsaved, shownUnsaved: false }
+  const formulas: Formulas = {
+    include: options.includeFormulas === true,
+    unsaved,
+    shownUnsaved: false,
+    unchecked: new Set(),
+  }
 
   if (target) {
     const name = target.sheet
@@ -252,7 +263,7 @@ function readWorkbook(
     const written = writeSheet(grid, range, budget.maxChars, cells, limits, view.warnings, false)
     view.sections.push(written.section)
     view.position.shown = { from: index + 1, to: index + 1 }
-    if (formulas.shownUnsaved) view.warnings.push(UNSAVED_NOTE)
+    view.warnings.push(...formulaNotes(formulas))
     return view
   }
 
@@ -296,12 +307,22 @@ function readWorkbook(
   }
   view.position.shown = { from, to: last }
   view.position.next = last < total ? last + 1 : null
-  if (formulas.shownUnsaved) view.warnings.push(UNSAVED_NOTE)
+  view.warnings.push(...formulaNotes(formulas))
   return view
 }
 
 const UNSAVED_NOTE =
   'Some formulas have no saved value (shown as "=formula (no saved value)"); recalculate in Excel and save to get values.'
+
+function formulaNotes(formulas: Formulas): string[] {
+  const notes = formulas.shownUnsaved ? [UNSAVED_NOTE] : []
+  for (const name of formulas.unchecked) {
+    notes.push(
+      `The sheet "${name}" has too many formulas to check which have saved values; its formulas are shown as formulas, not values.`,
+    )
+  }
+  return notes
+}
 
 /** How formula cells are written: with their text or not, and which have no saved value. */
 interface Formulas {
@@ -310,6 +331,8 @@ interface Formulas {
   unsaved: Map<string, UnsavedCells>
   /** Set once a cell without a saved value is written, for the note. */
   shownUnsaved: boolean
+  /** Sheets whose formulas were shown as formulas because not every cell could be checked. */
+  unchecked: Set<string>
 }
 
 function sheetError(error: unknown): DocumentError {
@@ -360,8 +383,14 @@ function gridsOf(book: XLSX.WorkBook, formulas: Formulas, limits: DocumentLimits
       name: name.slice(0, 200),
       used,
       ...(hidden[index]?.Hidden ? { hidden: true } : {}),
-      cell: (row: number, column: number) =>
-        cellText(data[row]?.[column], formulas, missing?.cells.get(cellKey(row, column))),
+      cell: (row: number, column: number) => {
+        const cell = data[row]?.[column]
+        const text = cellText(cell, formulas, missing?.at(row, column))
+        // A value that could not be checked is not trusted: the formula is shown instead.
+        if (!missing?.unchecked || !cell?.f || text.endsWith('(no saved value)')) return text
+        formulas.unchecked.add(name.slice(0, 200))
+        return `=${cell.f}`
+      },
     }
   })
 }

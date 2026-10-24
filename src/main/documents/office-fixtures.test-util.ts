@@ -345,6 +345,10 @@ export const makeOdp = (pages: string, title = 'Talk'): Uint8Array =>
 
 /** SheetJS's CFB writer, untyped upstream. */
 const CFB = XLSX.CFB as {
+  read: (
+    data: Uint8Array,
+    options: { type: 'array' },
+  ) => { FullPaths: string[]; FileIndex: { content?: ArrayLike<number> }[] }
   write: (container: unknown, options: { type: 'array' }) => ArrayLike<number>
   utils: {
     cfb_new: () => unknown
@@ -398,6 +402,47 @@ export function makeDoc(
   view.setUint32(0x1a2, 0x40, true)
   view.setUint32(0x1a6, clx.length, true)
   return ole({ WordDocument: main, '1Table': table })
+}
+
+/**
+ * An Excel 97-2003 workbook with A1 = 1 and B1 = `=A1*2` whose FORMULA record carries
+ * `result`, its 8-byte cached value: a BIFF8 formula always has one, but a writer that does
+ * not calculate fills in a placeholder (an empty string, or a string with no STRING record
+ * after it). SheetJS's .xls writer stores no formulas, so the record is patched in.
+ */
+export function makeXlsFormula(result: number[]): Uint8Array {
+  const book = CFB.read(makeWorkbook({ Calc: [[1, 7]] }, 'biff8'), { type: 'array' })
+  const index = book.FullPaths.findIndex((path) => /\/Workbook$/.test(path))
+  const stream = Uint8Array.from(book.FileIndex[index]?.content ?? [])
+  const view = new DataView(stream.buffer)
+  const records: Uint8Array[] = []
+  for (let at = 0; at + 4 <= stream.length;) {
+    const type = view.getUint16(at, true)
+    const length = view.getUint16(at + 2, true)
+    const cell = type === 0x0203 || type === 0x027e
+    if (cell && view.getUint16(at + 4, true) === 0 && view.getUint16(at + 6, true) === 1) {
+      // ptgRef A1 (relative), ptgInt 2, ptgMul.
+      const rgce = [0x24, 0, 0, 0, 0xc0, 0x1e, 2, 0, 0x05]
+      const record = new Uint8Array(4 + 22 + rgce.length)
+      const out = new DataView(record.buffer)
+      out.setUint16(0, 0x0006, true)
+      out.setUint16(2, 22 + rgce.length, true)
+      out.setUint16(6, 1, true)
+      out.setUint16(8, view.getUint16(at + 8, true), true)
+      record.set(result, 10)
+      out.setUint16(24, rgce.length, true)
+      record.set(rgce, 26)
+      records.push(record)
+    } else records.push(stream.subarray(at, at + 4 + length))
+    at += 4 + length
+  }
+  const patched = new Uint8Array(records.reduce((total, record) => total + record.length, 0))
+  let offset = 0
+  for (const record of records) {
+    patched.set(record, offset)
+    offset += record.length
+  }
+  return ole({ Workbook: patched })
 }
 
 export const makePpt = (): Uint8Array =>
