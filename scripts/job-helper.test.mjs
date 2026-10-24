@@ -81,24 +81,63 @@ describe('bundledPin', () => {
       `// require("./decoy-z.js")\nconst s = 'import "./decoy-z.js"';\n${launcher(null)}`,
     )
     await write('out/main/chunks/decoy-z.js', launcher(PIN))
-    // The decoy is not counted as the bundle's pin; its marker outside the bundle fails.
-    await expect(bundledPin(root)).rejects.toThrow(/without the job-run.exe pin/)
+    // The decoy is not in the manifest graph, so its pin is not the bundle's.
+    await expect(bundledPin(root)).rejects.toThrow(/pin is outside the production main bundle/)
   })
 
-  it('fails on a pin in a file the main entry does not load', async () => {
+  it.each([
+    ['a file the main entry does not load', 'chunks/decoy-z.js', launcher(PIN)],
+    ['a test-only entry the manifest omits', 'tools.js', launcher(PIN)],
+    ['a non-.js file', 'chunks/decoy.txt', `pin ${pinMarker(OTHER)}\n`],
+    ['the build manifest', 'x/.build-manifest.json', JSON.stringify({ pin: pinMarker(PIN) })],
+  ])('fails on a decoy marker in %s', async (_, file, text) => {
     await entry()
     await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
     await write('out/main/chunks/index-x.js', launcher(PIN))
+    await write(`out/main/${file}`, text)
+    await expect(bundledPin(root)).rejects.toThrow(/pin marker 2 times/)
+  })
+
+  // A chunk loaded by a computed path is in no manifest, but its marker still counts.
+  it('fails on a decoy marker in a chunk reachable only by a computed load', async () => {
+    await entry()
+    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
+    await write(
+      'out/main/chunks/index-x.js',
+      `const load = (n) => globalThis.require("./" + n);\nload("decoy-z.js");\n${launcher(PIN)}`,
+    )
+    await write('out/main/chunks/decoy-z.js', launcher(OTHER))
+    await expect(bundledPin(root)).rejects.toThrow(/pin marker 2 times/)
+  })
+
+  it('fails when the only marker is in a file the main entry does not load', async () => {
+    await entry()
+    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
+    await write('out/main/chunks/index-x.js', launcher(null))
     await write('out/main/chunks/decoy-z.js', launcher(PIN))
-    await expect(bundledPin(root)).rejects.toThrow(/pin outside the production main bundle/)
+    await expect(bundledPin(root)).rejects.toThrow(/pin is outside the production main bundle/)
   })
 
-  it('fails on a pin in a test-only entry, even one the manifest omits', async () => {
+  it('fails when the only marker is in a computed-load-only chunk', async () => {
     await entry()
     await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
-    await write('out/main/chunks/index-x.js', launcher(PIN))
-    await write('out/main/tools.js', launcher(PIN))
-    await expect(bundledPin(root)).rejects.toThrow(/pin outside the production main bundle/)
+    await write(
+      'out/main/chunks/index-x.js',
+      `const m = module.require("./" + "decoy-z.js");\n${launcher(null)}`,
+    )
+    await write('out/main/chunks/decoy-z.js', launcher(PIN))
+    await expect(bundledPin(root)).rejects.toThrow(/pin is outside the production main bundle/)
+  })
+
+  it.each([
+    ['too short', 'a'.repeat(63)],
+    ['too long', 'a'.repeat(65)],
+    ['upper case', 'A'.repeat(64)],
+  ])('fails on a marker with an invalid digest: %s', async (_, digest) => {
+    await entry()
+    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
+    await write('out/main/chunks/index-x.js', `const p = "job-run.exe-sha256:${digest}";\n`)
+    await expect(bundledPin(root)).rejects.toThrow(/invalid job-run.exe pin/)
   })
 
   it('fails on a second marker in the bundle', async () => {
@@ -110,7 +149,7 @@ describe('bundledPin', () => {
     })
     await write('out/main/chunks/index-x.js', launcher(PIN))
     await write('out/main/chunks/b.js', launcher(OTHER))
-    await expect(bundledPin(root)).rejects.toThrow(/pin 2 times: a+, b+/)
+    await expect(bundledPin(root)).rejects.toThrow(/pin marker 2 times/)
   })
 
   it('fails on the same marker twice', async () => {
@@ -120,7 +159,7 @@ describe('bundledPin', () => {
       'out/main/chunks/index-x.js',
       launcher(PIN) + `const again = "${pinMarker(PIN)}";\n`,
     )
-    await expect(bundledPin(root)).rejects.toThrow(/pin 2 times/)
+    await expect(bundledPin(root)).rejects.toThrow(/pin marker 2 times/)
   })
 
   it('fails when the pin is missing', async () => {
@@ -172,36 +211,34 @@ describe('bundledPin', () => {
       await write('elsewhere.js', launcher(PIN))
       await mkdir(join(root, 'out', 'main', 'chunks'), { recursive: true })
       await symlink(join(root, 'elsewhere.js'), join(root, 'out', 'main', 'chunks', 'index-x.js'))
-      await expect(bundledPin(root)).rejects.toThrow(/Cannot resolve chunk/)
+      await expect(bundledPin(root)).rejects.toThrow(/Not a file or folder in out\/main/)
     },
   )
+
+  it.skipIf(process.platform === 'win32')(
+    'fails on any symlink under out/main, even one nothing loads',
+    async () => {
+      await entry()
+      await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
+      await write('out/main/chunks/index-x.js', launcher(PIN))
+      await mkdir(join(root, 'elsewhere'))
+      await symlink(join(root, 'elsewhere'), join(root, 'out', 'main', 'linked'))
+      await expect(bundledPin(root)).rejects.toThrow(/Not a file or folder in out\/main/)
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')('fails when out/main is a symlink', async () => {
+    await write('real-main/index.js', launcher(PIN))
+    await mkdir(join(root, 'out'))
+    await symlink(join(root, 'real-main'), join(root, 'out', 'main'))
+    await expect(bundledPin(root)).rejects.toThrow(/is a symlink/)
+  })
 
   it('fails when the main entry loads a test-only entry', async () => {
     await entry()
     await manifest({ 'index.js': [[], ['chunks/../tools.js']], 'tools.js': [] })
     await write('out/main/tools.js', launcher(PIN))
     await expect(bundledPin(root)).rejects.toThrow(/test-only entry: tools\.js/)
-  })
-
-  it.each([
-    ['require(name)', 'const m = require(name);'],
-    ['import() of a template', 'const m = import(`./chunks/${name}.js`);'],
-    ['require() of a concatenation', 'const m = require("./chunks/" + name);'],
-  ])('fails on a computed load: %s', async (_, code) => {
-    await entry()
-    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
-    await write('out/main/chunks/index-x.js', `${code}\n${launcher(PIN)}`)
-    await expect(bundledPin(root)).rejects.toThrow(/loads a computed path/)
-  })
-
-  it('allows a method that happens to be called require', async () => {
-    await entry()
-    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
-    await write(
-      'out/main/chunks/index-x.js',
-      `class R {\n  require(id) {\n    return id;\n  }\n}\nnew R().require(id);\n${launcher(PIN)}`,
-    )
-    await expect(bundledPin(root)).resolves.toBe(PIN)
   })
 
   it('fails when package.json main is not in out/main', async () => {

@@ -1,8 +1,8 @@
 // job-run.exe (native/job-run): the build's pins file and the checks shared by
 // build-job-helper.mjs, the Vite build (which compiles the digest into the app) and afterPack.
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { readFile, readdir } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
+import { lstat, readFile, readdir } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -51,43 +51,38 @@ const TEST_ENTRIES = ['tools.js', 'documents.js']
 /** Written into out/main by the main build: its chunks and their imports, from Rollup. */
 export const BUILD_MANIFEST = '.build-manifest.json'
 /** The string the main build compiles in for job-launcher.ts's JOB_RUN_SHA256. */
-export const pinMarker = (pin) => (pin ? `job-run.exe-sha256:${pin}` : null)
-const MARKER = /job-run\.exe-sha256:([0-9a-f]{64})/g
-// A call of the global require() or of import() with anything but a string literal: a load no
-// manifest can list. Not a method of that name (`x.require(id)`, or its definition).
-const COMPUTED_LOAD =
-  /(?<![\w$.])(?:require|import)\s*\(\s*(?!(["'`])[^"'`$\\\n]*\1\s*\))(?![^()\n]*\)\s*\{)/
+const MARKER_PREFIX = 'job-run.exe-sha256:'
+export const pinMarker = (pin) => (pin ? `${MARKER_PREFIX}${pin}` : null)
+const DIGEST = /^[0-9a-f]{64}(?![0-9A-Za-z])/
 
-/** Every file under `dir`, recursively. */
+/** Every file under `dir`, recursively; fails on a symlink (or any other non-file) in the tree. */
 async function filesUnder(dir) {
+  if ((await lstat(dir)).isSymbolicLink()) throw new Error(`${dir} is a symlink`)
   const entries = await readdir(dir, { withFileTypes: true, recursive: true })
+  const odd = entries.find((e) => !e.isFile() && !e.isDirectory())
+  if (odd) throw new Error(`Not a file or folder in out/main: ${join(odd.parentPath, odd.name)}`)
   return entries.filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name))
 }
 
 /**
- * The job-run.exe pin compiled into the production main bundle. The bundle is the graph
- * Rollup recorded in out/main/.build-manifest.json from the main entry (package.json `main`)
- * through its static and dynamic imports; the files themselves are only searched for the pin.
- * Fails unless every chunk in that graph is inside out/main, none is a test-only entry or
- * loads a computed path, and the pin's marker appears exactly once in the graph and nowhere
- * else under out/main.
+ * The job-run.exe pin compiled into the production main bundle. Every file under out/main
+ * is searched for the pin's marker, which must appear exactly once in the whole tree, with a
+ * valid digest, in a chunk of the graph Rollup recorded in out/main/.build-manifest.json from
+ * the main entry (package.json `main`) through its static and dynamic imports. Fails on any
+ * symlink under out/main, and unless every chunk in that graph is inside out/main and none is
+ * a test-only entry.
  */
 export async function bundledPin(root = repoRoot) {
   const mainDir = resolve(root, 'out', 'main')
-  const realMain = existsSync(mainDir) ? realpathSync(mainDir) : mainDir
-  // Inside out/main by path and, through any symlinks, on disk.
-  const inMain = (file) =>
-    [
-      [mainDir, file],
-      [realMain, existsSync(file) ? realpathSync(file) : file],
-    ].every(([dir, f]) => {
-      const rel = relative(dir, f)
-      return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
-    })
+  const inMain = (file) => {
+    const rel = relative(mainDir, file)
+    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+  }
   const { main } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
   const entry = resolve(root, main ?? '')
   if (typeof main !== 'string' || !existsSync(entry) || !inMain(entry))
     throw new Error(`package.json main (${main}) is not a bundle in out/main`)
+  const files = await filesUnder(mainDir)
   const manifestFile = join(mainDir, BUILD_MANIFEST)
   if (!existsSync(manifestFile))
     throw new Error(`The main build wrote no ${BUILD_MANIFEST}: rebuild with \`pnpm build\``)
@@ -98,7 +93,7 @@ export async function bundledPin(root = repoRoot) {
   const start = chunkOf(entry)
   if (!Object.hasOwn(chunks, start) || chunks[start]?.isEntry !== true)
     throw new Error(`${BUILD_MANIFEST} has no entry ${start}`)
-  const graph = new Map()
+  const graph = new Set()
   const queue = [start]
   while (queue.length) {
     const file = resolve(mainDir, queue.pop())
@@ -109,29 +104,29 @@ export async function bundledPin(root = repoRoot) {
     const chunk = Object.hasOwn(chunks, name) ? chunks[name] : undefined
     if (!chunk || !name.endsWith('.js') || !existsSync(file) || !inMain(file))
       throw new Error(`Cannot resolve chunk ${name} inside out/main`)
-    const code = await readFile(file, 'utf8')
-    const load = code.match(COMPUTED_LOAD)
-    if (load)
-      throw new Error(`${name} loads a computed path the manifest cannot list: ${load[0]}...`)
-    graph.set(file, code)
+    graph.add(file)
     for (const edge of [chunk.imports ?? [], chunk.dynamicImports ?? []].flat()) {
       if (typeof edge !== 'string') throw new Error(`${BUILD_MANIFEST}: bad import of ${name}`)
       queue.push(edge)
     }
   }
-  const pins = [...graph.values()].flatMap((code) => [...code.matchAll(MARKER)].map((m) => m[1]))
-  if (pins.length === 0)
-    throw new Error('The app was built without the job-run.exe pin: rebuild after build:helpers')
-  if (pins.length !== 1)
-    throw new Error(
-      `The production main bundle has the job-run.exe pin ${pins.length} times: ${pins.toSorted().join(', ')}`,
-    )
-  for (const file of await filesUnder(mainDir)) {
-    if (graph.has(file)) continue
-    if ((await readFile(file, 'latin1')).search(MARKER) !== -1)
-      throw new Error(`A job-run.exe pin outside the production main bundle: ${file}`)
+  const markers = []
+  for (const file of files) {
+    const text = await readFile(file, 'latin1')
+    for (let at = text.indexOf(MARKER_PREFIX); at !== -1; at = text.indexOf(MARKER_PREFIX, at + 1))
+      markers.push({ file, digest: DIGEST.exec(text.slice(at + MARKER_PREFIX.length))?.[0] })
   }
-  return pins[0]
+  if (markers.length === 0)
+    throw new Error('The app was built without the job-run.exe pin: rebuild after build:helpers')
+  if (markers.length !== 1)
+    throw new Error(
+      `out/main has the job-run.exe pin marker ${markers.length} times: ${markers.map((m) => relative(mainDir, m.file)).join(', ')}`,
+    )
+  const [{ file: pinned, digest }] = markers
+  if (!digest) throw new Error(`An invalid job-run.exe pin in ${pinned}`)
+  if (!graph.has(pinned))
+    throw new Error(`The job-run.exe pin is outside the production main bundle: ${pinned}`)
+  return digest
 }
 
 /**
