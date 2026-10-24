@@ -2,8 +2,8 @@
 // build-job-helper.mjs, the Vite build (which compiles the digest into the app) and afterPack.
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { readFile, readdir } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const JOB_RUN_VERSION = '1.0.0.0'
@@ -48,17 +48,29 @@ export function checkHardening(bytes) {
 
 /** Main entries built only for the real-Electron tests (electron.vite.config.ts). */
 const TEST_ENTRIES = ['tools.js', 'documents.js']
-// Static require()/import/export-from of a string literal, as Rollup emits them.
-const IMPORTS =
-  /\brequire\(\s*(["'])([^"'\n]+)\1\s*\)|\b(?:import|export)\b[^"';]*?\bfrom\s*(["'])([^"'\n]+)\3|\bimport\s*\(\s*(["'])([^"'\n]+)\5\s*\)|\bimport\s*(["'])([^"'\n]+)\7/g
-// job-launcher.ts's `JOB_RUN_SHA256 = ...` with __JOB_RUN_SHA256__ compiled in.
-const PIN_DEFINITION = /\bJOB_RUN_SHA256(?:\$\d+)?\s*=([^;\n]*)/g
+/** Written into out/main by the main build: its chunks and their imports, from Rollup. */
+export const BUILD_MANIFEST = '.build-manifest.json'
+/** The string the main build compiles in for job-launcher.ts's JOB_RUN_SHA256. */
+export const pinMarker = (pin) => (pin ? `job-run.exe-sha256:${pin}` : null)
+const MARKER = /job-run\.exe-sha256:([0-9a-f]{64})/g
+// A call of the global require() or of import() with anything but a string literal: a load no
+// manifest can list. Not a method of that name (`x.require(id)`, or its definition).
+const COMPUTED_LOAD =
+  /(?<![\w$.])(?:require|import)\s*\(\s*(?!(["'`])[^"'`$\\\n]*\1\s*\))(?![^()\n]*\)\s*\{)/
+
+/** Every file under `dir`, recursively. */
+async function filesUnder(dir) {
+  const entries = await readdir(dir, { withFileTypes: true, recursive: true })
+  return entries.filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name))
+}
 
 /**
- * The job-run.exe pin compiled into the production main bundle: the main entry (package.json
- * `main`) and the local chunks it statically loads, never other files under out/main (the
- * test-only entries, or anything else left there). Fails unless that graph resolves entirely
- * inside out/main and defines JOB_RUN_SHA256 exactly once, as one 64-hex digest.
+ * The job-run.exe pin compiled into the production main bundle. The bundle is the graph
+ * Rollup recorded in out/main/.build-manifest.json from the main entry (package.json `main`)
+ * through its static and dynamic imports; the files themselves are only searched for the pin.
+ * Fails unless every chunk in that graph is inside out/main, none is a test-only entry or
+ * loads a computed path, and the pin's marker appears exactly once in the graph and nowhere
+ * else under out/main.
  */
 export async function bundledPin(root = repoRoot) {
   const mainDir = resolve(root, 'out', 'main')
@@ -76,35 +88,50 @@ export async function bundledPin(root = repoRoot) {
   const entry = resolve(root, main ?? '')
   if (typeof main !== 'string' || !existsSync(entry) || !inMain(entry))
     throw new Error(`package.json main (${main}) is not a bundle in out/main`)
+  const manifestFile = join(mainDir, BUILD_MANIFEST)
+  if (!existsSync(manifestFile))
+    throw new Error(`The main build wrote no ${BUILD_MANIFEST}: rebuild with \`pnpm build\``)
+  const { chunks } = JSON.parse(await readFile(manifestFile, 'utf8'))
+  if (typeof chunks !== 'object' || chunks === null)
+    throw new Error(`${manifestFile} lists no chunks`)
+  const chunkOf = (file) => relative(mainDir, file).split(sep).join('/')
+  const start = chunkOf(entry)
+  if (!Object.hasOwn(chunks, start) || chunks[start]?.isEntry !== true)
+    throw new Error(`${BUILD_MANIFEST} has no entry ${start}`)
   const graph = new Map()
-  const queue = [entry]
+  const queue = [start]
   while (queue.length) {
-    const file = queue.pop()
+    const file = resolve(mainDir, queue.pop())
+    const name = chunkOf(file)
     if (graph.has(file)) continue
-    if (TEST_ENTRIES.some((name) => file === join(mainDir, name)))
-      throw new Error(`The production main bundle loads a test-only entry: ${file}`)
+    if (TEST_ENTRIES.includes(name))
+      throw new Error(`The production main bundle loads a test-only entry: ${name}`)
+    const chunk = Object.hasOwn(chunks, name) ? chunks[name] : undefined
+    if (!chunk || !name.endsWith('.js') || !existsSync(file) || !inMain(file))
+      throw new Error(`Cannot resolve chunk ${name} inside out/main`)
     const code = await readFile(file, 'utf8')
+    const load = code.match(COMPUTED_LOAD)
+    if (load)
+      throw new Error(`${name} loads a computed path the manifest cannot list: ${load[0]}...`)
     graph.set(file, code)
-    for (const m of code.matchAll(IMPORTS)) {
-      const spec = m[2] ?? m[4] ?? m[6] ?? m[8]
-      if (!spec.startsWith('./') && !spec.startsWith('../')) continue // node: builtins, packages
-      const target = resolve(dirname(file), spec)
-      if (!target.endsWith('.js') || !existsSync(target) || !inMain(target))
-        throw new Error(`Cannot resolve ${spec} from ${file} inside out/main`)
-      queue.push(target)
+    for (const edge of [chunk.imports ?? [], chunk.dynamicImports ?? []].flat()) {
+      if (typeof edge !== 'string') throw new Error(`${BUILD_MANIFEST}: bad import of ${name}`)
+      queue.push(edge)
     }
   }
-  const pins = [...graph.values()].flatMap((code) =>
-    [...code.matchAll(PIN_DEFINITION)].map((m) => [...new Set(m[1].match(/[0-9a-f]{64}/g))]),
-  )
-  if (pins.every((hashes) => hashes.length === 0))
+  const pins = [...graph.values()].flatMap((code) => [...code.matchAll(MARKER)].map((m) => m[1]))
+  if (pins.length === 0)
     throw new Error('The app was built without the job-run.exe pin: rebuild after build:helpers')
-  if (pins.length !== 1 || pins[0].length !== 1)
+  if (pins.length !== 1)
     throw new Error(
-      `The production main bundle defines the job-run.exe pin ${pins.length} times, ` +
-        `with ${pins.flat().join(', ')}`,
+      `The production main bundle has the job-run.exe pin ${pins.length} times: ${pins.toSorted().join(', ')}`,
     )
-  return pins[0][0]
+  for (const file of await filesUnder(mainDir)) {
+    if (graph.has(file)) continue
+    if ((await readFile(file, 'latin1')).search(MARKER) !== -1)
+      throw new Error(`A job-run.exe pin outside the production main bundle: ${file}`)
+  }
+  return pins[0]
 }
 
 /**

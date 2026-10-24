@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { build as viteBuild, type Plugin } from 'vite'
 // @ts-expect-error -- a plain .mjs build script without type declarations
-import { readPin } from './scripts/job-helper.mjs'
+import { BUILD_MANIFEST, pinMarker, readPin } from './scripts/job-helper.mjs'
 import { buildCsp } from './src/shared/csp'
 
 // lowlight's package `exports` hides lib/, so resolve its entry point and step to lib/ beside it.
@@ -93,11 +93,53 @@ function documentWorkerPlugin(): Plugin {
   }
 }
 
+/**
+ * Writes out/main/.build-manifest.json: every chunk Rollup emitted for main, with the chunks
+ * it imports statically and dynamically. afterPack finds the job-run.exe pin by walking it
+ * from the production entry (see bundledPin in scripts/job-helper.mjs).
+ */
+function buildManifestPlugin(): Plugin {
+  return {
+    name: 'desktop-agent:build-manifest',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const chunks = Object.fromEntries(
+        Object.values(bundle).flatMap((out) =>
+          out.type === 'chunk'
+            ? [
+                [
+                  out.fileName,
+                  {
+                    name: out.name,
+                    isEntry: out.isEntry,
+                    // Rollup lists externals (node:fs, electron, ...) here too; keep only chunks.
+                    imports: out.imports.filter((file) => file in bundle),
+                    dynamicImports: out.dynamicImports.filter((file) => file in bundle),
+                  },
+                ],
+              ]
+            : [],
+        ),
+      )
+      this.emitFile({
+        type: 'asset',
+        fileName: BUILD_MANIFEST as string,
+        source: JSON.stringify({ version: 1, chunks }, null, 2),
+      })
+    },
+  }
+}
+
 export default defineConfig({
   main: {
-    // job-run.exe's digest from `pnpm build:helpers` (Windows), or none: see job-launcher.ts.
-    define: { __JOB_RUN_SHA256__: JSON.stringify((readPin as () => string | null)()) },
-    plugins: [documentWorkerPlugin()],
+    // job-run.exe's digest from `pnpm build:helpers` (Windows) as a unique marker string, or
+    // none: see job-launcher.ts.
+    define: {
+      __JOB_RUN_PIN__: JSON.stringify(
+        (pinMarker as (pin: string | null) => string | null)((readPin as () => string | null)()),
+      ),
+    },
+    plugins: [buildManifestPlugin(), documentWorkerPlugin()],
     build: {
       rollupOptions: {
         input: {
