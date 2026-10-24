@@ -116,3 +116,11 @@ export class DocumentError extends Error {
     super(message)
   }
 }
+
+/**
+ * What the app's callers (the read_document tool, attachments) need from the reader:
+ * DocumentWorkerHost in the app, a fake in unit tests.
+ */
+export interface DocumentReader {
+  extract(bytes: Uint8Array, options?: ExtractOptions): Promise<DocumentView>
+}

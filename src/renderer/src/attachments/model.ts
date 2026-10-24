@@ -22,12 +22,13 @@ export const TOO_MANY_FILES = `You can attach up to ${String(ATTACHMENT_LIMITS.m
 export const TOO_MUCH_DATA = `A message can carry up to ${String(ATTACHMENT_LIMITS.messageBytes / (1024 * 1024))} MB of attachments.`
 
 /**
- * Whether `kind` reaches the model: text files always (inline); images when the
- * connection's model can see them (`vision`, from main). PDFs and documents are still
- * sent as their names only.
+ * Whether `kind` reaches the model: text files always (inline); PDFs always, as the
+ * text the document reader extracts (drawn pages go as images only to a vision model,
+ * a note otherwise); images when the connection's model can see them (`vision`, from
+ * main). Documents are still sent as their names only.
  */
 export function canReceive(kind: AttachmentKind, vision = false): boolean {
-  return kind === 'text' || (kind === 'image' && vision)
+  return kind === 'text' || kind === 'pdf' || (kind === 'image' && vision)
 }
 
 /** The tooltip for a chip the model will not receive, or undefined when it will. */

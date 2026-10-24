@@ -1,3 +1,4 @@
+import type { DocumentReader } from '../documents/types'
 import type { AuditSink } from '../permissions/audit'
 import type { PathGuard } from '../permissions/guard'
 import type { FindJobLauncher } from './job-launcher'
@@ -75,6 +76,11 @@ export interface ToolDeps {
   /** Environment for shell commands. Defaults to process.env minus the app's own variables. */
   env?: NodeJS.ProcessEnv
   limits?: Partial<ToolLimits>
+  /**
+   * Parses documents and images for read_document, out of process (DocumentWorkerHost).
+   * Without one, read_document answers that reading documents is unavailable.
+   */
+  documents?: DocumentReader
   /** Monotonic clock in ms, for time caps and audit durations. */
   now?: () => number
   /**
@@ -93,5 +99,6 @@ export interface ResolvedDeps {
   killTree: KillTree
   jobLauncher: FindJobLauncher
   env: NodeJS.ProcessEnv
+  documents: DocumentReader | null
   now: () => number
 }

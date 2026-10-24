@@ -2,7 +2,7 @@
 
 How images reach models: images a tool returns (`ToolResult.images`) and image files
 the user attaches. Part 2 of the document-reading plan; `docs/document-reader.md` is the
-parser that will produce tool images, `docs/attachments-conversation.md` how attachments
+parser that produces tool images (`read_document`) and PDF attachments' page images, `docs/attachments-conversation.md` how attachments
 are saved.
 
 ## One form inside the app
@@ -123,8 +123,8 @@ tests.
 These need a real account and are not covered by CI:
 
 1. **ChatGPT · Plan tool images.** Sign in with a Plus or Pro plan, choose a GPT-5 model,
-   grant a folder with a PNG, and have a tool return an image (once `read_document`
-   lands: "read page 1 of scan.pdf as an image"). Check the reply describes the page. In
+   grant a folder with a PNG, and have a tool return an image ("read page 1 of
+   scan.pdf as an image" with `read_document`). Check the reply describes the page. In
    the main-process log, see whether a `chatgpt-plan` request was refused and retried
    (the fallback); either way the reply must describe the image. Also attach a PNG and
    ask what it shows.

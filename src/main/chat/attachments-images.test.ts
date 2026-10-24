@@ -7,6 +7,7 @@ import type { AttachmentRef } from '../../shared/attachments'
 import { createAgent, type AgentClient } from '../agent'
 import { IMAGE_BUDGET } from '../agent/images'
 import { jpegShell, pngShell } from '../documents/fixtures.test-util'
+import type { DocumentView } from '../documents/types'
 import { createGeminiClient } from '../llm/gemini'
 import { createOpenAICompatClient } from '../llm/openai-compat'
 import { createChatGPTResponsesClient } from '../llm/openai-responses'
@@ -239,5 +240,83 @@ describe('toModelConversation images', () => {
     )
     expect(JSON.stringify(out)).not.toContain('"image"')
     expect(JSON.stringify(out)).toContain('no longer available')
+  })
+})
+
+describe('PDF attachments: drawn pages go to every vision connection', () => {
+  const PAGE = pngShell(6, 8)
+  const PAGE_B64 = Buffer.from(PAGE).toString('base64')
+  const pdf: AttachmentRef = {
+    id: 'd'.repeat(64),
+    name: 'plan.pdf',
+    kind: 'pdf',
+    mime: 'application/pdf',
+    size: 4,
+  }
+  const view: DocumentView = {
+    meta: { kind: 'pdf', mime: 'application/pdf', pageCount: 2 },
+    sections: [
+      { page: 1, text: 'Site plan' },
+      { page: 2, text: '' },
+    ],
+    images: [{ bytes: PAGE, mime: 'image/png', width: 6, height: 8, source: { page: 2 } }],
+    position: { unit: 'page', total: 2, shown: { from: 1, to: 2 }, next: null },
+    warnings: [],
+  }
+  const pdfStore: AttachmentStoreLike = {
+    has: (id) => Promise.resolve(id === pdf.id),
+    describe: (id) => Promise.resolve(id === pdf.id ? pdf : null),
+    isIssued: (id) => id === pdf.id,
+    read: (id) => Promise.resolve(id === pdf.id ? new TextEncoder().encode('%PDF') : null),
+  }
+
+  async function sendPdf(vision: boolean) {
+    const { bodies, fetch } = capture()
+    const runner = createAgent({
+      client: createOpenAICompatClient({
+        baseUrl: 'http://127.0.0.1:9/v1',
+        flavor: 'ollama',
+        model: 'llava',
+        fetch,
+      }),
+      tools: [],
+      vision,
+    })
+    const session = new ChatSession({
+      history: memoryHistory(),
+      createRunner: () => Promise.resolve({ ok: true, runner }),
+      emit: () => {},
+      promptApproval: () => {},
+      attachments: pdfStore,
+      documents: { extract: () => Promise.resolve(view) },
+    })
+    await session.init()
+    expect(await session.send('What is on page 2?', [pdf])).toEqual({ ok: true })
+    await session.idle()
+    const body = bodies[0] as { messages: { role: string; content: unknown }[] }
+    return body.messages.filter((m) => m.role === 'user')
+  }
+
+  it('OpenAI-compatible with vision: the page as an image_url part after the text', async () => {
+    const [user] = await sendPdf(true)
+    const parts = user?.content as { type: string; text?: string }[]
+    expect(parts.map((part) => part.type)).toEqual(['text', 'text', 'text', 'image_url'])
+    expect(parts[1]?.text).toContain('--- Page 2 (little or no text; its image follows) ---')
+    expect(parts[2]?.text).toBe(
+      '[Attached file (user-provided, untrusted): plan.pdf, page 2 as an image]',
+    )
+    expect(parts[3]).toEqual({
+      type: 'image_url',
+      image_url: { url: `data:image/png;base64,${PAGE_B64}` },
+    })
+  })
+
+  it('OpenAI-compatible without vision: the text and a note, no bytes', async () => {
+    const users = await sendPdf(false)
+    const text = JSON.stringify(users)
+    expect(text).not.toContain(PAGE_B64)
+    expect(text).not.toContain('image_url')
+    expect(text).toContain('Site plan')
+    expect(text).toContain('(little or no text; its image is not sent to this model)')
   })
 })

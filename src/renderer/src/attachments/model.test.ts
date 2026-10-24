@@ -57,14 +57,16 @@ describe('chip text', () => {
     expect(formatSize(20 * 1024 * 1024)).toBe('20 MB')
   })
 
-  it('says text files always reach the model, and images only a vision model', () => {
+  it('says text files and PDFs always reach the model, and images only a vision model', () => {
     expect(canReceive('text')).toBe(true)
+    expect(canReceive('pdf')).toBe(true)
+    expect(canReceive('pdf', true)).toBe(true)
     expect(canReceive('image')).toBe(false)
     expect(canReceive('image', true)).toBe(true)
-    expect(canReceive('pdf', true)).toBe(false)
     expect(canReceive('document', true)).toBe(false)
     expect(notReceivedNote('image')).toBe(NO_VISION)
-    expect(notReceivedNote('pdf', true)).toBe(NOT_SENT_YET)
+    expect(notReceivedNote('pdf')).toBeUndefined()
+    expect(notReceivedNote('document', true)).toBe(NOT_SENT_YET)
     expect(notReceivedNote('image', true)).toBeUndefined()
   })
 })

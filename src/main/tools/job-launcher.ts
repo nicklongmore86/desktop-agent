@@ -8,15 +8,16 @@ import { isInside, samePath } from '../permissions/paths'
 
 /**
  * The launcher's SHA-256, compiled in at build time from the build's pins file
- * (build/job-helper-pins.json, written by scripts/build-job-helper.mjs); undefined in a
- * build without the launcher and in tests.
+ * (build/job-helper-pins.json, written by scripts/build-job-helper.mjs) as the marker
+ * `job-run.exe-sha256:<digest>`, which afterPack finds in the bundle; undefined in a build
+ * without the launcher and in tests.
  */
-declare const __JOB_RUN_SHA256__: string | undefined
+declare const __JOB_RUN_PIN__: string | undefined
 
 export const JOB_RUN_SHA256: string | null =
-  typeof __JOB_RUN_SHA256__ === 'string' && /^[0-9a-f]{64}$/.test(__JOB_RUN_SHA256__)
-    ? __JOB_RUN_SHA256__
-    : null
+  (typeof __JOB_RUN_PIN__ === 'string' &&
+    /^job-run\.exe-sha256:([0-9a-f]{64})$/.exec(__JOB_RUN_PIN__)?.[1]) ||
+  null
 
 /** Where the installer puts the launcher, relative to the app's resources folder. */
 export const JOB_RUN_PATH = ['helpers', 'job-run.exe'] as const

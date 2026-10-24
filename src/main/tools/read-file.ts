@@ -1,7 +1,9 @@
 import { promises as fs } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
+import { KIND_LABEL, sniff } from '../documents/sniff'
 import { ToolFailure, ToolInputError, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
+import { readableAsDocument } from './read-document'
 import { openVerified, readBounded } from './safe-fs'
 import { decodeText, formatBytes, looksBinary, splitLines } from './text'
 
@@ -18,7 +20,7 @@ export function readFileTool(deps: ResolvedDeps): ToolSpec<Input> {
   return {
     name: 'read_file',
     description:
-      'Read a text file inside the granted folders. Returns a one-line header (path, size, line ' +
+      'Read a text file inside the granted folders (for PDFs and images, use read_document). Returns a one-line header (path, size, line ' +
       'count, range shown) followed by the text. Files over ' +
       `${formatBytes(limits.maxReadBytes)} need startLine/endLine (1-based, inclusive). Binary files ` +
       'and files with several hard links are refused. UTF-8, UTF-16 (with BOM) and legacy ' +
@@ -67,9 +69,8 @@ export function readFileTool(deps: ResolvedDeps): ToolSpec<Input> {
               'too-large',
             )
           }
-          if (looksBinary(await readBounded(handle, 8000))) {
-            throw new ToolFailure(`${file} looks like a binary file; not reading it.`, 'binary')
-          }
+          const head = await readBounded(handle, 8000)
+          if (looksBinary(head)) throw binaryFailure(file, head)
           const range = await readLineRange(
             handle,
             first,
@@ -80,10 +81,9 @@ export function readFileTool(deps: ResolvedDeps): ToolSpec<Input> {
           return { content: `[${file} | ${formatBytes(size)} | ${range.header}]\n${range.text}` }
         }
 
-        const decoded = decodeText(await readBounded(handle, limits.maxReadBytes))
-        if (decoded.binary) {
-          throw new ToolFailure(`${file} looks like a binary file; not reading it.`, 'binary')
-        }
+        const bytes = await readBounded(handle, limits.maxReadBytes)
+        const decoded = decodeText(bytes)
+        if (decoded.binary) throw binaryFailure(file, bytes)
         const lines = splitLines(decoded.text)
         const last = Math.min(input.endLine ?? lines.length, lines.length)
         const encoding = decoded.encoding === 'utf-8' ? '' : ` | ${decoded.encoding}`
@@ -99,6 +99,18 @@ export function readFileTool(deps: ResolvedDeps): ToolSpec<Input> {
       }
     },
   }
+}
+
+/** The binary refusal, pointing to read_document when it can read the file. */
+function binaryFailure(file: string, head: Uint8Array): ToolFailure {
+  const { kind } = sniff(head)
+  if (readableAsDocument(kind)) {
+    return new ToolFailure(
+      `${file} is a ${KIND_LABEL[kind]}, not text; use read_document to read it.`,
+      'binary',
+    )
+  }
+  return new ToolFailure(`${file} looks like a binary file; not reading it.`, 'binary')
 }
 
 const CHUNK = 64 * 1024

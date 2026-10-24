@@ -4,6 +4,7 @@ import { deletePathTool } from './delete-path'
 import { defaultJobLauncher } from './job-launcher'
 import { listDirTool } from './list-dir'
 import { moveFileTool } from './move-file'
+import { readDocumentTool } from './read-document'
 import { readFileTool } from './read-file'
 import { defaultKillTree, defaultSpawner, runShellTool, shellEnv } from './run-shell'
 import { searchFilesTool } from './search-files'
@@ -39,6 +40,7 @@ export function createTools(deps: ToolDeps): AgentTool[] {
     killTree: deps.killTree ?? defaultKillTree(platform, spawn, deps.env ?? process.env),
     jobLauncher: deps.jobLauncher ?? defaultJobLauncher(platform, deps.guard),
     env: shellEnv(deps.env ?? process.env),
+    documents: deps.documents ?? null,
     now: deps.now ?? (() => performance.now()),
   }
   const wrap = {
@@ -72,7 +74,7 @@ export function createTools(deps: ToolDeps): AgentTool[] {
             content: JSON.stringify({
               roots,
               message: roots.length
-                ? 'Use these paths with list_dir, read_file, and search_files.'
+                ? 'Use these paths with list_dir, read_file, read_document, and search_files.'
                 : 'No accessible folders are granted. Ask the user to add a folder in Settings.',
             }),
           }
@@ -82,6 +84,7 @@ export function createTools(deps: ToolDeps): AgentTool[] {
     ),
     defineTool(listDirTool(resolved), wrap),
     defineTool(readFileTool(resolved), wrap),
+    defineTool(readDocumentTool(resolved), wrap),
     defineTool(searchFilesTool(resolved), wrap),
     defineTool(writeFileTool(resolved), wrap),
     defineTool(moveFileTool(resolved), wrap),

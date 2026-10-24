@@ -237,7 +237,7 @@ export function describeExif(info: ExifInfo, includeLocation: boolean): string {
           (altitude === undefined ? '' : ` (altitude ${altitude.toFixed(1)} m)`),
       )
     } else {
-      lines.push('Location: recorded (not included; ask with includeLocation)')
+      lines.push('Location: recorded (not included; ask with include_location)')
     }
   }
   return lines.join('\n')
