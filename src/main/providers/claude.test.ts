@@ -1,7 +1,10 @@
 import { beforeEach, expect, it, vi, afterEach } from 'vitest'
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createClaudeSubscriptionRunner } from './claude'
-import type { AgentEvent, AgentTool } from '../agent'
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
+import type { AgentEvent, AgentTool, ToolResult } from '../agent'
+import { imageBlock } from '../agent/images'
+import { jpegShell, pngShell } from '../documents/fixtures.test-util'
 
 const sdk = vi.hoisted(() => ({
   handlers: new Map<string, (input: unknown) => Promise<unknown>>(),
@@ -35,10 +38,14 @@ let mode:
   | 'result-success-error'
   | 'max-turns'
 let sentInput: boolean
+let inputs: unknown[]
+let toolResult: unknown
 const close = vi.fn()
 beforeEach(() => {
   mode = 'normal'
   sentInput = false
+  inputs = []
+  toolResult = undefined
   sdk.handlers.clear()
   close.mockClear()
   vi.mocked(query).mockClear()
@@ -75,8 +82,9 @@ beforeEach(() => {
           ),
         async *[Symbol.asyncIterator]() {
           if (typeof request.prompt === 'string') throw new Error('Expected gated input.')
-          for await (const _input of request.prompt) {
+          for await (const input of request.prompt) {
             sentInput = true
+            inputs.push(input)
           }
           yield {
             type: 'system',
@@ -128,16 +136,20 @@ beforeEach(() => {
             type: 'stream_event',
             event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hello' } },
           } as SDKMessage
-          await sdk.handlers.get('read_file')?.({ path: '/granted/file' })
+          toolResult = await sdk.handlers.get('read_file')?.({ path: '/granted/file' })
           yield { type: 'result', subtype: 'success', is_error: false } as SDKMessage
         },
       }) as unknown as ReturnType<typeof query>,
   )
 })
-function setup(observe: Parameters<typeof createClaudeSubscriptionRunner>[2] = {}) {
+function setup(
+  observe: Parameters<typeof createClaudeSubscriptionRunner>[2] = {},
+  result: ToolResult = { content: 'safe' },
+  conversation: MessageParam[] = [{ role: 'user', content: 'read' }],
+) {
   const events: AgentEvent[] = []
   const controller = new AbortController()
-  const execute = vi.fn(() => Promise.resolve({ content: 'safe' }))
+  const execute = vi.fn(() => Promise.resolve(result))
   const tool: AgentTool = {
     name: 'read_file',
     description: 'Guarded read',
@@ -150,7 +162,7 @@ function setup(observe: Parameters<typeof createClaudeSubscriptionRunner>[2] = {
     observe,
   )
   const run = () =>
-    runner.run([{ role: 'user', content: 'read' }], {
+    runner.run(conversation, {
       signal: controller.signal,
       onEvent: (e) => {
         events.push(e)
@@ -251,4 +263,43 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+it('hands tool images to the runtime as MCP image content and attached images with the prompt', async () => {
+  const page = pngShell(6, 6)
+  const photo = jpegShell(3, 3)
+  const { run } = setup(
+    {},
+    {
+      content: 'One page.',
+      images: [{ mime: 'image/png', data: page, width: 6, height: 6, label: 'page 1' }],
+    },
+    [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'What is this?' }, imageBlock('image/jpeg', photo)],
+      },
+    ],
+  )
+  const result = await run()
+  expect(result.stopReason).toBe('end_turn')
+  expect(toolResult).toEqual({
+    content: [
+      { type: 'text', text: 'One page.' },
+      { type: 'text', text: '[Image: page 1]' },
+      { type: 'image', data: Buffer.from(page).toString('base64'), mimeType: 'image/png' },
+    ],
+    isError: false,
+  })
+  const message = (inputs[0] as { message: { content: { type: string; text?: string }[] } }).message
+  expect(message.content.map((block) => block.type)).toEqual(['text', 'text', 'image'])
+  expect(message.content[0]?.text).toContain(
+    '[Image: transcript image 1, attached after this transcript]',
+  )
+  expect(message.content[0]?.text).not.toContain(Buffer.from(photo).toString('base64'))
+  expect(message.content[2]).toEqual(imageBlock('image/jpeg', photo))
+  // The saved history keeps a note, never the bytes.
+  const saved = JSON.stringify(result.conversation.slice(1))
+  expect(saved).toContain('1 image shown with this result (page 1)')
+  expect(saved).not.toContain(Buffer.from(page).toString('base64'))
 })

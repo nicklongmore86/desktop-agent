@@ -7,6 +7,7 @@ import type {
   ConnectionDescriptor,
 } from '../connection'
 import { SetupError } from '../errors'
+import type { PublishedVision } from '../vision'
 import { agentClientAdapter } from './agent-client'
 
 /** One model a connection lists, already filtered to ones that can chat. */
@@ -15,6 +16,8 @@ export interface ListedModel {
   label: string
   /** Absent: the server's list does not say (shown with the list's warning). */
   toolSupport?: 'supported' | 'unknown'
+  /** Whether the list says the model reads images; absent when it does not say. */
+  vision?: boolean
 }
 
 /** What a list or key check gets: the saved key (null for local servers) and the API root. */
@@ -54,6 +57,13 @@ export interface ModelApiSpec extends ConnectionDescriptor {
    * normalized root or throws a safe message (loopback http only).
    */
   baseUrlRule?: { resolve: (baseUrl: string) => string }
+  /**
+   * Whether `model` reads images by the vendor's published model families, checked before
+   * the model list's own word. Absent or null: the list, then the user's setting, decide.
+   */
+  vision?: (model: string) => PublishedVision
+  /** The model list says which models read images (ListedModel.vision): OpenRouter's does. */
+  listsVision?: boolean
 }
 
 const STATUS_TIMEOUT_MS = 3_000
@@ -76,6 +86,8 @@ export function modelApiAdapter(spec: ModelApiSpec): AdapterFactory {
     noModelsMessage,
     modelWarning,
     baseUrlRule,
+    vision,
+    listsVision,
     ...rest
   } = spec
   const { id, missingKeyMessage } = spec
@@ -161,6 +173,7 @@ export function modelApiAdapter(spec: ModelApiSpec): AdapterFactory {
           supportedReasoningEfforts: [],
           isDefault: model.id === defaultModel,
           ...(model.toolSupport ? { toolSupport: model.toolSupport } : {}),
+          ...(model.vision !== undefined ? { imageInput: model.vision } : {}),
         })),
         selectedModel,
         savedModel,
@@ -182,6 +195,20 @@ export function modelApiAdapter(spec: ModelApiSpec): AdapterFactory {
         return chosen
       },
       readyMessage: readyMessage(0),
+      // The model list's own word when it has one (from the cache when it is fresh), else
+      // the vendor's documented models, else nothing: the setting decides.
+      vision: async (model) => {
+        if (listsVision) {
+          const listed = await readKey()
+            .then((key) => listModels(key))
+            .catch(() => [])
+          const said = listed.find((candidate) => candidate.id === model)?.vision
+          if (said !== undefined) return said
+        }
+        return vision?.(model) ?? null
+      },
+      visionSource: 'model',
+      visionSetting: true,
     })(host)
 
     const errorStatus = (failure: ProviderFailure): ProviderStatus => ({

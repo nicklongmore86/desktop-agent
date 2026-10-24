@@ -82,6 +82,19 @@ export const createCodexSubscriptionAdapter: AdapterFactory = (host) => {
     invalidate,
     models,
 
+    /** From the runtime's catalog (`inputModalities`); the runner reads it again for each Send. */
+    async vision() {
+      let enabled = false
+      try {
+        const catalog = await models()
+        enabled =
+          catalog.options.find((option) => option.id === catalog.selectedModel)?.imageInput === true
+      } catch {
+        // No catalog: nobody said this model reads images.
+      }
+      return { enabled, source: 'model', setting: false, configurable: false }
+    },
+
     async setModel(model) {
       const catalog = await models()
       if (model !== null && !catalog.options.some((option) => option.id === model))

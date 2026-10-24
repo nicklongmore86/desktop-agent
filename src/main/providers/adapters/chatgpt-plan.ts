@@ -1,5 +1,5 @@
 import type { ProviderFailure, ProviderModels, ProviderStatus } from '../../../shared/ipc'
-import { CHATGPT_PLAN } from '../../../shared/ipc-connections'
+import { CHATGPT_PLAN, type ConnectionVision } from '../../../shared/ipc-connections'
 import { createAgent, type AgentClient, type AgentErrorCode, type AgentEvent } from '../../agent'
 import { OpenAICompatError, openAICompatErrorEvent } from '../../llm/openai-compat/errors'
 import type { FetchLike } from '../../llm/openai-compat/http'
@@ -18,6 +18,7 @@ import {
 } from '../chatgpt-auth'
 import type { AdapterFactory, AdapterHost, ConnectionAdapter } from '../connection'
 import { SetupError, SubscriptionError } from '../errors'
+import { openAIVision, resolveVision } from '../vision'
 
 export interface ChatgptPlanOptions {
   /** Tests: the sign-in service (against the fake OpenAI auth server). */
@@ -192,12 +193,31 @@ export const chatgptPlanAdapter =
           defaultReasoningEffort: null,
           supportedReasoningEfforts: [],
           isDefault: model.slug === defaultModel,
+          ...(model.vision !== undefined ? { imageInput: model.vision } : {}),
         })),
         selectedModel,
         savedModel,
         defaultModel,
         resolvedModel: selectedModel,
       }
+    }
+
+    /**
+     * The model list's own word (`input_modalities`, when it has one), then OpenAI's
+     * documented families, then the user's setting. A list that cannot be read means the
+     * families or the setting decide.
+     */
+    const visionOf = async (chosen?: string | null): Promise<ConnectionVision> => {
+      const listed = await listModels().catch(() => [])
+      const model = chosen ?? host.settings?.selection(id) ?? listed[0]?.slug ?? null
+      const published = model
+        ? (listed.find((entry) => entry.slug === model)?.vision ?? openAIVision(model))
+        : null
+      return resolveVision(published, {
+        source: 'model',
+        configurable: true,
+        setting: host.settings?.vision(id) ?? false,
+      })
     }
 
     const failure = (error: unknown): ProviderFailure => {
@@ -226,6 +246,7 @@ export const chatgptPlanAdapter =
       pickerOrder: 8,
       failure,
       models,
+      vision: () => visionOf(),
 
       invalidate() {
         cache = undefined
@@ -311,6 +332,7 @@ export const chatgptPlanAdapter =
           model: chosen,
           errorEvent,
           modelName: 'ChatGPT',
+          vision: (await visionOf(chosen)).enabled,
         })
       },
     }

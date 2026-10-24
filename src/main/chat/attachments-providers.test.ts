@@ -1,5 +1,6 @@
 // Every provider path gets a valid request for a prompt with attachments: the
-// session hands each one the same text form (see toModelConversation).
+// session hands each one the same text form (see toModelConversation). These
+// connections cannot see images; attachments-images.test.ts covers those that can.
 import Anthropic from '@anthropic-ai/sdk'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import { describe, expect, it } from 'vitest'
@@ -9,7 +10,13 @@ import { createGeminiClient } from '../llm/gemini'
 import { createOpenAICompatClient } from '../llm/openai-compat'
 import { createChatGPTResponsesClient } from '../llm/openai-responses'
 import { transcriptPrompt } from '../providers/bridge'
-import { attachmentPlaceholder, inlineText, type AttachmentStoreLike } from './attachments'
+import { pngShell } from '../documents/fixtures.test-util'
+import {
+  attachmentPlaceholder,
+  inlineText,
+  noVisionPlaceholder,
+  type AttachmentStoreLike,
+} from './attachments'
 import { ChatSession, type AgentRunner } from './session'
 import { memoryHistory } from './test-support'
 
@@ -39,10 +46,17 @@ const store: AttachmentStoreLike = {
   has: (id) => Promise.resolve(files.some((file) => file.id === id)),
   describe: (id) => Promise.resolve(files.find((file) => file.id === id) ?? null),
   isIssued: (id) => files.some((file) => file.id === id),
-  read: (id) => Promise.resolve(id === notes.id ? new TextEncoder().encode('Ship Friday') : null),
+  read: (id) =>
+    Promise.resolve(
+      id === notes.id
+        ? new TextEncoder().encode('Ship Friday')
+        : id === photo.id
+          ? pngShell(4, 4)
+          : null,
+    ),
 }
 const NOTES = inlineText(notes, 'Ship Friday')
-const PHOTO = attachmentPlaceholder(photo)
+const PHOTO = noVisionPlaceholder(photo)
 const REPORT = attachmentPlaceholder(report)
 
 /** Records each request body; answers 400 so the run ends after the first request. */
@@ -65,6 +79,7 @@ function expectClean(body: unknown): void {
   const text = JSON.stringify(body)
   expect(text).not.toContain('"attachment"')
   expect(text).not.toContain(notes.id)
+  expect(text).not.toContain('base64')
 }
 
 /** Sends a prompt with both attachments through a session whose runner is `runner`. */
@@ -156,6 +171,7 @@ describe('a prompt with attachments reaches every provider as valid text', () =>
   it.each(['Claude', 'Codex'])('%s subscription (transcript prompt)', async () => {
     const prompts: string[] = []
     await send({
+      vision: false,
       run(conversation) {
         prompts.push(transcriptPrompt(conversation))
         return Promise.resolve({ conversation, stopReason: 'end_turn' })

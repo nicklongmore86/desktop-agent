@@ -123,7 +123,7 @@ it('native Codex discovers grants and lists a folder through the guarded tool br
     expect(params['namespace'] ?? null).toBeNull()
     const name = String(params['tool'])
     calls.push(name)
-    const result = await bridge.call(name, params['arguments'])
+    const { result } = await bridge.call(name, params['arguments'])
     outputs.push(result.content)
     return { contentItems: [{ type: 'inputText', text: result.content }], success: !result.isError }
   }

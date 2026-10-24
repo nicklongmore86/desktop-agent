@@ -42,14 +42,23 @@ export interface GeminiFunctionCall {
   args?: unknown
 }
 
+/** Inline bytes (base64), for images. */
+export interface GeminiBlob {
+  mimeType: string
+  data: string
+}
+
 export interface GeminiFunctionResponse {
   id?: string
   name: string
   response: Record<string, unknown>
+  /** Gemini 3 and later: images that belong to this response (multimodal function responses). */
+  parts?: { inlineData: GeminiBlob }[]
 }
 
 export interface GeminiPart {
   text?: string
+  inlineData?: GeminiBlob
   thought?: boolean
   thoughtSignature?: string
   functionCall?: GeminiFunctionCall

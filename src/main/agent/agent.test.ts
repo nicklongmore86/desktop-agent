@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Message, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/messages'
 import { describe, expect, it, vi } from 'vitest'
-import { createAgent, createClaudeClient, DEFAULT_MODEL } from './index'
+import { pngShell } from '../documents/fixtures.test-util'
+import { createAgent, createClaudeClient, DEFAULT_MODEL, NO_VISION_NOTE } from './index'
 import type { AgentClient, AgentEvent, AgentTool } from './types'
 
 function reply(
@@ -407,5 +408,93 @@ describe('agent', () => {
     expect((await f.run()).stopReason).toBe(code)
     const event = f.events.find((event) => event.type === 'error')
     expect(event?.message).not.toMatch(/try again|secret/i)
+  })
+})
+
+describe('agent tool images', () => {
+  const imageTool = (label: string): AgentTool =>
+    tool(() =>
+      Promise.resolve({
+        content: `read ${label}`,
+        images: [{ mime: 'image/png', data: pngShell(4, 4), width: 4, height: 4, label }],
+      }),
+    )
+  const run = async (vision: boolean, steps: number) => {
+    const requests: MessageCreateParamsNonStreaming[] = []
+    const responses = [
+      ...Array.from({ length: steps }, (_, i) => reply('tool_use', [call(`c${String(i)}`)])),
+      reply(),
+    ]
+    let n = 0
+    const client: AgentClient = {
+      messages: {
+        stream(params) {
+          requests.push(structuredClone(params))
+          const response = responses.shift() ?? reply()
+          return {
+            abort: () => {},
+            on: () => {},
+            finalMessage: () => Promise.resolve(response),
+          }
+        },
+      },
+    }
+    const agent = createAgent({
+      client,
+      tools: [
+        {
+          ...imageTool('page'),
+          execute: () => {
+            n += 1
+            return imageTool(`page ${String(n)}`).execute({}, {} as never)
+          },
+        },
+      ],
+      vision,
+    })
+    const result = await agent.run([{ role: 'user', content: 'Read' }], {
+      signal: new AbortController().signal,
+      requestApproval: () => Promise.resolve(false),
+      onEvent: () => {},
+    })
+    return { requests, result, agent }
+  }
+  const images = (params: MessageCreateParamsNonStreaming | undefined): string[] =>
+    (params?.messages ?? []).flatMap((message) =>
+      typeof message.content === 'string'
+        ? []
+        : message.content.flatMap((block) =>
+            block.type === 'tool_result' && Array.isArray(block.content)
+              ? block.content.flatMap((part, i, all) => {
+                  const label = all[i - 1]
+                  return part.type === 'image' && label?.type === 'text' ? [label.text] : []
+                })
+              : [],
+          ),
+    )
+
+  it('sends a tool image to a vision model and saves only a note', async () => {
+    const { requests, result, agent } = await run(true, 1)
+    expect(agent.vision).toBe(true)
+    expect(images(requests[1])).toEqual(['[Image: page 1]'])
+    const saved = JSON.stringify(result.conversation)
+    expect(saved).not.toContain('base64')
+    expect(saved).toContain('1 image shown with this result (page 1)')
+  })
+
+  it('resends images from the last two tool steps only', async () => {
+    const { requests } = await run(true, 4)
+    expect(images(requests[1])).toEqual(['[Image: page 1]'])
+    expect(images(requests[2])).toEqual(['[Image: page 1]', '[Image: page 2]'])
+    expect(images(requests[4])).toEqual(['[Image: page 3]', '[Image: page 4]'])
+    // The aged-out step is read as its saved note.
+    expect(JSON.stringify(requests[4]?.messages[2])).toContain('call the tool again')
+  })
+
+  it('never sends an image without vision, and tells the model why', async () => {
+    const { requests, result, agent } = await run(false, 1)
+    expect(agent.vision).toBe(false)
+    expect(JSON.stringify(requests)).not.toContain('"image"')
+    expect(JSON.stringify(result.conversation)).toContain(NO_VISION_NOTE)
   })
 })

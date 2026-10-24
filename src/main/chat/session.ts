@@ -47,6 +47,12 @@ interface SwitchTarget {
 /** One agent run. `createAgent(...)` satisfies this. */
 export interface AgentRunner {
   run: (conversation: MessageParam[], options: RunOptions) => Promise<RunResult>
+  /**
+   * Whether the model can see images, when known before the run. False: attached images
+   * are sent as a note only. Absent: they are sent, and the runner strips them if its model
+   * turns out not to see images (Codex reads that from its catalog during the run).
+   */
+  readonly vision?: boolean
 }
 
 export type RunnerResult =
@@ -255,7 +261,9 @@ export class ChatSession {
     await this.persist()
     // The saved history keeps its attachment blocks; the runner gets their text form.
     const stored = this.conversation
-    const sent = await toModelConversation(stored, this.deps.attachments, this.unavailable)
+    const sent = await toModelConversation(stored, this.deps.attachments, this.unavailable, {
+      ...(built.runner.vision !== undefined ? { vision: built.runner.vision } : {}),
+    })
     if (cancelled()) {
       this.active = null
       release()

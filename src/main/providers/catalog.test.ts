@@ -205,3 +205,18 @@ it.each([
     expect(JSON.stringify(allowance)).not.toContain('balance')
   },
 )
+it('reads image input from inputModalities only; a missing list means text only', async () => {
+  const { peer } = peerWith({
+    data: [
+      { ...sol, inputModalities: ['text', 'image'] },
+      { ...terra, inputModalities: ['text'] },
+      { ...terra, id: 'luna', model: 'gpt-5.6-luna' },
+    ],
+    nextCursor: null,
+  })
+  expect((await codexModels(peer, null)).options.map((o) => [o.id, o.imageInput])).toEqual([
+    [sol.model, true],
+    [terra.model, false],
+    ['gpt-5.6-luna', false],
+  ])
+})

@@ -5,7 +5,8 @@ import { codexModels } from './catalog'
 import { CODEX_FAILURES, SubscriptionError, mapFailure } from './errors'
 import type { ProviderModels, ProviderFailure } from '../../shared/ipc'
 import features from './codex-features.json'
-import { ToolBridge, transcriptPrompt } from './bridge'
+import { imageLabel, ToolBridge, transcriptInput } from './bridge'
+import { imageDataUrl as dataUrl } from '../llm/openai-compat/translate'
 import { RpcPeer, object, type RpcObject } from './rpc'
 import { launch } from './runtime'
 
@@ -159,6 +160,10 @@ export function createCodexRunner(
             : codexModels(peer, preferences.model ?? null)
         ).catch(() => null)
         const choice = catalog?.options.find((model) => model.id === catalog.selectedModel)
+        // Images only to a model the catalog says reads them; unknown means no.
+        bridge.vision = choice?.imageInput === true
+        const prompt = transcriptInput(conversation, bridge.vision)
+        bridge.spendImages(prompt.images.length)
         const started = await peer.request('thread/start', {
           ...codexThreadOptions(context, tools),
           ...(catalog?.selectedModel ? { model: catalog.selectedModel } : {}),
@@ -207,9 +212,23 @@ export function createCodexRunner(
               typeof params['tool'] !== 'string'
             )
               throw new Error('Denied runtime request.')
-            const result = await bridge.call(params['tool'], object(params['arguments']))
+            const { result, images } = await bridge.call(
+              params['tool'],
+              object(params['arguments']),
+            )
             return {
-              contentItems: [{ type: 'inputText', text: result.content }],
+              contentItems: [
+                { type: 'inputText', text: result.content },
+                ...images.flatMap(({ label, block }) => {
+                  const url = dataUrl(block)
+                  return url
+                    ? [
+                        { type: 'inputText', text: imageLabel(label) },
+                        { type: 'inputImage', imageUrl: url },
+                      ]
+                    : []
+                }),
+              ],
               success: !result.isError,
             }
           }
@@ -236,7 +255,18 @@ export function createCodexRunner(
         void done.catch(() => {})
         const turn = await peer.request('turn/start', {
           threadId,
-          input: [{ type: 'text', text: transcriptPrompt(conversation), text_elements: [] }],
+          input: [
+            { type: 'text', text: prompt.text, text_elements: [] },
+            ...prompt.images.flatMap(({ label, block }) => {
+              const url = dataUrl(block)
+              return url
+                ? [
+                    { type: 'text', text: imageLabel(label), text_elements: [] },
+                    { type: 'image', url },
+                  ]
+                : []
+            }),
+          ],
         })
         const id = object(turn['turn'])['id']
         if (typeof id !== 'string') throw new Error('Invalid turn id.')

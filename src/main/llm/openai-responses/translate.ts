@@ -4,11 +4,15 @@ import type {
   MessageParam,
   ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/messages'
+import { IMAGE_LABEL_PREFIX } from '../../agent/images'
 import { OpenAICompatError } from '../openai-compat/errors'
 import {
   DOCUMENT_PLACEHOLDER,
   IMAGE_PLACEHOLDER,
+  imageDataUrl,
   TOOL_ERROR_PREFIX,
+  TOOL_IMAGES_NOTE,
+  type ToolResultPart,
 } from '../openai-compat/translate'
 
 /**
@@ -18,11 +22,24 @@ import {
 export const TOOL_NAMESPACE = 'workspace'
 
 // Responses request shapes (only the fields this client sends).
+export type ResponsesInputContent =
+  { type: 'input_text'; text: string } | { type: 'input_image'; image_url: string; detail: 'auto' }
 export type ResponsesInputItem =
-  | { type: 'message'; role: 'user'; content: [{ type: 'input_text'; text: string }] }
+  | { type: 'message'; role: 'user'; content: ResponsesInputContent[] }
   | { type: 'message'; role: 'assistant'; content: [{ type: 'output_text'; text: string }] }
   | { type: 'function_call'; call_id: string; name: string; arguments: string; namespace: string }
-  | { type: 'function_call_output'; call_id: string; output: string }
+  | {
+      type: 'function_call_output'
+      call_id: string
+      output: string | ResponsesInputContent[]
+    }
+
+/**
+ * Where tool images go: inside `function_call_output` (the Responses API's own form), or,
+ * if the route refuses that, in a user message right after the outputs, marked as tool
+ * output (as for Chat Completions).
+ */
+export type ToolImageMode = 'output' | 'message'
 export interface ResponsesFunctionTool {
   type: 'function'
   name: string
@@ -78,7 +95,9 @@ export const OMITTED_BODY_KEYS: readonly string[] = [
   'previous_response_id',
 ]
 
-function textOf(blocks: readonly ContentBlockParam[] | ToolResultBlockParam['content']): string {
+function textOf(
+  blocks: readonly (ContentBlockParam | ToolResultPart)[] | string | undefined,
+): string {
   if (blocks === undefined) return ''
   if (typeof blocks === 'string') return blocks
   const parts: string[] = []
@@ -97,6 +116,27 @@ const userText = (text: string): ResponsesInputItem => ({
   content: [{ type: 'input_text', text }],
 })
 
+/** Text and images as Responses input content (other blocks as textOf words them). */
+function inputContent(
+  blocks: readonly (ContentBlockParam | ToolResultPart)[],
+): ResponsesInputContent[] {
+  const parts: ResponsesInputContent[] = []
+  for (const block of blocks) {
+    const url = block.type === 'image' ? imageDataUrl(block) : null
+    if (url) parts.push({ type: 'input_image', image_url: url, detail: 'auto' })
+    else {
+      const text = textOf([block])
+      if (text) parts.push({ type: 'input_text', text })
+    }
+  }
+  return parts
+}
+
+const blocksOf = (content: ToolResultBlockParam['content']): ToolResultPart[] =>
+  typeof content === 'string' ? [{ type: 'text', text: content }] : (content ?? [])
+const hasImage = (blocks: readonly (ContentBlockParam | ToolResultPart)[]): boolean =>
+  blocks.some((block) => block.type === 'image')
+
 /**
  * `calls` holds the ids of the tool calls in the assistant message just before `message`
  * that are still unanswered. A tool result must answer one of them, once: the API rejects
@@ -104,7 +144,11 @@ const userText = (text: string): ResponsesInputItem => ({
  * pairing (conversation-store.ts). An orphaned result means the history is damaged, so the
  * request is refused rather than sent with the result silently dropped.
  */
-function translateMessage(message: MessageParam, calls: Set<string>): ResponsesInputItem[] {
+function translateMessage(
+  message: MessageParam,
+  calls: Set<string>,
+  mode: ToolImageMode,
+): ResponsesInputItem[] {
   if (typeof message.content === 'string') {
     if (!message.content) return []
     return message.role === 'user'
@@ -134,24 +178,65 @@ function translateMessage(message: MessageParam, calls: Set<string>): ResponsesI
     return out
   }
   // Outputs answer the calls just before them; other user content follows them.
+  const toolImages: ResponsesInputContent[] = []
   const out: ResponsesInputItem[] = message.content
     .filter((block) => block.type === 'tool_result')
-    .map((block) => {
+    .map((block): ResponsesInputItem => {
       if (!calls.delete(block.tool_use_id))
         throw new OpenAICompatError(
           'protocol',
           'The conversation has a tool result without its tool call, so it was not sent.',
         )
-      const output = textOf(block.content)
+      const blocks = blocksOf(block.content)
+      const prefix = block.is_error ? TOOL_ERROR_PREFIX : ''
+      if (hasImage(blocks) && mode === 'output') {
+        const parts = inputContent(blocks)
+        const first = parts[0]
+        if (prefix && first?.type === 'input_text') first.text = `${prefix}${first.text}`
+        return { type: 'function_call_output', call_id: block.tool_use_id, output: parts }
+      }
+      if (hasImage(blocks))
+        toolImages.push(
+          ...inputContent(
+            blocks.filter(
+              (part) =>
+                part.type === 'image' ||
+                (part.type === 'text' && part.text.startsWith(IMAGE_LABEL_PREFIX)),
+            ),
+          ),
+        )
+      const output = textOf(blocks.filter((part) => part.type !== 'image'))
       return {
         type: 'function_call_output',
         call_id: block.tool_use_id,
-        output: block.is_error ? `${TOOL_ERROR_PREFIX}${output}` : output,
+        output: `${prefix}${output}`,
       }
     })
-  const text = textOf(message.content.filter((block) => block.type !== 'tool_result'))
-  if (text) out.push(userText(text))
+  if (toolImages.length)
+    out.push({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: TOOL_IMAGES_NOTE }, ...toolImages],
+    })
+  const rest = message.content.filter((block) => block.type !== 'tool_result')
+  if (hasImage(rest)) {
+    const content = inputContent(rest)
+    if (content.length) out.push({ type: 'message', role: 'user', content })
+  } else {
+    const text = textOf(rest)
+    if (text) out.push(userText(text))
+  }
   return out
+}
+
+/** True when a request puts images inside function_call_output (see ToolImageMode). */
+export function hasOutputImages(body: ResponsesRequest): boolean {
+  return body.input.some(
+    (item) =>
+      item.type === 'function_call_output' &&
+      Array.isArray(item.output) &&
+      item.output.some((part) => part.type === 'input_image'),
+  )
 }
 
 /**
@@ -159,12 +244,15 @@ function translateMessage(message: MessageParam, calls: Set<string>): ResponsesI
  * state to continue from. The system prompt becomes `instructions` (system-role items are
  * rejected). `max_tokens` and `stop_sequences` have no allowed equivalent and are dropped.
  */
-export function toResponsesRequest(params: MessageCreateParamsNonStreaming): ResponsesRequest {
+export function toResponsesRequest(
+  params: MessageCreateParamsNonStreaming,
+  mode: ToolImageMode = 'output',
+): ResponsesRequest {
   const system = typeof params.system === 'string' ? params.system : textOf(params.system ?? [])
   const input: ResponsesInputItem[] = []
   let calls = new Set<string>()
   for (const message of params.messages) {
-    input.push(...translateMessage(message, calls))
+    input.push(...translateMessage(message, calls, mode))
     calls =
       message.role === 'assistant' && typeof message.content !== 'string'
         ? new Set(message.content.flatMap((b) => (b.type === 'tool_use' ? [b.id] : [])))

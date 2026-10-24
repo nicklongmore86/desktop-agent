@@ -6,12 +6,14 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ConnectionId } from '../../../shared/ipc-connections'
 import type { AgentEvent, AgentTool } from '../../agent'
+import { pngShell } from '../../documents/fixtures.test-util'
 import { GEMINI_FREE_TIER_NOTICE, GEMINI_HOST } from '../../llm/gemini'
 import { makeSandbox, put, type Sandbox } from '../../permissions/test-support'
 import type { ApiKeyStore, KeyStore } from '../../secrets'
 import { openSettingsStore, type SettingsStore } from '../../storage/settings-store'
 import { toolHarness } from '../../tools/test-support'
 import type { AdapterFactory } from '../connection'
+import { createAnthropicApiAdapter } from './anthropic-api'
 import { ConnectionService } from '../service'
 import { geminiApiAdapter } from './gemini-api'
 import { lmStudioAdapter, ollamaAdapter } from './local-servers'
@@ -611,4 +613,155 @@ describe('the OpenAI-compatible API connections', () => {
       expect(JSON.stringify(events)).not.toContain('Claude')
     },
   )
+})
+
+describe('images and vision per connection', () => {
+  /** A tool that returns one PNG with its text. */
+  const looker: AgentTool = {
+    name: 'look',
+    description: 'Look',
+    inputSchema: { type: 'object', properties: {} },
+    execute: () =>
+      Promise.resolve({
+        content: 'One picture.',
+        images: [{ mime: 'image/png', data: pngShell(4, 4), width: 4, height: 4, label: 'page 1' }],
+      }),
+  }
+  const lookRound = (path: string): void => {
+    route(
+      `POST ${path}`,
+      sse(callDelta('call_1', 'look', {}), delta({}, 'tool_calls')),
+      sse(delta({ content: 'A square.' }), delta({}, 'stop')),
+    )
+  }
+  const imageParts = (body: unknown): unknown[] =>
+    (body as { messages: { content: unknown }[] }).messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? (message.content as { type: string }[]).filter((part) => part.type === 'image_url')
+        : [],
+    )
+
+  it('OpenRouter: the model list says which models read images', async () => {
+    const { service, keys } = serviceWith(openRouterApiAdapter({ fetch: fetchFor(OPENROUTER) }))
+    keys.saved.set('openrouter-api', 'sk-or-good')
+    route(
+      'GET /api/v1/models',
+      json(200, {
+        data: [
+          {
+            id: 'acme/sees',
+            supported_parameters: ['tools'],
+            architecture: { input_modalities: ['text', 'image'] },
+          },
+          {
+            id: 'acme/blind',
+            supported_parameters: ['tools'],
+            architecture: { input_modalities: ['text'] },
+          },
+          { id: 'acme/unsaid', supported_parameters: ['tools'] },
+        ],
+      }),
+    )
+    expect(
+      (await service.models('openrouter-api')).options.map((o) => [o.id, o.imageInput]),
+    ).toEqual([
+      ['acme/blind', false],
+      ['acme/sees', true],
+      ['acme/unsaid', undefined],
+    ])
+    await settings.setSelection('openrouter-api', 'acme/sees')
+    expect(await service.vision('openrouter-api')).toEqual({
+      enabled: true,
+      source: 'model',
+      setting: false,
+      configurable: true,
+    })
+    await settings.setSelection('openrouter-api', 'acme/blind')
+    expect(await service.vision('openrouter-api')).toMatchObject({
+      enabled: false,
+      source: 'model',
+    })
+    // The setting only decides for a model the list does not describe.
+    await service.setVision('openrouter-api', true)
+    expect(await service.vision('openrouter-api')).toMatchObject({ enabled: false, setting: true })
+    await settings.setSelection('openrouter-api', 'acme/unsaid')
+    expect(await service.vision('openrouter-api')).toMatchObject({
+      enabled: true,
+      source: 'setting',
+    })
+  })
+
+  it('OpenAI: documented families decide without a request; others follow the setting', async () => {
+    const { service, keys } = serviceWith(openAIApiAdapter({ fetch: fetchFor(OPENAI) }))
+    keys.saved.set('openai-api', 'sk-good')
+    await settings.setSelection('openai-api', 'gpt-4o')
+    expect(await service.vision('openai-api')).toMatchObject({ enabled: true, source: 'model' })
+    await settings.setSelection('openai-api', 'gpt-3.5-turbo')
+    expect(await service.vision('openai-api')).toMatchObject({ enabled: false, source: 'model' })
+    await settings.setSelection('openai-api', 'ft-custom-model')
+    expect(await service.vision('openai-api')).toMatchObject({
+      enabled: false,
+      source: 'setting',
+      configurable: true,
+    })
+    expect(seen).toEqual([])
+  })
+
+  it('Ollama: images only once the user says the model can see them', async () => {
+    const created = serviceWith(ollamaAdapter())
+    const { service } = created
+    await service.setBaseUrl('ollama', `${origin}/v1`)
+    await settings.setSelection('ollama', 'llava:7b')
+    expect(await service.vision('ollama')).toEqual({
+      enabled: false,
+      source: 'setting',
+      setting: false,
+      configurable: true,
+    })
+
+    lookRound('/v1/chat/completions')
+    const blind = await run(service, 'ollama', [looker])
+    expect(blind.stopReason).toBe('end_turn')
+    const blindBodies = seen.filter((r) => r.path === '/v1/chat/completions').map((r) => r.body)
+    expect(blindBodies.flatMap(imageParts)).toEqual([])
+    expect(JSON.stringify(blindBodies[1])).toContain('This model cannot see images')
+
+    seen.length = 0
+    expect(await service.setVision('ollama', true)).toMatchObject({ enabled: true, setting: true })
+    expect(settings.connections.find((c) => c.id === 'ollama')).toMatchObject({ vision: true })
+    lookRound('/v1/chat/completions')
+    await run(service, 'ollama', [looker])
+    const second = seen.filter((r) => r.path === '/v1/chat/completions')[1]?.body as {
+      messages: { role: string; content: unknown }[]
+    }
+    expect(second.messages.map((m) => m.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ])
+    expect(imageParts(second)).toEqual([
+      {
+        type: 'image_url',
+        image_url: {
+          url: `data:image/png;base64,${Buffer.from(pngShell(4, 4)).toString('base64')}`,
+        },
+      },
+    ])
+    // No path, no request to anywhere but this computer.
+    expect(seen.every((r) => r.host === origin)).toBe(true)
+  })
+
+  it('refuses the setting for a connection that decides itself', async () => {
+    const { service } = serviceWith(createAnthropicApiAdapter)
+    expect(await service.vision('anthropic-api')).toEqual({
+      enabled: true,
+      source: 'connection',
+      setting: false,
+      configurable: false,
+    })
+    await expect(service.setVision('anthropic-api', false)).rejects.toThrow()
+    expect(settings.vision('anthropic-api')).toBe(false)
+  })
 })

@@ -44,6 +44,9 @@ export async function codexModels(
           : null,
         supportedReasoningEfforts: efforts,
         isDefault: model['isDefault'] === true,
+        // Images only when the catalog lists them: a missing list is taken as text only.
+        imageInput:
+          Array.isArray(model['inputModalities']) && model['inputModalities'].includes('image'),
       })
     }
     cursor = typeof result['nextCursor'] === 'string' ? result['nextCursor'] : null

@@ -48,6 +48,9 @@ export const createClaudeSubscriptionAdapter: AdapterFactory = (host) => {
     personalUseOnly: true,
     pickerOrder: 1,
     failure,
+    // Every Claude model the subscription offers reads images (the runner says so too).
+    vision: () =>
+      Promise.resolve({ enabled: true, source: 'connection', setting: false, configurable: false }),
 
     allowance(): Promise<ProviderAllowance> {
       const reset = lastFailure?.resetsAt ? Date.parse(lastFailure.resetsAt) : null

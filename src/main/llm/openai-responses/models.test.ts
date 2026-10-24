@@ -42,6 +42,23 @@ describe('listChatGPTModels', () => {
     expect(server.requests[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`)
   })
 
+  it('reads input_modalities when an entry has it', async () => {
+    server.reply(
+      json(200, {
+        models: [
+          { slug: 'gpt-a', visibility: 'list', input_modalities: ['text', 'image'] },
+          { slug: 'gpt-b', visibility: 'list', input_modalities: ['text'] },
+          { slug: 'gpt-c', visibility: 'list', input_modalities: 'image' },
+        ],
+      }),
+    )
+    expect(await listChatGPTModels(options())).toEqual([
+      { slug: 'gpt-a', displayName: 'gpt-a', vision: true },
+      { slug: 'gpt-b', displayName: 'gpt-b', vision: false },
+      { slug: 'gpt-c', displayName: 'gpt-c' },
+    ])
+  })
+
   it('rejects a list without models[] as malformed', async () => {
     server.reply(json(200, { data: [{ id: 'gpt-5' }] }))
     await expect(listChatGPTModels(options())).rejects.toMatchObject({ code: 'protocol' })

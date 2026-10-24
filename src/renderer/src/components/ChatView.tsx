@@ -7,6 +7,7 @@ import {
 } from '../../../shared/ipc-connections'
 import type { ChatAttachment } from '../../../shared/ipc'
 import { canReceive } from '../attachments/model'
+import { useConnectionVision } from '../attachments/use-vision'
 import { useAttachments } from '../attachments/use-attachments'
 import type { ChatViewState } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
@@ -81,6 +82,7 @@ export function ChatView({
 
   const usage = useProviderUsage(provider?.provider)
   const models = useProviderModels(provider?.provider)
+  const vision = useConnectionVision(provider?.provider, models.choice?.selected)?.enabled === true
   const refreshUsage = usage.refresh
   const refreshModels = models.refresh
 
@@ -267,7 +269,7 @@ export function ChatView({
                           key={attachment.id}
                           attachment={attachment}
                           available={attachment.available}
-                          unsupported={!canReceive(attachment.kind, provider?.provider)}
+                          unsupported={!canReceive(attachment.kind, vision)}
                         />
                       ))}
                     </ul>
@@ -369,6 +371,7 @@ export function ChatView({
           switching={state.switching}
           sending={sending}
           attach={attach}
+          vision={vision}
           insertRef={insertRef}
           onSubmit={() => {
             void submit(draft.trim(), true, attach.ids)

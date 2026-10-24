@@ -8,7 +8,7 @@ import {
   canReceive,
   formatSize,
   middleTruncate,
-  NOT_SENT_YET,
+  notReceivedNote,
   totalBytes,
   type StagedAttachment,
 } from '../attachments/model'
@@ -71,7 +71,11 @@ export function AttachmentChip({
   onCopyIntoFolder,
 }: ChipProps): React.JSX.Element {
   const preview = available && attachment.kind === 'image' ? thumbnailFor(attachment.id) : undefined
-  const note = !available ? ATTACHMENT_UNAVAILABLE : unsupported ? NOT_SENT_YET : undefined
+  const note = !available
+    ? ATTACHMENT_UNAVAILABLE
+    : unsupported
+      ? notReceivedNote(attachment.kind)
+      : undefined
   const size = formatSize(attachment.size)
   return (
     <li
@@ -129,12 +133,13 @@ export function AttachmentChip({
 /** The chips above the composer's text box, with a count once a message nears its limits. */
 export function StagedChips({
   staged,
-  connection,
+  vision,
   onRemove,
   onCopyIntoFolder,
 }: {
   staged: readonly StagedAttachment[]
-  connection: string | null
+  /** The connection's model can see images (main's word; false until known). */
+  vision: boolean
   onRemove: (id: string) => void
   onCopyIntoFolder: (id: string) => void
 }): React.JSX.Element | null {
@@ -149,7 +154,7 @@ export function StagedChips({
           <AttachmentChip
             key={attachment.id}
             attachment={attachment}
-            unsupported={!canReceive(attachment.kind, connection)}
+            unsupported={!canReceive(attachment.kind, vision)}
             onRemove={() => {
               onRemove(attachment.id)
             }}

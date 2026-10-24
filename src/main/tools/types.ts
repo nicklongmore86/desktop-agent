@@ -29,8 +29,20 @@ export interface ToolContext {
   origin?: ToolOrigin
 }
 
+/** An image a tool returns for vision-capable models. */
+export interface ToolImage {
+  mime: 'image/png' | 'image/jpeg'
+  data: Uint8Array
+  width: number
+  height: number
+  /** Short label the model sees next to the image, e.g. "page 3". */
+  label?: string
+}
+
 export interface ToolResult {
   content: string
+  /** Images for vision-capable models. `content` must still make sense without them. */
+  images?: ToolImage[]
   isError?: boolean
   /**
    * Set (by defineTool) when the call failed because the user declined its approval.

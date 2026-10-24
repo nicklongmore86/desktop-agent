@@ -8,6 +8,8 @@ export interface OpenAICompatModel {
   contextLength?: number
   /** OpenRouter lists only models that advertise `tools`; other servers do not say. */
   toolSupport: 'supported' | 'unknown'
+  /** OpenRouter: whether `architecture.input_modalities` lists `image`. Absent elsewhere. */
+  vision?: boolean
 }
 
 const MAX_MODELS = 5000
@@ -64,10 +66,13 @@ export async function listOpenAICompatModels(
     if (!id || id.length > 256 || seen.has(id)) continue
     if (options.flavor === 'openai' && OPENAI_NON_CHAT.test(id)) continue
     let toolSupport: OpenAICompatModel['toolSupport'] = 'unknown'
+    let vision: boolean | undefined
     if (options.flavor === 'openrouter') {
       const params = Array.isArray(entry.supported_parameters) ? entry.supported_parameters : []
       if (!params.includes('tools')) continue
       toolSupport = 'supported'
+      const modalities = record(entry.architecture).input_modalities
+      if (Array.isArray(modalities)) vision = modalities.includes('image')
     }
     seen.add(id)
     models.push({
@@ -77,6 +82,7 @@ export async function listOpenAICompatModels(
         ? { contextLength: Math.floor(entry.context_length) }
         : {}),
       toolSupport,
+      ...(vision !== undefined ? { vision } : {}),
     })
   }
   return models.sort((a, b) => a.id.localeCompare(b.id))
