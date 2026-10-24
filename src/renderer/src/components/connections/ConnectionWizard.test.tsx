@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalPrompt, ProviderStatus } from '../../../../shared/ipc'
 import { ApiContext } from '../../api'
 import { App } from '../../App'
@@ -11,8 +11,12 @@ import { BUILTIN_CONNECTION_INFO } from '../../../../shared/connections-fixture'
 import { fakeApi, type FakeApiOptions } from '../../test/fake-api'
 import { setViewport } from '../../test/viewport'
 
-// A short wait, so the tests below that never get an answer from main finish quickly.
-const timing = vi.hoisted(() => ({ ms: 60 }))
+// The wait on main is real time, so a test that ran into it would pass or fail with the
+// runner's speed. It never runs out here (2^31 - 1 ms, the longest setTimeout), so closing
+// waits for the undo as it does in practice. Only 'closing never hangs on main' shortens it,
+// to test what happens when it runs out.
+const timing = vi.hoisted(() => ({ ms: 2 ** 31 - 1 }))
+const NEVER_MS = timing.ms
 vi.mock('./timing', async (original) => ({
   ...(await original<typeof import('./timing')>()),
   get SETTLE_WAIT_MS() {
@@ -53,6 +57,14 @@ async function renderApp(options: FakeApiOptions) {
 }
 
 const wizard = (name: string | RegExp) => screen.findByRole('dialog', { name })
+/**
+ * Waits for the step's heading to take focus. A wizard opened by a load from main can be on
+ * screen before its effects (the focus, the Esc and Tab handling) have run.
+ */
+const headingFocused = (dialog: HTMLElement) =>
+  waitFor(() => {
+    expect(document.activeElement).toBe(within(dialog).getByRole('heading', { level: 2 }))
+  })
 const choose = async (
   user: ReturnType<typeof userEvent.setup>,
   dialog: HTMLElement,
@@ -74,7 +86,7 @@ describe('first run', () => {
     expect(within(dialog).getByText('Many models, one key')).toBeTruthy()
     expect(within(dialog).getByText('You can add more later and switch any time.')).toBeTruthy()
     // The heading takes focus so a screen reader starts at the question.
-    expect(document.activeElement).toBe(within(dialog).getByRole('heading', { level: 2 }))
+    await headingFocused(dialog)
     await user.click(within(dialog).getByRole('button', { name: 'Skip for now' }))
     expect(screen.queryByRole('dialog', { name: 'Which AI do you want to use?' })).toBeNull()
     // Skipping changes nothing in the app's settings.
@@ -474,8 +486,12 @@ describe('local models', () => {
 })
 
 describe('closing never hangs on main', () => {
-  afterEach(() => {
+  // A short wait, so these tests of main never answering finish quickly.
+  beforeEach(() => {
     timing.ms = 60
+  })
+  afterEach(() => {
+    timing.ms = NEVER_MS
   })
   const never = <T,>(): Promise<T> => new Promise<T>(() => {})
   const deferred = <T,>() => {
@@ -662,17 +678,22 @@ describe('closing never hangs on main', () => {
     // The undo is queued behind the switch. The picker is locked while a switch runs; once it
     // lands, the undo checks where chats are (held open here) and the user picks Codex.
     const check = deferred<ProviderStatus>()
-    api.provider.get.mockImplementationOnce(() => check.promise)
+    let checking = false
+    api.provider.get.mockImplementationOnce(() => {
+      checking = true
+      return check.promise
+    })
     act(() => {
       first.resolve(ready('ollama'))
     })
+    // Earlier reads count too, so wait for this one. And user-event ignores a pick on a
+    // disabled <select>, so wait for the picker to unlock before picking.
+    const providerPicker = screen.getByRole('combobox', { name: 'Active provider' })
     await waitFor(() => {
-      expect(api.provider.get).toHaveBeenCalled()
+      expect(checking).toBe(true)
+      expect(providerPicker).toHaveProperty('disabled', false)
     })
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: 'Active provider' }),
-      'codex-subscription',
-    )
+    await user.selectOptions(providerPicker, 'codex-subscription')
     // The check finishes: chats are on Ollama, but the user has chosen since, so it is left alone.
     act(() => {
       check.resolve(ready('ollama'))
@@ -1197,6 +1218,7 @@ describe('keyboard, Back and focus', () => {
   it('keeps Tab inside the dialog', async () => {
     const { user } = await renderApp(NOTHING_READY)
     const dialog = await wizard('Which AI do you want to use?')
+    await headingFocused(dialog)
     for (let press = 0; press < 12; press++) {
       await user.tab()
       expect(dialog.contains(document.activeElement)).toBe(true)

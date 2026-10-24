@@ -236,6 +236,31 @@ describe('Escape', () => {
     expect(api.chat.stop).toHaveBeenCalledOnce()
   })
 
+  it('stops a reply as soon as its Stop button is on screen', async () => {
+    const { api, pushChat } = await renderApp()
+    // As in the app: the event comes from main, not from inside act(), so React may run the
+    // render's effects in a later task. Esc is pressed the moment Stop appears, before that.
+    const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    env.IS_REACT_ACT_ENVIRONMENT = false
+    let pressed = false
+    const observer = new MutationObserver(() => {
+      if (pressed || !screen.queryByRole('button', { name: 'Stop' })) return
+      pressed = true
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+    try {
+      pushChat({ type: 'run_started', runId: 'r1', text: 'Hi' })
+      await waitFor(() => {
+        expect(pressed).toBe(true)
+      })
+      expect(api.chat.stop).toHaveBeenCalledOnce()
+    } finally {
+      observer.disconnect()
+      env.IS_REACT_ACT_ENVIRONMENT = true
+    }
+  })
+
   it('does nothing when idle', async () => {
     const { api, user } = await renderApp()
     await user.keyboard('{Escape}')
