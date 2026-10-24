@@ -195,15 +195,17 @@ export function modelApiAdapter(spec: ModelApiSpec): AdapterFactory {
         return chosen
       },
       readyMessage: readyMessage(0),
-      // The vendor's families first (no request), then the model list's own word (from the
-      // cache when it is fresh), then nothing: the setting decides.
+      // The model list's own word when it has one (from the cache when it is fresh), else
+      // the vendor's documented models, else nothing: the setting decides.
       vision: async (model) => {
-        const known = vision?.(model) ?? null
-        if (known !== null || !listsVision) return known
-        const listed = await readKey()
-          .then((key) => listModels(key))
-          .catch(() => [])
-        return listed.find((candidate) => candidate.id === model)?.vision ?? null
+        if (listsVision) {
+          const listed = await readKey()
+            .then((key) => listModels(key))
+            .catch(() => [])
+          const said = listed.find((candidate) => candidate.id === model)?.vision
+          if (said !== undefined) return said
+        }
+        return vision?.(model) ?? null
       },
       visionSource: 'model',
       visionSetting: true,

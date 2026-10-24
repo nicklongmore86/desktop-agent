@@ -87,7 +87,7 @@ beforeEach(() => {
                 isDefault: true,
                 defaultReasoningEffort: 'medium',
                 supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
-                ...(mode === 'text-only' ? { inputModalities: ['text'] } : {}),
+                inputModalities: mode === 'text-only' ? ['text'] : ['text', 'image'],
               },
             ],
             nextCursor: null,

@@ -29,17 +29,28 @@ for the composer's chips and for each Send, and the renderer only shows it
 (`connections.vision(id)`):
 
 - **Claude · API, Claude · Subscription**: always (every Claude model offered reads images).
-- **Codex**: the runtime catalog's `inputModalities` for the selected model (the
-  protocol's default for a missing list is text and image). The runner reads it from its
-  own catalog call during the run; a catalog that cannot be read means no images.
-- **ChatGPT · Plan**: the model list's `input_modalities` when an entry has it, else
-  OpenAI's documented families (below), else the setting.
-- **OpenAI**: the documented families (GPT-4o, 4.1, 4.5, 4 Turbo, GPT-5 and later, o1,
-  o3, o4-mini read images; GPT-3.5, GPT-4, o1-mini, o1-preview, o3-mini, gpt-oss do not),
-  else the setting. Its `/models` does not say, so no request is made for this.
+- **Codex**: the runtime catalog's `inputModalities` for the selected model, and only
+  that: an entry without the list is taken as text only (no family rules). The runner
+  reads it from its own catalog call during the run; a catalog that cannot be read means
+  no images.
+- **ChatGPT · Plan**: the model list's `input_modalities` when the entry has it, and only
+  that (a text-only entry gets no images even when its id is a documented image model);
+  else OpenAI's documented models (below), else the setting.
+- **OpenAI**: OpenAI's documented models, matched as exact ids or anchored patterns of
+  their published variants and dated snapshots, never as a prefix: GPT-4o and 4o mini,
+  `chatgpt-4o-latest`, GPT-4.1 (mini, nano), `gpt-4.5-preview`, GPT-4 Turbo,
+  `gpt-4-vision-preview`, GPT-5 and later (`gpt-N[.M]` with no suffix or `-mini`, `-nano`,
+  `-pro`, `-codex`, `-codex-mini`, `-codex-max`, `-chat-latest`), o1, o1-pro, o3, o3-pro,
+  o4-mini and `codex-mini-latest` read images; GPT-3.5 Turbo, GPT-4 (and its `-32k` and
+  dated preview ids), o1-mini, o1-preview, o3-mini and gpt-oss do not. Any other id,
+  including a lookalike (`codex-mini-evil`, `gpt-4o-text`) or another variant of a
+  family (audio, search, realtime, transcribe, tts), is unknown: the setting decides
+  (off by default). Its `/models` does not say, so no request is made for this.
 - **OpenRouter**: the model list's `architecture.input_modalities`, else the setting.
-- **Gemini**: Gemini 1.5 and later (and the `-latest` aliases), not 1.0; others (Gemma)
-  the setting.
+- **Gemini**: the Pro, Flash, Flash-Lite and Flash-8B models of Gemini 1.5 and later
+  (their numbered, `-latest`, experimental and preview ids, `-image`) and the
+  `gemini-(pro|flash|flash-lite)-latest` aliases; not 1.0; any other id (TTS, embedding,
+  Gemma) the setting.
 - **Ollama, LM Studio**: the setting.
 
 The setting is **This model can see images** in Settings → the connection's panel
