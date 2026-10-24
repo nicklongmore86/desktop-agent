@@ -7,7 +7,12 @@ export default defineConfig({
       {
         test: {
           name: 'main',
-          include: ['src/main/**/*.test.ts', 'src/preload/**/*.test.ts', 'src/shared/**/*.test.ts'],
+          include: [
+            'src/main/**/*.test.ts',
+            'src/preload/**/*.test.ts',
+            'src/shared/**/*.test.ts',
+            'scripts/**/*.test.mjs',
+          ],
           environment: 'node',
         },
       },

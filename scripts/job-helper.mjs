@@ -1,9 +1,9 @@
 // job-run.exe (native/job-run): the build's pins file and the checks shared by
 // build-job-helper.mjs, the Vite build (which compiles the digest into the app) and afterPack.
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
-import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const JOB_RUN_VERSION = '1.0.0.0'
@@ -46,9 +46,70 @@ export function checkHardening(bytes) {
     throw new Error(`job-run.exe lacks ${missing.map(([name]) => name).join(', ')}`)
 }
 
+/** Main entries built only for the real-Electron tests (electron.vite.config.ts). */
+const TEST_ENTRIES = ['tools.js', 'documents.js']
+// Static require()/import/export-from of a string literal, as Rollup emits them.
+const IMPORTS =
+  /\brequire\(\s*(["'])([^"'\n]+)\1\s*\)|\b(?:import|export)\b[^"';]*?\bfrom\s*(["'])([^"'\n]+)\3|\bimport\s*\(\s*(["'])([^"'\n]+)\5\s*\)|\bimport\s*(["'])([^"'\n]+)\7/g
+// job-launcher.ts's `JOB_RUN_SHA256 = ...` with __JOB_RUN_SHA256__ compiled in.
+const PIN_DEFINITION = /\bJOB_RUN_SHA256(?:\$\d+)?\s*=([^;\n]*)/g
+
+/**
+ * The job-run.exe pin compiled into the production main bundle: the main entry (package.json
+ * `main`) and the local chunks it statically loads, never other files under out/main (the
+ * test-only entries, or anything else left there). Fails unless that graph resolves entirely
+ * inside out/main and defines JOB_RUN_SHA256 exactly once, as one 64-hex digest.
+ */
+export async function bundledPin(root = repoRoot) {
+  const mainDir = resolve(root, 'out', 'main')
+  const realMain = existsSync(mainDir) ? realpathSync(mainDir) : mainDir
+  // Inside out/main by path and, through any symlinks, on disk.
+  const inMain = (file) =>
+    [
+      [mainDir, file],
+      [realMain, existsSync(file) ? realpathSync(file) : file],
+    ].every(([dir, f]) => {
+      const rel = relative(dir, f)
+      return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+    })
+  const { main } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
+  const entry = resolve(root, main ?? '')
+  if (typeof main !== 'string' || !existsSync(entry) || !inMain(entry))
+    throw new Error(`package.json main (${main}) is not a bundle in out/main`)
+  const graph = new Map()
+  const queue = [entry]
+  while (queue.length) {
+    const file = queue.pop()
+    if (graph.has(file)) continue
+    if (TEST_ENTRIES.some((name) => file === join(mainDir, name)))
+      throw new Error(`The production main bundle loads a test-only entry: ${file}`)
+    const code = await readFile(file, 'utf8')
+    graph.set(file, code)
+    for (const m of code.matchAll(IMPORTS)) {
+      const spec = m[2] ?? m[4] ?? m[6] ?? m[8]
+      if (!spec.startsWith('./') && !spec.startsWith('../')) continue // node: builtins, packages
+      const target = resolve(dirname(file), spec)
+      if (!target.endsWith('.js') || !existsSync(target) || !inMain(target))
+        throw new Error(`Cannot resolve ${spec} from ${file} inside out/main`)
+      queue.push(target)
+    }
+  }
+  const pins = [...graph.values()].flatMap((code) =>
+    [...code.matchAll(PIN_DEFINITION)].map((m) => [...new Set(m[1].match(/[0-9a-f]{64}/g))]),
+  )
+  if (pins.every((hashes) => hashes.length === 0))
+    throw new Error('The app was built without the job-run.exe pin: rebuild after build:helpers')
+  if (pins.length !== 1 || pins[0].length !== 1)
+    throw new Error(
+      `The production main bundle defines the job-run.exe pin ${pins.length} times, ` +
+        `with ${pins.flat().join(', ')}`,
+    )
+  return pins[0][0]
+}
+
 /**
  * afterPack: resources/helpers/job-run.exe is present, hardened, matches this build's pin,
- * and the compiled main bundle carries that same pin.
+ * and the production main bundle carries that same pin.
  */
 export async function verifyHelpers(resources) {
   const pin = readPin()
@@ -56,14 +117,7 @@ export async function verifyHelpers(resources) {
   const bytes = await readFile(join(resources, ...PINNED_PATH.split('/')))
   if (sha256(bytes) !== pin) throw new Error('Packaged job-run.exe does not match its pin')
   checkHardening(bytes)
-  // Recursive: with several main entries, shared code (the job launcher) lands in out/main/chunks.
-  const main = join(repoRoot, 'out', 'main')
-  const bundles = await Promise.all(
-    (await readdir(main, { recursive: true }))
-      .filter((f) => f.endsWith('.js'))
-      .map((f) => readFile(join(main, f))),
-  )
-  if (!bundles.some((code) => code.includes(pin)))
-    throw new Error('The app was built without the job-run.exe pin: rebuild after build:helpers')
+  if ((await bundledPin()) !== sha256(bytes))
+    throw new Error('The app was built with another job-run.exe pin: rebuild after build:helpers')
   console.log(`Verified packaged job-run.exe ${JOB_RUN_VERSION} (sha256 ${pin}).`)
 }
