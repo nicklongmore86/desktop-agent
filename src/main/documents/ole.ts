@@ -1,3 +1,4 @@
+import { checkCfb } from './cfb'
 import type { DocumentLimits } from './limits'
 import { CFB, extractXls, type CfbContainer } from './sheets'
 import { textView } from './text-view'
@@ -8,7 +9,8 @@ import { DocumentError, type DocumentView, type ExtractOptions } from './types'
  * they hold: Excel 97-2003 workbooks are read with SheetJS; Word 97-2003 documents get a
  * best-effort text extraction from the piece table (below); PowerPoint 97-2003 and
  * anything else is refused with what to do instead. A password-protected .docx, .xlsx or
- * .pptx is an OLE file too (an encrypted package), and is reported as such.
+ * .pptx is an OLE file too (an encrypted package), and is reported as such. The file's
+ * structure is checked first (cfb.ts), so SheetJS only ever sees one it can walk safely.
  */
 
 type CfbEntry = CfbContainer['FileIndex'][number]
@@ -18,6 +20,7 @@ export function extractOle(
   options: ExtractOptions,
   limits: DocumentLimits,
 ): DocumentView {
+  checkCfb(bytes, limits)
   let cfb: CfbContainer
   try {
     cfb = CFB.read(bytes, { type: 'array' })

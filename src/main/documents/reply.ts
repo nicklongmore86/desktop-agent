@@ -78,6 +78,9 @@ const shortText = (max: number) => z.string().max(max)
 /** An A1 reference without a sheet: B2, or A1:H200 (Excel's largest sheet is XFD1048576). */
 const a1 = z.string().regex(/^[A-Z]{1,3}[1-9]\d{0,6}(?::[A-Z]{1,3}[1-9]\d{0,6})?$/)
 const SHEET_NAME_CHARS = 200
+/** Excel's largest sheet: 1,048,576 rows by 16,384 columns (XFD). */
+const MAX_ROWS = 1_048_576
+const MAX_COLUMNS = 16_384
 
 export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
   const { limits, options } = job
@@ -204,6 +207,19 @@ function checkView(
     if (view.sections.length > shown || !view.sections.every((section) => section.sheet)) {
       throw invalid('it returned a sheet it did not show')
     }
+    // The cells a section says it shows are what it may hold: no more than one call allows.
+    for (const info of view.meta.sheets ?? []) if (info.used !== null) rangeOf(info.used)
+    let cells = 0
+    for (const sheet of view.sections.map((section) => section.sheet)) {
+      if (!sheet) continue
+      const used = sheet.used === null ? null : rangeOf(sheet.used)
+      if (sheet.next !== undefined) rangeOf(sheet.next)
+      if (sheet.shown === null) continue
+      const shownRange = rangeOf(sheet.shown)
+      if (!used || !inside(shownRange, used)) throw invalid('it showed cells outside the sheet')
+      cells += (shownRange.r1 - shownRange.r0 + 1) * (shownRange.c1 - shownRange.c0 + 1)
+    }
+    if (cells > limits.office.maxCellsPerCall) throw invalid('it returned more cells than allowed')
   } else if (view.meta.sheets !== undefined || view.sections.some((section) => section.sheet)) {
     throw invalid('it returned sheets for a document that has none')
   }
@@ -234,6 +250,33 @@ function checkView(
     }
   }
 }
+
+interface CellRange {
+  r0: number
+  c0: number
+  r1: number
+  c1: number
+}
+
+/** An A1 reference (already matched by `a1`) as zero-based bounds inside Excel's limits. */
+function rangeOf(ref: string): CellRange {
+  const [start = '', end = start] = ref.split(':')
+  const cell = (text: string): { r: number; c: number } => {
+    const letters = /^[A-Z]+/.exec(text)?.[0] ?? ''
+    let c = 0
+    for (const char of letters) c = c * 26 + (char.charCodeAt(0) - 64)
+    return { r: Number(text.slice(letters.length)) - 1, c: c - 1 }
+  }
+  const a = cell(start)
+  const b = cell(end)
+  if (a.r < 0 || a.c < 0 || b.r >= MAX_ROWS || b.c >= MAX_COLUMNS || b.r < a.r || b.c < a.c) {
+    throw invalid('a range is outside what a sheet can hold')
+  }
+  return { r0: a.r, c0: a.c, r1: b.r, c1: b.c }
+}
+
+const inside = (inner: CellRange, outer: CellRange): boolean =>
+  inner.r0 >= outer.r0 && inner.c0 >= outer.c0 && inner.r1 <= outer.r1 && inner.c1 <= outer.c1
 
 /** A deep copy holding only plain values and fresh byte arrays. */
 function copyView(view: DocumentView): DocumentView {

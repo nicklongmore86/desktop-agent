@@ -12,6 +12,7 @@ import {
 import { imageDimensions } from '../src/main/documents/limits'
 import {
   grid,
+  hostileOle,
   makeDoc,
   makeDocx,
   makeOdp,
@@ -359,6 +360,12 @@ test.describe('document worker (real Electron)', () => {
         ]),
         'zip-bomb',
       ],
+      ['OLE FAT loop', hostileOle.fatLoop(), 'malformed'],
+      ['OLE DIFAT loop', hostileOle.difatLoop(), 'malformed'],
+      ['OLE huge declared stream', hostileOle.hugeStream(), 'zip-bomb'],
+      ['OLE directory cycle', hostileOle.directoryCycle(), 'malformed'],
+      ['OLE truncated', hostileOle.truncated(), 'malformed'],
+      ['OLE tangled FAT', hostileOle.tangledFat(), 'malformed'],
     ]
     for (const [label, bytes, code] of corpus) {
       const started = Date.now()

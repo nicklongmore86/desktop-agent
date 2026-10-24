@@ -405,3 +405,94 @@ export const makePpt = (): Uint8Array =>
 
 export const makeEncryptedPackage = (): Uint8Array =>
   ole({ EncryptionInfo: new Uint8Array(64), EncryptedPackage: new Uint8Array(512) })
+
+// ---- Hostile OLE files: valid ones from SheetJS's writer, with one structure broken ----
+
+const u32 = (bytes: Uint8Array, at: number): number =>
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(at, true)
+const setU32 = (bytes: Uint8Array, at: number, value: number): void => {
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(at, value >>> 0, true)
+}
+const sectorAt = (n: number): number => (n + 1) * 512
+/** The FAT entry for sector n (the writer's files are small: one FAT sector). */
+const fatAt = (bytes: Uint8Array, n: number): number => sectorAt(u32(bytes, 0x4c)) + n * 4
+
+/** The byte offset of the directory entry named `name`, following the directory's chain. */
+function entryAt(bytes: Uint8Array, name: string): number {
+  for (
+    let sector = u32(bytes, 0x30);
+    sector !== 0xfffffffe;
+    sector = u32(bytes, fatAt(bytes, sector))
+  ) {
+    for (let i = 0; i < 4; i++) {
+      const at = sectorAt(sector) + i * 128
+      const length = new DataView(bytes.buffer, bytes.byteOffset).getUint16(at + 0x40, true)
+      const found = new TextDecoder('utf-16le').decode(
+        bytes.subarray(at, at + Math.max(0, length - 2)),
+      )
+      if (found === name) return at
+    }
+  }
+  throw new Error(`no entry ${name}`)
+}
+
+/** A file padded with zeroed sectors to `sectors` sectors after the header. */
+function padded(bytes: Uint8Array, sectors: number): Uint8Array {
+  const out = new Uint8Array(sectorAt(sectors))
+  out.set(bytes)
+  return out
+}
+
+/** A Word-like OLE file whose main stream is big enough to live in the FAT. */
+const baseOle = (): Uint8Array =>
+  ole({ WordDocument: new Uint8Array(8192).fill(7), '1Table': new Uint8Array(64) })
+
+export const hostileOle = {
+  /** A stream's chain points back at its own first sector. */
+  fatLoop(): Uint8Array {
+    const bytes = baseOle()
+    const start = u32(bytes, entryAt(bytes, 'WordDocument') + 0x74)
+    setU32(bytes, fatAt(bytes, start), start)
+    return bytes
+  },
+  /** The header says the FAT needs two DIFAT sectors; the first names itself as the next. */
+  difatLoop(): Uint8Array {
+    const base = baseOle()
+    const used = Math.ceil(base.length / 512) - 1
+    const bytes = padded(base, 320)
+    setU32(bytes, 0x2c, 300)
+    setU32(bytes, 0x44, used)
+    setU32(bytes, 0x48, 2)
+    setU32(bytes, sectorAt(used) + 508, used)
+    return bytes
+  },
+  /** A stream declaring 2 GB in a file of a few kilobytes. */
+  hugeStream(): Uint8Array {
+    const bytes = baseOle()
+    setU32(bytes, entryAt(bytes, 'WordDocument') + 0x78, 0x7fffffff)
+    return bytes
+  },
+  /** A directory entry that is its own left sibling. */
+  directoryCycle(): Uint8Array {
+    const bytes = baseOle()
+    const child = u32(bytes, entryAt(bytes, 'Root Entry') + 0x4c)
+    setU32(bytes, sectorAt(u32(bytes, 0x30)) + child * 128 + 0x44, child)
+    return bytes
+  },
+  /** Cut off after the header and its first sector. */
+  truncated(): Uint8Array {
+    return baseOle().slice(0, 1024)
+  },
+  /**
+   * Unused sectors chained backwards (each to the one before), which a reader that walks
+   * every chain from every sector re-walks again and again: quadratic time and memory.
+   */
+  tangledFat(): Uint8Array {
+    const base = baseOle()
+    const used = Math.ceil(base.length / 512) - 1
+    const bytes = padded(base, 128)
+    setU32(bytes, fatAt(bytes, used), 0xfffffffe)
+    for (let n = used + 1; n < 128; n++) setU32(bytes, fatAt(bytes, n), n - 1)
+    return bytes
+  },
+}

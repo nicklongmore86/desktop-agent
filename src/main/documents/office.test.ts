@@ -4,6 +4,7 @@ import { makeZip } from './fixtures.test-util'
 import { DEFAULT_LIMITS, type DocumentLimits } from './limits'
 import {
   grid,
+  hostileOle,
   makeDoc,
   makeDocx,
   makeEncryptedPackage,
@@ -348,6 +349,63 @@ describe('Excel and CSV', () => {
     }
   })
 
+  it('shows a formula saved without a value as such, never as a number it did not store', async () => {
+    // As openpyxl and other non-calculating writers save them: <f> with no <v>, or an
+    // empty <v/>; a text formula (t="str") with no <v>; beside a genuinely cached 0 and "".
+    const sheet =
+      '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+      '<row r="1"><c r="A1"><v>1</v></c><c r="B1"><f>SUM(A1:A3)</f></c><c r="C1"><f>A1-1</f><v>0</v></c>' +
+      '<c r="D1"><f>A1*2</f><v/></c><c r="E1" t="str"><f>A1&amp;"x"</f></c><c r="F1" t="str"><f>""</f><v></v></c></row>' +
+      '<row r="2"><c r="A2"><v>2</v></c><c><f>A2*3</f></c></row>' +
+      '</sheetData></worksheet>'
+    const book = await repack(makeWorkbook({ Calc: [[1]] }), (name, data) =>
+      name === 'xl/worksheets/sheet1.xml' ? sheet : data,
+    )
+    const view = await read(book)
+    expect(view.sections[0]?.text.split('\n').slice(2)).toEqual([
+      '| 1 | 1 | =SUM(A1:A3) (no saved value) | 0 | =A1*2 (no saved value) | =A1&"x" (no saved value) | ="" |',
+      '| 2 | 2 | =A2*3 (no saved value) |  |  |  |  |',
+    ])
+    expect(view.warnings).toContain(
+      'Some formulas have no saved value (shown as "=formula (no saved value)"); recalculate in Excel and save to get values.',
+    )
+    // A range read says the same.
+    const range = await read(book, { select: { range: 'Calc!B1:C1' } })
+    expect(range.sections[0]?.text).toContain('| 1 | =SUM(A1:A3) (no saved value) | 0 |')
+    expect(range.warnings.join(' ')).toMatch(/recalculate in Excel/)
+
+    // A cached 0 is a value: it shows as 0, with no note.
+    const cached = await read(
+      makeWorkbook({ Calc: [[1, { f: 'A1-1', v: 0 }, { f: 'A1*2', v: 2 }]] }),
+    )
+    expect(cached.sections[0]?.text).toContain('| 1 | 1 | 0 | 2 |')
+    expect(cached.warnings.join(' ')).not.toMatch(/no saved value/)
+  })
+
+  it('shows OpenDocument formulas with no value, which SheetJS drops, as such', async () => {
+    const row =
+      '<table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell>' +
+      '<table:table-cell table:formula="of:=SUM([.A1:.A3])"/>' +
+      '<table:table-cell table:formula="of:=[.A1]-1" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell>' +
+      '<table:table-cell table:formula="of:=IF([.A1]&gt;0;[$Other.B2];0)" office:value-type="float"/>' +
+      '</table:table-row>' +
+      '<table:table-row table:number-rows-repeated="2"><table:table-cell table:formula="of:=[.A1]+1" table:number-columns-repeated="2"/></table:table-row>'
+    const book = await repack(makeWorkbook({ S: [[1]] }, 'ods'), (name, data) =>
+      name === 'content.xml'
+        ? data.replace(/<table:table-row>[\s\S]*?<\/table:table-row>/, row)
+        : data,
+    )
+    const view = await read(book)
+    expect(view.meta.kind).toBe('ods')
+    expect(view.meta.sheets).toEqual([{ name: 'S', used: 'A1:D3' }])
+    expect(view.sections[0]?.text.split('\n').slice(2)).toEqual([
+      '| 1 | 1 | =SUM(A1:A3) (no saved value) | 0 | =IF(A1>0,Other!B2,0) (no saved value) |',
+      '| 2 | =A1+1 (no saved value) | =A1+1 (no saved value) |  |  |',
+      '| 3 | =A1+1 (no saved value) | =A1+1 (no saved value) |  |  |',
+    ])
+    expect(view.warnings.join(' ')).toMatch(/recalculate in Excel and save/)
+  })
+
   it('reads CSV and tab-separated text by name, with quoted fields', async () => {
     const csv = new TextEncoder().encode(
       '﻿name,note\n"Smith, J","said ""hi""\nthen left"\nLee,ok\n',
@@ -540,5 +598,30 @@ describe('hostile files', () => {
       { name: 'xl/workbook.bin', data: 'x' },
     ])
     expect(await refusal(read(xlsb))).toMatch(/^unsupported: .*\.xlsb/)
+  })
+
+  it('refuses a damaged OLE file before SheetJS walks it, quickly', async () => {
+    const cases: [keyof typeof hostileOle, RegExp][] = [
+      ['fatLoop', /^malformed: .*stream chain loops/],
+      ['difatLoop', /^malformed: .*sector table list loops/],
+      ['hugeStream', /^zip-bomb: .*declares a stream larger than the file/],
+      ['directoryCycle', /^malformed: .*directory loops/],
+      ['truncated', /^malformed: .*cut short/],
+      ['tangledFat', /^malformed: .*sector chains are tangled/],
+    ]
+    for (const [name, expected] of cases) {
+      const started = Date.now()
+      expect(await refusal(read(hostileOle[name]())), name).toMatch(expected)
+      expect(Date.now() - started, name).toBeLessThan(1000)
+    }
+    // A header that is not a compound file's, and sectors that are neither 512 nor 4096 bytes.
+    const odd = makeDoc('x\r', 'y\r')
+    odd[0x1e] = 10
+    expect(await refusal(read(odd))).toMatch(/^malformed: .*not 512 or 4096 bytes/)
+    const wrongOrder = makeDoc('x\r', 'y\r')
+    wrongOrder[0x1c] = 0xff
+    expect(await refusal(read(wrongOrder))).toMatch(/^malformed: .*byte order/)
+    // Real ones still read.
+    expect(text(await read(makeDoc('Fine\r', 'text\r')))).toBe('Fine\ntext')
   })
 })

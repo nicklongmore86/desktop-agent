@@ -12,6 +12,15 @@ import {
   type SheetInfo,
   type SheetPart,
 } from './types'
+import {
+  cellKey,
+  MAX_COLUMNS,
+  MAX_ROWS,
+  unsavedOds,
+  unsavedXlsx,
+  type Recorder,
+  type UnsavedCells,
+} from './unsaved'
 import { decodeXml, refuseDtd } from './xml'
 
 /**
@@ -21,7 +30,9 @@ import { decodeXml, refuseDtd } from './xml'
  * sheet and shows the first rows of each; a range (`Sheet1!A1:H200`) reads those cells,
  * at most `office.maxCellsPerCall` of them and within the text budget, and names the
  * range to read next. Formulas show their cached values (the text of the formula with
- * `includeFormulas`, or when there is no value); nothing is ever recalculated or run.
+ * `includeFormulas`, or when there is no value); nothing is ever recalculated or run. A
+ * formula saved without a result shows as `=SUM(A1:A3) (no saved value)`, never as a
+ * number that was not stored (unsaved.ts finds them in the raw XML).
  *
  * SheetJS parses the sheets, but never sees the ZIP: the package's parts are inflated by
  * the guarded reader (package.ts) and handed over as an in-memory container, so the
@@ -44,8 +55,6 @@ interface Grid {
   cell: (row: number, column: number) => string
 }
 
-const MAX_ROWS = 1_048_576
-const MAX_COLUMNS = 16_384
 /** Part names SheetJS needs from a package; everything else (media, macros, embeddings) stays behind. */
 const NEEDED =
   /^(?:\[Content_Types\]\.xml|_rels\/\.rels|docProps\/[^/]+\.xml|xl\/(?:_rels\/)?[^/]+\.(?:xml|rels)|xl\/worksheets\/[^/]+\.xml|mimetype|content\.xml|styles\.xml|meta\.xml|settings\.xml|META-INF\/manifest\.xml)$/i
@@ -78,20 +87,59 @@ export async function extractPackageWorkbook(
   limits: DocumentLimits,
 ): Promise<DocumentView> {
   const container = CFB.utils.cfb_new()
+  const recorder: Recorder = { count: 0 }
+  const byPart = new Map<string, UnsavedCells>()
+  let unsaved = new Map<string, UnsavedCells>()
   for (const name of pkg.names()) {
     if (!NEEDED.test(name)) continue
     const bytes = await pkg.read(name)
     if (!bytes) continue
     if (name !== 'mimetype') refuseDtd(dtdProbe(bytes), `"${name}"`)
+    if (kind === 'xlsx' && /^xl\/worksheets\/[^/]+\.xml$/i.test(name)) {
+      byPart.set(name.toLowerCase(), unsavedXlsx(decodeXml(bytes), recorder))
+    } else if (kind === 'ods' && name === 'content.xml') {
+      unsaved = unsavedOds(decodeXml(bytes), recorder)
+    }
     CFB.utils.cfb_add(container, `/${name}`, bytes)
   }
+  if (byPart.size > 0) unsaved = await sheetsByName(pkg, byPart)
   const warnings: string[] = []
   if (pkg.has('xl/vbaProject.bin')) {
     warnings.push('The workbook contains macros; they were not run or read.')
   }
-  const view = readWorkbook(kind, (parse) => sheetjs.parse_zip(container, parse), options, limits)
+  const view = readWorkbook(
+    kind,
+    (parse) => sheetjs.parse_zip(container, parse),
+    options,
+    limits,
+    unsaved,
+  )
   view.warnings.unshift(...warnings)
   return view
+}
+
+/** Worksheet parts' findings keyed by the sheet names the workbook part gives them. */
+async function sheetsByName(
+  pkg: OfficePackage,
+  byPart: Map<string, UnsavedCells>,
+): Promise<Map<string, UnsavedCells>> {
+  const out = new Map<string, UnsavedCells>()
+  const root = await pkg.relationships('')
+  const main =
+    [...root.values()].find((rel) => rel.type.endsWith('/officeDocument'))?.target ??
+    'xl/workbook.xml'
+  const local = (name: string): string => name.slice(name.indexOf(':') + 1)
+  const book = await pkg.xml(main, { keep: (name) => local(name) === 'sheet' })
+  const rels = await pkg.relationships(main)
+  for (const sheet of book?.children ?? []) {
+    if (typeof sheet === 'string') continue
+    const name = sheet.attrs.name
+    const id = sheet.attrs['r:id']
+    const part = id === undefined ? undefined : rels.get(id)?.target.toLowerCase()
+    const found = part === undefined ? undefined : byPart.get(part)
+    if (name !== undefined && found && found.cells.size > 0) out.set(name.slice(0, 200), found)
+  }
+  return out
 }
 
 /** Reads an Excel 97-2003 workbook (.xls) from its OLE container's bytes. */
@@ -154,6 +202,7 @@ function readWorkbook(
   parse: (options: XLSX.ParsingOptions) => XLSX.WorkBook,
   options: ExtractOptions,
   limits: DocumentLimits,
+  unsaved = new Map<string, UnsavedCells>(),
 ): DocumentView {
   const base: XLSX.ParsingOptions = {
     dense: true,
@@ -183,7 +232,7 @@ function readWorkbook(
   const target = targetOf(options, names)
   const budget = effectiveBudget(options.budget, limits)
   const cells = limits.office.maxCellsPerCall
-  const formulas = options.includeFormulas === true
+  const formulas = { include: options.includeFormulas === true, unsaved, shownUnsaved: false }
 
   if (target) {
     const name = target.sheet
@@ -203,6 +252,7 @@ function readWorkbook(
     const written = writeSheet(grid, range, budget.maxChars, cells, limits, view.warnings, false)
     view.sections.push(written.section)
     view.position.shown = { from: index + 1, to: index + 1 }
+    if (formulas.shownUnsaved) view.warnings.push(UNSAVED_NOTE)
     return view
   }
 
@@ -246,7 +296,20 @@ function readWorkbook(
   }
   view.position.shown = { from, to: last }
   view.position.next = last < total ? last + 1 : null
+  if (formulas.shownUnsaved) view.warnings.push(UNSAVED_NOTE)
   return view
+}
+
+const UNSAVED_NOTE =
+  'Some formulas have no saved value (shown as "=formula (no saved value)"); recalculate in Excel and save to get values.'
+
+/** How formula cells are written: with their text or not, and which have no saved value. */
+interface Formulas {
+  include: boolean
+  /** Sheet name -> formula cells found without a result in the raw XML. */
+  unsaved: Map<string, UnsavedCells>
+  /** Set once a cell without a saved value is written, for the note. */
+  shownUnsaved: boolean
 }
 
 function sheetError(error: unknown): DocumentError {
@@ -283,24 +346,52 @@ function sheetView(kind: DocumentKind, grids: Grid[], limits: DocumentLimits): D
   return view
 }
 
-function gridsOf(book: XLSX.WorkBook, formulas: boolean, limits: DocumentLimits): Grid[] {
+function gridsOf(book: XLSX.WorkBook, formulas: Formulas, limits: DocumentLimits): Grid[] {
   const hidden = book.Workbook?.Sheets ?? []
   return book.SheetNames.slice(0, limits.office.maxSheets).map((name, index) => {
     const sheet = book.Sheets[name] as
       (XLSX.WorkSheet & { '!data'?: XLSX.CellObject[][] }) | undefined
     const ref = (sheet?.['!fullref'] as string | undefined) ?? sheet?.['!ref']
-    const used = ref ? decodeRange(ref) : null
+    const missing = formulas.unsaved.get(name.slice(0, 200))
+    // OpenDocument cells with no value are dropped by SheetJS, so may lie past its range.
+    const used = union(ref ? decodeRange(ref) : null, missing?.used ?? null)
     const data = sheet?.['!data'] ?? []
     return {
       name: name.slice(0, 200),
       used,
       ...(hidden[index]?.Hidden ? { hidden: true } : {}),
-      cell: (row: number, column: number) => cellText(data[row]?.[column], formulas),
+      cell: (row: number, column: number) =>
+        cellText(data[row]?.[column], formulas, missing?.cells.get(cellKey(row, column))),
     }
   })
 }
 
-function cellText(cell: XLSX.CellObject | undefined, formulas: boolean): string {
+function union(a: Range | null, b: Range | null): Range | null {
+  if (!a || !b) return a ?? b
+  return {
+    r0: Math.min(a.r0, b.r0),
+    c0: Math.min(a.c0, b.c0),
+    r1: Math.max(a.r1, b.r1),
+    c1: Math.max(a.c1, b.c1),
+  }
+}
+
+/**
+ * A cell as text. `unsaved` is the formula when the raw XML has one with no stored result
+ * ('' when SheetJS read the formula itself); SheetJS's own sign of the same is a stub
+ * (`t: 'z'`) that still carries a formula.
+ */
+function cellText(
+  cell: XLSX.CellObject | undefined,
+  formulas: Formulas,
+  unsaved: string | undefined,
+): string {
+  const stub = !cell || cell.t === 'z' || cell.v === undefined || cell.v === ''
+  if ((cell?.f !== undefined && cell.t === 'z') || (unsaved !== undefined && stub)) {
+    formulas.shownUnsaved = true
+    const formula = cell?.f || unsaved
+    return formula ? `=${formula} (no saved value)` : '(formula with no saved value)'
+  }
   if (!cell) return ''
   let value =
     cell.w ??
@@ -313,7 +404,7 @@ function cellText(cell: XLSX.CellObject | undefined, formulas: boolean): string 
         : cell.v instanceof Date
           ? cell.v.toISOString()
           : String(cell.v))
-  if (cell.f && (formulas || value === ''))
+  if (cell.f && (formulas.include || value === ''))
     value = value === '' ? `=${cell.f}` : `${value} (=${cell.f})`
   return value
 }
