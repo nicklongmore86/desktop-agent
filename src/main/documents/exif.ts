@@ -35,7 +35,11 @@ const TAG = {
 /** Bytes per component of each TIFF field type. */
 const TYPE_SIZE: Record<number, number> = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 }
 
-/** The TIFF block holding EXIF data inside an image file, or null if it has none. */
+/**
+ * The TIFF block holding EXIF data inside an image file, or null if it has none. Every
+ * segment or chunk must fit inside its container (the file, or the RIFF chunk for
+ * WebP); one that claims to run past it means a damaged file, and no EXIF is read.
+ */
 export function findExif(bytes: Uint8Array, kind: DocumentKind): Uint8Array | null {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (kind === 'tiff') return bytes
@@ -45,12 +49,13 @@ export function findExif(bytes: Uint8Array, kind: DocumentKind): Uint8Array | nu
       const marker = bytes[at + 1] ?? 0
       if (marker === 0xda || marker === 0xd9) return null
       const length = view.getUint16(at + 2)
-      if (marker === 0xe1 && at + 10 <= bytes.length) {
+      const end = at + 2 + length
+      if (length < 2 || end > bytes.length) return null
+      if (marker === 0xe1 && length >= 8) {
         const id = String.fromCharCode(...bytes.subarray(at + 4, at + 10))
-        if (id === 'Exif\0\0')
-          return bytes.subarray(at + 10, Math.min(bytes.length, at + 2 + length))
+        if (id === 'Exif\0\0') return bytes.subarray(at + 10, end)
       }
-      at += 2 + length
+      at = end
     }
     return null
   }
@@ -58,20 +63,27 @@ export function findExif(bytes: Uint8Array, kind: DocumentKind): Uint8Array | nu
     let at = 8
     while (at + 12 <= bytes.length) {
       const length = view.getUint32(at)
+      // Length, type, data, CRC.
+      if (at + 12 + length > bytes.length) return null
       const type = String.fromCharCode(...bytes.subarray(at + 4, at + 8))
-      if (type === 'eXIf') return bytes.subarray(at + 8, Math.min(bytes.length, at + 8 + length))
+      if (type === 'eXIf') return bytes.subarray(at + 8, at + 8 + length)
       if (type === 'IDAT' || type === 'IEND') return null
       at += 12 + length
     }
     return null
   }
   if (kind === 'webp') {
+    if (bytes.length < 12) return null
+    // The RIFF chunk's size counts from byte 8.
+    const riffEnd = 8 + view.getUint32(4, true)
+    if (riffEnd > bytes.length) return null
     let at = 12
-    while (at + 8 <= bytes.length) {
+    while (at + 8 <= riffEnd) {
       const type = String.fromCharCode(...bytes.subarray(at, at + 4))
       const length = view.getUint32(at + 4, true)
+      if (at + 8 + length > riffEnd) return null
       if (type === 'EXIF') {
-        const chunk = bytes.subarray(at + 8, Math.min(bytes.length, at + 8 + length))
+        const chunk = bytes.subarray(at + 8, at + 8 + length)
         // Some writers keep the JPEG-style "Exif\0\0" prefix.
         return String.fromCharCode(...chunk.subarray(0, 6)) === 'Exif\0\0'
           ? chunk.subarray(6)

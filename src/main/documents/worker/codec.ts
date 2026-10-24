@@ -1,31 +1,91 @@
+import type { DocumentImage } from '../types'
 import type { DecodeImage } from '../extract'
 import type { EncodeRaster } from '../pdf'
 
-/** A rendered page over this size is sent as JPEG instead of PNG. */
+/** A PNG over this size is sent as JPEG instead. */
 const PNG_MAX_BYTES = 2 * 1024 * 1024
+const JPEG_QUALITIES = [0.85, 0.7, 0.55] as const
+/** Each time the lowest JPEG quality is still too big, the image shrinks by this much. */
+const SHRINK = 0.75
+const MIN_EDGE = 64
 
 async function toBytes(blob: Blob): Promise<Uint8Array> {
   return new Uint8Array(await blob.arrayBuffer())
 }
 
-/** PNG keeps rendered text and line art crisp; a busy page (a scan) falls back to JPEG. */
-export const encodeRaster: EncodeRaster = async (rgba, width, height) => {
+/**
+ * Encodes what `draw` paints, keeping the output under `maxBytes`. PNG keeps text and line
+ * art crisp; a busy image (a scan, a photo) falls back to JPEG, then to lower qualities,
+ * then to smaller sizes. JPEG has no alpha, so it is painted on white.
+ */
+async function encodeCanvas(
+  draw: (context: OffscreenCanvasRenderingContext2D, width: number, height: number) => void,
+  width: number,
+  height: number,
+  maxBytes: number,
+  jpegFirst: boolean,
+): Promise<Omit<DocumentImage, 'source'>> {
   const canvas = new OffscreenCanvas(width, height)
   const context = canvas.getContext('2d')
   if (!context) throw new Error('No 2D canvas')
-  context.putImageData(new ImageData(rgba, width, height), 0, 0)
-  const png = await canvas.convertToBlob({ type: 'image/png' })
-  if (png.size <= PNG_MAX_BYTES) return { bytes: await toBytes(png), mime: 'image/png' }
-  const jpeg = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
-  return { bytes: await toBytes(jpeg), mime: 'image/jpeg' }
+  context.imageSmoothingQuality = 'high'
+  draw(context, width, height)
+  if (!jpegFirst) {
+    const png = await canvas.convertToBlob({ type: 'image/png' })
+    if (png.size <= Math.min(PNG_MAX_BYTES, maxBytes)) {
+      return { bytes: await toBytes(png), mime: 'image/png', width, height }
+    }
+  }
+  let current = canvas
+  for (;;) {
+    const flat = new OffscreenCanvas(current.width, current.height)
+    const flatContext = flat.getContext('2d')
+    if (!flatContext) throw new Error('No 2D canvas')
+    flatContext.fillStyle = '#ffffff'
+    flatContext.fillRect(0, 0, flat.width, flat.height)
+    flatContext.drawImage(current, 0, 0)
+    for (const quality of JPEG_QUALITIES) {
+      const jpeg = await flat.convertToBlob({ type: 'image/jpeg', quality })
+      if (jpeg.size <= maxBytes) {
+        return {
+          bytes: await toBytes(jpeg),
+          mime: 'image/jpeg',
+          width: flat.width,
+          height: flat.height,
+        }
+      }
+    }
+    const nextWidth = Math.round(current.width * SHRINK)
+    const nextHeight = Math.round(current.height * SHRINK)
+    if (Math.min(nextWidth, nextHeight) < MIN_EDGE) {
+      throw new Error('The image could not be encoded small enough')
+    }
+    const smaller = new OffscreenCanvas(nextWidth, nextHeight)
+    const smallerContext = smaller.getContext('2d')
+    if (!smallerContext) throw new Error('No 2D canvas')
+    smallerContext.imageSmoothingQuality = 'high'
+    smallerContext.drawImage(current, 0, 0, nextWidth, nextHeight)
+    current = smaller
+  }
 }
+
+export const encodeRaster: EncodeRaster = (rgba, width, height, maxBytes) =>
+  encodeCanvas(
+    (context) => {
+      context.putImageData(new ImageData(rgba, width, height), 0, 0)
+    },
+    width,
+    height,
+    maxBytes,
+    false,
+  )
 
 /**
  * Decodes with Chromium's codecs, applying EXIF orientation, then scales to fit
  * `longEdge` (never up) and re-encodes from the canvas. The canvas holds only pixels,
  * so the output carries no EXIF, GPS or other metadata from the original.
  */
-export const decodeImage: DecodeImage = async (bytes, kind, longEdge) => {
+export const decodeImage: DecodeImage = async (bytes, kind, longEdge, maxBytes) => {
   const source = await createImageBitmap(new Blob([bytes as Uint8Array<ArrayBuffer>]), {
     imageOrientation: 'from-image',
   })
@@ -33,16 +93,15 @@ export const decodeImage: DecodeImage = async (bytes, kind, longEdge) => {
     const scale = Math.min(1, longEdge / Math.max(source.width, source.height))
     const width = Math.max(1, Math.round(source.width * scale))
     const height = Math.max(1, Math.round(source.height * scale))
-    const canvas = new OffscreenCanvas(width, height)
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('No 2D canvas')
-    context.imageSmoothingQuality = 'high'
-    context.drawImage(source, 0, 0, width, height)
-    const mime = kind === 'jpeg' ? 'image/jpeg' : 'image/png'
-    const blob = await canvas.convertToBlob(
-      mime === 'image/jpeg' ? { type: mime, quality: 0.9 } : { type: mime },
+    return await encodeCanvas(
+      (context, w, h) => {
+        context.drawImage(source, 0, 0, w, h)
+      },
+      width,
+      height,
+      maxBytes,
+      kind === 'jpeg',
     )
-    return { bytes: await toBytes(blob), mime, width, height }
   } finally {
     source.close()
   }

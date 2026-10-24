@@ -1,5 +1,5 @@
 import type { WrappedPdfiumModule } from '@embedpdf/pdfium'
-import { DEFAULT_LIMITS, type DocumentLimits } from './limits'
+import { DEFAULT_LIMITS, effectiveBudget, type DocumentLimits } from './limits'
 import {
   DocumentError,
   type DocumentImage,
@@ -9,12 +9,16 @@ import {
   type PageRegion,
 } from './types'
 
-/** Encodes an RGBA raster (row-major, no padding) as PNG or JPEG. */
+/**
+ * Encodes an RGBA raster (row-major, no padding) as PNG or JPEG of at most `maxBytes`,
+ * shrinking it if it must; the size returned is the encoded image's.
+ */
 export type EncodeRaster = (
   rgba: Uint8ClampedArray<ArrayBuffer>,
   width: number,
   height: number,
-) => Promise<{ bytes: Uint8Array; mime: DocumentImage['mime'] }>
+  maxBytes: number,
+) => Promise<Omit<DocumentImage, 'source'>>
 
 // fpdfview.h
 const FPDF_ERR_PASSWORD = 4
@@ -90,17 +94,16 @@ async function readDocument(
     view.warnings.push('The PDF has no pages.')
     return view
   }
-  const longEdge = Math.min(options.budget?.longEdge ?? limits.defaultLongEdge, limits.maxLongEdge)
-  const maxImages = Math.min(
-    options.budget?.maxImages ?? DEFAULT_MAX_IMAGES,
-    limits.maxImagesPerCall,
-  )
+  const budget = effectiveBudget(options.budget, limits)
+  const longEdge = budget.longEdge
+  const maxImages = options.budget?.maxImages === undefined ? DEFAULT_MAX_IMAGES : budget.maxImages
+  const maxChars = budget.maxChars
 
   const region = options.select?.region
   if (region) {
     checkRegion(region, total)
     await withPage(pdfium, doc, region.page, async (page) => {
-      const text = boundedText(pdfium, page, region)
+      const text = boundedText(pdfium, page, region).slice(0, maxChars)
       if (text) view.sections.push({ page: region.page, text })
       view.images.push(
         await renderPage(pdfium, page, region.page, longEdge, limits, encode, region),
@@ -125,7 +128,6 @@ async function readDocument(
     Math.max(from, Math.floor(options.select?.to ?? total)),
     from + pageBudget - 1,
   )
-  const maxChars = Math.max(1, options.budget?.maxChars ?? limits.defaultMaxChars)
   let chars = 0
   let last = from - 1
   let skippedRenders = 0
@@ -322,9 +324,9 @@ async function renderPage(
   } finally {
     pdfium.FPDFBitmap_Destroy(bitmap)
   }
-  const encoded = await encode(rgba, width, height)
+  const encoded = await encode(rgba, width, height, limits.maxImageBytes)
   const source: DocumentImage['source'] = region
     ? { page: pageNumber, region }
     : { page: pageNumber }
-  return { ...encoded, width, height, source }
+  return { ...encoded, source }
 }

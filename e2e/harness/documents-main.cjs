@@ -9,7 +9,24 @@ const { DocumentWorkerHost, documentWorkerPaths } = require('../../out/main/docu
 // No app.enableSandbox() here (it overrides --no-sandbox, which Linux CI containers need);
 // the worker window asks for sandbox: true itself.
 
-const options = JSON.parse(process.env.E2E_DOCUMENT_HOST ?? '{}')
+const { cpSync, mkdtempSync } = require('node:fs')
+const { tmpdir } = require('node:os')
+
+const { hostile, ...options } = JSON.parse(process.env.E2E_DOCUMENT_HOST ?? '{}')
+const paths = documentWorkerPaths(join(__dirname, '../../out/main'))
+if (hostile) {
+  // A copy of the built worker whose script is replaced by a hostile one.
+  const dir = join(mkdtempSync(join(tmpdir(), 'hostile-worker-')), 'document-worker')
+  cpSync(paths.workerDir, dir, { recursive: true })
+  cpSync(join(__dirname, 'hostile-worker.js'), join(dir, 'assets', 'index.js'))
+  paths.workerDir = dir
+}
+
+// Counts main's event-loop turns, so a test can tell whether main ever stalled.
+let ticks = 0
+setInterval(() => {
+  ticks++
+}, 10)
 
 /** A view with its image bytes as base64, plus a few decoded pixels to check orientation. */
 function serialise(view) {
@@ -36,16 +53,28 @@ function serialise(view) {
 }
 
 app.whenReady().then(() => {
-  const host = new DocumentWorkerHost({
-    ...documentWorkerPaths(join(__dirname, '../../out/main')),
-    ...options,
-  })
+  const host = new DocumentWorkerHost({ ...paths, ...options })
   globalThis.documents = {
     extract: (base64, extractOptions) =>
       host.extract(Buffer.from(base64, 'base64'), extractOptions).then(serialise, (error) => ({
         error: { name: error.name, code: error.code, message: error.message },
       })),
     stats: () => host.stats(),
+    ticks: () => ticks,
+    /** Live broker processes and worker windows. */
+    alive: () => ({
+      brokers: app
+        .getAppMetrics()
+        .filter((metric) => metric.type === 'Utility' && metric.name === 'Document reader broker')
+        .length,
+      windows: require('electron').BrowserWindow.getAllWindows().length,
+    }),
+    /** A PNG of random noise: as hard to compress as an image gets. */
+    makeNoise: (width, height) => {
+      const pixels = require('node:crypto').randomBytes(width * height * 4)
+      for (let at = 3; at < pixels.length; at += 4) pixels[at] = 255
+      return nativeImage.createFromBitmap(pixels, { width, height }).toPNG().toString('base64')
+    },
     /** A JPEG, left half red and right half blue, encoded by Chromium. */
     makeJpeg: (width, height) => {
       const pixels = Buffer.alloc(width * height * 4)

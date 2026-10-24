@@ -11,6 +11,10 @@ export interface DocumentLimits {
   maxImagesPerCall: number
   /** Default text budget per call. */
   defaultMaxChars: number
+  /** Largest text budget a caller may ask for. */
+  maxCharsPerCall: number
+  /** Largest encoded image returned (the Anthropic API's per-image limit). */
+  maxImageBytes: number
   /** Default and largest long edge of a returned image. */
   defaultLongEdge: number
   maxLongEdge: number
@@ -36,6 +40,8 @@ export const DEFAULT_LIMITS: DocumentLimits = {
   maxPagesPerCall: 50,
   maxImagesPerCall: 20,
   defaultMaxChars: 50_000,
+  maxCharsPerCall: 500_000,
+  maxImageBytes: 5 * MiB,
   defaultLongEdge: 1568,
   maxLongEdge: 4096,
   maxRegionScale: 8,
@@ -69,6 +75,22 @@ export function checkPixels(
 }
 
 const formatMiB = (bytes: number): string => `${(bytes / MiB).toFixed(1)} MB`
+
+/** The budgets a request actually gets: what it asked for, inside the hard limits. */
+export function effectiveBudget(
+  budget: { maxChars?: number; maxImages?: number; longEdge?: number } | undefined,
+  limits: DocumentLimits = DEFAULT_LIMITS,
+): { maxChars: number; maxImages: number; longEdge: number } {
+  const whole = (value: number | undefined, fallback: number, max: number, min = 1): number =>
+    value === undefined || !Number.isFinite(value)
+      ? fallback
+      : Math.max(min, Math.min(max, Math.floor(value)))
+  return {
+    maxChars: whole(budget?.maxChars, limits.defaultMaxChars, limits.maxCharsPerCall),
+    maxImages: whole(budget?.maxImages, limits.maxImagesPerCall, limits.maxImagesPerCall, 0),
+    longEdge: whole(budget?.longEdge, limits.defaultLongEdge, limits.maxLongEdge, 16),
+  }
+}
 
 /**
  * An image's width and height read from its header, without decoding it, or null when

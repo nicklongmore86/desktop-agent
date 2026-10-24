@@ -1,11 +1,18 @@
-import { app, BrowserWindow, MessageChannelMain, session, type MessagePortMain } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  MessageChannelMain,
+  session,
+  utilityProcess,
+  type UtilityProcess,
+} from 'electron'
 import { readdir, readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { z } from 'zod'
 import { secureWebPreferences } from '../security'
 import { checkDocumentSize, DEFAULT_LIMITS, type DocumentLimits } from './limits'
-import { WORKER_PORT_CHANNEL, type FromWorker, type ToWorker } from './protocol'
+import { WORKER_PORT_CHANNEL, type FromBroker, type ToBroker } from './protocol'
+import { checkReply } from './reply'
 import {
   DocumentError,
   type DocumentErrorCode,
@@ -16,10 +23,15 @@ import {
 /**
  * Runs document parsing in a hidden, sandboxed BrowserWindow: no Node, an in-memory
  * session of its own whose every request except the worker's own bundled files is
- * cancelled, and a CSP that allows only its own script and WASM. Bytes go in and
- * results come out over a MessagePort. Each job has a wall-clock timeout and a memory
- * ceiling, after which the window is destroyed; workers are recycled after a number of
- * jobs and shut down when idle. A new worker starts in roughly 150 ms.
+ * cancelled, and a CSP that allows only its own script and WASM.
+ *
+ * Main never holds a port the worker can post to. The worker's MessagePort leads to a
+ * broker utility process (broker.ts), which deserialises and checks what the worker
+ * sends and forwards a bounded copy; main checks that copy again. A hostile worker can
+ * hang or crash only the broker, and main, still running, kills both. Bytes go in as
+ * copies, never paths. Each job has a wall-clock timeout and a memory ceiling (worker
+ * and broker together), after which both are killed; workers are recycled after a
+ * number of jobs and shut down when idle. A new worker starts in roughly 150 ms.
  */
 
 export interface DocumentWorkerOptions {
@@ -27,6 +39,8 @@ export interface DocumentWorkerOptions {
   workerDir: string
   /** Its preload: out/preload/document-worker.js. */
   preloadPath: string
+  /** The broker utility process: out/main/document-broker.js. */
+  brokerPath: string
   limits?: DocumentLimits
   timeoutMs?: number
   /** Working set above which a running job is killed; above 3/4 of it the worker is recycled. */
@@ -37,10 +51,15 @@ export interface DocumentWorkerOptions {
 }
 
 /** Where the worker's files are in a build: beside out/main, inside app.asar when packaged. */
-export function documentWorkerPaths(mainDir: string): { workerDir: string; preloadPath: string } {
+export function documentWorkerPaths(mainDir: string): {
+  workerDir: string
+  preloadPath: string
+  brokerPath: string
+} {
   return {
     workerDir: join(mainDir, '../document-worker'),
     preloadPath: join(mainDir, '../preload/document-worker.js'),
+    brokerPath: join(mainDir, 'document-broker.js'),
   }
 }
 
@@ -61,79 +80,21 @@ export function isWorkerRequestAllowed(url: string, workerDir: string): boolean 
 const START_TIMEOUT_MS = 10_000
 const MEMORY_POLL_MS = 250
 
-const regionSchema = z.object({
-  page: z.number(),
-  x: z.number(),
-  y: z.number(),
-  width: z.number(),
-  height: z.number(),
-})
-const shortText = z.string().max(10_000)
-/** The worker parses hostile files, so its answers are checked before anyone uses them. */
-const viewSchema = z.object({
-  meta: z.object({
-    kind: z.string().max(20),
-    mime: z.string().max(200),
-    name: z.string().max(1000).optional(),
-    pageCount: z.number().int().nonnegative().optional(),
-    width: z.number().nonnegative().optional(),
-    height: z.number().nonnegative().optional(),
-    title: shortText.optional(),
-    author: shortText.optional(),
-  }),
-  sections: z
-    .array(
-      z.object({
-        page: z.number().int().positive().optional(),
-        title: shortText.optional(),
-        text: z.string(),
-      }),
-    )
-    .max(1000),
-  images: z
-    .array(
-      z.object({
-        bytes: z.instanceof(Uint8Array),
-        mime: z.enum(['image/png', 'image/jpeg']),
-        width: z.number().int().positive(),
-        height: z.number().int().positive(),
-        source: z.object({
-          page: z.number().int().positive().optional(),
-          region: regionSchema.optional(),
-        }),
-      }),
-    )
-    .max(100),
-  position: z.object({
-    unit: z.enum(['page', 'char', 'image']),
-    total: z.number().int().nonnegative(),
-    shown: z.object({ from: z.number().int(), to: z.number().int() }),
-    next: z.number().int().positive().nullable(),
-  }),
-  warnings: z.array(shortText).max(100),
-})
-const ERROR_CODES = new Set<string>([
-  'too-large',
-  'too-many-pixels',
-  'password-protected',
-  'malformed',
-  'unsupported',
-  'out-of-range',
-  'zip-bomb',
-])
-
 interface Job {
   id: number
+  options: ExtractOptions
   resolve: (view: DocumentView) => void
   reject: (error: DocumentError) => void
 }
 
 interface Worker {
   window: BrowserWindow
-  port: MessagePortMain
+  broker: UtilityProcess
   jobs: number
   pending: Job | null
   dead: boolean
+  /** Waits for the broker's next startup message ('connected', then 'ready'). */
+  starting: ((message: FromBroker | Error) => void) | null
 }
 
 export class DocumentWorkerHost {
@@ -255,6 +216,10 @@ export class DocumentWorkerHost {
     const started = Date.now()
     const wasm = await this.loadWasm()
     this.hardenSession()
+    const broker = utilityProcess.fork(this.options.brokerPath, [], {
+      serviceName: 'Document reader broker',
+      stdio: 'ignore',
+    })
     const window = new BrowserWindow({
       show: false,
       width: 320,
@@ -279,37 +244,47 @@ export class DocumentWorkerHost {
       event.preventDefault()
     })
 
-    const { port1, port2 } = new MessageChannelMain()
-    const worker: Worker = { window, port: port1, jobs: 0, pending: null, dead: false }
+    const worker: Worker = { window, broker, jobs: 0, pending: null, dead: false, starting: null }
     contents.on('render-process-gone', () => {
       this.abort(worker, 'worker-failed', 'The document reader stopped unexpectedly.')
     })
     window.on('closed', () => {
-      worker.dead = true
+      this.abort(worker, 'worker-failed', 'The document reader stopped unexpectedly.')
+    })
+    broker.on('message', (message: FromBroker) => {
+      this.fromBroker(worker, message)
+    })
+    broker.on('exit', () => {
+      this.abort(worker, 'worker-failed', 'The document reader stopped unexpectedly.')
     })
 
-    try {
-      await window.loadURL(page)
-      const ready = new Promise<void>((resolveReady, rejectReady) => {
+    const next = (): Promise<FromBroker> =>
+      new Promise((resolveNext, rejectNext) => {
         const timer = setTimeout(() => {
-          rejectReady(new Error('The document worker did not start'))
+          rejectNext(new Error('The document worker did not start'))
         }, START_TIMEOUT_MS)
-        port1.on('message', ({ data }: { data: FromWorker }) => {
-          if (data.type === 'ready') {
-            clearTimeout(timer)
-            resolveReady()
-          } else if (data.type === 'init-failed') {
-            clearTimeout(timer)
-            rejectReady(new Error(`The document worker failed to start: ${data.message}`))
-          } else {
-            this.settle(worker, data)
-          }
-        })
+        worker.starting = (message) => {
+          clearTimeout(timer)
+          worker.starting = null
+          if (message instanceof Error) rejectNext(message)
+          else resolveNext(message)
+        }
       })
-      port1.start()
+    try {
+      // Both ends of the channel are handed over: one to the broker, one to the page.
+      const { port1, port2 } = new MessageChannelMain()
+      const connected = next()
+      this.send(worker, { type: 'connect' }, [port1])
+      const [answer] = await Promise.all([connected, window.loadURL(page)])
+      if (answer.type !== 'connected') throw new Error('The document broker did not start')
+      const ready = next()
       contents.postMessage(WORKER_PORT_CHANNEL, null, [port2])
       this.send(worker, { type: 'init', wasm })
-      await ready
+      const status = await ready
+      if (status.type === 'init-failed') {
+        throw new Error(`The document worker failed to start: ${status.message}`)
+      }
+      if (status.type !== 'ready') throw new Error('The document worker did not start')
     } catch (error) {
       this.kill(worker)
       throw new DocumentError(
@@ -322,8 +297,8 @@ export class DocumentWorkerHost {
     return worker
   }
 
-  private send(worker: Worker, message: ToWorker): void {
-    worker.port.postMessage(message)
+  private send(worker: Worker, message: ToBroker, ports: Electron.MessagePortMain[] = []): void {
+    if (!worker.dead) worker.broker.postMessage(message, ports)
   }
 
   private dispatch(
@@ -351,6 +326,7 @@ export class DocumentWorkerHost {
       }
       worker.pending = {
         id,
+        options,
         resolve: (view) => {
           done()
           resolveJob(view)
@@ -368,43 +344,62 @@ export class DocumentWorkerHost {
     })
   }
 
+  /** Fails the running job, if any, and kills the worker and its broker. */
   private abort(worker: Worker, code: DocumentErrorCode, message: string): void {
     const job = worker.pending
     worker.pending = null
     this.kill(worker)
+    worker.starting?.(new Error(message))
     job?.reject(new DocumentError(code, message))
   }
 
-  private settle(worker: Worker, data: FromWorker): void {
-    const job = worker.pending
-    if (!job || !('id' in data) || data.id !== job.id) return
-    worker.pending = null
-    if (data.type === 'result') {
-      const parsed = viewSchema.safeParse(data.view)
-      if (parsed.success) job.resolve(data.view)
-      else
-        job.reject(
-          new DocumentError('worker-failed', 'The document reader returned an invalid result.'),
-        )
+  private fromBroker(worker: Worker, message: FromBroker): void {
+    if (worker.dead) return
+    if (worker.starting) {
+      worker.starting(message)
       return
     }
-    const code = ERROR_CODES.has(data.code) ? data.code : 'worker-failed'
-    const message = typeof data.message === 'string' ? data.message.slice(0, 1000) : ''
-    job.reject(new DocumentError(code, message || 'The document could not be read.'))
+    if (message.type === 'violation') {
+      this.abort(worker, 'worker-failed', message.message.slice(0, 500))
+      return
+    }
+    const job = worker.pending
+    if (!job) {
+      this.abort(worker, 'worker-failed', 'The document reader sent a message nobody asked for.')
+      return
+    }
+    // The broker already checked this; check its copy again before anyone uses it.
+    let reply
+    try {
+      reply = checkReply(message, { id: job.id, options: job.options, limits: this.limits })
+    } catch (error) {
+      this.abort(
+        worker,
+        'worker-failed',
+        error instanceof DocumentError ? error.message : 'The document reader failed.',
+      )
+      return
+    }
+    worker.pending = null
+    if (reply.type === 'result') job.resolve(reply.view)
+    else job.reject(new DocumentError(reply.code, reply.message))
   }
 
-  /** Bytes in the worker's renderer process working set (0 if it has none). */
+  /** Bytes in the worker renderer's and the broker's working sets together. */
   private memoryOf(worker: Worker): number {
     if (worker.dead || worker.window.isDestroyed()) return 0
-    const pid = worker.window.webContents.getOSProcessId()
-    const metric = app.getAppMetrics().find((entry) => entry.pid === pid)
-    return (metric?.memory.workingSetSize ?? 0) * 1024
+    const pids = new Set([worker.window.webContents.getOSProcessId(), worker.broker.pid])
+    let kilobytes = 0
+    for (const metric of app.getAppMetrics()) {
+      if (pids.has(metric.pid)) kilobytes += metric.memory.workingSetSize
+    }
+    return kilobytes * 1024
   }
 
   private kill(worker: Worker): void {
     if (worker.dead) return
     worker.dead = true
-    worker.port.close()
+    worker.broker.kill()
     if (!worker.window.isDestroyed()) {
       // Crash first: a renderer stuck in a WASM loop won't unload on its own.
       if (!worker.window.webContents.isDestroyed())

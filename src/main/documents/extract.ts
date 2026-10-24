@@ -4,6 +4,7 @@ import {
   checkDocumentSize,
   checkPixels,
   DEFAULT_LIMITS,
+  effectiveBudget,
   imageDimensions,
   type DocumentLimits,
 } from './limits'
@@ -17,11 +18,15 @@ import {
   type ExtractOptions,
 } from './types'
 
-/** Decodes an image with its EXIF orientation applied, scaled to fit `longEdge`, re-encoded. */
+/**
+ * Decodes an image with its EXIF orientation applied, scaled to fit `longEdge`, and
+ * re-encodes it in at most `maxBytes`.
+ */
 export type DecodeImage = (
   bytes: Uint8Array,
   kind: DocumentKind,
   longEdge: number,
+  maxBytes: number,
 ) => Promise<Omit<DocumentImage, 'source'>>
 
 /** What the dispatcher needs from its host: PDFium, and the browser's image codecs. */
@@ -128,11 +133,11 @@ async function extractImage(
     const text = describeExif(exif, options.includeLocation === true)
     if (text) view.sections.push({ title: 'Image metadata', text })
   }
-  if (options.view === 'text' || options.budget?.maxImages === 0) return view
+  const budget = effectiveBudget(options.budget, limits)
+  if (options.view === 'text' || budget.maxImages === 0) return view
 
-  const longEdge = Math.min(options.budget?.longEdge ?? limits.defaultLongEdge, limits.maxLongEdge)
   try {
-    const image = await env.decodeImage(bytes, kind, longEdge)
+    const image = await env.decodeImage(bytes, kind, budget.longEdge, limits.maxImageBytes)
     view.images.push({ ...image, source: {} })
   } catch (error) {
     if (error instanceof DocumentError) throw error
@@ -156,10 +161,24 @@ function extractText(
   const text = new TextDecoder(encoding).decode(bytes)
   const total = text.length
   const from = Math.max(1, Math.floor(options.select?.from ?? 1))
-  const maxChars = Math.max(1, options.budget?.maxChars ?? limits.defaultMaxChars)
-  const to = Math.min(total, from - 1 + maxChars, Math.floor(options.select?.to ?? total))
+  const { maxChars } = effectiveBudget(options.budget, limits)
   const view = emptyView('text', 'text/plain')
+  if (total === 0) {
+    view.position = { unit: 'char', total, shown: { from: 0, to: 0 }, next: null }
+    return view
+  }
+  if (from > total) {
+    throw new DocumentError(
+      'out-of-range',
+      `Character ${String(from)} is past the end; the text has ${String(total)} characters.`,
+    )
+  }
+  const to = Math.min(
+    total,
+    from - 1 + maxChars,
+    Math.max(from, Math.floor(options.select?.to ?? total)),
+  )
   view.position = { unit: 'char', total, shown: { from, to }, next: to < total ? to + 1 : null }
-  if (from <= total) view.sections.push({ text: text.slice(from - 1, to) })
+  view.sections.push({ text: text.slice(from - 1, to) })
   return view
 }

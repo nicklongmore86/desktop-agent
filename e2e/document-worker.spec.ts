@@ -34,6 +34,9 @@ interface Harness {
   extract: (base64: string, options: ExtractOptions) => Promise<Result>
   stats: () => { workersStarted: number; jobs: number; lastStartMs: number }
   makeJpeg: (width: number, height: number) => string
+  makeNoise: (width: number, height: number) => string
+  ticks: () => number
+  alive: () => { brokers: number; windows: number }
 }
 
 async function launch(hostOptions: Record<string, unknown> = {}): Promise<ElectronApplication> {
@@ -63,6 +66,10 @@ const docs = (app: ElectronApplication) => ({
     ),
   stats: () =>
     app.evaluate(() => (globalThis as unknown as { documents: Harness }).documents.stats()),
+  ticks: () =>
+    app.evaluate(() => (globalThis as unknown as { documents: Harness }).documents.ticks()),
+  alive: () =>
+    app.evaluate(() => (globalThis as unknown as { documents: Harness }).documents.alive()),
   makeJpeg: async (width: number, height: number): Promise<Uint8Array> =>
     Buffer.from(
       await app.evaluate(
@@ -201,6 +208,24 @@ test.describe('document worker (real Electron)', () => {
     expect(view.images[0]).toMatchObject({ width: 600, height: 200 })
   })
 
+  test('keeps every returned image under 5 MB, however noisy', async () => {
+    const noise = Buffer.from(
+      await app.evaluate(
+        (_electron, [w, h]) =>
+          (globalThis as unknown as { documents: Harness }).documents.makeNoise(w, h),
+        [3000, 3000] as const,
+      ),
+      'base64',
+    )
+    const view = ok(await docs(app).extract(noise, { budget: { longEdge: 3000 } }))
+    const [image] = view.images
+    const bytes = imageBytes(image)
+    expect(bytes.length).toBeLessThanOrEqual(5 * 1024 * 1024)
+    // PNG would be far over 5 MB, so it came back as JPEG, smaller if it had to.
+    expect(image?.mime).toBe('image/jpeg')
+    expect(imageDimensions(bytes, 'jpeg')).toEqual({ width: image?.width, height: image?.height })
+  })
+
   test('malformed corpus is refused without hanging', async () => {
     const corpus: [string, Uint8Array, string][] = [
       ['encrypted PDF', makePdf([{ text: ['x'] }], { encrypted: true }), 'password-protected'],
@@ -248,5 +273,36 @@ test('workers are recycled after N jobs and start quickly', async () => {
     expect(stats.lastStartMs).toBeLessThan(5_000)
   } finally {
     await app.close()
+  }
+})
+
+test.describe('a hostile worker (a compromised page speaking the protocol)', () => {
+  let app: ElectronApplication
+  test.beforeAll(async () => {
+    app = await launch({ hostile: true, timeoutMs: 15_000 })
+  })
+  test.afterAll(async () => {
+    await app.close()
+  })
+
+  for (const attack of ['transfer', 'huge', 'many-images', 'flood', 'garbage']) {
+    test(`'${attack}' fails the job and kills the worker, main never stalls, the next job works`, async () => {
+      const d = docs(app)
+      const ticksBefore = await d.ticks()
+      const started = Date.now()
+      const result = await d.extract(new TextEncoder().encode('hello'), { name: attack })
+      const elapsed = Date.now() - started
+      const ticks = (await d.ticks()) - ticksBefore
+      expect(result.error?.code).toBe('worker-failed')
+      // Killed by the broker's checks or its crash, not by the 15 s timeout.
+      expect(elapsed).toBeLessThan(10_000)
+      // Main's 10 ms timer kept running throughout (generously: a quarter of the turns).
+      expect(ticks).toBeGreaterThanOrEqual(Math.floor(elapsed / 10 / 4))
+      await expect.poll(() => d.alive(), { timeout: 5_000 }).toEqual({ brokers: 0, windows: 0 })
+
+      const next = ok(await d.extract(new TextEncoder().encode('hello'), { name: 'ok' }))
+      expect(next.sections).toEqual([{ text: 'fine' }])
+      expect(await d.alive()).toEqual({ brokers: 1, windows: 1 })
+    })
   }
 })

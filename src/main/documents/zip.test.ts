@@ -87,4 +87,17 @@ describe('zip guard', () => {
     corrupt.fill(0xff, 30 + 5, 30 + 5 + 4)
     expect(await rejection(readZipEntry(corrupt, corruptEntry))).toBe('malformed')
   })
+
+  it('refuses a directory record whose extra field or comment runs past the directory', () => {
+    const zip = makeZip([{ name: 'a.txt', data: 'hello' }])
+    expect(readZipDirectory(zip)).toHaveLength(1)
+    const end = zip.length - 22
+    const central = new DataView(zip.buffer).getUint32(end + 16, true)
+    for (const field of [30, 32]) {
+      const bad = new Uint8Array(zip)
+      // The extra or comment length now reaches into the end-of-directory record.
+      new DataView(bad.buffer).setUint16(central + field, 4, true)
+      expect(() => readZipDirectory(bad)).toThrow(expect.objectContaining({ code: 'malformed' }))
+    }
+  })
 })

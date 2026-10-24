@@ -7,14 +7,15 @@ import { decodeImage, encodeRaster } from './codec'
 /**
  * The document worker page: a hidden, sandboxed window with no Node, no network and a
  * locked-down CSP. It parses one document at a time for the main process, over the
- * MessagePort its preload hands it. Anything a hostile file manages to do stays here.
+ * MessagePort its preload hands it, whose other end is the broker (broker.ts), not main.
+ * Anything a hostile file manages to do stays here or in the broker.
  */
 
 let pdfium: Promise<WrappedPdfiumModule> | null = null
 
 function start(port: MessagePort): void {
-  // Copied, not transferred: MessagePortMain on the main side accepts only ports in a
-  // transfer list, and a transferred ArrayBuffer stalls its deserialiser.
+  // Copied, not transferred: a MessagePortMain accepts only ports in a transfer list, and
+  // a transferred ArrayBuffer breaks its deserialiser (the broker treats that as hostile).
   const send = (message: FromWorker): void => {
     port.postMessage(message)
   }

@@ -104,6 +104,8 @@ export default defineConfig({
           index: fromRoot('./src/main/index.ts'),
           // The document reader on its own, for the real-Electron tests (e2e/document-worker).
           documents: fromRoot('./src/main/documents/index.ts'),
+          // The utility process between main and the worker page (see broker.ts).
+          'document-broker': fromRoot('./src/main/documents/broker.ts'),
         },
       },
     },

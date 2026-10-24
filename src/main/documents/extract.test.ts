@@ -35,7 +35,12 @@ function env(): ExtractEnv & { decodeImage: ReturnType<typeof vi.fn> } {
         if ((rgba[i + 2] ?? 0) > 150 && (rgba[i] ?? 0) < 100) blue++
       }
       rasters.push({ width, height, blue })
-      return Promise.resolve({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' })
+      return Promise.resolve({
+        bytes: new Uint8Array([1, 2, 3]),
+        mime: 'image/png' as const,
+        width,
+        height,
+      })
     },
     decodeImage: vi.fn(() =>
       Promise.resolve({

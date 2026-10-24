@@ -35,6 +35,11 @@ export default defineConfig([
     languageOptions: { globals: globals.node },
   },
   {
+    // A stand-in for a compromised document worker page, loaded by the e2e tests.
+    files: ['e2e/harness/hostile-worker.js'],
+    languageOptions: { globals: globals.browser, sourceType: 'module' },
+  },
+  {
     // The document worker page runs in a sandboxed browser context, not in Node.
     files: ['src/main/documents/worker/**/*.ts'],
     languageOptions: { globals: globals.browser },

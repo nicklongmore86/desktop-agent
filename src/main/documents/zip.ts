@@ -77,14 +77,15 @@ export function listZipEntries(
   const entries: ZipEntry[] = []
   let at = offset
   for (let i = 0; i < count; i++) {
-    if (at + 46 > end || view.getUint32(at, true) !== CENTRAL) {
+    if (at + 46 > offset + size || view.getUint32(at, true) !== CENTRAL) {
       throw new DocumentError('malformed', 'The archive directory is damaged.')
     }
     const flags = view.getUint16(at + 8, true)
     const nameLength = view.getUint16(at + 28, true)
     const extraLength = view.getUint16(at + 30, true)
     const commentLength = view.getUint16(at + 32, true)
-    if (at + 46 + nameLength > end) {
+    // The whole record, name, extra field and comment included, must fit in the directory.
+    if (at + 46 + nameLength + extraLength + commentLength > offset + size) {
       throw new DocumentError('malformed', 'The archive directory is damaged.')
     }
     const entry: ZipEntry = {
