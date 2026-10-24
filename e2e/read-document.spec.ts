@@ -91,7 +91,8 @@ const reader = (app: ElectronApplication) => ({
 
 /** A temp folder with a granted `root`, an ungranted `outside` and a protected `userData`. */
 function sandbox() {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), 'read-document-')))
+  // The native realpath, as the guard sees it: it expands Windows 8.3 names (RUNNER~1).
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'read-document-')))
   const dirs = {
     root: join(base, 'root'),
     outside: join(base, 'outside'),
@@ -168,13 +169,17 @@ test.describe('read_document over the sandboxed worker', () => {
     expect((await reader(app).audit()).slice(-3)).toEqual([
       expect.objectContaining({
         tool: 'read_document',
-        args: { path: file, from: 1, to: 2, kind: 'pdf', images: 1 },
+        args: { path: file, from: 1, to: 2, extra: { kind: 'pdf', imageCount: 1 } },
         paths: [file],
         approval: 'auto',
         outcome: 'ok',
       }),
-      expect.objectContaining({ args: { path: file, start: 3, kind: 'pdf', images: 0 } }),
-      expect.objectContaining({ args: { path: file, region, kind: 'pdf', images: 1 } }),
+      expect.objectContaining({
+        args: { path: file, start: 3, extra: { kind: 'pdf', imageCount: 0 } },
+      }),
+      expect.objectContaining({
+        args: { path: file, region, extra: { kind: 'pdf', imageCount: 1 } },
+      }),
     ])
   })
 
@@ -211,8 +216,12 @@ test.describe('read_document over the sandboxed worker', () => {
     expect(located.content).toMatch(/Location: 51\.50\d*, -0\.12\d*/)
     const audit = (await reader(app).audit()).slice(-2)
     expect(audit.map((entry) => entry.args)).toEqual([
-      { path: file, kind: 'jpeg', images: 1 },
-      { path: file, includeLocation: true, kind: 'jpeg', images: 1, locationRead: true },
+      { path: file, extra: { kind: 'jpeg', imageCount: 1 } },
+      {
+        path: file,
+        includeLocation: true,
+        extra: { kind: 'jpeg', imageCount: 1, locationRead: true },
+      },
     ])
   })
 

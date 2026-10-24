@@ -156,6 +156,46 @@ describe('createTools', () => {
     },
   )
 
+  it('records only allowlisted small audit extras, never over the summarized args', async () => {
+    const audit = new MemoryAudit()
+    const record = (extras: unknown) =>
+      defineTool(
+        {
+          name: 'run',
+          description: 'Audits',
+          inputSchema: { type: 'object', properties: {} },
+          needsApproval: false,
+          parse: () => ({}),
+          summarize: () => ({ path: '/granted/a.pdf' }),
+          run: () => Promise.resolve({ content: 'ok', audit: extras } as RunResult),
+        },
+        { guard: toolHarness(sb).guard, audit, now: () => 0, onAuditFailure: () => {} },
+      ).execute({}, fakeContext().ctx)
+
+    await record({ kind: 'pdf', imageCount: 2, locationRead: true })
+    await record({
+      path: '/elsewhere/secret.txt',
+      extra: 'overwritten',
+      contents: 'x'.repeat(10_000),
+      kind: 'A'.repeat(500),
+      imageCount: 2.5,
+      locationRead: 'yes',
+      nested: { path: '/elsewhere' },
+    })
+    await record({ kind: { toString: () => 'pdf' }, imageCount: 1_000_000 })
+    await record('a string')
+    await record([{ kind: 'pdf' }])
+    await record(Object.create({ kind: 'pdf' }))
+    expect(audit.entries.map((entry) => entry.args)).toEqual([
+      { path: '/granted/a.pdf', extra: { kind: 'pdf', imageCount: 2, locationRead: true } },
+      { path: '/granted/a.pdf' },
+      { path: '/granted/a.pdf' },
+      { path: '/granted/a.pdf' },
+      { path: '/granted/a.pdf' },
+      { path: '/granted/a.pdf' },
+    ])
+  })
+
   it('flags a declined call by its code, never by its wording', async () => {
     const run = (body: () => Promise<RunResult>) =>
       defineTool(

@@ -1,7 +1,11 @@
-import { promises as fs } from 'node:fs'
+import { init, type WrappedPdfiumModule } from '@embedpdf/pdfium'
+import { promises as fs, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { extractDocument } from '../documents/extract'
 import { makePdf } from '../documents/fixtures.test-util'
+import { DEFAULT_LIMITS } from '../documents/limits'
 import {
   DocumentError,
   type DocumentReader,
@@ -109,7 +113,7 @@ describe('read_document', () => {
     expect(h.audit.entries).toEqual([
       expect.objectContaining({
         tool: 'read_document',
-        args: { path: file, kind: 'pdf', images: 1 },
+        args: { path: file, extra: { kind: 'pdf', imageCount: 1 } },
         paths: [file],
         approval: 'auto',
         origin: 'agent',
@@ -190,7 +194,6 @@ describe('read_document', () => {
       { path: file, region: { page: 1, x: 0.6, y: 0, width: 0.6, height: 1 } },
       { path: file, region: { page: 1, x: 0, y: 0, width: 0, height: 1 } },
       { path: file, region: { page: 1, x: 0, y: 0, width: 1 } },
-      { path: file, region: { page: 1, x: 0, y: 0, width: 1, height: 1, zoom: 9 } },
       { path: file, region: [1, 2] },
       { path: file, include_location: 'yes' },
     ]
@@ -201,6 +204,65 @@ describe('read_document', () => {
       })
     }
     expect(calls).toHaveLength(0)
+  })
+
+  describe('region zoom, through the real PDF reader', () => {
+    let pdfium: WrappedPdfiumModule
+
+    beforeAll(async () => {
+      const require = createRequire(import.meta.url)
+      const wasm = readFileSync(require.resolve('@embedpdf/pdfium/pdfium.wasm'))
+      pdfium = await init({
+        wasmBinary: wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wasm.length),
+      })
+      pdfium.PDFiumExt_Init()
+    })
+
+    /** extractDocument with real PDFium; the codecs only report the raster size. */
+    const realReader = (): DocumentReader => ({
+      extract: (bytes, options = {}) =>
+        extractDocument(bytes, options, {
+          pdfium: () => Promise.resolve(pdfium),
+          encode: (_rgba, width, height) =>
+            Promise.resolve({ bytes: png(), mime: 'image/png' as const, width, height }),
+          decodeImage: () => Promise.reject(new Error('not used')),
+        }),
+    })
+
+    // A 784 pt square page: a region w wide is drawn at 1568 / (784 w) times its natural size.
+    beforeEach(async () => {
+      h = toolHarness(sb, { documents: realReader() })
+      await put(
+        path.join(sb.root, 'square.pdf'),
+        Buffer.from(makePdf([{ width: 784, height: 784, drawing: true }])),
+      )
+    })
+
+    const zoom = async (size: number) => {
+      const region = { page: 1, x: 0.25, y: 0.25, width: size, height: size }
+      const r = await run({ path: path.join(sb.root, 'square.pdf'), region })
+      expect(r.isError).toBeUndefined()
+      expect(r.images).toHaveLength(1)
+      return r
+    }
+
+    it(`zooms a region to exactly ${String(DEFAULT_LIMITS.maxRegionScale)}x`, async () => {
+      expect(DEFAULT_LIMITS.maxRegionScale).toBe(8)
+      // 196 pt across, drawn 1568 px across: 8x.
+      const r = await zoom(0.25)
+      expect(r.images?.[0]).toMatchObject({ width: 1568, height: 1568 })
+      expect(r.content).toContain('at 1568 x 1568 px')
+    })
+
+    it('caps a region that would need more than 8x at 8x', async () => {
+      // 98 pt across would need 16x to fill 1568 px; it is drawn at 8x, 784 px.
+      const r = await zoom(0.125)
+      expect(r.images?.[0]).toMatchObject({ width: 784, height: 784 })
+      expect(r.content).toContain('at 784 x 784 px')
+      // A tiny region stays at 8x too, never stretched further.
+      const tiny = await zoom(0.01)
+      expect(tiny.images?.[0]).toMatchObject({ width: 63, height: 63 })
+    })
   })
 
   it('returns a photo upright with its facts as text, and its location only when asked', async () => {
@@ -230,8 +292,12 @@ describe('read_document', () => {
 
     // The audit log records that the location was asked for and actually read.
     expect(h.audit.entries.map((entry) => entry.args)).toEqual([
-      { path: file, kind: 'jpeg', images: 1 },
-      { path: file, includeLocation: true, kind: 'jpeg', images: 1, locationRead: true },
+      { path: file, extra: { kind: 'jpeg', imageCount: 1 } },
+      {
+        path: file,
+        includeLocation: true,
+        extra: { kind: 'jpeg', imageCount: 1, locationRead: true },
+      },
     ])
   })
 
@@ -247,8 +313,7 @@ describe('read_document', () => {
     expect(h.audit.entries[0]?.args).toEqual({
       path: file,
       includeLocation: true,
-      kind: 'jpeg',
-      images: 1,
+      extra: { kind: 'jpeg', imageCount: 1 },
     })
   })
 

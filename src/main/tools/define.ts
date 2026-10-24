@@ -43,11 +43,42 @@ export class ToolFailure extends Error {
   }
 }
 
+/**
+ * Facts a tool learns while running, recorded under the audit entry's `args.extra`.
+ * Only these keys, each a small scalar, are kept; anything else is dropped, so a tool
+ * can neither overwrite its summarized args nor put file contents in the log.
+ */
+export interface AuditExtras {
+  /** The detected file type, a short lowercase tag such as 'pdf'. */
+  kind?: string
+  imageCount?: number
+  locationRead?: boolean
+}
+
+const AUDIT_EXTRAS: Record<keyof AuditExtras, (value: unknown) => boolean> = {
+  kind: (value) => typeof value === 'string' && /^[a-z][a-z0-9-]{0,15}$/.test(value),
+  imageCount: (value) =>
+    typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1000,
+  locationRead: (value) => typeof value === 'boolean',
+}
+
+/** The allowlisted, well-formed fields of a tool's audit extras, or undefined if none. */
+export function auditExtras(raw: unknown): AuditExtras | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const kept: Record<string, unknown> = {}
+  for (const [key, valid] of Object.entries(AUDIT_EXTRAS)) {
+    if (!Object.hasOwn(raw, key)) continue
+    const value = (raw as Record<string, unknown>)[key]
+    if (valid(value)) kept[key] = value
+  }
+  return Object.keys(kept).length ? kept : undefined
+}
+
 /** A tool body's result: a ToolResult plus, for errors, the category to audit. */
 export interface RunResult extends ToolResult {
   code?: ErrorCode
-  /** Facts learned while running, added to the audit entry's args (never file contents). */
-  audit?: Record<string, unknown>
+  /** Facts learned while running; see AuditExtras. */
+  audit?: AuditExtras
 }
 
 export function errorResult(message: string, code: ErrorCode): RunResult {
@@ -171,12 +202,13 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
       }
 
       try {
+        const extra = auditExtras(result.audit)
         await deps.audit.record({
           tool: spec.name,
           args:
             input === undefined
               ? { invalidInput: true }
-              : { ...spec.summarize(input, approval), ...result.audit },
+              : { ...spec.summarize(input, approval), ...(extra ? { extra } : {}) },
           paths,
           approval,
           origin: ctx.origin ?? 'agent',

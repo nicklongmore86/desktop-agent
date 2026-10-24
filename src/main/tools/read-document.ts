@@ -208,7 +208,7 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
         ...(images.length ? { images } : {}),
         audit: {
           kind,
-          images: images.length,
+          imageCount: images.length,
           ...(locationRead ? { locationRead: true } : {}),
         },
       }
