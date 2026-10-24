@@ -14,6 +14,7 @@ import { filesPushChannels } from '../shared/ipc-files'
 import { gitPushChannels } from '../shared/ipc-git'
 import { nativeImageScaler } from './attachments/native-image'
 import { cancelOnPageEnd } from './chat/lifecycle'
+import { defaultSystemHeifDecoder } from './documents/system-heif'
 import { DocumentWorkerHost, documentWorkerPaths } from './documents/worker-host'
 import { registerIpcHandlers } from './ipc-handlers'
 import { isTrustedIpcSender } from './security'
@@ -63,12 +64,19 @@ app.on('second-instance', () => {
 void app.whenReady().then(async () => {
   hardenSessions()
   // One sandboxed document reader for the app: read_document and PDF attachments share it.
-  const documents = new DocumentWorkerHost(documentWorkerPaths(__dirname))
+  // HEIC photos are decoded by Windows' codec in heif-decode.exe, never from a granted folder.
+  let grantedRoots: () => readonly string[] = () => []
+  const heic = defaultSystemHeifDecoder(process.platform, () => grantedRoots())
+  const documents = new DocumentWorkerHost({
+    ...documentWorkerPaths(__dirname),
+    systemDecoder: heic,
+  })
   app.on('will-quit', () => {
     void documents.dispose()
   })
   const services = await createAppServices({
     documents,
+    heicSupport: () => heic.support(),
     userData: app.getPath('userData'),
     openUrl: (url) => shell.openExternal(url),
     // Electron 44's main-process clipboard.writeText resolves once the text is written.
@@ -113,6 +121,7 @@ void app.whenReady().then(async () => {
     },
   })
   const { chat } = services
+  grantedRoots = () => services.grants.list()
 
   // Only the app window's current main frame may call in, and only on an app URL.
   const isTrustedSender = (event: { senderFrame: { url: string; parent: unknown } | null }) => {

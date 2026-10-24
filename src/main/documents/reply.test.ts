@@ -443,3 +443,57 @@ describe('checkReply: Office shapes', () => {
     ).toBe('it returned more pages than allowed')
   })
 })
+
+describe('checkReply: a HEIC decode request', () => {
+  const heic = (overrides: Record<string, unknown> = {}) => ({
+    meta: { kind: 'heic', mime: 'image/heic', width: 3024, height: 4032 },
+    sections: [{ title: 'Image metadata', text: 'Camera: Apple iPhone 15' }],
+    images: [],
+    position: { unit: 'image', total: 1, shown: { from: 1, to: 1 }, next: null },
+    warnings: [],
+    systemDecode: {
+      format: 'heif',
+      coded: { width: 4032, height: 3024 },
+      cropped: { width: 4032, height: 3024 },
+      orientation: 6,
+    },
+    ...overrides,
+  })
+  const request = (changes: Record<string, unknown>) => ({
+    ...heic().systemDecode,
+    ...changes,
+  })
+
+  it('accepts one for a HEIC photo when an image was asked for, and copies it', () => {
+    const checked = checkReply(reply(heic()), job())
+    if (checked.type !== 'result') throw new Error('not a result')
+    expect(checked.view.systemDecode).toEqual(heic().systemDecode)
+    expect(checked.view.systemDecode).not.toBe(heic().systemDecode)
+  })
+
+  it('refuses one for anything else, or alongside an image, or with no image wanted', () => {
+    const asked = 'it asked for a decode it should not need'
+    expect(verdict(reply(heic({ meta: { kind: 'jpeg', mime: 'image/jpeg' } })))).toBe(asked)
+    expect(verdict(reply(heic({ images: [{ ...png(10, 10), source: {} }] })))).toBe(asked)
+    expect(verdict(reply(heic()), job({ budget: { maxImages: 0 } }))).toBe(asked)
+  })
+
+  it('refuses a request past the pixel cap, an inconsistent crop, or a bad shape', () => {
+    expect(
+      verdict(reply(heic({ systemDecode: request({ coded: { width: 20_000, height: 10_000 } }) }))),
+    ).toBe('an image is too large')
+    expect(
+      verdict(reply(heic({ systemDecode: request({ cropped: { width: 5000, height: 10 } }) }))),
+    ).toBe('its image size is inconsistent')
+    for (const bad of [
+      request({ orientation: 9 }),
+      request({ format: 'avif' }),
+      request({ coded: { width: 0, height: 1 } }),
+      request({ path: 'C:\\photo.heic' }),
+    ]) {
+      expect(verdict(reply(heic({ systemDecode: bad })))).toBe(
+        'its reply did not match what was asked',
+      )
+    }
+  })
+})

@@ -23,6 +23,7 @@ import {
   type ConnectionsState,
 } from '../../../shared/ipc-connections'
 import { BUILTIN_CONNECTION_INFO } from '../../../shared/connections-fixture'
+import type { HeicSupport } from '../../../shared/attachments'
 import type { AttachOutcome, CopyIntoFolderResult } from '../../../shared/ipc-attachments'
 import type {
   FileEntry,
@@ -141,6 +142,8 @@ const DEFAULT_CONFIGURED: readonly ConnectionId[] = [
 ]
 
 export interface FakeApiOptions {
+  /** What attachments.heicSupport() answers; no codec by default. */
+  heicSupport?: HeicSupport
   /** Anthropic API's key, which the key calls default to. */
   key?: ApiKeyStatus
   /** Other API-key connections' keys, by connection id. */
@@ -356,6 +359,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
       ),
       copyIntoFolder: vi.fn((_id: string, _folder: FileLocation): Promise<CopyIntoFolderResult> =>
         Promise.resolve({ ok: false, reason: 'Not copied.' }),
+      ),
+      heicSupport: vi.fn((): Promise<HeicSupport> =>
+        Promise.resolve(options.heicSupport ?? { supported: false, reason: 'No HEIC codec.' }),
       ),
     },
     git: {

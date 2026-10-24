@@ -44,6 +44,11 @@ The app reads only this pipe, accepts only one exact line, and ignores anything 
 - Before every command, the app checks that `resources\helpers\job-run.exe` is a regular file (not a link) whose real path is exactly that location, outside every granted folder, and whose SHA-256 matches the compiled-in pin. It is never looked up on `PATH` or in the working folder.
 - If that check fails, or there is no install (development on Windows) or no pin, the command still runs, without a job, and the existing kill path applies (`taskkill /T /F`, then the PowerShell tree-kill fallback). The result ends with the reason, for example `Not run in a Job Object (job-run.exe failed its integrity check); processes the command started may still be running.`, and the app logs it once.
 
+The same build script, pins file, after-pack check and verification
+(`verifyPinnedHelper`) cover `heif-decode.exe`, the HEIC decoder (see
+[document-reader.md](document-reader.md#heic-photos)), under its own marker
+(`heif-decode.exe-sha256:`).
+
 ## Processes that escape by design
 
 A Job Object contains only processes created by processes already in it. These are started by something outside the job, so they keep running after the command:

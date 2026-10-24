@@ -4,15 +4,21 @@
 // it through `electronApp.evaluate` and `globalThis.documents`. Run `pnpm build` first.
 const { app, nativeImage } = require('electron')
 const { join } = require('node:path')
-const { DocumentWorkerHost, documentWorkerPaths } = require('../../out/main/documents.js')
+const {
+  createSystemHeifDecoder,
+  DocumentWorkerHost,
+  documentWorkerPaths,
+  HEIF_DECODE_PATH,
+  verifyPinnedHelper,
+} = require('../../out/main/documents.js')
 
 // No app.enableSandbox() here (it overrides --no-sandbox, which Linux CI containers need);
 // the worker window asks for sandbox: true itself.
 
-const { cpSync, mkdtempSync } = require('node:fs')
+const { cpSync, existsSync, mkdtempSync, readFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 
-const { hostile, ...options } = JSON.parse(process.env.E2E_DOCUMENT_HOST ?? '{}')
+const { hostile, fakeHeic, ...options } = JSON.parse(process.env.E2E_DOCUMENT_HOST ?? '{}')
 const paths = documentWorkerPaths(join(__dirname, '../../out/main'))
 if (hostile) {
   // A copy of the built worker whose script is replaced by a hostile one.
@@ -52,14 +58,57 @@ function serialise(view) {
   }
 }
 
+// HEIC: Windows' codec through heif-decode.exe as `pnpm build:helpers` built and pinned it
+// (build/helpers); elsewhere, or without a build, the decoder says why it is unavailable.
+const pins = join(__dirname, '../../build/job-helper-pins.json')
+const heicPin = existsSync(pins)
+  ? (JSON.parse(readFileSync(pins, 'utf8'))['helpers/heif-decode.exe']?.sha256 ?? null)
+  : null
+/** A PNG made by Chromium: red on the left (or, `onTop`, the top) half, blue on the other. */
+function redBluePng(width, height, onTop = false) {
+  const pixels = Buffer.alloc(width * height * 4)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const at = (y * width + x) * 4
+      const red = onTop ? y < height / 2 : x < width / 2
+      pixels[at] = red ? 0 : 255 // B
+      pixels[at + 2] = red ? 255 : 0 // R
+      pixels[at + 3] = 255
+    }
+  }
+  return new Uint8Array(nativeImage.createFromBitmap(pixels, { width, height }).toPNG())
+}
+// `fakeHeic: 'stored'` stands in for a codec that leaves the test photo's pixels as stored
+// (64 x 32, red on the left), `'upright'` for one that applies its irot (32 x 64, red on top).
+const systemDecoder = fakeHeic
+  ? {
+      support: () => Promise.resolve({ supported: true }),
+      decode: () =>
+        Promise.resolve(fakeHeic === 'stored' ? redBluePng(64, 32) : redBluePng(32, 64, true)),
+    }
+  : createSystemHeifDecoder({
+      platform: process.platform,
+      findDecoder: () =>
+        verifyPinnedHelper(
+          {
+            resources: join(__dirname, '../../build'),
+            sha256: heicPin,
+            grantedRoots: () => [],
+            platform: process.platform,
+          },
+          HEIF_DECODE_PATH,
+        ),
+    })
+
 app.whenReady().then(() => {
-  const host = new DocumentWorkerHost({ ...paths, ...options })
+  const host = new DocumentWorkerHost({ ...paths, systemDecoder, ...options })
   globalThis.documents = {
     extract: (base64, extractOptions) =>
       host.extract(Buffer.from(base64, 'base64'), extractOptions).then(serialise, (error) => ({
         error: { name: error.name, code: error.code, message: error.message },
       })),
     stats: () => host.stats(),
+    heicSupport: () => systemDecoder.support(),
     ticks: () => ticks,
     /** Live broker processes and worker windows. */
     alive: () => ({

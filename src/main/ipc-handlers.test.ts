@@ -192,6 +192,7 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
         Promise.resolve({ ok: false as const, code: 'binary' as const, reason: 'no' }),
       ),
       copyIntoFolder: vi.fn(() => Promise.resolve({ ok: true as const, text: '@"/granted/a"' })),
+      heicSupport: vi.fn(() => Promise.resolve({ supported: true as const })),
     },
     files: {
       roots: vi.fn(() => [{ id: ROOT_ID, name: 'granted', path: '/granted' }]),
@@ -477,6 +478,11 @@ describe('registerIpcHandlers', () => {
       expect(services.attachments.fromPaste).toHaveBeenLastCalledWith(bytes, 'text/plain', 'a.txt')
       await invoke(attachmentsChannels.attachmentsCopyIntoFolder, appFrame, ID, at)
       expect(services.attachments.copyIntoFolder).toHaveBeenCalledWith(ID, at)
+      // HEIC support takes no arguments either.
+      await expect(
+        invoke(attachmentsChannels.attachmentsHeicSupport, appFrame, '/etc/passwd'),
+      ).resolves.toEqual({ supported: true })
+      expect(services.attachments.heicSupport).toHaveBeenCalledWith()
     })
 
     it('refuses a dropped "path" that is not a bounded string', async () => {

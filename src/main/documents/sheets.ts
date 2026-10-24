@@ -3,6 +3,7 @@ import { escapeCell } from './docx'
 import { effectiveBudget, type DocumentLimits } from './limits'
 import type { OfficePackage } from './package'
 import { MIME } from './sniff'
+import { sanitizeTitle } from '../storage/plain-text'
 import {
   DocumentError,
   type DocumentKind,
@@ -317,16 +318,21 @@ function readWorkbook(
 const UNSAVED_NOTE =
   'Some formulas have no saved value (shown as "=formula (no saved value)"); recalculate in Excel and save to get values.'
 
+/** Longest sheet name a note quotes. */
+const NOTE_SHEET_CHARS = 100
+
 function formulaNotes(formulas: Formulas): string[] {
   const notes = formulas.shownUnsaved ? [UNSAVED_NOTE] : []
+  // Sheet names come from the file: one line of plain text, bounded, in the notes.
+  const quoted = (name: string): string => sanitizeTitle(name, NOTE_SHEET_CHARS)
   for (const name of formulas.unchecked) {
     notes.push(
-      `The sheet "${name}" has too many formulas to check which have saved values; its formulas are shown as formulas, not values.`,
+      `The sheet "${quoted(name)}" has too many formulas to check which have saved values; its formulas are shown as formulas, not values.`,
     )
   }
   for (const name of formulas.zeros) {
     notes.push(
-      `Some .xls formula results in "${name}" are 0 and may not have been calculated; recalculate in Excel and save as .xlsx to confirm.`,
+      `Some .xls formula results in "${quoted(name)}" are 0 and may not have been calculated; recalculate in Excel and save as .xlsx to confirm.`,
     )
   }
   return notes

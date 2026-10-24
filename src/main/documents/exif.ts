@@ -1,3 +1,4 @@
+import { readHeif } from './heif'
 import type { DocumentKind } from './types'
 
 /**
@@ -43,6 +44,7 @@ const TYPE_SIZE: Record<number, number> = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 
 export function findExif(bytes: Uint8Array, kind: DocumentKind): Uint8Array | null {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (kind === 'tiff') return bytes
+  if (kind === 'heic' || kind === 'avif') return readHeif(bytes)?.exif ?? null
   if (kind === 'jpeg') {
     let at = 2
     while (at + 4 <= bytes.length && bytes[at] === 0xff) {

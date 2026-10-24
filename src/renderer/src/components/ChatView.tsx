@@ -6,7 +6,8 @@ import {
   type ConnectionInfo,
 } from '../../../shared/ipc-connections'
 import type { ChatAttachment } from '../../../shared/ipc'
-import { canReceive } from '../attachments/model'
+import { canReceive, notReceivedNote } from '../attachments/model'
+import { useHeicSupport } from '../attachments/use-heic'
 import { useConnectionVision } from '../attachments/use-vision'
 import { useAttachments } from '../attachments/use-attachments'
 import type { ChatViewState } from '../chat-state'
@@ -83,6 +84,7 @@ export function ChatView({
   const usage = useProviderUsage(provider?.provider)
   const models = useProviderModels(provider?.provider)
   const vision = useConnectionVision(provider?.provider, models.choice?.selected)?.enabled === true
+  const heic = useHeicSupport()
   const refreshUsage = usage.refresh
   const refreshModels = models.refresh
 
@@ -269,7 +271,13 @@ export function ChatView({
                           key={attachment.id}
                           attachment={attachment}
                           available={attachment.available}
-                          unsupported={!canReceive(attachment.kind, vision, attachment.mime)}
+                          unsupported={!canReceive(attachment.kind, vision, attachment.mime, heic)}
+                          unsupportedNote={notReceivedNote(
+                            attachment.kind,
+                            vision,
+                            attachment.mime,
+                            heic,
+                          )}
                         />
                       ))}
                     </ul>

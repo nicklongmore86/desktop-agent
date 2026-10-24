@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { pngShell } from './fixtures.test-util'
 import { DEFAULT_LIMITS } from './limits'
 import type { ExtractJob, FromBroker, ToBroker } from './protocol'
-import type { DocumentView } from './types'
+import { DocumentError, type DocumentView } from './types'
 
 /**
  * Electron stand-ins. The fake broker answers main's messages however a test says;
@@ -429,5 +429,122 @@ describe('isWorkerRequestAllowed', () => {
     ['not a url', false],
   ])('%s -> %s', (url, allowed) => {
     expect(isWorkerRequestAllowed(url, dir)).toBe(allowed)
+  })
+})
+
+describe('HEIC photos through the system decoder', () => {
+  const photo = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 1, 2, 3])
+  const heicView = (overrides: Partial<DocumentView> = {}): Partial<DocumentView> => ({
+    meta: { kind: 'heic', mime: 'image/heic', width: 32, height: 64 },
+    sections: [{ title: 'Image metadata', text: 'Camera: Apple iPhone 15' }],
+    position: { unit: 'image', total: 1, shown: { from: 1, to: 1 }, next: null },
+    systemDecode: {
+      format: 'heif',
+      coded: { width: 64, height: 64 },
+      cropped: { width: 64, height: 32 },
+      orientation: 6,
+    },
+    ...overrides,
+  })
+  const upright = pngShell(32, 64)
+  let jobs: ExtractJob[]
+  beforeEach(() => {
+    jobs = []
+    electron.state.answer = (job, reply) => {
+      const extract = job as ExtractJob
+      jobs.push(extract)
+      if (jobs.length === 1) reply(result(job, heicView()))
+      else
+        reply(
+          result(job, {
+            meta: { kind: 'png', mime: 'image/png', width: 32, height: 64 },
+            sections: [],
+            images: [{ bytes: upright, mime: 'image/png', width: 32, height: 64, source: {} }],
+            position: { unit: 'image', total: 1, shown: { from: 1, to: 1 }, next: null },
+          }),
+        )
+    }
+  })
+  const decoder = (decode: () => Promise<Uint8Array>) => ({
+    support: vi.fn(() => Promise.resolve({ supported: true as const })),
+    decode: vi.fn(decode),
+  })
+
+  it('decodes the original bytes with the system codec, then re-reads its PNG in the worker', async () => {
+    const system = decoder(() => Promise.resolve(pngShell(64, 32)))
+    const h = host({ systemDecoder: system })
+    const read = await h.extract(photo, { name: 'IMG.HEIC', budget: { longEdge: 800 } })
+    expect(system.decode).toHaveBeenCalledWith(photo, {
+      longEdge: 800,
+      maxPixels: 100_000_000,
+      maxInputBytes: DEFAULT_LIMITS.maxDocumentBytes,
+      memoryBytes: 1536 * 1024 * 1024,
+      timeoutMs: 30_000,
+      maxOutputBytes: DEFAULT_LIMITS.maxDocumentBytes,
+    })
+    // The second job is the PNG, with what the worker read from the original.
+    expect(jobs).toHaveLength(2)
+    expect(jobs[1]?.bytes).toEqual(pngShell(64, 32))
+    expect(jobs[1]?.options).toEqual({
+      mime: 'image/png',
+      view: 'images',
+      budget: { maxImages: 1, longEdge: 800 },
+      systemDecoded: { cropped: { width: 64, height: 32 }, orientation: 6 },
+    })
+    expect(read.meta).toMatchObject({ kind: 'heic', width: 32, height: 64 })
+    expect(read.sections[0]?.text).toBe('Camera: Apple iPhone 15')
+    expect(read.images).toEqual([
+      { bytes: upright, mime: 'image/png', width: 32, height: 64, source: {} },
+    ])
+    expect(read.systemDecode).toBeUndefined()
+  })
+
+  it('refuses with the decoder’s reason when the codec is missing, without a second job', async () => {
+    const system = decoder(() =>
+      Promise.reject(new DocumentError('unsupported', 'Install HEIF Image Extensions.')),
+    )
+    await expect(host({ systemDecoder: system }).extract(photo)).rejects.toMatchObject({
+      code: 'unsupported',
+      message: 'Install HEIF Image Extensions.',
+    })
+    expect(jobs).toHaveLength(1)
+  })
+
+  it('refuses HEIC when there is no system decoder at all', async () => {
+    await expect(host().extract(photo)).rejects.toMatchObject({ code: 'unsupported' })
+    expect(jobs).toHaveLength(1)
+  })
+
+  it('never lets a caller pass what only the host may', async () => {
+    const system = decoder(() => Promise.resolve(pngShell(64, 32)))
+    await host({ systemDecoder: system }).extract(photo, {
+      systemDecoded: { cropped: { width: 1, height: 1 }, orientation: 3 },
+    })
+    expect(jobs[0]?.options).toEqual({})
+  })
+
+  it('fails when the second job does not give back one PNG', async () => {
+    electron.state.answer = (job, reply) => {
+      jobs.push(job as ExtractJob)
+      reply(
+        result(job, jobs.length === 1 ? heicView() : { meta: { kind: 'png', mime: 'image/png' } }),
+      )
+    }
+    const system = decoder(() => Promise.resolve(pngShell(64, 32)))
+    await expect(host({ systemDecoder: system }).extract(photo)).rejects.toMatchObject({
+      code: 'worker-failed',
+    })
+  })
+
+  it('kills a worker that asks for a decode the photo does not need', async () => {
+    electron.state.answer = (job, reply) => {
+      reply(result(job, { ...heicView(), meta: { kind: 'jpeg', mime: 'image/jpeg' } }))
+    }
+    const system = decoder(() => Promise.resolve(pngShell(64, 32)))
+    await expect(host({ systemDecoder: system }).extract(photo)).rejects.toMatchObject({
+      code: 'worker-failed',
+    })
+    expect(system.decode).not.toHaveBeenCalled()
+    expect(killed(0)).toEqual({ window: true, broker: true })
   })
 })

@@ -5,6 +5,7 @@ import {
   admit,
   canReceive,
   formatSize,
+  HEIC_CHECKING,
   middleTruncate,
   NO_VISION,
   NOT_SENT_YET,
@@ -78,6 +79,30 @@ describe('chip text', () => {
     expect(notReceivedNote('document', false, docx)).toBeUndefined()
     expect(notReceivedNote('document', true, 'application/rtf')).toBe(NOT_SENT_YET)
     expect(notReceivedNote('image', true)).toBeUndefined()
+  })
+
+  it('sends HEIC and AVIF photos to a vision model, HEIC only where it can be decoded', () => {
+    const yes = { supported: true as const }
+    const no = { supported: false as const, reason: 'Install HEIF Image Extensions.' }
+    for (const mime of ['image/heic', 'image/heif']) {
+      expect(canReceive('document', true, mime, yes)).toBe(true)
+      expect(canReceive('document', false, mime, yes)).toBe(false)
+      expect(canReceive('document', true, mime, no)).toBe(false)
+      expect(canReceive('document', true, mime, null)).toBe(false)
+      expect(notReceivedNote('document', false, mime, yes)).toBe(NO_VISION)
+      expect(notReceivedNote('document', true, mime, no)).toBe(
+        'Install HEIF Image Extensions. Until then the model sees the file name only.',
+      )
+      expect(notReceivedNote('document', true, mime, null)).toBe(HEIC_CHECKING)
+      expect(notReceivedNote('document', true, mime, yes)).toBeUndefined()
+    }
+    // AVIF is decoded by Chromium: it needs vision only.
+    expect(canReceive('document', true, 'image/avif', no)).toBe(true)
+    expect(canReceive('document', false, 'image/avif', yes)).toBe(false)
+    expect(notReceivedNote('document', false, 'image/avif')).toBe(NO_VISION)
+    // TIFF and BMP are still names only.
+    expect(canReceive('document', true, 'image/tiff', yes)).toBe(false)
+    expect(notReceivedNote('document', true, 'image/tiff', yes)).toBe(NOT_SENT_YET)
   })
 })
 

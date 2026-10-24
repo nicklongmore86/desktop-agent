@@ -2,8 +2,9 @@ import { init, type WrappedPdfiumModule } from '@embedpdf/pdfium'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { extractDocument, type ExtractEnv } from './extract'
+import { extractDocument, remainingTurn, type ExtractEnv } from './extract'
 import { jpegShell, makeExif, makePdf, makeZip, pngShell, withExif } from './fixtures.test-util'
+import { PLAIN_HEIC, ROTATED_AVIF, ROTATED_HEIC, withIspe } from './heif-fixtures.test-util'
 import { DEFAULT_LIMITS } from './limits'
 import { DocumentError, type ExtractOptions } from './types'
 
@@ -224,14 +225,19 @@ describe('other kinds', () => {
     expect(view.warnings[0]).toBe('The file says it is image/jpeg but its contents are a PDF.')
   })
 
-  it('says HEIC is not supported yet, and refuses an unreadable OLE file', async () => {
+  it('refuses a HEIF file with no readable header, and an unreadable OLE file', async () => {
     const heic = new Uint8Array([
       0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66,
       0x31, 0x68, 0x65, 0x69, 0x63,
     ])
-    expect((await read(heic)).warnings[0]).toMatch(/HEIC\/HEIF images are not supported yet/)
+    expect(await refusal(read(heic))).toBe('malformed')
     const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0])
     expect(await refusal(read(ole))).toBe('malformed')
+  })
+
+  it('reads RTF as not supported yet', async () => {
+    const view = await read(new TextEncoder().encode('{\\rtf1 hello}'))
+    expect(view.warnings).toEqual(['Reading a RTF document is not supported yet.'])
   })
 
   it('reads text in character windows', async () => {
@@ -239,5 +245,90 @@ describe('other kinds', () => {
     const view = await read(text, { select: { from: 3 }, budget: { maxChars: 4 } })
     expect(view.sections[0]?.text).toBe('cdef')
     expect(view.position).toEqual({ unit: 'char', total: 10, shown: { from: 3, to: 6 }, next: 7 })
+  })
+})
+
+describe('HEIC and AVIF photos', () => {
+  it('HEIC: reads the header and metadata, and asks the host to decode it', async () => {
+    const e = env()
+    const view = await read(ROTATED_HEIC, { name: 'IMG_0001.HEIC' }, e)
+    expect(e.decodeImage).not.toHaveBeenCalled()
+    expect(view.meta).toMatchObject({ kind: 'heic', width: 32, height: 64 })
+    expect(view.images).toEqual([])
+    expect(view.systemDecode).toEqual({
+      format: 'heif',
+      coded: { width: 64, height: 64 },
+      cropped: { width: 64, height: 32 },
+      orientation: 6,
+    })
+    const text = view.sections[0]?.text ?? ''
+    expect(text).toContain('Captured: 2026:05:01 10:20:30')
+    expect(text).toContain('Camera: Apple iPhone 15')
+    expect(text).toContain('Orientation: EXIF 6 (applied)')
+    expect(text).toContain('Location: recorded (not included; ask with include_location)')
+    expect(text).not.toContain('51.5')
+    const located = await read(ROTATED_HEIC, { includeLocation: true }, e)
+    expect(located.sections[0]?.text).toContain('Location: 51.5, -0.125')
+    expect((await read(PLAIN_HEIC)).systemDecode?.orientation).toBe(1)
+  })
+
+  it('HEIC: no decode is asked for when no image is wanted', async () => {
+    const view = await read(ROTATED_HEIC, { view: 'text' })
+    expect(view.systemDecode).toBeUndefined()
+    expect(view.sections[0]?.text).toContain('Camera: Apple iPhone 15')
+    expect((await read(ROTATED_HEIC, { budget: { maxImages: 0 } })).systemDecode).toBeUndefined()
+  })
+
+  it('oversized HEIC and AVIF headers -> too-many-pixels before any decode', async () => {
+    for (const [photo] of [[ROTATED_HEIC], [ROTATED_AVIF]] as const) {
+      const e = env()
+      const big = withIspe(photo, 20_000, 10_000)
+      expect(await refusal(read(big, {}, e))).toBe('too-many-pixels')
+      expect(e.decodeImage).not.toHaveBeenCalled()
+    }
+  })
+
+  it('AVIF: decoded in the worker, irot applied by the codec, not again', async () => {
+    const e = env()
+    const view = await read(ROTATED_AVIF, {}, e)
+    expect(e.decodeImage).toHaveBeenCalledWith(ROTATED_AVIF, 'avif', 1568, 5 * 1024 * 1024, 1)
+    expect(view.meta).toMatchObject({ kind: 'avif', width: 32, height: 64 })
+    expect(view.systemDecode).toBeUndefined()
+    expect(view.images).toHaveLength(1)
+    expect(view.sections[0]?.text).toContain('Camera: Apple iPhone 15')
+  })
+
+  it("turns the system codec's PNG upright only when the codec did not", async () => {
+    const decoded = { cropped: { width: 64, height: 32 }, orientation: 6 }
+    const asStored = env()
+    await read(pngShell(64, 32), { systemDecoded: decoded }, asStored)
+    expect(asStored.decodeImage.mock.calls[0]?.[4]).toBe(6)
+    const upright = env()
+    await read(pngShell(32, 64), { systemDecoded: decoded }, upright)
+    expect(upright.decodeImage.mock.calls[0]?.[4]).toBe(1)
+    const plain = env()
+    await read(pngShell(64, 32), {}, plain)
+    expect(plain.decodeImage.mock.calls[0]?.[4]).toBe(1)
+  })
+})
+
+describe('remainingTurn', () => {
+  const landscape = { width: 400, height: 300 }
+  const portrait = { width: 300, height: 400 }
+  it('turns only a quarter-turned photo whose output kept the stored shape', () => {
+    for (const orientation of [5, 6, 7, 8]) {
+      expect(remainingTurn(orientation, landscape, { width: 200, height: 150 })).toBe(orientation)
+      expect(remainingTurn(orientation, landscape, { width: 150, height: 200 })).toBe(1)
+      expect(remainingTurn(orientation, portrait, { width: 150, height: 200 })).toBe(orientation)
+    }
+  })
+
+  it('takes a shape-keeping turn, or a square, as done by the codec', () => {
+    for (const orientation of [1, 2, 3, 4]) {
+      expect(remainingTurn(orientation, landscape, landscape)).toBe(1)
+    }
+    expect(remainingTurn(6, { width: 100, height: 100 }, { width: 100, height: 100 })).toBe(1)
+    expect(remainingTurn(6, landscape, { width: 100, height: 100 })).toBe(1)
+    expect(remainingTurn(9, landscape, landscape)).toBe(1)
   })
 })

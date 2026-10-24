@@ -68,6 +68,26 @@ export interface ExtractOptions {
   includeLocation?: boolean
   /** Spreadsheets: show each formula's text after its value. */
   includeFormulas?: boolean
+  /**
+   * Set by the host only, on its second job for a HEIC photo: the bytes are the PNG the
+   * system codec made of it, and this is what the worker read from the original, so the
+   * worker can turn it upright if the codec did not.
+   */
+  systemDecoded?: { cropped: { width: number; height: number }; orientation: number }
+}
+
+/**
+ * A photo the worker cannot decode itself (HEIC, whose HEVC codec is not in Chromium):
+ * what it read from the container, for the host to decode it with the system's codec.
+ */
+export interface SystemDecodeRequest {
+  format: 'heif'
+  /** The primary image's stored size: what the codec allocates. */
+  coded: { width: number; height: number }
+  /** After its clean-aperture crop, before rotation. */
+  cropped: { width: number; height: number }
+  /** From `irot`/`imir`, as an EXIF orientation (1-8). */
+  orientation: number
 }
 
 export interface DocumentImage {
@@ -131,6 +151,8 @@ export interface DocumentView {
     next: number | null
   }
   warnings: string[]
+  /** Only from the worker to the host, never to callers: see SystemDecodeRequest. */
+  systemDecode?: SystemDecodeRequest
 }
 
 export type DocumentErrorCode =

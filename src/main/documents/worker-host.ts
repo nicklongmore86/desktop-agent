@@ -10,9 +10,10 @@ import { readdir, readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { secureWebPreferences } from '../security'
-import { checkDocumentSize, DEFAULT_LIMITS, type DocumentLimits } from './limits'
+import { checkDocumentSize, DEFAULT_LIMITS, effectiveBudget, type DocumentLimits } from './limits'
 import { WORKER_PORT_CHANNEL, type FromBroker, type ToBroker } from './protocol'
 import { checkReply } from './reply'
+import type { SystemImageDecoder } from './system-heif'
 import {
   DocumentError,
   type DocumentErrorCode,
@@ -48,6 +49,11 @@ export interface DocumentWorkerOptions {
   maxJobsPerWorker?: number
   idleMs?: number
   partition?: string
+  /**
+   * Decodes HEIC photos, which Chromium cannot, with the system's codec (heif-decode.exe
+   * on Windows). Without it they are refused with `unsupported`.
+   */
+  systemDecoder?: SystemImageDecoder
 }
 
 /** Where the worker's files are in a build: beside out/main, inside app.asar when packaged. */
@@ -106,6 +112,8 @@ export class DocumentWorkerHost {
   private readonly partition: string
   private worker: Promise<Worker> | null = null
   private queue: Promise<unknown> = Promise.resolve()
+  /** System decodes run one at a time too, beside the worker's jobs. */
+  private decodes: Promise<unknown> = Promise.resolve()
   private wasm: Promise<Uint8Array> | null = null
   private hardened = false
   private idleTimer: NodeJS.Timeout | null = null
@@ -126,9 +134,62 @@ export class DocumentWorkerHost {
     checkDocumentSize(bytes.length, this.limits)
     // A copy of exactly these bytes: a Buffer's view may sit in a shared pool.
     const copy = new Uint8Array(bytes)
-    const run = this.queue.then(() => this.run(copy, options))
+    // Only the host asks for that.
+    const { systemDecoded: _ignored, ...asked } = options
+    return this.enqueue(copy, asked).then((view) =>
+      view.systemDecode ? this.decodeWithSystem(copy, view, asked) : view,
+    )
+  }
+
+  private enqueue(bytes: Uint8Array, options: ExtractOptions): Promise<DocumentView> {
+    const run = this.queue.then(() => this.run(bytes, options))
     this.queue = run.catch(() => undefined)
     return run
+  }
+
+  /**
+   * A HEIC photo: the worker read its header and metadata but has no HEVC decoder. The
+   * system codec decodes the original bytes (never anything the worker sent) into a PNG
+   * in its own locked-down process, and a second worker job turns that upright, scales it
+   * and re-encodes it, checked like any other image. Main never parses the photo or the PNG.
+   */
+  private async decodeWithSystem(
+    bytes: Uint8Array,
+    view: DocumentView,
+    options: ExtractOptions,
+  ): Promise<DocumentView> {
+    const request = view.systemDecode
+    delete view.systemDecode
+    if (!request) return view
+    const decoder = this.options.systemDecoder
+    if (!decoder) {
+      throw new DocumentError('unsupported', 'HEIC photos cannot be decoded in this session.')
+    }
+    const budget = effectiveBudget(options.budget, this.limits)
+    const decoding = this.decodes.then(() =>
+      decoder.decode(bytes, {
+        longEdge: budget.longEdge,
+        maxPixels: this.limits.maxDecodedPixels,
+        maxInputBytes: this.limits.maxDocumentBytes,
+        memoryBytes: this.memoryLimitBytes,
+        timeoutMs: this.timeoutMs,
+        maxOutputBytes: this.limits.maxDocumentBytes,
+      }),
+    )
+    this.decodes = decoding.catch(() => undefined)
+    const png = await decoding
+    const decoded = await this.enqueue(png, {
+      mime: 'image/png',
+      view: 'images',
+      budget: { maxImages: 1, longEdge: budget.longEdge },
+      systemDecoded: { cropped: request.cropped, orientation: request.orientation },
+    })
+    const [image] = decoded.images
+    if (decoded.meta.kind !== 'png' || decoded.images.length !== 1 || !image) {
+      throw new DocumentError('worker-failed', 'The decoded photo could not be read back.')
+    }
+    view.images = [image]
+    return view
   }
 
   stats(): { workersStarted: number; jobs: number; lastStartMs: number } {

@@ -106,6 +106,7 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
         .optional(),
     }),
   })
+  const size = z.strictObject({ width: count.min(1), height: count.min(1) })
   const view = z.strictObject({
     meta: z.strictObject({
       kind: z.enum(KINDS),
@@ -152,6 +153,14 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
       next: count.min(1).nullable(),
     }),
     warnings: z.array(shortText(MAX_WARNING_CHARS)).max(MAX_WARNINGS),
+    systemDecode: z
+      .strictObject({
+        format: z.literal('heif'),
+        coded: size,
+        cropped: size,
+        orientation: z.number().int().min(1).max(8),
+      })
+      .optional(),
   })
   const reply = z.discriminatedUnion('type', [
     z.strictObject({ type: z.literal('result'), id: z.literal(job.id), view }),
@@ -237,6 +246,24 @@ function checkView(
       throw invalid('it returned a page it did not show')
     }
   }
+  const request = view.systemDecode
+  if (request) {
+    // Only for a HEIC photo the worker read but could not decode, when an image was asked for.
+    if (
+      view.meta.kind !== 'heic' ||
+      view.images.length > 0 ||
+      budget.maxImages === 0 ||
+      position.unit !== 'image' ||
+      position.total !== 1
+    ) {
+      throw invalid('it asked for a decode it should not need')
+    }
+    const { coded, cropped } = request
+    if (coded.width * coded.height > limits.maxDecodedPixels) throw invalid('an image is too large')
+    if (cropped.width > coded.width || cropped.height > coded.height) {
+      throw invalid('its image size is inconsistent')
+    }
+  }
   for (const image of view.images) {
     if (image.width * image.height > limits.maxDecodedPixels) throw invalid('an image is too large')
     if (image.source.region && image.source.region.page !== image.source.page) {
@@ -306,6 +333,19 @@ function copyView(view: DocumentView): DocumentView {
       next: view.position.next,
     },
     warnings: [...view.warnings],
+    ...(view.systemDecode
+      ? {
+          systemDecode: {
+            format: view.systemDecode.format,
+            coded: { width: view.systemDecode.coded.width, height: view.systemDecode.coded.height },
+            cropped: {
+              width: view.systemDecode.cropped.width,
+              height: view.systemDecode.cropped.height,
+            },
+            orientation: view.systemDecode.orientation,
+          },
+        }
+      : {}),
   }
 }
 

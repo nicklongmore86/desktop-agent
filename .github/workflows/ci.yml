@@ -69,8 +69,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
-      # job-run.exe (MSVC, Windows only; a no-op on Linux), before the tests that run it and
-      # before the build that compiles in its pin.
+      # job-run.exe and heif-decode.exe (MSVC, Windows only; a no-op on Linux), before the
+      # tests that run them and before the build that compiles in their pins.
       - run: pnpm build:helpers
       - run: pnpm test
       - run: pnpm build
@@ -132,6 +132,11 @@ jobs:
         run: |
           $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
           pnpm exec vitest run src/main/tools/job-run.test.ts -t 'packaged job-run.exe'
+      - name: Test packaged heif-decode.exe
+        shell: pwsh
+        run: |
+          $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
+          pnpm exec vitest run src/main/documents/heif-decode.test.ts -t 'packaged heif-decode.exe'
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-windows-x64

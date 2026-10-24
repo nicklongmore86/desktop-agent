@@ -1,5 +1,6 @@
 import type { WrappedPdfiumModule } from '@embedpdf/pdfium'
 import { describeExif, readExif } from './exif'
+import { readHeif } from './heif'
 import {
   checkDocumentSize,
   checkPixels,
@@ -25,14 +26,16 @@ import {
 } from './types'
 
 /**
- * Decodes an image with its EXIF orientation applied, scaled to fit `longEdge`, and
- * re-encodes it in at most `maxBytes`.
+ * Decodes an image with its EXIF orientation applied, then `turn` (an EXIF orientation,
+ * for pixels a system codec left as stored), scaled to fit `longEdge`, and re-encodes it
+ * in at most `maxBytes`.
  */
 export type DecodeImage = (
   bytes: Uint8Array,
   kind: DocumentKind,
   longEdge: number,
   maxBytes: number,
+  turn?: number,
 ) => Promise<Omit<DocumentImage, 'source'>>
 
 /** What the dispatcher needs from its host: PDFium, and the browser's image codecs. */
@@ -42,8 +45,9 @@ export interface ExtractEnv {
   decodeImage: DecodeImage
 }
 
-const DECODABLE = new Set<DocumentKind>(['jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff'])
-const NOT_YET = new Set<DocumentKind>(['rtf', 'heic', 'avif'])
+/** Decoded by Chromium in the worker (AVIF with its irot/imir and crop applied). */
+const DECODABLE = new Set<DocumentKind>(['jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'avif'])
+const NOT_YET = new Set<DocumentKind>(['rtf'])
 const PACKAGES = new Set<DocumentKind>([
   'docx',
   'xlsx',
@@ -73,7 +77,7 @@ export async function extractDocument(
   let view: DocumentView
   if (kind === 'pdf') {
     view = await extractPdf(await env.pdfium(), bytes, options, env.encode, limits)
-  } else if (DECODABLE.has(kind)) {
+  } else if (DECODABLE.has(kind) || kind === 'heic') {
     view = await extractImage(bytes, kind, mime, options, env, limits)
   } else if (kind === 'text') {
     view = isCsv(options)
@@ -85,11 +89,7 @@ export async function extractDocument(
     view = extractOle(bytes, options, limits)
   } else if (NOT_YET.has(kind)) {
     view = emptyView(kind, mime)
-    view.warnings.push(
-      kind === 'heic'
-        ? 'HEIC/HEIF images are not supported yet. Convert it to JPEG or PNG and try again.'
-        : `Reading a ${KIND_LABEL[kind]} is not supported yet.`,
-    )
+    view.warnings.push(`Reading a ${KIND_LABEL[kind]} is not supported yet.`)
   } else if (kind === 'zip') {
     // Some writers compress the OpenDocument mimetype entry, which sniff() cannot see into.
     const odf = await compressedOdfKind(bytes, limits)
@@ -158,18 +158,37 @@ async function extractImage(
   const view = emptyView(kind, mime)
   view.position = { unit: 'image', total: 1, shown: { from: 1, to: 1 }, next: null }
   const exif = readExif(bytes, kind)
-  const swapped = (exif?.orientation ?? 1) >= 5
-  view.meta.width = swapped ? dimensions.height : dimensions.width
-  view.meta.height = swapped ? dimensions.width : dimensions.height
+  // HEIF turns its image with irot/imir; an EXIF orientation tag inside it is ignored.
+  const heif = kind === 'heic' || kind === 'avif' ? readHeif(bytes) : null
+  if (exif && heif) exif.orientation = heif.orientation
+  const orientation = heif?.orientation ?? exif?.orientation ?? 1
+  const shown = heif?.cropped ?? dimensions
+  const swapped = orientation >= 5
+  view.meta.width = swapped ? shown.height : shown.width
+  view.meta.height = swapped ? shown.width : shown.height
   if (exif) {
     const text = describeExif(exif, options.includeLocation === true)
     if (text) view.sections.push({ title: 'Image metadata', text })
   }
   const budget = effectiveBudget(options.budget, limits)
   if (options.view === 'text' || budget.maxImages === 0) return view
+  if (kind === 'heic') {
+    if (!heif) throw new DocumentError('malformed', 'The image header is damaged.')
+    // Chromium has no HEVC decoder: the host decodes it with the system's codec, if any.
+    view.systemDecode = {
+      format: 'heif',
+      coded: heif.coded,
+      cropped: heif.cropped,
+      orientation: heif.orientation,
+    }
+    return view
+  }
 
+  const turn = options.systemDecoded
+    ? remainingTurn(options.systemDecoded.orientation, options.systemDecoded.cropped, dimensions)
+    : 1
   try {
-    const image = await env.decodeImage(bytes, kind, budget.longEdge, limits.maxImageBytes)
+    const image = await env.decodeImage(bytes, kind, budget.longEdge, limits.maxImageBytes, turn)
     view.images.push({ ...image, source: {} })
   } catch (error) {
     if (error instanceof DocumentError) throw error
@@ -177,6 +196,25 @@ async function extractImage(
   }
   if (kind === 'gif') view.warnings.push('Only the first frame of an animated GIF is shown.')
   return view
+}
+
+/**
+ * The orientation still to apply to a system codec's output of a HEIF photo whose
+ * irot/imir make `orientation`, given the photo's size before rotation (`cropped`) and
+ * the output's. Windows' HEIF codec is reported to apply irot/imir itself, so the output
+ * counts as upright unless a quarter turn visibly did not happen: an output with the
+ * shape (portrait or landscape) of the unrotated photo is turned here. A turn that keeps
+ * the shape (180 degrees, a mirror) cannot be seen, and is taken as done.
+ */
+export function remainingTurn(
+  orientation: number,
+  cropped: { width: number; height: number },
+  output: { width: number; height: number },
+): number {
+  if (orientation < 5 || orientation > 8) return 1
+  if (cropped.width === cropped.height || output.width === output.height) return 1
+  const unturned = cropped.width > cropped.height === output.width > output.height
+  return unturned ? orientation : 1
 }
 
 /** Word, Excel, PowerPoint and OpenDocument packages, through the guarded ZIP reader. */

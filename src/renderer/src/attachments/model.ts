@@ -1,8 +1,11 @@
 import {
   ATTACHMENT_LIMITS,
+  CONVERTIBLE_PHOTO_MIMES,
+  HEIC_MIMES,
   READABLE_DOCUMENT_MIMES,
   type AttachmentKind,
   type AttachmentRef,
+  type HeicSupport,
 } from '../../../shared/attachments'
 import type { AttachErrorCode, AttachOutcome } from '../../../shared/ipc-attachments'
 
@@ -18,6 +21,9 @@ export const NOT_SENT_YET = 'Not sent to this model yet; it will see the file na
 export const NO_VISION =
   'This model can’t see images; it will see the file name only. Switch to a vision model, or turn on “This model can see images” in Settings if it is one.'
 
+/** Shown on a HEIC chip until main has said whether this computer can decode HEIC. */
+export const HEIC_CHECKING = 'Checking whether this computer can decode HEIC photos…'
+
 /** The per-message limits (ATTACHMENT_LIMITS), as the composer words them. */
 export const TOO_MANY_FILES = `You can attach up to ${String(ATTACHMENT_LIMITS.maxPerMessage)} files to a message.`
 export const TOO_MUCH_DATA = `A message can carry up to ${String(ATTACHMENT_LIMITS.messageBytes / (1024 * 1024))} MB of attachments.`
@@ -27,14 +33,25 @@ export const TOO_MUCH_DATA = `A message can carry up to ${String(ATTACHMENT_LIMI
  * text the document reader extracts (drawn pages go as images only to a vision model,
  * a note otherwise); Word, Excel, PowerPoint and OpenDocument files (by `mime`,
  * READABLE_DOCUMENT_MIMES) always, as their text; images when the connection's model can
- * see them (`vision`, from main). Other documents are still sent as their names only.
+ * see them (`vision`, from main); AVIF photos likewise, converted, and HEIC/HEIF photos
+ * when this computer can also decode them (`heic`, from main; null while unknown). Other
+ * documents are still sent as their names only.
  */
-export function canReceive(kind: AttachmentKind, vision = false, mime = ''): boolean {
+export function canReceive(
+  kind: AttachmentKind,
+  vision = false,
+  mime = '',
+  heic: HeicSupport | null = null,
+): boolean {
   return (
     kind === 'text' ||
     kind === 'pdf' ||
     (kind === 'document' && READABLE_DOCUMENT_MIMES.has(mime)) ||
-    (kind === 'image' && vision)
+    (kind === 'image' && vision) ||
+    (kind === 'document' &&
+      vision &&
+      CONVERTIBLE_PHOTO_MIMES.has(mime) &&
+      (!HEIC_MIMES.has(mime) || heic?.supported === true))
   )
 }
 
@@ -43,9 +60,16 @@ export function notReceivedNote(
   kind: AttachmentKind,
   vision = false,
   mime = '',
+  heic: HeicSupport | null = null,
 ): string | undefined {
-  if (canReceive(kind, vision, mime)) return undefined
-  return kind === 'image' ? NO_VISION : NOT_SENT_YET
+  if (canReceive(kind, vision, mime, heic)) return undefined
+  if (kind === 'image') return NO_VISION
+  if (kind === 'document' && CONVERTIBLE_PHOTO_MIMES.has(mime)) {
+    if (!vision) return NO_VISION
+    if (!heic) return HEIC_CHECKING
+    if (!heic.supported) return `${heic.reason} Until then the model sees the file name only.`
+  }
+  return NOT_SENT_YET
 }
 
 /** A short, readable file size: 1.2 KB, 3 MB. */

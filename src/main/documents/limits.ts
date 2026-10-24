@@ -1,3 +1,4 @@
+import { readHeif } from './heif'
 import { DocumentError, type DocumentKind } from './types'
 
 export interface DocumentLimits {
@@ -157,6 +158,10 @@ export function imageDimensions(
       return jpegDimensions(bytes, view)
     case 'tiff':
       return tiffDimensions(bytes, view)
+    case 'heic':
+    case 'avif':
+      // The primary image's stored size, before its crop: what a decoder allocates.
+      return readHeif(bytes)?.coded ?? null
     default:
       return null
   }

@@ -12,6 +12,7 @@
     "src/main/documents/docx.ts",
     "src/main/documents/exif.ts",
     "src/main/documents/extract.ts",
+    "src/main/documents/heif.ts",
     "src/main/documents/limits.ts",
     "src/main/documents/odf.ts",
     "src/main/documents/ole.ts",
@@ -25,6 +26,7 @@
     "src/main/documents/types.ts",
     "src/main/documents/unsaved.ts",
     "src/main/documents/xml.ts",
-    "src/main/documents/zip.ts"
+    "src/main/documents/zip.ts",
+    "src/main/storage/plain-text.ts"
   ]
 }

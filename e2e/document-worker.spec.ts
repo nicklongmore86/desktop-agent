@@ -9,6 +9,7 @@ import {
   pngShell,
   withExif,
 } from '../src/main/documents/fixtures.test-util'
+import { ROTATED_AVIF, ROTATED_HEIC, withIspe } from '../src/main/documents/heif-fixtures.test-util'
 import { imageDimensions } from '../src/main/documents/limits'
 import {
   grid,
@@ -48,6 +49,7 @@ type Result =
 interface Harness {
   extract: (base64: string, options: ExtractOptions) => Promise<Result>
   stats: () => { workersStarted: number; jobs: number; lastStartMs: number }
+  heicSupport: () => { supported: boolean; reason?: string }
   makeJpeg: (width: number, height: number) => string
   makeNoise: (width: number, height: number) => string
   ticks: () => number
@@ -83,6 +85,8 @@ const docs = (app: ElectronApplication) => ({
     app.evaluate(() => (globalThis as unknown as { documents: Harness }).documents.stats()),
   ticks: () =>
     app.evaluate(() => (globalThis as unknown as { documents: Harness }).documents.ticks()),
+  heicSupport: () =>
+    app.evaluate(() => (globalThis as unknown as { documents: Harness }).documents.heicSupport()),
   alive: () =>
     app.evaluate(() => (globalThis as unknown as { documents: Harness }).documents.alive()),
   makeJpeg: async (width: number, height: number): Promise<Uint8Array> =>
@@ -215,6 +219,76 @@ test.describe('document worker (real Electron)', () => {
     expect(text).not.toContain('51.5')
     const located = ok(await docs(app).extract(photo, { includeLocation: true }))
     expect(located.sections[0]?.text).toMatch(/Location: 51\.50\d*, -0\.12\d*/)
+  })
+
+  test('AVIF: decoded by Chromium in the worker, upright, cropped, metadata stripped', async () => {
+    // Stored 64 x 32 (left red, right blue) with irot for a quarter turn clockwise: upright
+    // it is 32 x 64 with red on top. The EXIF orientation inside it is ignored.
+    const view = ok(await docs(app).extract(ROTATED_AVIF, { name: 'IMG_0002.avif' }))
+    expect(view.meta).toMatchObject({ kind: 'avif', width: 32, height: 64 })
+    const [image] = view.images
+    expect(image).toMatchObject({ width: 32, height: 64 })
+    expect(image?.top.r).toBeGreaterThan(200)
+    expect(image?.top.b).toBeLessThan(60)
+    expect(image?.bottom.b).toBeGreaterThan(200)
+    expect(image?.bottom.r).toBeLessThan(60)
+    const output = imageBytes(image)
+    expect(readExif(output, image?.mime === 'image/png' ? 'png' : 'jpeg')).toBeNull()
+    expect(Buffer.from(output).includes(Buffer.from('iPhone'))).toBe(false)
+    const text = view.sections[0]?.text ?? ''
+    expect(text).toContain('Camera: Apple iPhone 15')
+    expect(text).not.toContain('51.5')
+    const located = ok(await docs(app).extract(ROTATED_AVIF, { includeLocation: true }))
+    expect(located.sections[0]?.text).toContain('Location: 51.5, -0.125')
+  })
+
+  test('HEIC: the system codec where installed; otherwise a refusal saying what to do', async () => {
+    const support = await docs(app).heicSupport()
+    const result = await docs(app).extract(ROTATED_HEIC, { name: 'IMG_0001.HEIC' })
+    if (!support.supported) {
+      // Linux, or Windows without the Store codecs (GitHub's runners): refused, nothing decoded.
+      expect(result.error).toMatchObject({ code: 'unsupported', message: support.reason })
+      expect(support.reason).toMatch(
+        process.platform === 'win32' ? /Microsoft Store/ : /only on Windows/,
+      )
+      // The metadata still reads without an image.
+      const text = ok(await docs(app).extract(ROTATED_HEIC, { view: 'text' }))
+      expect(text.meta).toMatchObject({ kind: 'heic', width: 32, height: 64 })
+      expect(text.sections[0]?.text).toContain('Camera: Apple iPhone 15')
+      return
+    }
+    const view = ok(result)
+    expect(view.meta).toMatchObject({ kind: 'heic', width: 32, height: 64 })
+    const [image] = view.images
+    expect(image).toMatchObject({ width: 32, height: 64 })
+    expect(image?.top.r).toBeGreaterThan(200)
+    expect(image?.bottom.b).toBeGreaterThan(200)
+    expect(Buffer.from(imageBytes(image)).includes(Buffer.from('iPhone'))).toBe(false)
+  })
+
+  test("Chromium's own decoder cannot read HEIC (so it is not used for it), but reads AVIF", async () => {
+    const decode = (photo: Uint8Array) =>
+      app.evaluate(async ({ BrowserWindow }, base64) => {
+        const window = new BrowserWindow({ show: false })
+        try {
+          await window.loadURL('about:blank')
+          return (await window.webContents.executeJavaScript(
+            `createImageBitmap(new Blob([Uint8Array.from(atob('${base64}'), (c) => c.charCodeAt(0))]))` +
+              '.then((b) => `${b.width}x${b.height}`, (e) => `error: ${e.name}`)',
+          )) as string
+        } finally {
+          window.destroy()
+        }
+      }, Buffer.from(photo).toString('base64'))
+    expect(await decode(ROTATED_HEIC)).toMatch(/^error: /)
+    expect(await decode(ROTATED_AVIF)).toBe('32x64')
+  })
+
+  test('HEIC and AVIF over 100 megapixels are refused from the header, before decoding', async () => {
+    for (const photo of [ROTATED_HEIC, ROTATED_AVIF]) {
+      const result = await docs(app).extract(withIspe(photo, 20_000, 10_000), {})
+      expect(result.error).toMatchObject({ code: 'too-many-pixels' })
+    }
   })
 
   test('downscales a large image to the requested long edge', async () => {
@@ -397,6 +471,34 @@ test.describe('document worker (real Electron)', () => {
     ok(await docs(app).extract(makePdf([{ text: ['fine'] }])))
   })
 })
+
+for (const codec of ['stored', 'upright'] as const) {
+  test(`HEIC from a codec that returns it ${codec}: upright once, in the worker`, async () => {
+    const app = await launch({ fakeHeic: codec })
+    try {
+      const view = ok(await docs(app).extract(ROTATED_HEIC, { name: 'IMG_0001.HEIC' }))
+      expect(view.meta).toMatchObject({ kind: 'heic', width: 32, height: 64 })
+      const [image] = view.images
+      expect(image).toMatchObject({ mime: 'image/png', width: 32, height: 64 })
+      expect(image?.top.r).toBeGreaterThan(200)
+      expect(image?.top.b).toBeLessThan(60)
+      expect(image?.bottom.b).toBeGreaterThan(200)
+      expect(image?.bottom.r).toBeLessThan(60)
+      expect(view.sections[0]?.text).toContain('Camera: Apple iPhone 15')
+      if (codec === 'stored') {
+        // irot 1: a quarter turn anticlockwise (EXIF 8), so red ends at the bottom.
+        const turned = new Uint8Array(ROTATED_HEIC)
+        turned[Buffer.from(turned).indexOf('irot') + 4] = 1
+        const [left] = ok(await docs(app).extract(turned, {})).images
+        expect(left).toMatchObject({ width: 32, height: 64 })
+        expect(left?.top.b).toBeGreaterThan(200)
+        expect(left?.bottom.r).toBeGreaterThan(200)
+      }
+    } finally {
+      await app.close()
+    }
+  })
+}
 
 test('a job past the timeout is refused and its worker window destroyed', async () => {
   const app = await launch({ timeoutMs: 5 })

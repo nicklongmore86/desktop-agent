@@ -41,6 +41,11 @@ an `@"path"` reference to insert.
   - `text`: anything else passing read_file's binary check; stored as UTF-8.
   - Other zips (jar, apk, epub, vsix), executables and binaries are refused.
     Extraction happens when a chat is sent (`docs/document-reader.md`).
+    HEIC/HEIF and AVIF photos are converted then (`CONVERTIBLE_PHOTO_MIMES`): for a model
+    that can see images they are sent upright, re-encoded without metadata, with the capture
+    time and camera in their introduction (never the location); each takes one image from
+    the request's budget. HEIC needs Windows' HEIF and HEVC codecs (`attachments.heicSupport`,
+    asked once per session): without them its chip stays greyed and says what to install.
 - The 20 MB per-message total is the composer's to enforce (main sees one file at a time).
 
 ## Checks (`validate.ts`)
