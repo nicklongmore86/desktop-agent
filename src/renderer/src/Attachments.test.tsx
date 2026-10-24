@@ -76,7 +76,7 @@ describe('chips above the composer', () => {
     expect(api.attachments.pick).toHaveBeenCalledOnce()
   })
 
-  it('greys a file the model cannot receive yet and says why; text files and PDFs are not greyed', async () => {
+  it('greys a file the model cannot receive yet and says why; text files, PDFs and Office documents are not greyed', async () => {
     const { api, user } = await renderApp()
     api.attachments.pick.mockResolvedValueOnce([
       attachment(ref(1, { name: 'photo.png', kind: 'image', mime: 'image/png' })),
@@ -89,18 +89,23 @@ describe('chips above the composer', () => {
           mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         }),
       ),
+      attachment(
+        ref(6, { name: 'old.ppt', kind: 'document', mime: 'application/vnd.ms-powerpoint' }),
+      ),
     ])
     await user.click(screen.getByRole('button', { name: 'Attach files' }))
     const list = await screen.findByRole('list', { name: 'Attached files' })
-    const [photo, plain, pdf, doc] = within(list).getAllByRole('listitem')
+    const [photo, plain, pdf, doc, ppt] = within(list).getAllByRole('listitem')
     expect(photo?.className).toContain('attachment-chip-muted')
     expect(photo?.getAttribute('title')).toContain('This model can’t see images')
-    expect(doc?.getAttribute('title')).toContain(
+    expect(ppt?.className).toContain('attachment-chip-muted')
+    expect(ppt?.getAttribute('title')).toContain(
       'Not sent to this model yet; it will see the file name only.',
     )
     expect(plain?.className).not.toContain('attachment-chip-muted')
-    // PDFs are read as text for every model.
+    // PDFs and Word, Excel, PowerPoint and OpenDocument files are read as text for every model.
     expect(pdf?.className).not.toContain('attachment-chip-muted')
+    expect(doc?.className).not.toContain('attachment-chip-muted')
   })
 
   it('makes image chips active for a connection whose model can see images', async () => {

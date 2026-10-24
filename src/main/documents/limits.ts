@@ -21,6 +21,27 @@ export interface DocumentLimits {
   /** How far a region may be zoomed past the page's natural size (72 dpi = 1). */
   maxRegionScale: number
   zip: ZipLimits
+  office: OfficeLimits
+}
+
+/** Word, Excel, PowerPoint and OpenDocument files: their XML parts and what one call returns. */
+export interface OfficeLimits {
+  /** Largest XML part (uncompressed) parsed at all. */
+  maxPartBytes: number
+  /** Uncompressed bytes read from one package, every part together. */
+  maxTotalBytes: number
+  /** Deepest element nesting in an XML part. */
+  maxXmlDepth: number
+  /** Elements in one XML part. */
+  maxXmlElements: number
+  /** Spreadsheet cells returned per call. */
+  maxCellsPerCall: number
+  /** Rows of each sheet shown when no sheet or range is asked for. */
+  previewRows: number
+  /** Columns of each sheet shown when no range is asked for. */
+  previewColumns: number
+  /** Sheets listed (and so shown) per workbook. */
+  maxSheets: number
 }
 
 export interface ZipLimits {
@@ -46,6 +67,16 @@ export const DEFAULT_LIMITS: DocumentLimits = {
   maxLongEdge: 4096,
   maxRegionScale: 8,
   zip: { maxEntries: 10_000, maxTotalBytes: 512 * MiB, maxEntryBytes: 256 * MiB, maxRatio: 200 },
+  office: {
+    maxPartBytes: 64 * MiB,
+    maxTotalBytes: 256 * MiB,
+    maxXmlDepth: 256,
+    maxXmlElements: 4_000_000,
+    maxCellsPerCall: 10_000,
+    previewRows: 20,
+    previewColumns: 30,
+    maxSheets: 200,
+  },
 }
 
 export function checkDocumentSize(size: number, limits: DocumentLimits = DEFAULT_LIMITS): void {

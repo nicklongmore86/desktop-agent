@@ -24,11 +24,36 @@ interface Input {
   /** Where to continue: the page a previous call named. */
   start: number | undefined
   region: PageRegion | undefined
+  /** Spreadsheets: a sheet name, and an A1 range that may name the sheet itself. */
+  sheet: string | undefined
+  range: string | undefined
+  includeFormulas: boolean
   includeLocation: boolean
 }
 
-/** Kinds read_document reads today (the worker decodes these). */
-const READABLE = new Set<DocumentKind>(['pdf', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff'])
+/** Kinds read_document reads (the worker decodes these). Legacy and package kinds are told apart by the worker. */
+const READABLE = new Set<DocumentKind>([
+  'pdf',
+  'jpeg',
+  'png',
+  'gif',
+  'webp',
+  'bmp',
+  'tiff',
+  'docx',
+  'xlsx',
+  'pptx',
+  'ooxml',
+  'odf',
+  'odt',
+  'ods',
+  'odp',
+  'ole',
+  'doc',
+  'xls',
+  'ppt',
+  'csv',
+])
 
 /** Whether read_document can read a file of this kind; read_file points binary files there. */
 export function readableAsDocument(kind: DocumentKind): boolean {
@@ -55,15 +80,21 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
   return {
     name: 'read_document',
     description:
-      'Read a PDF or an image (JPEG, PNG, GIF, WebP, BMP, TIFF) inside the granted folders. ' +
-      'Returns a header (path, type, size, pages and the range shown) and the text page by ' +
-      'page; pages that are drawings or scans, and photos, also come back as images. Long ' +
-      `documents are read up to ${String(DOCUMENT_LIMITS.maxPagesPerCall)} pages (and a text ` +
-      'budget) at a time: the last line says where to continue with `start`. Use `region` to ' +
-      `zoom into part of a page (up to ${String(DOCUMENT_LIMITS.maxRegionScale)}x) for small ` +
+      'Read a PDF, an image (JPEG, PNG, GIF, WebP, BMP, TIFF), a Word document (.docx, best ' +
+      'effort for .doc), an Excel workbook (.xlsx, .xlsm, .xls) or CSV, a PowerPoint ' +
+      'presentation (.pptx) or an OpenDocument file (.odt, .ods, .odp) inside the granted ' +
+      'folders. Returns a header and the text: PDFs page by page (drawn or scanned pages and ' +
+      'photos also as images), Word documents as Markdown-like text with headings, lists and ' +
+      'tables, presentations slide by slide with speaker notes, and workbooks as tables with ' +
+      'cell addresses. Long documents are read a part at a time: the last line says where to ' +
+      'continue with `start`. For a workbook, the first call lists its sheets and shows their ' +
+      'first rows; then read cells with `range` (e.g. "Sheet1!A1:H200"), at most ' +
+      `${String(DOCUMENT_LIMITS.office.maxCellsPerCall)} cells a call. Use \`region\` to zoom ` +
+      `into part of a PDF page (up to ${String(DOCUMENT_LIMITS.maxRegionScale)}x) for small ` +
       'print or drawing detail. Photos are returned upright with their metadata removed; the ' +
-      'capture time and camera come back as text, the location only with include_location. Office ' +
-      'documents, HEIC and AVIF are not supported yet. Use read_file for text files.',
+      'capture time and camera come back as text, the location only with include_location. ' +
+      'Macros are never run. HEIC, AVIF and .ppt are not supported. Use read_file for other ' +
+      'text files.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -71,12 +102,27 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
         pages: {
           type: 'string',
           description:
-            'Pages to read, 1-based: "3", "2-5" or "10-" (to the end, within the limit).',
+            'Pages (or slides) to read, 1-based: "3", "2-5" or "10-" (to the end, within the limit).',
         },
         start: {
           type: 'integer',
           minimum: 1,
-          description: 'Continue from this page: the one a previous call named.',
+          description:
+            'Continue from here: the page, slide, character or sheet a previous call named.',
+        },
+        sheet: {
+          type: 'string',
+          description: 'Workbooks: the sheet to read (by name), from its first cell.',
+        },
+        range: {
+          type: 'string',
+          description:
+            'Workbooks: the cells to read, as an A1 range with an optional sheet: "Sheet1!A1:H200", ' +
+            '"\'Q3 sales\'!B2:F40", "A:C" (whole columns) or "A21:H" (from A21 down).',
+        },
+        include_formulas: {
+          type: 'boolean',
+          description: "Workbooks: show each formula's text after its value.",
         },
         region: {
           type: 'object',
@@ -108,8 +154,17 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
       const pages = input.optionalString('pages')
       const start = input.optionalInteger('start', 1, Number.MAX_SAFE_INTEGER)
       const region = parseRegion(input.optionalObject('region'))
-      if ([pages, start, region].filter((value) => value !== undefined).length > 1) {
-        throw new ToolInputError('use only one of "pages", "start" and "region".')
+      const sheet = input.optionalString('sheet')
+      const cellRange = input.optionalString('range')
+      if (sheet !== undefined && (sheet.length === 0 || sheet.length > 200)) {
+        throw new ToolInputError('"sheet" must be a sheet name.')
+      }
+      if (cellRange !== undefined && (cellRange.trim().length === 0 || cellRange.length > 300)) {
+        throw new ToolInputError('"range" must be an A1 range such as "Sheet1!A1:H200".')
+      }
+      const cells = sheet !== undefined || cellRange !== undefined ? true : undefined
+      if ([pages, start, region, cells].filter((value) => value !== undefined).length > 1) {
+        throw new ToolInputError('use only one of "pages", "start", "region" and "sheet"/"range".')
       }
       const range = pages === undefined ? undefined : parsePages(pages)
       return {
@@ -118,6 +173,9 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
         to: range?.to,
         start,
         region,
+        sheet,
+        range: cellRange,
+        includeFormulas: input.optionalBoolean('include_formulas') === true,
         includeLocation: input.optionalBoolean('include_location') === true,
       }
     },
@@ -127,6 +185,9 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
       ...(input.to !== undefined ? { to: input.to } : {}),
       ...(input.start !== undefined ? { start: input.start } : {}),
       ...(input.region ? { region: { ...input.region } } : {}),
+      ...(input.sheet !== undefined ? { sheet: input.sheet } : {}),
+      ...(input.range !== undefined ? { range: input.range } : {}),
+      ...(input.includeFormulas ? { includeFormulas: true } : {}),
       ...(input.includeLocation ? { includeLocation: true } : {}),
     }),
     async run(input, call) {
@@ -159,13 +220,19 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
 
       const options: ExtractOptions = { name: path.basename(file) }
       if (input.region) options.select = { region: input.region }
-      else if (input.from !== undefined || input.to !== undefined) {
+      else if (input.sheet !== undefined || input.range !== undefined) {
+        options.select = {
+          ...(input.sheet !== undefined ? { sheet: input.sheet } : {}),
+          ...(input.range !== undefined ? { range: input.range } : {}),
+        }
+      } else if (input.from !== undefined || input.to !== undefined) {
         options.select = {
           ...(input.from !== undefined ? { from: input.from } : {}),
           ...(input.to !== undefined ? { to: input.to } : {}),
         }
       }
       if (input.includeLocation) options.includeLocation = true
+      if (input.includeFormulas) options.includeFormulas = true
 
       let view: DocumentView
       try {
@@ -258,13 +325,18 @@ function imageLabel(source: { page?: number; region?: PageRegion }): string {
 
 const fraction = (n: number): string => String(Math.round(n * 1000) / 1000)
 
-/** The header line, the text page by page, and where to continue. */
+/** The header line, the text page by page (slide by slide, sheet by sheet), and where to continue. */
 function formatView(file: string, size: number, view: DocumentView, input: Input): string {
   const { meta, position } = view
   const header = [file, KIND_LABEL[meta.kind], formatBytes(size)]
-  if (meta.pageCount !== undefined) {
-    header.push(`${String(meta.pageCount)} page${meta.pageCount === 1 ? '' : 's'}`)
-  }
+  const { from, to } = position.shown
+  const plural = (count: number, word: string): string =>
+    `${String(count)} ${word}${count === 1 ? '' : 's'}`
+  if (position.unit === 'slide') header.push(plural(position.total, 'slide'))
+  else if (position.unit === 'sheet') header.push(plural(position.total, 'sheet'))
+  else if (position.unit === 'char' && meta.kind !== 'text') {
+    header.push(plural(position.total, 'character'))
+  } else if (meta.pageCount !== undefined) header.push(plural(meta.pageCount, 'page'))
   if (meta.width !== undefined && meta.height !== undefined) {
     header.push(`${String(meta.width)} x ${String(meta.height)} px`)
   }
@@ -274,17 +346,32 @@ function formatView(file: string, size: number, view: DocumentView, input: Input
       `page ${String(page)} region x=${fraction(x)} y=${fraction(y)} ` +
         `width=${fraction(width)} height=${fraction(height)}`,
     )
-  } else if (position.unit === 'page' && position.total > 0) {
-    const { from, to } = position.shown
+  } else if ((position.unit === 'page' || position.unit === 'slide') && position.total > 0) {
+    const word = position.unit
     header.push(
-      from === to ? `page ${String(from)} shown` : `pages ${String(from)}-${String(to)} shown`,
+      from === to
+        ? `${word} ${String(from)} shown`
+        : `${word}s ${String(from)}-${String(to)} shown`,
     )
+  } else if (
+    position.unit === 'char' &&
+    position.total > 0 &&
+    (position.next !== null || from > 1)
+  ) {
+    header.push(`characters ${String(from)}-${String(to)} shown`)
   }
   if (meta.title) header.push(`title: ${meta.title}`)
   if (meta.author) header.push(`author: ${meta.author}`)
 
   const lines = [`[${header.join(' | ')}]`]
   for (const warning of view.warnings) lines.push(`[Note: ${warning}]`)
+  if (meta.sheets && meta.kind !== 'csv') {
+    lines.push('Sheets:')
+    meta.sheets.forEach((sheet, index) => {
+      const used = sheet.used ?? 'empty'
+      lines.push(`${String(index + 1)}. "${sheet.name}" (${used}${sheet.hidden ? ', hidden' : ''})`)
+    })
+  }
 
   const imageIndex = new Map<string, number>()
   view.images.forEach((image, index) => {
@@ -292,7 +379,24 @@ function formatView(file: string, size: number, view: DocumentView, input: Input
     imageIndex.set(key, index + 1)
   })
   for (const section of view.sections) {
-    if (section.page !== undefined && !input.region) {
+    if (section.sheet) {
+      const { name, shown, used, next } = section.sheet
+      const label = meta.kind === 'csv' ? 'Rows' : `Sheet "${name}"`
+      lines.push(shown ? `--- ${label}: ${shown} of ${used ?? shown} ---` : `--- ${label} ---`)
+      if (section.text.trim()) lines.push(section.text.trimEnd())
+      if (next) {
+        lines.push(
+          `[More of ${meta.kind === 'csv' ? 'the file' : `"${name}"`}: call read_document with ` +
+            `range: "${cellRange(meta.kind === 'csv' ? null : name, next)}" to continue.]`,
+        )
+      }
+      continue
+    }
+    if (position.unit === 'slide' && section.page !== undefined) {
+      lines.push(
+        `--- Slide ${String(section.page)}${section.title ? `: ${section.title}` : ''} ---`,
+      )
+    } else if (section.page !== undefined && !input.region) {
       const rendered = imageIndex.get(`page ${String(section.page)}`)
       const note = rendered
         ? section.text.trim()
@@ -316,22 +420,47 @@ function formatView(file: string, size: number, view: DocumentView, input: Input
     }
     if (!view.sections.some((section) => section.text.trim()))
       lines.push('[No text in this region.]')
-  } else if (meta.kind !== 'pdf') {
+  } else if (position.unit === 'image') {
     const image = view.images[0]
     lines.push(
       image
         ? `[Image 1: the picture, upright, at ${String(image.width)} x ${String(image.height)} px, with its metadata removed]`
         : '[The picture itself is not attached.]',
     )
+  } else if (position.unit === 'sheet') {
+    if (position.next !== null) {
+      lines.push(
+        `[More: sheets ${String(position.next)}-${String(position.total)} not shown. Call ` +
+          `read_document with start: ${String(position.next)} to see them, or with range to read cells.]`,
+      )
+    } else if (!view.sections.some((section) => section.sheet?.next)) {
+      lines.push(
+        input.range || input.sheet ? '[End of the cells asked for.]' : '[End of workbook.]',
+      )
+    }
   } else if (position.total === 0) {
-    lines.push('[The PDF has no pages.]')
-  } else if (position.next !== null) {
     lines.push(
-      `[More: pages ${String(position.next)}-${String(position.total)} not shown. ` +
+      position.unit === 'page'
+        ? '[The PDF has no pages.]'
+        : position.unit === 'slide'
+          ? '[The presentation has no slides.]'
+          : '[The document has no text.]',
+    )
+  } else if (position.next !== null) {
+    const word = position.unit === 'char' ? 'characters' : `${position.unit}s`
+    lines.push(
+      `[More: ${word} ${String(position.next)}-${String(position.total)} not shown. ` +
         `Call read_document with start: ${String(position.next)} to continue.]`,
     )
   } else {
     lines.push('[End of document.]')
   }
   return lines.join('\n')
+}
+
+/** A range as read_document takes it back: the sheet quoted when its name needs it. */
+function cellRange(sheet: string | null, cells: string): string {
+  if (sheet === null) return cells
+  const name = /^[A-Za-z_][A-Za-z0-9_.]*$/.test(sheet) ? sheet : `'${sheet.replace(/'/g, "''")}'`
+  return `${name}!${cells}`
 }

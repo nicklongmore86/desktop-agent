@@ -6,7 +6,7 @@ export interface Sniffed {
   mime: string
 }
 
-const MIME: Record<DocumentKind, string> = {
+export const MIME: Record<DocumentKind, string> = {
   pdf: 'application/pdf',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -15,6 +15,13 @@ const MIME: Record<DocumentKind, string> = {
   odf: 'application/vnd.oasis.opendocument',
   zip: 'application/zip',
   ole: 'application/x-ole-storage',
+  doc: 'application/msword',
+  xls: 'application/vnd.ms-excel',
+  ppt: 'application/vnd.ms-powerpoint',
+  odt: 'application/vnd.oasis.opendocument.text',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  odp: 'application/vnd.oasis.opendocument.presentation',
+  csv: 'text/csv',
   jpeg: 'image/jpeg',
   png: 'image/png',
   gif: 'image/gif',
@@ -44,6 +51,12 @@ const ascii = (bytes: Uint8Array, from: number, to: number): string =>
 export function sniff(bytes: Uint8Array): Sniffed {
   const kind = sniffKind(bytes)
   return { kind, mime: kind === 'odf' ? odfMime(bytes) : MIME[kind] }
+}
+
+const ODF_KINDS: Record<string, DocumentKind> = {
+  [MIME.odt]: 'odt',
+  [MIME.ods]: 'ods',
+  [MIME.odp]: 'odp',
 }
 
 function sniffKind(bytes: Uint8Array): DocumentKind {
@@ -93,7 +106,9 @@ function heifKind(bytes: Uint8Array): DocumentKind | null {
 
 function zipKind(bytes: Uint8Array): DocumentKind {
   // ODF stores an uncompressed `mimetype` entry first, readable from the local header.
-  if (ascii(bytes, 30, 38) === 'mimetype' && odfMime(bytes) !== MIME.odf) return 'odf'
+  if (ascii(bytes, 30, 38) === 'mimetype' && odfMime(bytes) !== MIME.odf) {
+    return ODF_KINDS[odfMime(bytes)] ?? 'odf'
+  }
   let names: Set<string>
   try {
     names = new Set(listZipEntries(bytes).map((entry) => entry.name))
@@ -155,6 +170,13 @@ export const KIND_LABEL: Record<DocumentKind, string> = {
   odf: 'OpenDocument file',
   zip: 'ZIP archive',
   ole: 'legacy Office (OLE) file',
+  doc: 'Word 97-2003 document',
+  xls: 'Excel 97-2003 workbook',
+  ppt: 'PowerPoint 97-2003 presentation',
+  odt: 'OpenDocument text',
+  ods: 'OpenDocument spreadsheet',
+  odp: 'OpenDocument presentation',
+  csv: 'CSV file',
   jpeg: 'JPEG image',
   png: 'PNG image',
   gif: 'GIF image',

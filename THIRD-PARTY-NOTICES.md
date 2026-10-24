@@ -108,3 +108,17 @@ the sandboxed document worker window.
 The package's `LICENSE` and PDFium's `LICENSE` (BSD 3-Clause and Apache 2.0 text) ship
 beside the worker as `out/document-worker/licenses/embedpdf-pdfium-LICENSE.txt` and
 `out/document-worker/licenses/pdfium-LICENSE.txt`.
+
+# SheetJS Community Edition (document reader)
+
+The document reader parses Excel (.xlsx, .xlsm, .xls) and OpenDocument spreadsheets with
+SheetJS Community Edition 0.20.3 (`xlsx`), installed from its official distribution
+(https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz, pinned with its integrity hash in
+`pnpm-lock.yaml`), and uses its CFB library to open legacy Office (OLE) files. It is bundled,
+unmodified, into the worker's `assets/index.js` and runs only inside the sandboxed document
+worker window.
+
+- SheetJS Community Edition: Apache License 2.0, copyright (C) 2012-present SheetJS LLC.
+  Source: https://git.sheetjs.com/sheetjs/sheetjs
+
+Its `LICENSE` ships beside the worker as `out/document-worker/licenses/sheetjs-LICENSE.txt`.

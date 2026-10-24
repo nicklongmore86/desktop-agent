@@ -1,8 +1,7 @@
 # Document reader
 
 `src/main/documents/` reads documents and images for the agent: the parser and its
-sandbox (below), used by the `read_document` tool and by PDF attachments. Sending images
-to every provider comes later; Office documents come next.
+sandbox (below), used by the `read_document` tool and by PDF and Office attachments.
 
 ## Shape
 
@@ -22,8 +21,68 @@ to every provider comes later; Office documents come next.
   (capture time, camera, orientation) come back as text; GPS only with
   `includeLocation: true`. `exif.ts` is a small bounds-checked reader rather than a
   library: four tags need no 1.3 MB dependency in the attack surface.
-- HEIC, AVIF and the Office formats are detected and answered with a "not supported
-  yet" warning.
+- Office and OpenDocument files: see [Office documents](#office-documents). HEIC, AVIF
+  and RTF are detected and answered with a "not supported yet" warning.
+
+## Office documents
+
+All of it runs in the sandboxed worker, under the same 30 s timeout and memory ceiling.
+
+- Packages (`package.ts`): every OOXML and ODF file is opened with the guarded ZIP reader
+  (`zip.ts`: entry count, declared sizes and ratios up front, real inflated bytes counted
+  against what each entry declares and an archive budget), with tighter caps on top
+  (`limits.office`): 64 MB per part and 256 MB per package, uncompressed.
+- XML (`xml.ts`): a small parser of our own, written for hostile input. A DOCTYPE is
+  refused outright, so there are no entity definitions to expand (no billion laughs) and
+  nothing external to load (no XXE); only the five predefined entities and character
+  references are decoded. Nesting depth (256) and elements per part (4 million) are
+  capped. Names are namespace-resolved to the usual prefixes (`w:`, `a:`, `p:`, `text:`),
+  whatever prefix the file used, and each reader keeps only the elements it reads, so a
+  large part costs little more memory than its text.
+- Word (`docx.ts`): the body as Markdown-like text: headings (`#`, from the style's name
+  or outline level, through `basedOn`), list items (`-` or `1.`, indented by level, from
+  `numbering.xml` and paragraph or style numbering), tables as Markdown tables (merged and
+  spanned cells padded; a table inside a cell flattened onto one line), text boxes after
+  their paragraph, pictures as `[Image: alt text]` (counted in a note, not rendered).
+  Deleted text, field codes and `mc:Fallback` copies are left out. Title and author come
+  from `docProps/core.xml`.
+- PowerPoint (`pptx.ts`): slides in `sldIdLst` order (not part-name order), each with its
+  title placeholder as `# title`, the text of its shapes in order (indented by level),
+  tables as Markdown, pictures as `[Image: alt text]`, then `Speaker notes:` from its
+  notes slide's body placeholder (not the slide image, number, header or footer). Hidden
+  slides say so in their title.
+- Workbooks (`sheets.ts`): Excel (.xlsx, .xlsm, .xls) and OpenDocument spreadsheets are
+  parsed by SheetJS, which never sees the ZIP: the package's parts are inflated by the
+  guarded reader and handed to SheetJS's `parse_zip` as an in-memory container, so every
+  archive limit applies. Parts that declare a DTD are refused first; only the XML parts a
+  workbook needs are handed over (never `vbaProject.bin`, media or embedded objects), so
+  macros are never run or read (a note says a workbook has them). Each sheet is a
+  Markdown table whose header is the column letters and whose first column is the row
+  number, so every cell has its address. Values are the cached ones (`w`, else `v`);
+  `includeFormulas` adds `(=formula)` after the value, and a formula with no value shows
+  its text. Nothing is recalculated. With no sheet or range, the view lists every sheet
+  (name, used range, hidden) and shows its first 20 rows and 30 columns, until the text
+  or cell budget is spent; a range (`Sheet1!A1:H200`, `'Q3 sales'!B2:F40`, `A:C`, `5:20`,
+  `A21:H`) reads those cells, at most 10,000 per call and within the text budget, and
+  each sheet section names the range to read next. SheetJS is told how many rows to
+  parse (`sheetRows`), so a sheet is not parsed past what a call can show. CSV and
+  tab-separated text (by a `.csv`/`.tsv` name or a CSV MIME type; the delimiter guessed
+  from the first line) goes through a small RFC 4180 parser of ours into the same tables.
+- OpenDocument (`odf.ts`): text documents read like Word (`text:h` outline levels,
+  nested lists, tables with repeated rows and columns expanded within limits, `text:s`
+  spaces), presentations like PowerPoint (`draw:page`, title frames, notes); `.ods` goes
+  to SheetJS as above. A compressed `mimetype` entry is tolerated.
+- Legacy OLE files (`ole.ts`), opened with SheetJS's CFB reader: Excel 97-2003 goes to
+  SheetJS; Word 97-2003 gets a best-effort text extraction from the piece table (8-bit
+  and UTF-16 pieces, field instructions dropped and results kept, no headings or table
+  layout, with a note); Word 95 and older, PowerPoint 97-2003 (.ppt) and Excel binary
+  workbooks (.xlsb) are refused with "save it as .docx/.pptx/.xlsx"; an OLE file holding
+  an encrypted package (a password-protected .docx/.xlsx/.pptx) is `password-protected`.
+- Positions: Word, OpenDocument text and .doc move by characters of the text produced
+  (`unit: 'char'`), cut at a line break in the second half of the window, so a long
+  document is continued with `start` whatever its pages or sections; slides move like
+  pages (`unit: 'slide'`, `meta.pageCount` is the slide count); workbooks move by sheet
+  (`unit: 'sheet'`, `meta.sheets` lists them) and within a sheet by range.
 
 ## Sandbox
 
@@ -62,8 +121,10 @@ main: main keeps running, fails the job (at once on a crash or violation, at the
 timeout on a hang) and kills the broker and the window. Main checks the broker's copy
 with `reply.ts` again before using it.
 
-`reply.ts` holds a reply to the request and the limits: at most 20 images and 50 pages;
-at most 51 sections; text within the request's budget (hard cap 500,000 characters)
+`reply.ts` holds a reply to the request and the limits: at most 20 images and 50 pages
+(or slides, or sheets); at most 51 sections; for workbooks at most 200 listed sheets,
+names up to 200 characters, every range an A1 reference, a sheet list matching the
+position, and sheets only on a workbook; text within the request's budget (hard cap 500,000 characters)
 per section and in total, plus room for an image's EXIF section; images PNG or JPEG
 with the magic bytes and header dimensions they claim, a long edge no larger than the
 request's, at most 100 megapixels and 5 MB each; pages and positions inside the range
@@ -85,32 +146,39 @@ The worker page is built by a nested Vite build in `electron.vite.config.ts` int
 `src/main/tools/read-document.ts`, registered for every connection with the other file
 tools. Read-only like `read_file`: no approval, but every call is audited.
 
-- Input: `path`; one of `pages` (`"3"`, `"2-5"`, `"10-"`), `start` (the page a previous
-  call named) or `region` (`{page, x, y, width, height}` as fractions of the page, zoomed
-  up to 8x); `include_location`.
+- Input: `path`; one of `pages` (`"3"`, `"2-5"`, `"10-"`, pages or slides), `start` (the
+  page, slide, character or sheet a previous call named), `region` (`{page, x, y, width,
+height}` as fractions of a PDF page, zoomed up to 8x), or `sheet`/`range` for a
+  workbook (`range` may name the sheet: `"Sheet1!A1:H200"`); `include_formulas`;
+  `include_location`.
 - The path goes through the same guard as `read_file` (granted folders, realpath, the
   secret and protected-path blocklist) and is opened with `openVerified` (no links, one
   hard link, the handle re-checked); the worker gets a copy of the bytes, never the path.
-- `content` is text: a header (path, type, size, pages, range shown, title, author), the
-  text page by page (pages also attached as images say so), notes, and the last line says
-  where to continue (`start: N`) or that the document ended. `images` (`ToolImage`) holds
+- `content` is text: a header (path, type, size, pages/slides/characters/sheets, range
+  shown, title, author), the text page by page (pages also attached as images say so),
+  slide by slide (`--- Slide 3: title ---`) or sheet by sheet (a `Sheets:` list, then
+  `--- Sheet "Sales": A1:D20 of A1:D60 ---` and a table, and `[More of "Sales": call
+read_document with range: "Sales!A21:D60" to continue.]`), notes, and the last line
+  says where to continue (`start: N`) or that the document ended. `images` (`ToolImage`) holds
   rendered pages (`label: "page 3"`), a zoomed region, or the photo (upright, scaled,
   re-encoded without EXIF/GPS); `content` makes sense without them.
 - Photos: capture time and camera come back as text; the location only with
   `include_location`. The audit entry records `includeLocation` when it was asked for and
   `locationRead: true` when a location was actually returned, plus the kind and image
   count (`RunResult.audit`, merged into the entry's args by `defineTool`).
-- HEIC, AVIF, Office and other recognised formats are answered with a "not supported yet"
-  error (`unsupported`); text files are pointed to `read_file`, and `read_file`'s binary
-  refusal points PDFs and images to `read_document`.
+- HEIC, AVIF and RTF are answered with a "not supported yet" error (`unsupported`), .ppt,
+  .xlsb and Word 95 with "save it as ..."; text files are pointed to `read_file` (CSV and
+  TSV are read as tables), and `read_file`'s binary refusal points PDFs, images and
+  Office files to `read_document`. The audit entry records `sheet`, `range` and
+  `includeFormulas` when they were given.
 - Reader refusals and worker failures (timeout, crash, memory, a misbehaving worker)
   become ordinary error results with an audit category (`unreadable`, `out-of-range`,
   `timeout`, `worker-failed`, ...); the agent never sees an exception.
 
-The app owns one `DocumentWorkerHost` (`src/main/index.ts`), shared by the tool and PDF
+The app owns one `DocumentWorkerHost` (`src/main/index.ts`), shared by the tool and
 attachments and disposed on `will-quit`.
 
-## PDF attachments
+## PDF and Office attachments
 
 When a chat is sent, `toModelConversation` (`src/main/chat/attachments.ts`) reads each
 PDF attachment with the same host: its text page by page in a fenced block marked as
@@ -126,13 +194,24 @@ than that is used once and not kept), so sending a chat again does not parse its
 again. A text-only view is read again, with its pages, when a send can use them. A PDF
 that cannot be read is sent as a placeholder saying why. PDF chips are no longer greyed in the composer.
 
+Word, Excel, PowerPoint and OpenDocument attachments, and Word and Excel 97-2003 ones
+(`READABLE_DOCUMENT_MIMES`, by the MIME type the classifier recorded), are read the same
+way, as text only (`view: 'text'`), through the same cache (`cachedPdfReading`, keyed by
+attachment id, byte-bounded): a document's text, a presentation's slides and notes, or a
+workbook's sheet list and first rows, in one fenced block marked as user-provided,
+untrusted data, with a note when only part was sent (`documentBlocks`). One that cannot
+be read is a placeholder saying why. Their chips are no longer greyed (`canReceive`
+takes the MIME type); older PowerPoint, RTF and mail still are.
+
 ## Limits
 
 `limits.ts`: 100 MB per document; 100 megapixels per decoded or rendered image, checked
 from the header before decoding; 50 pages and 20 images per call; long edge up to
-4096 px. `zip.ts` is the guarded ZIP reader for the later OOXML/ODF work: entry-count,
+4096 px. `zip.ts` is the guarded ZIP reader for OOXML and ODF: entry-count,
 declared-size and ratio caps up front, then streaming inflation that counts real bytes
-against the entry's declared size and an archive-wide budget.
+against the entry's declared size and an archive-wide budget. `limits.office`: 64 MB per
+XML part and 256 MB per package uncompressed, XML depth 256 and 4 million elements per
+part, 10,000 cells per call, a 20 x 30 preview per sheet, 200 sheets listed.
 
 ## Tests
 
@@ -144,13 +223,22 @@ against the entry's declared size and an archive-wide budget.
   the Claude `tool_result` and in the user message after the OpenAI `tool` message, and
   never without vision. In real Electron, `e2e/read-document.spec.ts` runs the tool
   (`out/main/tools.js`, built from `src/main/tools/e2e-entry.ts`) over the real worker.
-- Unit (Vitest, Node): `sniff`, `limits`, `zip`, `exif`, `extract` (real PDFium WASM
-  with stand-in codecs, including the malformed corpus), `reply` (every limit) and
+- Unit (Vitest, Node): `sniff`, `limits`, `zip`, `exif`, `xml` (DTD refusal, depth and
+  element caps, namespaces, broken XML), `office` (every format from real files built in
+  memory by `office-fixtures.test-util.ts`: workbooks written by SheetJS, Word,
+  PowerPoint and ODF from their XML parts, .doc/.ppt as OLE files; ranges, cell caps and
+  continuation; hostile files: zip bombs by ratio and by a lying entry, XXE, billion
+  laughs, a DTD in a part for SheetJS, oversized shared strings, tables nested past the
+  depth cap, too many elements; every view also passed through `checkReply`), `extract`
+  (real PDFium WASM with stand-in codecs, including the malformed corpus), `reply` (every limit, the Office shapes included) and
   `worker-host` (mocked Electron and broker: no port held by main, timeout, broker
   crash and violation, memory kill, recycling, request filter).
 - Real Electron (Playwright, `e2e/document-worker.spec.ts`, after `pnpm build`): a PDF
   (text, rendered page, region), a rotated JPEG with EXIF, the 5 MB image cap, the
-  sandbox probe, the malformed corpus, the timeout kill and recycling. A hostile
+  sandbox probe, every Office and OpenDocument format and the hostile Office corpus inside
+  the worker, the malformed corpus, the timeout kill and recycling.
+  `e2e/read-document.spec.ts` also reads Word, Excel (listing, then a range) and
+  PowerPoint (slide by slide) through the tool. A hostile
   worker (`e2e/harness/hostile-worker.js`, swapped into a copy of the built worker)
   posts transferred ArrayBuffers, oversized and over-count replies, floods and junk:
   each job fails, main's event loop keeps turning, the broker and window are gone,

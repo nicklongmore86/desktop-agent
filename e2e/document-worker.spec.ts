@@ -5,18 +5,32 @@ import {
   jpegShell,
   makeExif,
   makePdf,
+  makeZip,
   pngShell,
   withExif,
 } from '../src/main/documents/fixtures.test-util'
 import { imageDimensions } from '../src/main/documents/limits'
+import {
+  grid,
+  makeDoc,
+  makeDocx,
+  makeOdp,
+  makeOdt,
+  makePpt,
+  makePptx,
+  makeWorkbook,
+  wp,
+  wtbl,
+} from '../src/main/documents/office-fixtures.test-util'
 import type { DocumentView, ExtractOptions } from '../src/main/documents/types'
 
 /**
  * The document reader in real Electron: the built host (out/main/documents.js) starts its
  * hidden, sandboxed worker window (out/document-worker) and parses with PDFium WASM and
  * Chromium's image codecs. Covers a small PDF (text, a rendered page, a region), a
- * rotated JPEG with EXIF (orientation applied, EXIF stripped, GPS only when asked), the
- * malformed corpus, and the timeout kill.
+ * rotated JPEG with EXIF (orientation applied, EXIF stripped, GPS only when asked), Word,
+ * Excel, PowerPoint and OpenDocument files (SheetJS and the XML readers inside the
+ * worker, hostile ones included), the malformed corpus, and the timeout kill.
  */
 
 type Pixel = { r: number; g: number; b: number }
@@ -224,6 +238,135 @@ test.describe('document worker (real Electron)', () => {
     // PNG would be far over 5 MB, so it came back as JPEG, smaller if it had to.
     expect(image?.mime).toBe('image/jpeg')
     expect(imageDimensions(bytes, 'jpeg')).toEqual({ width: image?.width, height: image?.height })
+  })
+
+  test('Office and OpenDocument files are read inside the worker', async () => {
+    const docx = ok(
+      await docs(app).extract(
+        makeDocx(
+          wp('Plan', { style: 'Heading1' }) +
+            wp('Buy milk', { list: 1 }) +
+            wtbl([
+              ['a', 'b'],
+              ['1', '2'],
+            ]),
+        ),
+        { name: 'plan.docx' },
+      ),
+    )
+    expect(docx.meta).toMatchObject({ kind: 'docx', title: 'Plan', name: 'plan.docx' })
+    expect(docx.sections[0]?.text).toBe(
+      '# Plan\n\n- Buy milk\n\n| a | b |\n| --- | --- |\n| 1 | 2 |',
+    )
+
+    const book = makeWorkbook({ Data: grid(100, 4), Other: [['x']] })
+    const listing = ok(await docs(app).extract(book))
+    expect(listing.meta.sheets).toEqual([
+      { name: 'Data', used: 'A1:D100' },
+      { name: 'Other', used: 'A1' },
+    ])
+    expect(listing.sections[0]?.sheet).toEqual({
+      name: 'Data',
+      shown: 'A1:D20',
+      used: 'A1:D100',
+      next: 'A21:D100',
+    })
+    const range = ok(await docs(app).extract(book, { select: { range: 'Data!B90:C' } }))
+    expect(range.sections[0]?.sheet).toMatchObject({ shown: 'B90:C100' })
+    expect(range.sections[0]?.text).toContain('| 100 | B100 | C100 |')
+    for (const type of ['biff8', 'ods'] as const) {
+      const other = ok(await docs(app).extract(makeWorkbook({ Data: grid(3, 2) }, type)))
+      expect(other.sections[0]?.text, type).toContain('| 3 | A3 | B3 |')
+    }
+    const csv = ok(
+      await docs(app).extract(new TextEncoder().encode('a,b\n1,2\n'), { name: 'x.csv' }),
+    )
+    expect(csv.meta.kind).toBe('csv')
+
+    const deck = ok(
+      await docs(app).extract(
+        makePptx([{ title: 'Hi', body: ['One'], notes: 'Smile' }, { title: 'Two' }]),
+      ),
+    )
+    expect(deck.position).toEqual({
+      unit: 'slide',
+      total: 2,
+      shown: { from: 1, to: 2 },
+      next: null,
+    })
+    expect(deck.sections[0]?.text).toBe('# Hi\nOne\n\nSpeaker notes:\nSmile')
+
+    const odt = ok(
+      await docs(app).extract(
+        makeOdt('<text:h text:outline-level="1">Notes</text:h><text:p>Body</text:p>'),
+      ),
+    )
+    expect(odt.sections[0]?.text).toBe('# Notes\n\nBody')
+    const odp = ok(
+      await docs(app).extract(
+        makeOdp(
+          '<draw:page><draw:custom-shape><text:p>Slide text</text:p></draw:custom-shape></draw:page>',
+        ),
+      ),
+    )
+    expect(odp.sections[0]?.text).toBe('Slide text')
+    const doc = ok(await docs(app).extract(makeDoc('Old Word text\r', 'and more\r')))
+    expect(doc.sections[0]?.text).toBe('Old Word text\nand more')
+    expect((await docs(app).extract(makePpt())).error?.code).toBe('unsupported')
+  })
+
+  test('hostile Office files are refused inside the worker, which stays healthy', async () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const lol = Array.from(
+      { length: 9 },
+      (_, i) => `<!ENTITY l${String(i + 1)} "${`&l${String(i)};`.repeat(10)}">`,
+    ).join('')
+    let deep = wp('core')
+    for (let i = 0; i < 100; i++) deep = wtbl([[{ xml: deep }]])
+    const corpus: [string, Uint8Array, string][] = [
+      [
+        'XXE',
+        makeDocx('', {
+          document: `<!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]><w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>&x;</w:t></w:r></w:p></w:body></w:document>`,
+        }),
+        'malformed',
+      ],
+      [
+        'billion laughs',
+        makeDocx('', {
+          document: `<!DOCTYPE d [<!ENTITY l0 "lol">${lol}]><w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>&l9;</w:t></w:r></w:p></w:body></w:document>`,
+        }),
+        'malformed',
+      ],
+      ['nested tables', makeDocx(deep), 'malformed'],
+      [
+        'zip bomb',
+        makeZip([
+          { name: '[Content_Types].xml', data: '<Types/>' },
+          { name: 'word/document.xml', data: new Uint8Array(64 * 1024 * 1024) },
+        ]),
+        'zip-bomb',
+      ],
+      [
+        'lying entry',
+        makeZip([
+          { name: '[Content_Types].xml', data: '<Types/>' },
+          {
+            name: 'xl/workbook.xml',
+            data: `<workbook>${' '.repeat(8 * 1024 * 1024)}</workbook>`,
+            declaredSize: 100,
+          },
+        ]),
+        'zip-bomb',
+      ],
+    ]
+    for (const [label, bytes, code] of corpus) {
+      const started = Date.now()
+      const result = await docs(app).extract(bytes)
+      expect(result.error?.code, label).toBe(code)
+      expect(Date.now() - started, label).toBeLessThan(10_000)
+    }
+    ok(await docs(app).extract(makeDocx(wp('fine'))))
   })
 
   test('malformed corpus is refused without hanging', async () => {

@@ -48,6 +48,13 @@ const KINDS = [
   'odf',
   'zip',
   'ole',
+  'doc',
+  'xls',
+  'ppt',
+  'odt',
+  'ods',
+  'odp',
+  'csv',
   'jpeg',
   'png',
   'gif',
@@ -68,6 +75,9 @@ const MAX_WARNING_CHARS = 1000
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const fraction = z.number().min(0).max(1)
 const shortText = (max: number) => z.string().max(max)
+/** An A1 reference without a sheet: B2, or A1:H200 (Excel's largest sheet is XFD1048576). */
+const a1 = z.string().regex(/^[A-Z]{1,3}[1-9]\d{0,6}(?::[A-Z]{1,3}[1-9]\d{0,6})?$/)
+const SHEET_NAME_CHARS = 200
 
 export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
   const { limits, options } = job
@@ -103,6 +113,16 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
       height: count.optional(),
       title: shortText(1000).optional(),
       author: shortText(1000).optional(),
+      sheets: z
+        .array(
+          z.strictObject({
+            name: shortText(SHEET_NAME_CHARS),
+            used: a1.nullable(),
+            hidden: z.literal(true).optional(),
+          }),
+        )
+        .max(limits.office.maxSheets)
+        .optional(),
     }),
     sections: z
       .array(
@@ -110,12 +130,20 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
           page: count.min(1).optional(),
           title: shortText(200).optional(),
           text: z.string().max(budget.maxChars + METADATA_CHARS),
+          sheet: z
+            .strictObject({
+              name: shortText(SHEET_NAME_CHARS),
+              shown: a1.nullable(),
+              used: a1.nullable(),
+              next: a1.optional(),
+            })
+            .optional(),
         }),
       )
       .max(maxSections),
     images: z.array(image).max(maxImages),
     position: z.strictObject({
-      unit: z.enum(['page', 'char', 'image']),
+      unit: z.enum(['page', 'slide', 'char', 'sheet', 'image']),
       total: count,
       shown: z.strictObject({ from: count, to: count }),
       next: count.min(1).nullable(),
@@ -169,8 +197,17 @@ function checkView(
   ) {
     throw invalid('its position is inconsistent')
   }
-  if (position.unit === 'page') {
-    const shown = position.shown.to - position.shown.from + (position.shown.to ? 1 : 0)
+  const shown = position.shown.to - position.shown.from + (position.shown.to ? 1 : 0)
+  if (position.unit === 'sheet') {
+    if (shown > limits.maxPagesPerCall) throw invalid('it returned more sheets than allowed')
+    if (view.meta.sheets?.length !== position.total) throw invalid('its sheet list is inconsistent')
+    if (view.sections.length > shown || !view.sections.every((section) => section.sheet)) {
+      throw invalid('it returned a sheet it did not show')
+    }
+  } else if (view.meta.sheets !== undefined || view.sections.some((section) => section.sheet)) {
+    throw invalid('it returned sheets for a document that has none')
+  }
+  if (position.unit === 'page' || position.unit === 'slide') {
     if (shown > limits.maxPagesPerCall) throw invalid('it returned more pages than allowed')
     if (view.meta.pageCount !== undefined && view.meta.pageCount !== position.total) {
       throw invalid('its page count is inconsistent')
@@ -201,8 +238,14 @@ function checkView(
 /** A deep copy holding only plain values and fresh byte arrays. */
 function copyView(view: DocumentView): DocumentView {
   return {
-    meta: defined(view.meta),
-    sections: view.sections.map(defined),
+    meta: {
+      ...defined(view.meta),
+      ...(view.meta.sheets ? { sheets: view.meta.sheets.map(defined) } : {}),
+    },
+    sections: view.sections.map((section) => ({
+      ...defined(section),
+      ...(section.sheet ? { sheet: defined(section.sheet) } : {}),
+    })),
     images: view.images.map((image) => ({
       bytes: new Uint8Array(image.bytes),
       mime: image.mime,

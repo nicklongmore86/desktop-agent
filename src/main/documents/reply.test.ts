@@ -269,3 +269,121 @@ describe('checkReply', () => {
     )
   })
 })
+
+describe('checkReply: Office shapes', () => {
+  const sheetView = (overrides: Partial<DocumentView> = {}): DocumentView => ({
+    meta: {
+      kind: 'xlsx',
+      mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      sheets: [
+        { name: 'Sales', used: 'A1:D60' },
+        { name: 'Notes', used: null, hidden: true },
+      ],
+    },
+    sections: [
+      {
+        title: 'Sales',
+        text: '| | A |',
+        sheet: { name: 'Sales', shown: 'A1:D20', used: 'A1:D60', next: 'A21:D60' },
+      },
+      { title: 'Notes', text: '(empty sheet)', sheet: { name: 'Notes', shown: null, used: null } },
+    ],
+    images: [],
+    position: { unit: 'sheet', total: 2, shown: { from: 1, to: 2 }, next: null },
+    warnings: [],
+    ...overrides,
+  })
+
+  it('accepts sheets, slides and character positions', () => {
+    expect(verdict(reply(sheetView()))).toBe('accepted')
+    const slides: DocumentView = {
+      meta: { kind: 'pptx', mime: 'x', pageCount: 3 },
+      sections: [{ page: 2, title: 'Hi', text: '# Hi' }],
+      images: [],
+      position: { unit: 'slide', total: 3, shown: { from: 2, to: 2 }, next: 3 },
+      warnings: [],
+    }
+    expect(verdict(reply(slides))).toBe('accepted')
+    const text: DocumentView = {
+      meta: { kind: 'docx', mime: 'x' },
+      sections: [{ text: 'abc' }],
+      images: [],
+      position: { unit: 'char', total: 10, shown: { from: 1, to: 3 }, next: 4 },
+      warnings: [],
+    }
+    expect(verdict(reply(text))).toBe('accepted')
+  })
+
+  it('refuses ranges that are not A1 references, and over-long sheet names', () => {
+    const bad = (sheet: Record<string, unknown>) =>
+      verdict(reply(sheetView({ sections: [{ title: 'Sales', text: '', sheet } as never] })))
+    expect(bad({ name: 'Sales', shown: 'A1:D20', used: 'A1:D60', next: '=HYPERLINK()' })).toBe(
+      'its reply did not match what was asked',
+    )
+    expect(bad({ name: 'Sales', shown: 'A0', used: null })).toBe(
+      'its reply did not match what was asked',
+    )
+    expect(bad({ name: 'x'.repeat(201), shown: null, used: null })).toBe(
+      'its reply did not match what was asked',
+    )
+    expect(bad({ name: 'Sales', shown: null, used: null, extra: 1 })).toBe(
+      'its reply did not match what was asked',
+    )
+  })
+
+  it('refuses a sheet list that does not match the position, or too many sheets', () => {
+    expect(
+      verdict(
+        reply(
+          sheetView({ position: { unit: 'sheet', total: 3, shown: { from: 1, to: 2 }, next: 3 } }),
+        ),
+      ),
+    ).toBe('its sheet list is inconsistent')
+    const many = Array.from({ length: DEFAULT_LIMITS.office.maxSheets + 1 }, (_, i) => ({
+      name: `S${String(i)}`,
+      used: null,
+    }))
+    expect(verdict(reply(sheetView({ meta: { kind: 'xlsx', mime: 'x', sheets: many } })))).toBe(
+      'its reply did not match what was asked',
+    )
+    // More sections than sheets shown.
+    const one = sheetView()
+    expect(
+      verdict(
+        reply({
+          ...one,
+          position: { unit: 'sheet', total: 2, shown: { from: 1, to: 1 }, next: 2 },
+        }),
+      ),
+    ).toBe('it returned a sheet it did not show')
+  })
+
+  it('refuses sheets on a document that is not a workbook', () => {
+    const view = pdfView({
+      sections: [{ page: 1, text: 'x', sheet: { name: 'S', shown: null, used: null } }],
+      images: [],
+      position: { unit: 'page', total: 3, shown: { from: 1, to: 1 }, next: 2 },
+    })
+    expect(verdict(reply(view))).toBe('it returned sheets for a document that has none')
+  })
+
+  it('refuses slides outside the range shown, and more than 50', () => {
+    const view: DocumentView = {
+      meta: { kind: 'pptx', mime: 'x', pageCount: 80 },
+      sections: [{ page: 9, text: '' }],
+      images: [],
+      position: { unit: 'slide', total: 80, shown: { from: 1, to: 2 }, next: 3 },
+      warnings: [],
+    }
+    expect(verdict(reply(view))).toBe('it returned a page it did not show')
+    expect(
+      verdict(
+        reply({
+          ...view,
+          sections: [],
+          position: { unit: 'slide', total: 80, shown: { from: 1, to: 51 }, next: 52 },
+        }),
+      ),
+    ).toBe('it returned more pages than allowed')
+  })
+})

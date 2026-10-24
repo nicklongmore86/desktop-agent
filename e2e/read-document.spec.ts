@@ -4,6 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readExif } from '../src/main/documents/exif'
 import { makeExif, makePdf, withExif } from '../src/main/documents/fixtures.test-util'
+import {
+  grid,
+  makeDocx,
+  makePptx,
+  makeWorkbook,
+  wp,
+} from '../src/main/documents/office-fixtures.test-util'
 import { imageDimensions } from '../src/main/documents/limits'
 
 /**
@@ -258,6 +265,41 @@ test.describe('read_document over the sandboxed worker', () => {
     const good = join(dirs.root, 'good.pdf')
     writeFileSync(good, makePdf([{ text: ['Still here'] }]))
     expect((await reader(app).run({ path: good })).content).toContain('Still here')
+  })
+
+  test('Word, Excel and PowerPoint: text, sheets with ranges, slides, each continued', async () => {
+    const docx = join(dirs.root, 'plan.docx')
+    writeFileSync(docx, makeDocx(wp('Plan', { style: 'Heading1' }) + wp('Step', { list: 2 })))
+    const word = await reader(app).run({ path: docx })
+    expect(word.isError).toBeUndefined()
+    expect(word.content.split('\n').slice(1)).toEqual([
+      '# Plan',
+      '',
+      '1. Step',
+      '[End of document.]',
+    ])
+
+    const xlsx = join(dirs.root, 'sales.xlsx')
+    writeFileSync(xlsx, makeWorkbook({ Sales: grid(50, 3) }))
+    const listing = await reader(app).run({ path: xlsx })
+    expect(listing.content).toContain('1. "Sales" (A1:C50)')
+    expect(listing.content).toContain(
+      '[More of "Sales": call read_document with range: "Sales!A21:C50" to continue.]',
+    )
+    const rest = await reader(app).run({ path: xlsx, range: 'Sales!A21:C50' })
+    expect(rest.content).toContain('| 50 | A50 | B50 | C50 |')
+    const audit = await reader(app).audit()
+    expect(audit.at(-1)?.args).toMatchObject({ path: xlsx, range: 'Sales!A21:C50' })
+
+    const pptx = join(dirs.root, 'talk.pptx')
+    writeFileSync(pptx, makePptx([{ title: 'One', notes: 'Breathe' }, { title: 'Two' }]))
+    const first = await reader(app).run({ path: pptx, pages: '1' })
+    expect(first.content).toContain('--- Slide 1: One ---')
+    expect(first.content).toContain('Speaker notes:\nBreathe')
+    expect(first.content).toContain('Call read_document with start: 2 to continue.')
+    expect((await reader(app).run({ path: pptx, start: 2 })).content).toContain(
+      '--- Slide 2: Two ---',
+    )
   })
 
   test('read_file points the PDF to read_document', async () => {

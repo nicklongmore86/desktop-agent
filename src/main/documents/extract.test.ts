@@ -178,14 +178,12 @@ describe('malformed corpus: refused, quickly', () => {
     expect(await refusal(read(garbage))).toBe('unsupported')
   })
 
-  it('zip bomb inside an OOXML container -> detected only, never inflated', async () => {
+  it('zip bomb inside an OOXML container -> refused from its declared ratio, never inflated', async () => {
     const bomb = makeZip([
       { name: '[Content_Types].xml', data: '<Types/>' },
       { name: 'word/document.xml', data: new Uint8Array(32 * 1024 * 1024) },
     ])
-    const view = await read(bomb)
-    expect(view.meta.kind).toBe('docx')
-    expect(view.warnings).toContain('Reading a Word document is not supported yet.')
+    expect(await refusal(read(bomb))).toBe('zip-bomb')
   })
 
   it('oversized input -> too-large', async () => {
@@ -226,16 +224,14 @@ describe('other kinds', () => {
     expect(view.warnings[0]).toBe('The file says it is image/jpeg but its contents are a PDF.')
   })
 
-  it('says HEIC and Office formats are not supported yet', async () => {
+  it('says HEIC is not supported yet, and refuses an unreadable OLE file', async () => {
     const heic = new Uint8Array([
       0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66,
       0x31, 0x68, 0x65, 0x69, 0x63,
     ])
     expect((await read(heic)).warnings[0]).toMatch(/HEIC\/HEIF images are not supported yet/)
     const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0])
-    expect((await read(ole)).warnings).toEqual([
-      'Reading a legacy Office (OLE) file is not supported yet.',
-    ])
+    expect(await refusal(read(ole))).toBe('malformed')
   })
 
   it('reads text in character windows', async () => {

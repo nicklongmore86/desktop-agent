@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { extractDocument } from '../documents/extract'
 import { makePdf } from '../documents/fixtures.test-util'
+import { grid, makeDocx, makePptx, makeWorkbook, wp } from '../documents/office-fixtures.test-util'
 import { DEFAULT_LIMITS } from '../documents/limits'
 import {
   DocumentError,
@@ -319,20 +320,17 @@ describe('read_document', () => {
 
   it('says clearly what is not supported yet', async () => {
     const answers: Record<string, DocumentView> = {
-      'report.docx': {
-        ...pdfView({ sections: [], images: [] }),
-        meta: {
-          kind: 'docx',
-          mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        },
-        warnings: ['Reading a Word document is not supported yet.'],
-      },
       'IMG.heic': {
         ...pdfView({ sections: [], images: [] }),
         meta: { kind: 'heic', mime: 'image/heic' },
         warnings: [
           'HEIC/HEIF images are not supported yet. Convert it to JPEG or PNG and try again.',
         ],
+      },
+      'notes.rtf': {
+        ...pdfView({ sections: [], images: [] }),
+        meta: { kind: 'rtf', mime: 'application/rtf' },
+        warnings: ['Reading a RTF document is not supported yet.'],
       },
     }
     const { reader } = fakeReader((_bytes, options) => answers[options.name ?? ''] ?? pdfView())
@@ -347,6 +345,22 @@ describe('read_document', () => {
       expect(r.images).toBeUndefined()
     }
     expect(h.audit.entries.map((entry) => entry.error)).toEqual(['unsupported', 'unsupported'])
+  })
+
+  it('passes on a reader refusal such as an old PowerPoint file', async () => {
+    const { reader } = fakeReader(() => {
+      throw new DocumentError(
+        'unsupported',
+        'Older PowerPoint (.ppt) files cannot be read. Open it in PowerPoint and save it as .pptx, then try again.',
+      )
+    })
+    h = toolHarness(sb, { documents: reader })
+    await put(path.join(sb.root, 'old.ppt'), 'x')
+    expect(await run({ path: path.join(sb.root, 'old.ppt') })).toMatchObject({
+      isError: true,
+      content: expect.stringMatching(/save it as \.pptx/) as unknown,
+    })
+    expect(h.audit.entries[0]?.error).toBe('unsupported')
   })
 
   it('points text files to read_file', async () => {
@@ -403,6 +417,120 @@ describe('read_document', () => {
     expect(await run({ path: path.join(sb.root, 'a.pdf') })).toMatchObject({
       isError: true,
       content: expect.stringMatching(/not available/) as unknown,
+    })
+  })
+
+  describe('Office documents, through the real readers', () => {
+    const officeReader = (): DocumentReader => ({
+      extract: (bytes, options = {}) =>
+        extractDocument(bytes, options, {
+          pdfium: () => Promise.reject(new Error('not a PDF')),
+          encode: () => Promise.reject(new Error('no encoder')),
+          decodeImage: () => Promise.reject(new Error('no decoder')),
+        }),
+    })
+    const write = async (name: string, bytes: Uint8Array): Promise<string> => {
+      const file = path.join(sb.root, name)
+      await put(file, Buffer.from(bytes))
+      return file
+    }
+
+    it('reads a Word document as text and continues by character', async () => {
+      h = toolHarness(sb, { documents: officeReader() })
+      const paragraphs = Array.from({ length: 30 }, (_, i) =>
+        wp(`Paragraph ${String(i + 1)} ${'z'.repeat(60)}`),
+      )
+      const file = await write(
+        'plan.docx',
+        makeDocx(wp('Plan', { style: 'Heading1' }) + paragraphs.join('')),
+      )
+      const first = await run({ path: file })
+      expect(first.isError).toBeUndefined()
+      expect(first.content).toMatch(
+        /^\[.*plan\.docx \| Word document \| .* \| \d+ characters \| title: Plan \| author: Ada\]\n# Plan\n\nParagraph 1 /,
+      )
+      expect(first.content).toMatch(/\[End of document\.\]$/)
+      expect(h.audit.entries[0]?.args).toEqual({
+        path: file,
+        extra: { kind: 'docx', imageCount: 0 },
+      })
+    })
+
+    it('lists the sheets of a workbook, then reads a range and says what range comes next', async () => {
+      h = toolHarness(sb, { documents: officeReader() })
+      const file = await write(
+        'sales.xlsx',
+        makeWorkbook({ Sales: grid(60, 3), "Q3 o'clock": [['x']] }),
+      )
+      const listing = await run({ path: file })
+      const lines = listing.content.split('\n')
+      expect(lines[0]).toMatch(/\| Excel workbook \| .* \| 2 sheets\]$/)
+      expect(lines.slice(1, 4)).toEqual(['Sheets:', '1. "Sales" (A1:C60)', `2. "Q3 o'clock" (A1)`])
+      expect(lines[4]).toBe('--- Sheet "Sales": A1:C20 of A1:C60 ---')
+      expect(lines).toContain('| 20 | A20 | B20 | C20 |')
+      expect(lines).toContain(
+        '[More of "Sales": call read_document with range: "Sales!A21:C60" to continue.]',
+      )
+      expect(lines).toContain(`--- Sheet "Q3 o'clock": A1 of A1 ---`)
+
+      const range = await run({ path: file, range: 'Sales!A21:C60' })
+      expect(range.content).toContain('| 60 | A60 | B60 | C60 |')
+      expect(range.content).toMatch(/\[End of the cells asked for\.\]$/)
+      const quoted = await run({ path: file, sheet: "q3 O'CLOCK" })
+      expect(quoted.content).toContain('| 1 | x |')
+      expect(h.audit.entries.at(-1)?.args).toMatchObject({ sheet: "q3 O'CLOCK" })
+
+      const missing = await run({ path: file, sheet: 'Nope' })
+      expect(missing).toMatchObject({
+        isError: true,
+        content: expect.stringMatching(/no sheet named "Nope"/) as unknown,
+      })
+      expect(h.audit.entries.at(-1)?.error).toBe('out-of-range')
+    })
+
+    it('reads slides with notes, and CSV by its name', async () => {
+      h = toolHarness(sb, { documents: officeReader() })
+      const deck = await write(
+        'talk.pptx',
+        makePptx([{ title: 'Hi', body: ['One'], notes: 'Smile' }, { title: 'Bye' }]),
+      )
+      const slides = await run({ path: deck, pages: '1' })
+      expect(slides.content.split('\n')).toEqual([
+        expect.stringMatching(
+          /\| PowerPoint presentation \| .* \| 2 slides \| slide 1 shown \| title: Deck \| author: Ada\]$/,
+        ) as unknown,
+        '--- Slide 1: Hi ---',
+        '# Hi',
+        'One',
+        '',
+        'Speaker notes:',
+        'Smile',
+        '[More: slides 2-2 not shown. Call read_document with start: 2 to continue.]',
+      ])
+      const csv = await write('people.csv', new TextEncoder().encode('name,age\nAda,36\n'))
+      const table = await run({ path: csv })
+      expect(table.content.split('\n').slice(1)).toEqual([
+        '--- Rows: A1:B2 of A1:B2 ---',
+        '| | A | B |',
+        '| --- | --- | --- |',
+        '| 1 | name | age |',
+        '| 2 | Ada | 36 |',
+        '[End of workbook.]',
+      ])
+    })
+
+    it('rejects sheet and range mixed with pages, start or region, and odd values', async () => {
+      h = toolHarness(sb, { documents: officeReader() })
+      const file = await write('a.xlsx', makeWorkbook({ A: [['x']] }))
+      for (const input of [
+        { path: file, range: 'A1', pages: '2' },
+        { path: file, sheet: 'A', start: 2 },
+        { path: file, sheet: '' },
+        { path: file, range: ' ' },
+        { path: file, range: 'x'.repeat(301) },
+      ]) {
+        expect(await run(input)).toMatchObject({ isError: true })
+      }
     })
   })
 

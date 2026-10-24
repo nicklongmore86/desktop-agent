@@ -45,12 +45,15 @@ const fromRoot = (path: string): string => fileURLToPath(new URL(path, import.me
  * because the worker is always loaded from files, never from the dev server.
  */
 function documentWorkerPlugin(): Plugin {
-  const licenses = [
-    ['@embedpdf/pdfium/LICENSE', 'embedpdf-pdfium-LICENSE.txt'],
-    ['@embedpdf/pdfium/LICENSE.pdfium', 'pdfium-LICENSE.txt'],
-  ] as const
   const require = createRequire(import.meta.url)
   const pdfiumDir = dirname(dirname(require.resolve('@embedpdf/pdfium')))
+  // SheetJS's package exports hide package.json; its LICENSE sits beside the entry point.
+  const sheetjsDir = dirname(require.resolve('xlsx'))
+  const licenses = [
+    [join(pdfiumDir, 'LICENSE'), 'embedpdf-pdfium-LICENSE.txt'],
+    [join(pdfiumDir, 'LICENSE.pdfium'), 'pdfium-LICENSE.txt'],
+    [join(sheetjsDir, 'LICENSE'), 'sheetjs-LICENSE.txt'],
+  ] as const
   return {
     name: 'desktop-agent:document-worker',
     apply: 'build',
@@ -82,7 +85,7 @@ function documentWorkerPlugin(): Plugin {
                 this.emitFile({
                   type: 'asset',
                   fileName: `licenses/${out}`,
-                  source: readFileSync(join(pdfiumDir, file.split('/').pop() ?? '')),
+                  source: readFileSync(file),
                 })
               }
             },
