@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ProviderStatus } from '../../../shared/ipc'
 import {
   CHATGPT_PLAN,
@@ -104,9 +104,11 @@ export function ChatView({
   }, [limitBanner, refreshUsage])
 
   // Esc stops a running reply, but never while an approval is open: there it denies.
+  // A layout effect, so Esc works from the commit that shows Stop: a passive effect can run a
+  // task later, and an Esc pressed in between was lost.
   const approvalOpen = state.approvals.length > 0
   const running = state.running
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!running || approvalOpen) return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
