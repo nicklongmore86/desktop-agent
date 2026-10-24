@@ -84,4 +84,39 @@ describe('limits', () => {
     ).toBeNull()
     expect(imageDimensions(new Uint8Array(10), 'webp')).toBeNull()
   })
+
+  it('trusts PNG and JPEG dimensions only behind a real header', () => {
+    const forged = (at: number, value: number): Uint8Array => {
+      const bytes = pngShell(640, 480)
+      bytes[at] = value
+      return bytes
+    }
+    // Every byte of the signature, the IHDR length (13) and the type 'IHDR' is checked.
+    for (let at = 0; at < 16; at++) {
+      expect(imageDimensions(forged(at, (pngShell(1, 1)[at] ?? 0) ^ 0x20), 'png')).toBeNull()
+    }
+    // Just the first two bytes of a PNG, with plausible dimensions where IHDR would be.
+    const lookalike = new Uint8Array(33)
+    lookalike.set([0x89, 0x50])
+    new DataView(lookalike.buffer).setUint32(16, 640)
+    new DataView(lookalike.buffer).setUint32(20, 480)
+    expect(imageDimensions(lookalike, 'png')).toBeNull()
+    // IHDR cut short of its 13 bytes, and garbage after a valid signature.
+    expect(imageDimensions(pngShell(640, 480).subarray(0, 28), 'png')).toBeNull()
+    const garbage = pngShell(640, 480)
+    garbage.fill(0xab, 8)
+    expect(imageDimensions(garbage, 'png')).toBeNull()
+
+    // A JPEG needs SOI, then a frame header the walker finds.
+    const noSoi = jpegShell(1024, 768)
+    noSoi[1] = 0xd9
+    expect(imageDimensions(noSoi, 'jpeg')).toBeNull()
+    expect(imageDimensions(new Uint8Array([0xff, 0xd8, ...new Uint8Array(30)]), 'jpeg')).toBeNull()
+    const shortFrame = jpegShell(1024, 768)
+    shortFrame[5] = 7
+    expect(imageDimensions(shortFrame, 'jpeg')).toBeNull()
+    const overrunFrame = jpegShell(1024, 768)
+    overrunFrame[5] = 0x40
+    expect(imageDimensions(overrunFrame, 'jpeg')).toBeNull()
+  })
 })

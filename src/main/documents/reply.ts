@@ -190,12 +190,9 @@ function checkView(
       throw invalid('an image region is inconsistent')
     }
     const kind = image.mime === 'image/png' ? 'png' : 'jpeg'
+    // Null unless the bytes start with a full PNG signature and IHDR, or a JPEG SOI and frame.
     const header = imageDimensions(image.bytes, kind)
-    const magic =
-      kind === 'png'
-        ? image.bytes[0] === 0x89 && image.bytes[1] === 0x50
-        : image.bytes[0] === 0xff && image.bytes[1] === 0xd8
-    if (!magic || header?.width !== image.width || header.height !== image.height) {
+    if (header?.width !== image.width || header.height !== image.height) {
       throw invalid('an image is not what it claims to be')
     }
   }

@@ -104,8 +104,10 @@ export function imageDimensions(
   const has = (end: number): boolean => end <= bytes.length
   switch (kind) {
     case 'png':
-      // Signature, then the IHDR chunk: length, type, width, height.
-      if (!has(24)) return null
+      // The full signature, then an IHDR chunk of exactly 13 bytes: width, height, and five
+      // one-byte fields.
+      if (!has(PNG_HEADER.length + 13)) return null
+      if (!PNG_HEADER.every((byte, i) => bytes[i] === byte)) return null
       return { width: view.getUint32(16), height: view.getUint32(20) }
     case 'gif':
       if (!has(10)) return null
@@ -128,6 +130,11 @@ export function imageDimensions(
       return null
   }
 }
+
+/** The PNG signature, then the first chunk's length (13) and type ('IHDR'). */
+const PNG_HEADER = [
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+] as const
 
 function webpDimensions(
   bytes: Uint8Array,
@@ -154,6 +161,7 @@ function jpegDimensions(
   bytes: Uint8Array,
   view: DataView,
 ): { width: number; height: number } | null {
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null
   let at = 2
   while (at + 9 <= bytes.length) {
     if (bytes[at] !== 0xff) return null
@@ -169,6 +177,9 @@ function jpegDimensions(
     }
     // SOF0..SOF15, except DHT (C4), JPG (C8) and DAC (CC).
     if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      // The frame header holds at least precision, height, width and a component count.
+      const length = view.getUint16(at + 2)
+      if (length < 8 || at + 2 + length > bytes.length) return null
       return { height: view.getUint16(at + 5), width: view.getUint16(at + 7) }
     }
     if (marker === 0xda || marker === 0xd9) return null

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { pngShell } from './fixtures.test-util'
 import { DEFAULT_LIMITS } from './limits'
 import type { ExtractJob, FromBroker, ToBroker } from './protocol'
 import type { DocumentView } from './types'
@@ -292,6 +293,39 @@ describe('DocumentWorkerHost', () => {
     }
     await expect(host().extract(bytes)).rejects.toMatchObject({ code: 'worker-failed' })
     expect(killed(0)).toEqual({ window: true, broker: true })
+  })
+
+  it('accepts 20 images near the byte limit, keeps the worker, and leaves nothing running', async () => {
+    const big = new Uint8Array(DEFAULT_LIMITS.maxImageBytes - 1024)
+    big.set(pngShell(1000, 1000))
+    const images = Array.from({ length: 20 }, () => ({
+      bytes: big,
+      mime: 'image/png' as const,
+      width: 1000,
+      height: 1000,
+      source: { page: 1 },
+    }))
+    electron.state.answer = (job, reply) => {
+      reply(
+        result(job, {
+          meta: { kind: 'pdf', mime: 'application/pdf', pageCount: 1 },
+          sections: [{ page: 1, text: 'x' }],
+          images,
+          position: { unit: 'page', total: 1, shown: { from: 1, to: 1 }, next: null },
+        }),
+      )
+    }
+    const h = host()
+    for (let i = 0; i < 2; i++) {
+      const view = await h.extract(bytes)
+      expect(view.images).toHaveLength(20)
+      expect(view.images[0]?.bytes.length).toBe(big.length)
+    }
+    expect(h.stats()).toMatchObject({ workersStarted: 1, jobs: 2 })
+    expect(killed(0)).toEqual({ window: false, broker: false })
+    await h.dispose()
+    expect(electron.state.windows.every((w) => w.destroyed)).toBe(true)
+    expect(electron.state.brokers.every((b) => b.killed)).toBe(true)
   })
 
   it('kills a reply for another job id', async () => {

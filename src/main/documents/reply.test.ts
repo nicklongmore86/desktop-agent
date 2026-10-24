@@ -173,6 +173,47 @@ describe('checkReply', () => {
     expect(verdict(reply(pdfView({ images: [jpeg] })))).toBe('accepted')
   })
 
+  it('refuses non-PNG and non-JPEG bytes that carry forged dimensions', () => {
+    // PNG's first two bytes, then the claimed width and height where IHDR would hold them.
+    const lookalike = new Uint8Array(33)
+    lookalike.set([0x89, 0x50])
+    new DataView(lookalike.buffer).setUint32(16, 100)
+    new DataView(lookalike.buffer).setUint32(20, 100)
+    const badType = pngShell(100, 100)
+    badType.set([0x49, 0x44, 0x41, 0x54], 12) // 'IDAT' where 'IHDR' belongs
+    const badLength = pngShell(100, 100)
+    badLength[11] = 12
+    const truncated = pngShell(100, 100).subarray(0, 26)
+    for (const bytes of [lookalike, badType, badLength, truncated]) {
+      expect(verdict(reply(pdfView({ images: [{ ...png(100, 100, 2), bytes }] })))).toBe(
+        'an image is not what it claims to be',
+      )
+    }
+    // SOI alone, with no frame header after it.
+    const soiOnly = new Uint8Array(32)
+    soiOnly.set([0xff, 0xd8, 0xff, 0xd9])
+    const jpeg: DocumentImage = {
+      bytes: soiOnly,
+      mime: 'image/jpeg',
+      width: 64,
+      height: 32,
+      source: { page: 2 },
+    }
+    expect(verdict(reply(pdfView({ images: [jpeg] })))).toBe('an image is not what it claims to be')
+  })
+
+  it('accepts 20 images near the per-image byte limit', () => {
+    const big = new Uint8Array(DEFAULT_LIMITS.maxImageBytes)
+    big.set(pngShell(100, 100))
+    const images = Array.from({ length: 20 }, () => ({ ...png(100, 100, 1), bytes: big }))
+    const pages = { position: { unit: 'page', total: 1, shown: { from: 1, to: 1 }, next: null } }
+    const one = { meta: { kind: 'pdf', mime: 'application/pdf', pageCount: 1 } }
+    const sections = [{ page: 1, text: 'x' }]
+    expect(verdict(reply(pdfView({ ...one, ...pages, sections, images } as never)))).toBe(
+      'accepted',
+    )
+  })
+
   it('refuses bytes that are not a Uint8Array', () => {
     const image = png(100, 100, 2)
     for (const bytes of [Array.from(image.bytes), image.bytes.buffer, 'abc', { length: 10 }]) {
