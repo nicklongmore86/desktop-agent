@@ -8,13 +8,23 @@
   // The worker page and the browser-safe modules it shares with the main process.
   "include": [
     "src/main/documents/worker/**/*",
+    "src/main/documents/cfb.ts",
+    "src/main/documents/docx.ts",
     "src/main/documents/exif.ts",
     "src/main/documents/extract.ts",
     "src/main/documents/limits.ts",
+    "src/main/documents/odf.ts",
+    "src/main/documents/ole.ts",
+    "src/main/documents/package.ts",
     "src/main/documents/pdf.ts",
+    "src/main/documents/pptx.ts",
     "src/main/documents/protocol.ts",
+    "src/main/documents/sheets.ts",
     "src/main/documents/sniff.ts",
+    "src/main/documents/text-view.ts",
     "src/main/documents/types.ts",
+    "src/main/documents/unsaved.ts",
+    "src/main/documents/xml.ts",
     "src/main/documents/zip.ts"
   ]
 }

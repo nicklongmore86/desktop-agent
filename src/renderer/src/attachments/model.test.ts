@@ -57,16 +57,26 @@ describe('chip text', () => {
     expect(formatSize(20 * 1024 * 1024)).toBe('20 MB')
   })
 
-  it('says text files and PDFs always reach the model, and images only a vision model', () => {
+  it('says text files, PDFs and Office documents always reach the model, and images only a vision model', () => {
+    const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     expect(canReceive('text')).toBe(true)
     expect(canReceive('pdf')).toBe(true)
     expect(canReceive('pdf', true)).toBe(true)
     expect(canReceive('image')).toBe(false)
     expect(canReceive('image', true)).toBe(true)
+    expect(canReceive('document', false, docx)).toBe(true)
+    expect(canReceive('document', false, 'application/vnd.ms-excel')).toBe(true)
+    expect(canReceive('document', false, 'application/vnd.oasis.opendocument.spreadsheet')).toBe(
+      true,
+    )
+    // Older PowerPoint, RTF and mail are still sent as names.
+    expect(canReceive('document', true, 'application/vnd.ms-powerpoint')).toBe(false)
+    expect(canReceive('document', true, 'application/rtf')).toBe(false)
     expect(canReceive('document', true)).toBe(false)
     expect(notReceivedNote('image')).toBe(NO_VISION)
     expect(notReceivedNote('pdf')).toBeUndefined()
-    expect(notReceivedNote('document', true)).toBe(NOT_SENT_YET)
+    expect(notReceivedNote('document', false, docx)).toBeUndefined()
+    expect(notReceivedNote('document', true, 'application/rtf')).toBe(NOT_SENT_YET)
     expect(notReceivedNote('image', true)).toBeUndefined()
   })
 })

@@ -295,6 +295,27 @@ describe('DocumentWorkerHost', () => {
     expect(killed(0)).toEqual({ window: true, broker: true })
   })
 
+  it('checks the broker’s copy of a sheet’s claimed cells against the per-call cap', async () => {
+    const sheet = (shown: string): Partial<DocumentView> => ({
+      meta: { kind: 'xlsx', mime: 'x', sheets: [{ name: 'S', used: 'A1:XFD1048576' }] },
+      sections: [{ text: 'x', sheet: { name: 'S', shown, used: 'A1:XFD1048576' } }],
+      images: [],
+      position: { unit: 'sheet', total: 1, shown: { from: 1, to: 1 }, next: null },
+    })
+    let shown = 'A1:XFD1048576'
+    electron.state.answer = (job, reply) => {
+      reply(result(job, sheet(shown)))
+    }
+    const h = host()
+    await expect(h.extract(bytes)).rejects.toMatchObject({
+      code: 'worker-failed',
+      message: expect.stringContaining('it returned more cells than allowed') as unknown,
+    })
+    expect(killed(0)).toEqual({ window: true, broker: true })
+    shown = 'A1:J1000'
+    await expect(h.extract(bytes)).resolves.toMatchObject({ sections: [{ text: 'x' }] })
+  })
+
   it('accepts 20 images near the byte limit, keeps the worker, and leaves nothing running', async () => {
     const big = new Uint8Array(DEFAULT_LIMITS.maxImageBytes - 1024)
     big.set(pngShell(1000, 1000))

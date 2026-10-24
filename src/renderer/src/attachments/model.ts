@@ -1,5 +1,6 @@
 import {
   ATTACHMENT_LIMITS,
+  READABLE_DOCUMENT_MIMES,
   type AttachmentKind,
   type AttachmentRef,
 } from '../../../shared/attachments'
@@ -24,16 +25,26 @@ export const TOO_MUCH_DATA = `A message can carry up to ${String(ATTACHMENT_LIMI
 /**
  * Whether `kind` reaches the model: text files always (inline); PDFs always, as the
  * text the document reader extracts (drawn pages go as images only to a vision model,
- * a note otherwise); images when the connection's model can see them (`vision`, from
- * main). Documents are still sent as their names only.
+ * a note otherwise); Word, Excel, PowerPoint and OpenDocument files (by `mime`,
+ * READABLE_DOCUMENT_MIMES) always, as their text; images when the connection's model can
+ * see them (`vision`, from main). Other documents are still sent as their names only.
  */
-export function canReceive(kind: AttachmentKind, vision = false): boolean {
-  return kind === 'text' || kind === 'pdf' || (kind === 'image' && vision)
+export function canReceive(kind: AttachmentKind, vision = false, mime = ''): boolean {
+  return (
+    kind === 'text' ||
+    kind === 'pdf' ||
+    (kind === 'document' && READABLE_DOCUMENT_MIMES.has(mime)) ||
+    (kind === 'image' && vision)
+  )
 }
 
 /** The tooltip for a chip the model will not receive, or undefined when it will. */
-export function notReceivedNote(kind: AttachmentKind, vision = false): string | undefined {
-  if (canReceive(kind, vision)) return undefined
+export function notReceivedNote(
+  kind: AttachmentKind,
+  vision = false,
+  mime = '',
+): string | undefined {
+  if (canReceive(kind, vision, mime)) return undefined
   return kind === 'image' ? NO_VISION : NOT_SENT_YET
 }
 

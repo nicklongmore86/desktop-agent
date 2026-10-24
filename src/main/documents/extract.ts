@@ -8,8 +8,14 @@ import {
   imageDimensions,
   type DocumentLimits,
 } from './limits'
+import { extractDocx } from './docx'
+import { extractOdf } from './odf'
+import { extractOle } from './ole'
+import { OfficePackage } from './package'
 import { extractPdf, type EncodeRaster } from './pdf'
-import { KIND_LABEL, sniff } from './sniff'
+import { extractPptx } from './pptx'
+import { extractCsv, extractPackageWorkbook } from './sheets'
+import { KIND_LABEL, MIME, sniff } from './sniff'
 import {
   DocumentError,
   type DocumentImage,
@@ -37,16 +43,16 @@ export interface ExtractEnv {
 }
 
 const DECODABLE = new Set<DocumentKind>(['jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff'])
-const NOT_YET = new Set<DocumentKind>([
+const NOT_YET = new Set<DocumentKind>(['rtf', 'heic', 'avif'])
+const PACKAGES = new Set<DocumentKind>([
   'docx',
   'xlsx',
   'pptx',
   'ooxml',
+  'odt',
+  'ods',
+  'odp',
   'odf',
-  'ole',
-  'rtf',
-  'heic',
-  'avif',
 ])
 
 /** Reads any supported document into a {@link DocumentView}. Runs inside the sandboxed worker. */
@@ -70,7 +76,13 @@ export async function extractDocument(
   } else if (DECODABLE.has(kind)) {
     view = await extractImage(bytes, kind, mime, options, env, limits)
   } else if (kind === 'text') {
-    view = extractText(bytes, options, limits)
+    view = isCsv(options)
+      ? extractCsv(decodeText(bytes), options, limits)
+      : extractText(bytes, options, limits)
+  } else if (PACKAGES.has(kind)) {
+    view = await extractPackage(bytes, kind, options, limits)
+  } else if (kind === 'ole') {
+    view = extractOle(bytes, options, limits)
   } else if (NOT_YET.has(kind)) {
     view = emptyView(kind, mime)
     view.warnings.push(
@@ -79,7 +91,15 @@ export async function extractDocument(
         : `Reading a ${KIND_LABEL[kind]} is not supported yet.`,
     )
   } else if (kind === 'zip') {
-    throw new DocumentError('unsupported', 'ZIP archives are not read. Extract the file you need.')
+    // Some writers compress the OpenDocument mimetype entry, which sniff() cannot see into.
+    const odf = await compressedOdfKind(bytes, limits)
+    if (!odf) {
+      throw new DocumentError(
+        'unsupported',
+        'ZIP archives are not read. Extract the file you need.',
+      )
+    }
+    view = await extractPackage(bytes, odf, options, limits)
   } else {
     throw new DocumentError('unsupported', 'This file type is not recognised, so it was not read.')
   }
@@ -94,8 +114,20 @@ function sameType(claimed: string, actual: string, kind: DocumentKind): boolean 
   if (kind === 'jpeg' && normal === 'image/jpg') return true
   if (kind === 'text')
     return normal.startsWith('text/') || normal.endsWith('json') || normal.endsWith('xml')
-  if (kind === 'odf') return normal.startsWith('application/vnd.oasis.opendocument')
+  if (kind === 'odf' || kind === 'odt' || kind === 'ods' || kind === 'odp')
+    return normal.startsWith('application/vnd.oasis.opendocument')
   if (kind === 'ole') return /msword|ms-excel|ms-powerpoint|ms-outlook/.test(normal)
+  // Macro-enabled and template variants of the same packages.
+  if (kind === 'docx')
+    return /^application\/vnd\.(ms-word|openxmlformats-officedocument\.wordprocessingml)/.test(
+      normal,
+    )
+  if (kind === 'xlsx')
+    return /^application\/vnd\.(ms-excel|openxmlformats-officedocument\.spreadsheetml)/.test(normal)
+  if (kind === 'pptx')
+    return /^application\/vnd\.(ms-powerpoint|openxmlformats-officedocument\.presentationml)/.test(
+      normal,
+    )
   if (kind === 'heic') return normal === 'image/heif'
   return false
 }
@@ -147,18 +179,85 @@ async function extractImage(
   return view
 }
 
-function extractText(
+/** Word, Excel, PowerPoint and OpenDocument packages, through the guarded ZIP reader. */
+async function extractPackage(
   bytes: Uint8Array,
+  kind: DocumentKind,
   options: ExtractOptions,
   limits: DocumentLimits,
-): DocumentView {
+): Promise<DocumentView> {
+  const pkg = OfficePackage.open(bytes, limits)
+  switch (kind) {
+    case 'docx':
+      return extractDocx(pkg, options, limits)
+    case 'xlsx':
+    case 'ods':
+      return extractPackageWorkbook(pkg, kind, options, limits)
+    case 'pptx':
+      return extractPptx(pkg, options, limits)
+    case 'odt':
+    case 'odp':
+      return extractOdf(pkg, kind, options, limits)
+    case 'ooxml':
+      if (pkg.has('xl/workbook.bin')) {
+        throw new DocumentError(
+          'unsupported',
+          'Excel binary workbooks (.xlsb) cannot be read. Open it in Excel and save it as .xlsx, then try again.',
+        )
+      }
+      throw new DocumentError(
+        'unsupported',
+        'This Office file is not a Word document, Excel workbook or PowerPoint presentation.',
+      )
+    default:
+      throw new DocumentError(
+        'unsupported',
+        'Only OpenDocument text, spreadsheets and presentations can be read; this OpenDocument file is another kind.',
+      )
+  }
+}
+
+/** An OpenDocument text, spreadsheet or presentation whose mimetype entry is compressed. */
+async function compressedOdfKind(
+  bytes: Uint8Array,
+  limits: DocumentLimits,
+): Promise<DocumentKind | null> {
+  let pkg: OfficePackage
+  try {
+    pkg = OfficePackage.open(bytes, limits)
+  } catch {
+    return null
+  }
+  if (!pkg.has('mimetype') || !pkg.has('content.xml')) return null
+  const mime = new TextDecoder().decode((await pkg.read('mimetype')) ?? new Uint8Array()).trim()
+  const kind = (['odt', 'ods', 'odp'] as const).find((odf) => MIME[odf] === mime)
+  return kind ?? null
+}
+
+/** Text with a .csv or .tsv name, or claimed as CSV, is read as a table. */
+function isCsv(options: ExtractOptions): boolean {
+  return (
+    /\.(csv|tsv)$/i.test(options.name ?? '') ||
+    /^text\/(csv|tab-separated-values)\b/i.test(options.mime ?? '')
+  )
+}
+
+function decodeText(bytes: Uint8Array): string {
   const encoding =
     bytes[0] === 0xff && bytes[1] === 0xfe
       ? 'utf-16le'
       : bytes[0] === 0xfe && bytes[1] === 0xff
         ? 'utf-16be'
         : 'utf-8'
-  const text = new TextDecoder(encoding).decode(bytes)
+  return new TextDecoder(encoding).decode(bytes)
+}
+
+function extractText(
+  bytes: Uint8Array,
+  options: ExtractOptions,
+  limits: DocumentLimits,
+): DocumentView {
+  const text = decodeText(bytes)
   const total = text.length
   const from = Math.max(1, Math.floor(options.select?.from ?? 1))
   const { maxChars } = effectiveBudget(options.budget, limits)

@@ -40,7 +40,7 @@ an `@"path"` reference to insert.
     through the same verified handle.
   - `text`: anything else passing read_file's binary check; stored as UTF-8.
   - Other zips (jar, apk, epub, vsix), executables and binaries are refused.
-    Extraction is a separate step (feat/doc-worker).
+    Extraction happens when a chat is sent (`docs/document-reader.md`).
 - The 20 MB per-message total is the composer's to enforce (main sees one file at a time).
 
 ## Checks (`validate.ts`)
@@ -91,7 +91,7 @@ At startup, before the window can send, `sweep` removes blobs no saved chat (of 
 
 `src/renderer/src/attachments/` holds the pure rules (`model.ts`: limits, refusal wording, which kinds a connection can receive) and the `useAttachments` hook; `components/AttachmentChips.tsx` draws chips.
 
-- Chips above the text show a kind icon (or a preview of a dropped or pasted image: a `blob:` object URL of the user's File, revoked when the chip is removed, the draft is sent or cleared, or the composer unmounts; the sent message shows the kind icon), the name (middle-truncated, in a `<bdi>`), size and a remove button. A chip is dashed and grey, with a tooltip, when the connection cannot receive its kind (`canReceive`): text files always reach the model inline; images reach it when main says the connection's current model can see images (`connections.vision`, re-read when the connection, the model or "This model can see images" changes; see `docs/provider-images.md`); PDFs and documents are still sent as their names only.
+- Chips above the text show a kind icon (or a preview of a dropped or pasted image: a `blob:` object URL of the user's File, revoked when the chip is removed, the draft is sent or cleared, or the composer unmounts; the sent message shows the kind icon), the name (middle-truncated, in a `<bdi>`), size and a remove button. A chip is dashed and grey, with a tooltip, when the connection cannot receive its kind (`canReceive`): text files always reach the model inline; images reach it when main says the connection's current model can see images (`connections.vision`, re-read when the connection, the model or "This model can see images" changes; see `docs/provider-images.md`); PDFs, and Word, Excel, PowerPoint and OpenDocument files (and Word and Excel 97-2003, by the MIME type main recorded: `READABLE_DOCUMENT_MIMES`), always reach it as the text the document reader extracts; other documents (older PowerPoint, RTF, mail) are still sent as their names only.
 - Drop (chat column and message box), paste and the paperclip all end in `files.attachDropped`, `attachments.fromPaste` or `attachments.pick`. The Files tab shows a hint pointing to the message box and attaches nothing; tree-token drags still insert `@` references.
 - An `@"path"` outcome is inserted into the text; refusals are toasts (one line for a batch), with an "Open Settings" button for `grant-folder`. A snapshot from outside the grants offers "Copy into folder…", which uses the first granted folder and main's approval dialog.
 - The composer enforces 10 files and 20 MB per message before send; `send(text, attachmentIds)`. Attaching is paused exactly when sending is (a reply is running, or the chat is switching). Esc and approvals are unchanged.

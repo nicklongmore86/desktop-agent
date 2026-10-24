@@ -14,6 +14,14 @@ export type DocumentKind =
   | 'odf'
   | 'zip'
   | 'ole'
+  // What a view says it read: sniff.ts tells OLE files apart only by opening them.
+  | 'doc'
+  | 'xls'
+  | 'ppt'
+  | 'odt'
+  | 'ods'
+  | 'odp'
+  | 'csv'
   | 'jpeg'
   | 'png'
   | 'gif'
@@ -40,8 +48,12 @@ export interface ExtractOptions {
   mime?: string
   /** The file name, for messages only. */
   name?: string
-  /** Which part to read: a 1-based inclusive page range, or one region of one page. */
-  select?: { from?: number; to?: number; region?: PageRegion }
+  /**
+   * Which part to read: a 1-based inclusive range of pages, slides, characters or sheets
+   * (whatever the view's `position.unit` is), or one region of one page. Spreadsheets also
+   * take a sheet name and an A1 range (`Sheet1!A1:H200`, `A1:H200`, `A:C`, `5:20`).
+   */
+  select?: { from?: number; to?: number; region?: PageRegion; sheet?: string; range?: string }
   /** 'auto' renders pages with little or no text; 'images' renders every page shown; 'text' none. */
   view?: 'auto' | 'text' | 'images'
   budget?: {
@@ -54,6 +66,8 @@ export interface ExtractOptions {
   }
   /** Include GPS coordinates from EXIF. Off by default: location is personal data. */
   includeLocation?: boolean
+  /** Spreadsheets: show each formula's text after its value. */
+  includeFormulas?: boolean
 }
 
 export interface DocumentImage {
@@ -65,10 +79,29 @@ export interface DocumentImage {
 }
 
 export interface DocumentSection {
-  /** 1-based page number, for paged documents. */
+  /** 1-based page (or slide) number, for paged documents. */
   page?: number
   title?: string
   text: string
+  /** Spreadsheets: the sheet this section shows. */
+  sheet?: SheetPart
+}
+
+/** One sheet of a workbook, as a section shows it. Ranges are A1 references without the sheet. */
+export interface SheetPart {
+  name: string
+  /** The cells shown, or null when none are. */
+  shown: string | null
+  /** Where the sheet's cells are, or null when it is empty. */
+  used: string | null
+  /** The range to read next for more of this sheet. */
+  next?: string
+}
+
+export interface SheetInfo {
+  name: string
+  used: string | null
+  hidden?: boolean
 }
 
 export interface DocumentView {
@@ -81,12 +114,18 @@ export interface DocumentView {
     height?: number
     title?: string
     author?: string
+    /** Workbooks: every sheet, in order (at most `office.maxSheets`). */
+    sheets?: SheetInfo[]
   }
   sections: DocumentSection[]
   images: DocumentImage[]
-  /** Where this view sits in the whole: `shown` is inclusive, `next` is where to continue. */
+  /**
+   * Where this view sits in the whole: `shown` is inclusive, `next` is where to continue.
+   * Slides count like pages (`meta.pageCount` is the slide count); `char` positions are in
+   * the text the reader produced; a workbook moves sheet by sheet.
+   */
   position: {
-    unit: 'page' | 'char' | 'image'
+    unit: 'page' | 'slide' | 'char' | 'sheet' | 'image'
     total: number
     shown: { from: number; to: number }
     next: number | null

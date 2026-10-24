@@ -269,7 +269,7 @@ export function ChatView({
                           key={attachment.id}
                           attachment={attachment}
                           available={attachment.available}
-                          unsupported={!canReceive(attachment.kind, vision)}
+                          unsupported={!canReceive(attachment.kind, vision, attachment.mime)}
                         />
                       ))}
                     </ul>

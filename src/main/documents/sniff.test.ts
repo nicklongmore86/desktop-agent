@@ -59,7 +59,12 @@ describe('sniff', () => {
       { name: 'mimetype', data: 'application/vnd.oasis.opendocument.text', stored: true },
       { name: 'content.xml', data: '<x/>' },
     ])
-    expect(sniff(odt)).toEqual({ kind: 'odf', mime: 'application/vnd.oasis.opendocument.text' })
+    expect(sniff(odt)).toEqual({ kind: 'odt', mime: 'application/vnd.oasis.opendocument.text' })
+    const odg = makeZip([
+      { name: 'mimetype', data: 'application/vnd.oasis.opendocument.graphics', stored: true },
+      { name: 'content.xml', data: '<x/>' },
+    ])
+    expect(sniff(odg)).toEqual({ kind: 'odf', mime: 'application/vnd.oasis.opendocument.graphics' })
   })
 
   it('ignores the name: a PDF renamed .jpg is still a PDF', () => {

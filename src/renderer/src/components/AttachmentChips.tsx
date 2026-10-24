@@ -154,7 +154,7 @@ export function StagedChips({
           <AttachmentChip
             key={attachment.id}
             attachment={attachment}
-            unsupported={!canReceive(attachment.kind, vision)}
+            unsupported={!canReceive(attachment.kind, vision, attachment.mime)}
             onRemove={() => {
               onRemove(attachment.id)
             }}
