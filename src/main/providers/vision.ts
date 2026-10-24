@@ -74,17 +74,18 @@ const GEMINI_SEES = exactly([
   String.raw`gemini-(1\.5|2\.0|2\.5|[3-9](\.\d)?)-(pro|flash|flash-lite|flash-8b)(-image)?(-latest|-\d{3}|-exp(-\d{2}-\d{2}|-\d{4})?|-preview(-\d{2}-\d{2,4})?)?`,
   'gemini-(pro|flash|flash-lite)-latest',
   String.raw`gemini-exp-\d{4}`,
+  String.raw`gemini(-1\.0)?-pro-vision(-latest|-\d{3})?`,
 ])
 
 /**
  * Gemini API model ids: the Gemini 1.5 and later Pro, Flash, Flash-Lite and Flash-8B
  * models (their `-latest`, numbered, experimental and preview ids, and the `-latest`
- * aliases) read images; Gemini 1.0 text models do not. Other ids (TTS, embedding, live
- * audio, Gemma) are not said either way.
+ * aliases) read images, as does Gemini 1.0 Pro Vision; the other Gemini 1.0 models do
+ * not. Other ids (TTS, embedding, live audio, Gemma) are not said either way.
  */
 export function geminiVision(model: string): PublishedVision {
   const id = model.replace(/^models\//, '').toLowerCase()
-  if (/^gemini-1\.0-/.test(id)) return false
   if (GEMINI_SEES.test(id)) return true
+  if (/^gemini-1\.0-/.test(id)) return false
   return null
 }
