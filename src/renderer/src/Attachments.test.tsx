@@ -81,15 +81,41 @@ describe('chips above the composer', () => {
     api.attachments.pick.mockResolvedValueOnce([
       attachment(ref(1, { name: 'photo.png', kind: 'image', mime: 'image/png' })),
       attachment(ref(2, { name: 'plain.txt' })),
+      attachment(ref(4, { name: 'doc.pdf', kind: 'pdf', mime: 'application/pdf' })),
     ])
     await user.click(screen.getByRole('button', { name: 'Attach files' }))
     const list = await screen.findByRole('list', { name: 'Attached files' })
-    const [photo, plain] = within(list).getAllByRole('listitem')
+    const [photo, plain, pdf] = within(list).getAllByRole('listitem')
     expect(photo?.className).toContain('attachment-chip-muted')
-    expect(photo?.getAttribute('title')).toContain(
+    expect(photo?.getAttribute('title')).toContain('This model can’t see images')
+    expect(pdf?.getAttribute('title')).toContain(
       'Not sent to this model yet; it will see the file name only.',
     )
     expect(plain?.className).not.toContain('attachment-chip-muted')
+  })
+
+  it('makes image chips active for a connection whose model can see images', async () => {
+    const vision = {
+      enabled: true,
+      source: 'connection' as const,
+      setting: false,
+      configurable: false,
+    }
+    const { api, user } = await renderApp({ vision: { 'anthropic-api': vision } })
+    api.attachments.pick.mockResolvedValueOnce([
+      attachment(ref(1, { name: 'photo.png', kind: 'image', mime: 'image/png' })),
+      attachment(ref(4, { name: 'doc.pdf', kind: 'pdf', mime: 'application/pdf' })),
+    ])
+    await user.click(screen.getByRole('button', { name: 'Attach files' }))
+    const list = await screen.findByRole('list', { name: 'Attached files' })
+    await waitFor(() => {
+      expect(within(list).getAllByRole('listitem')[0]?.className).not.toContain(
+        'attachment-chip-muted',
+      )
+    })
+    // PDFs are still names only.
+    expect(within(list).getAllByRole('listitem')[1]?.className).toContain('attachment-chip-muted')
+    expect(api.connections.vision).toHaveBeenCalledWith('anthropic-api')
   })
 
   it('offers "Copy into folder…" on a snapshot from outside the grants', async () => {

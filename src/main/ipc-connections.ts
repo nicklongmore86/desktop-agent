@@ -6,6 +6,7 @@ import {
   type ConnectionId,
   type ConnectionInfo,
   type ConnectionsState,
+  type ConnectionVision,
 } from '../shared/ipc-connections'
 import type { ProviderStatus } from '../shared/ipc'
 import type { IpcHandle } from './ipc-features'
@@ -29,6 +30,10 @@ export interface ConnectionsService {
   baseUrl: (id: ConnectionId) => Promise<ConnectionBaseUrl>
   /** Validates (loopback only) and saves; a refused URL comes back as `error`. */
   setBaseUrl: (id: ConnectionId, baseUrl: string | null) => Promise<ConnectionBaseUrl>
+  /** Whether images reach the connection's current model. */
+  vision: (id: ConnectionId) => Promise<ConnectionVision>
+  /** Throws for a connection that does not offer the setting. */
+  setVision: (id: ConnectionId, enabled: boolean) => Promise<ConnectionVision>
 }
 
 /** The shape of an id: a safe single path segment. The registry decides whether it exists. */
@@ -81,5 +86,13 @@ export function registerConnectionsHandlers(
     if (baseUrl !== null && (typeof baseUrl !== 'string' || baseUrl.length > 2048))
       throw new Error('Enter a valid address.')
     return connections.setBaseUrl(connection, baseUrl)
+  })
+  handle(connectionsChannels.connectionsVision, (...args) => {
+    if (args.length !== 1) throw new Error('Unknown provider.')
+    return connections.vision(parseConnectionId(args[0], connections))
+  })
+  handle(connectionsChannels.connectionsSetVision, (...args) => {
+    if (args.length !== 2 || typeof args[1] !== 'boolean') throw new Error('Invalid choice.')
+    return connections.setVision(parseConnectionId(args[0], connections), args[1])
   })
 }

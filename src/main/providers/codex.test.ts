@@ -4,7 +4,10 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createCodexRunner, connectCodex, codexLogin } from './codex'
 import { launch } from './runtime'
-import type { AgentEvent, AgentTool } from '../agent'
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
+import type { AgentEvent, AgentTool, ToolResult } from '../agent'
+import { imageBlock, NO_VISION_NOTE } from '../agent/images'
+import { jpegShell, pngShell } from '../documents/fixtures.test-util'
 
 vi.mock('./runtime', () => ({ launch: vi.fn(), killRuntime: vi.fn(() => Promise.resolve()) }))
 const context = {
@@ -24,6 +27,7 @@ let mode:
   | 'model-error'
   | 'model-timeout'
   | 'retry'
+  | 'text-only'
 beforeEach(() => {
   frames = []
   vi.mocked(launch).mockClear()
@@ -83,6 +87,7 @@ beforeEach(() => {
                 isDefault: true,
                 defaultReasoningEffort: 'medium',
                 supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+                ...(mode === 'text-only' ? { inputModalities: ['text'] } : {}),
               },
             ],
             nextCursor: null,
@@ -153,9 +158,12 @@ beforeEach(() => {
     return child as unknown as ChildProcessWithoutNullStreams
   })
 })
-function setup() {
+function setup(
+  output: ToolResult = { content: 'guarded result' },
+  conversation: MessageParam[] = [{ role: 'user', content: 'hello' }],
+) {
   const events: AgentEvent[] = []
-  const execute = vi.fn(() => Promise.resolve({ content: 'guarded result' }))
+  const execute = vi.fn(() => Promise.resolve(output))
   const tool: AgentTool = {
     name: 'read_file',
     description: 'Guarded read',
@@ -165,7 +173,7 @@ function setup() {
   const controller = new AbortController()
   const runner = createCodexRunner(context, [tool])
   const run = () =>
-    runner.run([{ role: 'user', content: 'hello' }], {
+    runner.run(conversation, {
       signal: controller.signal,
       requestApproval: vi.fn(),
       onEvent: (event) => {
@@ -291,4 +299,56 @@ it('ignores retryable error notifications and accepts the successful runtime com
   expect((await run()).stopReason).toBe('end_turn')
   expect(events.some((event) => event.type === 'error')).toBe(false)
   expect(frames.filter((frame) => frame['method'] === 'turn/start')).toHaveLength(1)
+})
+
+describe('Codex images', () => {
+  const page = pngShell(6, 6)
+  const photo = jpegShell(3, 3)
+  const output: ToolResult = {
+    content: 'One page.',
+    images: [{ mime: 'image/png', data: page, width: 6, height: 6, label: 'page 1' }],
+  }
+  const conversation: MessageParam[] = [
+    { role: 'user', content: [{ type: 'text', text: 'Look' }, imageBlock('image/jpeg', photo)] },
+  ]
+  const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64')
+
+  it('sends images to a model whose catalog entry reads them', async () => {
+    const { run } = setup(output, conversation)
+    const result = await run()
+    expect(result.stopReason).toBe('end_turn')
+    expect(frames.find((f) => f['id'] === 'tool-request')?.['result']).toEqual({
+      contentItems: [
+        { type: 'inputText', text: 'One page.' },
+        { type: 'inputText', text: '[Image: page 1]' },
+        { type: 'inputImage', imageUrl: `data:image/png;base64,${b64(page)}` },
+      ],
+      success: true,
+    })
+    const input = (
+      frames.find((f) => f['method'] === 'turn/start')?.['params'] as {
+        input: { type: string; text?: string; url?: string }[]
+      }
+    ).input
+    expect(input.map((item) => item.type)).toEqual(['text', 'text', 'image'])
+    expect(input[0]?.text).not.toContain(b64(photo))
+    expect(input[2]?.url).toBe(`data:image/jpeg;base64,${b64(photo)}`)
+    expect(JSON.stringify(result.conversation)).not.toContain(b64(page))
+  })
+
+  it('sends none to a model whose catalog says text only, and says so', async () => {
+    mode = 'text-only'
+    const { run } = setup(output, conversation)
+    const result = await run()
+    expect(result.stopReason).toBe('end_turn')
+    const reply = frames.find((f) => f['id'] === 'tool-request')?.['result'] as {
+      contentItems: { type: string; text?: string }[]
+    }
+    expect(reply.contentItems.map((item) => item.type)).toEqual(['inputText'])
+    expect(reply.contentItems[0]?.text).toContain(NO_VISION_NOTE)
+    const turn = JSON.stringify(frames.find((f) => f['method'] === 'turn/start'))
+    expect(turn).not.toContain('"image"')
+    expect(turn).not.toContain(b64(photo))
+    expect(turn).toContain(NO_VISION_NOTE)
+  })
 })

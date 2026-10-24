@@ -131,6 +131,8 @@ export interface ProviderModel extends ModelOption {
   isDefault: boolean
   /** Whether the server says the model can call tools; absent when the list does not say. */
   toolSupport?: 'supported' | 'unknown'
+  /** Whether the model list says the model reads images; absent when it does not say. */
+  imageInput?: boolean
 }
 export interface ProviderModels {
   provider: ConnectionId

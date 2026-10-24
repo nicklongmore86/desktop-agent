@@ -35,17 +35,18 @@ const agent = createAgent({ client, tools, model: 'gemini-2.5-flash' })
 
 The canonical transcript stays in Anthropic format. Everything below happens inside the client.
 
-| Anthropic                       | Gemini                                                                                                                                                          |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `system`                        | `systemInstruction.parts[].text`                                                                                                                                |
-| `user` / `assistant`            | `user` / `model`. Neighbouring turns with the same role are merged, and turns left with no parts are dropped.                                                   |
-| `text`                          | `{ text }`                                                                                                                                                      |
-| `tool_use`                      | `{ functionCall: { id?, name, args } }` plus `thoughtSignature`                                                                                                 |
-| `tool_result`                   | `{ functionResponse: { id?, name, response: { output } \| { error } } }` in a `user` turn. `is_error` results go under `error`, so they stay visible as errors. |
-| `image`, `document`             | A text placeholder (`[Image omitted: not sent to Gemini]`)                                                                                                      |
-| `thinking`, `redacted_thinking` | Dropped                                                                                                                                                         |
-| `tools[].input_schema`          | `tools[0].functionDeclarations[].parameters` (OpenAPI subset, see below). A tool with no properties gets no `parameters`.                                       |
-| `max_tokens`                    | `generationConfig.maxOutputTokens`                                                                                                                              |
+| Anthropic                       | Gemini                                                                                                                                                                                                              |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `system`                        | `systemInstruction.parts[].text`                                                                                                                                                                                    |
+| `user` / `assistant`            | `user` / `model`. Neighbouring turns with the same role are merged, and turns left with no parts are dropped.                                                                                                       |
+| `text`                          | `{ text }`                                                                                                                                                                                                          |
+| `tool_use`                      | `{ functionCall: { id?, name, args } }` plus `thoughtSignature`                                                                                                                                                     |
+| `tool_result`                   | `{ functionResponse: { id?, name, response: { output } \| { error } } }` in a `user` turn. `is_error` results go under `error`, so they stay visible as errors.                                                     |
+| `image`                         | `inlineData` (PNG, JPEG, WebP); a GIF or a remote image becomes a text placeholder. In a tool result: `functionResponse.parts` on Gemini 3+, otherwise inline parts after the responses (`docs/provider-images.md`) |
+| `document`                      | A text placeholder (`[Attachment omitted: not sent to Gemini]`)                                                                                                                                                     |
+| `thinking`, `redacted_thinking` | Dropped                                                                                                                                                                                                             |
+| `tools[].input_schema`          | `tools[0].functionDeclarations[].parameters` (OpenAPI subset, see below). A tool with no properties gets no `parameters`.                                                                                           |
+| `max_tokens`                    | `generationConfig.maxOutputTokens`                                                                                                                                                                                  |
 
 Function declarations use "a select subset of the OpenAPI schema format" ([function calling](https://ai.google.dev/gemini-api/docs/generate-content/function-calling)), described by the `Schema` type in the [API reference](https://ai.google.dev/api/generate-content). `schema.ts` converts each schema as follows:
 
@@ -134,4 +135,4 @@ Google's [pricing page](https://ai.google.dev/gemini-api/docs/pricing) says free
 
 - **Error routing in the agent loop:** `createAgent` maps thrown errors with the Anthropic-specific `apiErrorEvent`, so a `GeminiError` currently surfaces as the generic `api` error with a "Claude" message. The wiring PR should route errors through `geminiErrorEvent` (or the adapter's own mapper). Until then, the codes listed in the Errors table are only reachable by calling the client directly. Malformed calls still never execute.
 - The agent loop's stop-reason messages say "Claude". That is outside this module.
-- There is no automatic retry or backoff, no image input (images are replaced by a placeholder), no thinking-budget control and no context caching.
+- There is no automatic retry or backoff, no thinking-budget control and no context caching. Images are sent only when the agent loop has them (a vision model; see `docs/provider-images.md`).

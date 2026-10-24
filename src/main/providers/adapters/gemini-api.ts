@@ -6,6 +6,7 @@ import {
   listGeminiModels,
   validateGeminiKey,
 } from '../../llm/gemini'
+import { geminiVision } from '../vision'
 import { modelApiAdapter } from './model-api'
 
 /** Ids that list generateContent but cannot run a chat tool loop. */
@@ -54,6 +55,8 @@ export const geminiApiAdapter = (options: { fetch?: typeof fetch } = {}) => {
       'Gemini API mode uses your saved key. Free-tier keys share your data with Google.',
     missingKeyMessage: 'Add your Gemini API key in Settings.',
     noModelsMessage: 'This Gemini key has no chat models available.',
+    // models.list does not say; Gemini 1.5 and later read images.
+    vision: geminiVision,
   })
 }
 

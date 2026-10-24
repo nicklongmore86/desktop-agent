@@ -34,6 +34,11 @@ export interface ConfiguredConnection {
    * loopback check; checked again (resolveBaseUrl) before every request.
    */
   baseUrl?: string
+  /**
+   * "This model can see images", for a connection whose model list does not say. Absent
+   * means off: images are never sent to a model nobody said can read them.
+   */
+  vision?: boolean
 }
 
 /**
@@ -88,6 +93,9 @@ export interface SettingsStore {
   baseUrl: (connection: ConnectionId) => string | null
   /** Saves an API root the caller has validated (null: back to the default). */
   setBaseUrl: (connection: ConnectionId, baseUrl: string | null) => Promise<void>
+  /** A connection's "This model can see images" setting (false when never set). */
+  vision: (connection: ConnectionId) => boolean
+  setVision: (connection: ConnectionId, enabled: boolean) => Promise<void>
   readonly showPersonalUseConnections: boolean
   setShowPersonalUseConnections: (show: boolean) => Promise<void>
   readonly model: string
@@ -119,7 +127,13 @@ const connectionIdSchema = z.string().regex(CONNECTION_ID)
 const selectionSchema = z.partialRecord(connectionIdSchema, z.string().regex(MODEL_ID))
 const baseUrlSchema = z.string().min(1).max(2048)
 const connectionsSchema = z
-  .array(z.object({ id: connectionIdSchema, baseUrl: baseUrlSchema.optional() }))
+  .array(
+    z.object({
+      id: connectionIdSchema,
+      baseUrl: baseUrlSchema.optional(),
+      vision: z.boolean().optional(),
+    }),
+  )
   .max(64)
 export const chatgptAuthSchema = z.object({
   hostId: z
@@ -168,7 +182,11 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
       if (saved.success) connection = saved.data
       const list = connectionsSchema.safeParse(parsed['connections'])
       if (list.success)
-        connections = list.data.map(({ id, baseUrl }) => ({ id, ...(baseUrl ? { baseUrl } : {}) }))
+        connections = list.data.map(({ id, baseUrl, vision }) => ({
+          id,
+          ...(baseUrl ? { baseUrl } : {}),
+          ...(vision ? { vision } : {}),
+        }))
       if (typeof parsed['showPersonalUseConnections'] === 'boolean')
         showPersonalUseConnections = parsed['showPersonalUseConnections']
       const selections = selectionSchema.safeParse(parsed['connectionModels'] ?? {})
@@ -268,9 +286,26 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
         throw new Error('Enter a shorter address.')
       await serial(async () => {
         // Never changes which connection chats go to.
-        const list = withConnection(connections, id).map((entry) =>
-          entry.id !== id ? entry : next === null ? { id } : { id, baseUrl: next },
-        )
+        const list = withConnection(connections, id).map((entry) => {
+          if (entry.id !== id) return entry
+          const { baseUrl: _old, ...rest } = entry
+          return next === null ? rest : { ...rest, baseUrl: next }
+        })
+        await writeJsonFile(file, snapshot({ connections: list }))
+        connections = list
+      })
+    },
+    vision: (id) => connections.find((entry) => entry.id === id)?.vision === true,
+    async setVision(id, enabled) {
+      if (!CONNECTION_ID.test(id)) throw new Error('Unknown provider.')
+      if (typeof enabled !== 'boolean') throw new Error('Invalid choice.')
+      await serial(async () => {
+        // Like the base URL, never changes which connection chats go to.
+        const list = withConnection(connections, id).map((entry) => {
+          if (entry.id !== id) return entry
+          const { vision: _old, ...rest } = entry
+          return enabled ? { ...rest, vision: true } : rest
+        })
         await writeJsonFile(file, snapshot({ connections: list }))
         connections = list
       })

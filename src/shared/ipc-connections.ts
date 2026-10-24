@@ -18,6 +18,8 @@ export const connectionsChannels = {
   connectionsSetShowPersonalUse: 'connections:set-show-personal-use',
   connectionsBaseUrl: 'connections:base-url',
   connectionsSetBaseUrl: 'connections:set-base-url',
+  connectionsVision: 'connections:vision',
+  connectionsSetVision: 'connections:set-vision',
 } as const
 
 /** Who serves the model. Add a vendor here before registering its first adapter. */
@@ -119,6 +121,24 @@ export interface ConnectionBaseUrl {
   error: string | null
 }
 
+/**
+ * Whether images reach a connection's current model (docs/provider-images.md). Main
+ * decides; the renderer only shows it and offers the setting where it applies.
+ */
+export interface ConnectionVision {
+  /** Images are sent: tool images, and image attachments (their chips are active). */
+  enabled: boolean
+  /**
+   * Where that comes from: the connection's models all read images ('connection'), the
+   * model list says so for this model ('model'), or the user's setting ('setting').
+   */
+  source: 'connection' | 'model' | 'setting'
+  /** The user's "This model can see images" setting for this connection (default off). */
+  setting: boolean
+  /** Settings offers the setting: the connection's models may or may not read images. */
+  configurable: boolean
+}
+
 /** Which of the listed connections the user has set up, and the setting that hides some. */
 export interface ConnectionsState {
   /** Set-up connections the user can choose now, in the order they were added. */
@@ -154,5 +174,9 @@ export interface ConnectionsApi {
     baseUrl: (connection: ConnectionId) => Promise<ConnectionBaseUrl>
     /** Main accepts loopback http URLs only; null goes back to the default. */
     setBaseUrl: (connection: ConnectionId, baseUrl: string | null) => Promise<ConnectionBaseUrl>
+    /** Whether images reach the connection's current model. Never throws for a listed one. */
+    vision: (connection: ConnectionId) => Promise<ConnectionVision>
+    /** Saves "This model can see images"; rejects for a connection that does not offer it. */
+    setVision: (connection: ConnectionId, enabled: boolean) => Promise<ConnectionVision>
   }
 }

@@ -341,6 +341,8 @@ export async function createAppServices(deps: AppServiceDeps) {
         }
       }
     },
+    vision: (id: ConnectionId) => connections.vision(id),
+    setVision: (id: ConnectionId, enabled: boolean) => connections.setVision(id, enabled),
   }
   /** Each API-key connection's key; the renderer only ever learns whether one is saved. */
   const apiKey = {

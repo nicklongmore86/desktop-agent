@@ -6,7 +6,7 @@ import type {
   ProviderLoginState,
   ProviderStatus,
 } from '../../shared/ipc'
-import type { ConnectionId } from '../../shared/ipc-connections'
+import type { ConnectionId, ConnectionVision } from '../../shared/ipc-connections'
 import type { AgentTool } from '../agent'
 import type { AgentRunner } from '../chat/session'
 import type { KeyStore } from '../secrets'
@@ -30,6 +30,7 @@ import type { RuntimeContext } from './codex'
 import { SubscriptionError } from './errors'
 import { isolatedContext } from './isolation'
 import { ConnectionRegistry } from './registry'
+import { NO_VISION } from './vision'
 import type { RuntimeName } from './runtime'
 
 export interface ConnectionOptions {
@@ -291,6 +292,25 @@ export class ConnectionService implements AdapterHost {
     const result = await adapter.setBaseUrl(baseUrl)
     this.invalidateMetadata()
     return result
+  }
+
+  /** Whether images reach the connection's current model. Never throws for a registered one. */
+  async vision(provider: ConnectionId): Promise<ConnectionVision> {
+    const adapter = this.registry.require(provider)
+    if (!adapter.vision) return NO_VISION
+    try {
+      return await adapter.vision()
+    } catch {
+      return NO_VISION
+    }
+  }
+
+  /** Saves "This model can see images"; throws for a connection that does not offer it. */
+  async setVision(provider: ConnectionId, enabled: boolean): Promise<ConnectionVision> {
+    const current = await this.vision(provider)
+    if (!current.configurable) throw new Error('This connection decides that itself.')
+    await this.settings?.setVision(provider, enabled)
+    return this.vision(provider)
   }
 
   /** The connection's own mapping: a code and a message written here, never provider text. */

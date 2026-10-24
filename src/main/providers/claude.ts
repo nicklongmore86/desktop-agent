@@ -11,7 +11,7 @@ import { z } from 'zod/v4'
 import type { AgentTool, RunResult } from '../agent'
 import { DEFAULT_SYSTEM_PROMPT } from '../agent'
 import type { AgentRunner } from '../chat/session'
-import { ToolBridge, transcriptPrompt } from './bridge'
+import { imageLabel, ToolBridge, transcriptInput } from './bridge'
 import { CLAUDE_FAILURES, SubscriptionError, mapFailure, plausibleReset } from './errors'
 import type { ProviderFailure } from '../../shared/ipc'
 import type { RuntimeContext } from './codex'
@@ -61,13 +61,18 @@ export function createClaudeSubscriptionRunner(
   } = {},
 ): AgentRunner {
   return {
+    // Every Claude model the subscription offers reads images.
+    vision: true,
     async run(conversation, options): Promise<RunResult> {
       let child: ChildProcessWithoutNullStreams | undefined
       const abortController = new AbortController()
       const bridge = new ToolBridge(conversation, tools, {
         ...options,
         signal: abortController.signal,
+        vision: true,
       })
+      const prompt = transcriptInput(conversation, true)
+      bridge.spendImages(prompt.images.length)
       const abort = () => {
         abortController.abort()
         if (child) void killRuntime(child)
@@ -88,9 +93,24 @@ export function createClaudeSubscriptionRunner(
               shape[key] = appTool.inputSchema.required?.includes(key) ? field : field.optional()
             }
             return tool(appTool.name, appTool.description, shape, async (input) => {
-              const result = await bridge.call(appTool.name, input)
+              const { result, images } = await bridge.call(appTool.name, input)
+              // MCP image content: the runtime turns it into image blocks in its tool_result.
               return {
-                content: [{ type: 'text', text: result.content }],
+                content: [
+                  { type: 'text', text: result.content },
+                  ...images.flatMap(({ label, block }) =>
+                    block.source.type === 'base64'
+                      ? [
+                          { type: 'text' as const, text: imageLabel(label) },
+                          {
+                            type: 'image' as const,
+                            data: block.source.data,
+                            mimeType: block.source.media_type,
+                          },
+                        ]
+                      : [],
+                  ),
+                ],
                 isError: result.isError ?? false,
               }
             })
@@ -105,7 +125,18 @@ export function createClaudeSubscriptionRunner(
           if (!abortController.signal.aborted)
             yield {
               type: 'user',
-              message: { role: 'user', content: transcriptPrompt(conversation) },
+              message: {
+                role: 'user',
+                content: prompt.images.length
+                  ? [
+                      { type: 'text', text: prompt.text },
+                      ...prompt.images.flatMap(({ label, block }) => [
+                        { type: 'text' as const, text: imageLabel(label) },
+                        block,
+                      ]),
+                    ]
+                  : prompt.text,
+              },
               parent_tool_use_id: null,
               session_id: '',
             }

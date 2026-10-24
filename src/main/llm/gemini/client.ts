@@ -128,7 +128,7 @@ export function createGeminiClient({
 
         async function run(): Promise<Message> {
           const path = `/v1beta/${modelPath(model)}:streamGenerateContent?alt=sse`
-          const body = JSON.stringify(toGeminiRequest(params, calls))
+          const body = JSON.stringify(toGeminiRequest({ ...params, model }, calls))
           let idle: ReturnType<typeof setTimeout> | undefined
           const idleState = { stalled: false }
           const touch = (): void => {

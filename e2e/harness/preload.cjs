@@ -407,6 +407,8 @@ const builtinConnections = [
 
 const allConnections = builtinConnections
 const customBaseUrl = {}
+/** "This model can see images", per connection (off unless a test turns it on). */
+const visionSetting = {}
 const connectionInfo = (id) => allConnections.find((info) => info.id === id)
 let showPersonalUse = true
 const offered = () => allConnections.filter((info) => showPersonalUse || !info.personalUseOnly)
@@ -891,6 +893,23 @@ contextBridge.exposeInMainWorld('desktopApi', {
       if (baseUrl === null) delete customBaseUrl[id]
       else customBaseUrl[id] = baseUrl
       return Promise.resolve({ baseUrl: baseUrl ?? usual, custom: baseUrl !== null, error: null })
+    },
+    // No connection's model sees images here unless a test turns the setting on.
+    vision: (id) =>
+      Promise.resolve({
+        enabled: visionSetting[id] === true,
+        source: 'setting',
+        setting: visionSetting[id] === true,
+        configurable: true,
+      }),
+    setVision: (id, enabled) => {
+      visionSetting[id] = enabled === true
+      return Promise.resolve({
+        enabled: enabled === true,
+        source: 'setting',
+        setting: enabled === true,
+        configurable: true,
+      })
     },
   },
   audit: {

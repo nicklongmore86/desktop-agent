@@ -9,6 +9,8 @@ export interface ChatGPTModel {
   slug: string
   /** Shown in the model picker. */
   displayName: string
+  /** Whether the entry's `input_modalities` lists `image`; absent when the entry does not say. */
+  vision?: boolean
 }
 
 const MAX_MODELS = 1000
@@ -51,7 +53,12 @@ export async function listChatGPTModels(
     if (!MODEL_SLUG.test(slug) || seen.has(slug)) continue
     seen.add(slug)
     const name = typeof entry.display_name === 'string' ? entry.display_name.trim() : ''
-    models.push({ slug, displayName: name ? name.slice(0, 256) : slug })
+    const modalities = entry.input_modalities
+    models.push({
+      slug,
+      displayName: name ? name.slice(0, 256) : slug,
+      ...(Array.isArray(modalities) ? { vision: modalities.includes('image') } : {}),
+    })
   }
   return models
 }

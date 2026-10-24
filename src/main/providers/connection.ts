@@ -10,6 +10,7 @@ import type {
   ConnectionCapabilities,
   ConnectionId,
   ConnectionInfo,
+  ConnectionVision,
   Vendor,
 } from '../../shared/ipc-connections'
 import type { AgentTool } from '../agent'
@@ -115,6 +116,11 @@ export interface ConnectionAdapter extends ConnectionDescriptor {
   baseUrl?: () => { baseUrl: string; custom: boolean }
   /** Saves a custom API root (null: the default). Throws a safe message for one it refuses. */
   setBaseUrl?: (baseUrl: string | null) => Promise<{ baseUrl: string; custom: boolean }>
+  /**
+   * Whether images reach the current model (providers/vision.ts). Absent: never. The
+   * runner decides the same way for each Send; a failure to find out means no.
+   */
+  vision?: () => Promise<ConnectionVision>
 }
 
 /** Builds an adapter once the service (its host) exists. */
