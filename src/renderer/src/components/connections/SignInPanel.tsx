@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useId, useState, type SubmitEvent } from 're
 import type { ProviderLoginState, ProviderStatus } from '../../../../shared/ipc'
 import type { ConnectionInfo } from '../../../../shared/ipc-connections'
 import { BaseUrlField } from './BaseUrlField'
+import { VisionField } from './VisionField'
 import { useMounted } from './use-mounted'
 import { plainText } from '../../plain-text'
 import { useApi } from '../../api'
@@ -275,6 +276,7 @@ export function ProviderPanel({
           }}
         />
       )}
+      <VisionField connection={connection} />
       {authKind === 'chatgpt-login' && (
         <ChatgptSignIn
           busy={busy}

@@ -18,16 +18,18 @@ it('keeps subscription calls behind PathGuard, audit, input validation and appro
     onEvent: vi.fn(),
     requestApproval: approval,
   })
-  expect((await bridge.call('read_file', { path: join(sb.outside, 'secret') })).isError).toBe(true)
   expect(
-    (await bridge.call('read_file', { path: join(sb.root, '.codex', 'auth.json') })).isError,
+    (await bridge.call('read_file', { path: join(sb.outside, 'secret') })).result.isError,
   ).toBe(true)
   expect(
-    (await bridge.call('read_file', { path: join(sb.root, '.claude', '.credentials.json') }))
+    (await bridge.call('read_file', { path: join(sb.root, '.codex', 'auth.json') })).result.isError,
+  ).toBe(true)
+  expect(
+    (await bridge.call('read_file', { path: join(sb.root, '.claude', '.credentials.json') })).result
       .isError,
   ).toBe(true)
   expect(
-    (await bridge.call('write_file', { path: join(sb.root, 'test.txt'), content: 'hello' }))
+    (await bridge.call('write_file', { path: join(sb.root, 'test.txt'), content: 'hello' })).result
       .isError,
   ).toBe(true)
   expect(approval).toHaveBeenCalledTimes(1)

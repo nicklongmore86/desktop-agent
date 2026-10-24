@@ -12,5 +12,8 @@ export const connectionsApi = (invoke: Invoke): ConnectionsApi => ({
     baseUrl: (connection) => invoke(connectionsChannels.connectionsBaseUrl, connection),
     setBaseUrl: (connection, baseUrl) =>
       invoke(connectionsChannels.connectionsSetBaseUrl, connection, baseUrl),
+    vision: (connection) => invoke(connectionsChannels.connectionsVision, connection),
+    setVision: (connection, enabled) =>
+      invoke(connectionsChannels.connectionsSetVision, connection, enabled),
   },
 })

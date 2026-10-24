@@ -17,6 +17,7 @@ import type {
 } from '../../../shared/ipc'
 import {
   type ConnectionBaseUrl,
+  type ConnectionVision,
   type ConnectionId,
   type ConnectionInfo,
   type ConnectionsState,
@@ -150,6 +151,8 @@ export interface FakeApiOptions {
   configured?: ConnectionId[]
   /** What connections.status() answers for a connection that is not the current one (ready by default). */
   statuses?: Record<ConnectionId, ProviderStatus>
+  /** What connections.vision() answers per connection (no vision, offering the setting, by default). */
+  vision?: Record<ConnectionId, ConnectionVision>
   showPersonalUse?: boolean
   grants?: GrantsState
   chat?: ChatState
@@ -192,6 +195,11 @@ export function fakeApi(options: FakeApiOptions = {}) {
   const allConnections = options.connections ?? BUILTIN_CONNECTION_INFO
   let configured: ConnectionId[] = options.configured ?? [...DEFAULT_CONFIGURED]
   let showPersonalUse = options.showPersonalUse ?? true
+  const visions: Record<ConnectionId, ConnectionVision> = { ...options.vision }
+  const visionOf = (id: ConnectionId): ConnectionVision =>
+    structuredClone(
+      visions[id] ?? { enabled: false, source: 'setting', setting: false, configurable: true },
+    )
   const offered = (): ConnectionInfo[] =>
     allConnections.filter((info) => showPersonalUse || !info.personalUseOnly)
   let grants: GrantsState = options.grants ?? {
@@ -660,6 +668,16 @@ export function fakeApi(options: FakeApiOptions = {}) {
           error: null,
         }),
       ),
+      vision: vi.fn((id: ConnectionId) => Promise.resolve(visionOf(id))),
+      setVision: vi.fn((id: ConnectionId, enabled: boolean) => {
+        const current = visionOf(id)
+        if (!current.configurable) return Promise.reject(new Error('Not offered.'))
+        visions[id] =
+          current.source === 'setting'
+            ? { ...current, enabled, setting: enabled }
+            : { ...current, setting: enabled }
+        return Promise.resolve(visionOf(id))
+      }),
     },
     audit: {
       reveal: vi.fn(async () => {}),

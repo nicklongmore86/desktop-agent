@@ -13,7 +13,13 @@ import {
 import { MAX_EVENT_BYTES, mediaType, sseData } from '../openai-compat/stream'
 import { diagnostics, LABEL, responsesError, responsesStatusError } from './errors'
 import { ResponsesAccumulator } from './stream'
-import { offeredToolNames, toResponsesRequest } from './translate'
+import {
+  hasOutputImages,
+  offeredToolNames,
+  toResponsesRequest,
+  type ResponsesRequest,
+  type ToolImageMode,
+} from './translate'
 
 /** The only API root ChatGPT plan use allows; never configurable. */
 export const RESPONSES_BASE_URL = 'https://api.openai.com/v1'
@@ -61,9 +67,13 @@ export function createChatGPTResponsesClient(options: ChatGPTResponsesClientOpti
   if (!MODEL_SLUG.test(model))
     throw new OpenAICompatError('invalid_request', `Choose a ${LABEL} model.`)
   const connection = connectChatGPT(options)
+  // Tool images go inside function_call_output until the route refuses one request that
+  // has them there; from then on (for this client) they go in a user message instead.
+  const images: { mode: ToolImageMode } = { mode: 'output' }
   return {
     messages: {
-      stream: (params, { signal }) => new ResponsesStream(connection, model, params, signal),
+      stream: (params, { signal }) =>
+        new ResponsesStream(connection, model, params, signal, images),
     },
   }
 }
@@ -72,18 +82,21 @@ class ResponsesStream implements AgentStream {
   private readonly listeners: ((delta: string) => void)[] = []
   private readonly controller = new AbortController()
   private readonly result: Promise<Message>
+  private emitted = false
 
   constructor(
     connection: Connection,
     model: string,
     params: MessageCreateParamsNonStreaming,
     signal: AbortSignal,
+    images: { mode: ToolImageMode } = { mode: 'output' },
   ) {
     this.result = this.run(
       connection,
       model,
       params,
       AbortSignal.any([signal, this.controller.signal]),
+      images,
     )
     // Callers that never ask for the result must not cause an unhandled rejection.
     this.result.catch(() => {})
@@ -107,8 +120,38 @@ class ResponsesStream implements AgentStream {
     model: string,
     params: MessageCreateParamsNonStreaming,
     signal: AbortSignal,
+    images: { mode: ToolImageMode },
   ): Promise<Message> {
-    const body = toResponsesRequest({ ...params, model })
+    const body = toResponsesRequest({ ...params, model }, images.mode)
+    try {
+      return await this.send(connection, model, body, signal)
+    } catch (error) {
+      // Refused with images in a tool output, before anything streamed: send them once
+      // more as a user message instead, and keep doing so.
+      if (
+        !hasOutputImages(body) ||
+        this.emitted ||
+        signal.aborted ||
+        !(error instanceof OpenAICompatError) ||
+        error.code !== 'invalid_request'
+      )
+        throw error
+      images.mode = 'message'
+      return this.send(
+        connection,
+        model,
+        toResponsesRequest({ ...params, model }, 'message'),
+        signal,
+      )
+    }
+  }
+
+  private async send(
+    connection: Connection,
+    model: string,
+    body: ResponsesRequest,
+    signal: AbortSignal,
+  ): Promise<Message> {
     const { response, touch, done, mapError, isSecret } = await connection.request('responses', {
       method: 'POST',
       body,
@@ -159,6 +202,7 @@ class ResponsesStream implements AgentStream {
   }
 
   private emit(text: string): void {
+    this.emitted = true
     for (const listener of this.listeners) {
       try {
         listener(text)

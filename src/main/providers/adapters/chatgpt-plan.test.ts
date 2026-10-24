@@ -38,6 +38,8 @@ let loginStates: ProviderLoginState[]
 let observed: unknown[]
 /** Requests to POST /v1/responses answer in order (the last repeats); GET /v1/models lists. */
 let responses: ((res: ServerResponse) => void)[]
+/** The entries GET /v1/models lists. */
+let listed: Record<string, unknown>[]
 
 const sse =
   (...events: unknown[]) =>
@@ -94,14 +96,15 @@ beforeEach(async () => {
   loginStates = []
   observed = []
   responses = [sse(...text('Hello'))]
+  listed = [
+    { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list' },
+    { slug: 'gpt-6.1-terra', display_name: 'GPT-6.1 Terra', visibility: 'list' },
+    { slug: 'hidden-model', display_name: 'Hidden', visibility: 'hide' },
+  ]
   api.reply((req, res) => {
     if (req.method === 'GET' && req.path === '/v1/models') {
       jsonReply(200, {
-        models: [
-          { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list' },
-          { slug: 'gpt-6.1-terra', display_name: 'GPT-6.1 Terra', visibility: 'list' },
-          { slug: 'hidden-model', display_name: 'Hidden', visibility: 'hide' },
-        ],
+        models: listed,
       })(res)
       return
     }
@@ -264,6 +267,43 @@ describe('ChatGPT plan connection', () => {
     await expect(service.setModel(ID, 'hidden-model')).rejects.toThrow(
       'Choose an available ChatGPT model.',
     )
+  })
+
+  it('sends images only to a model the list says reads them, else to a documented model', async () => {
+    listed = [
+      { slug: 'gpt-4o', display_name: 'GPT-4o', visibility: 'list', input_modalities: ['text'] },
+      {
+        slug: 'gpt-6.1-sol',
+        display_name: 'GPT-6.1 Sol',
+        visibility: 'list',
+        input_modalities: ['text', 'image'],
+      },
+      { slug: 'codex-mini-evil', display_name: 'Lookalike', visibility: 'list' },
+      { slug: 'gpt-4o-text', display_name: 'Lookalike', visibility: 'list' },
+      { slug: 'codex-mini-latest', display_name: 'Codex mini', visibility: 'list' },
+    ]
+    const service = await signedIn()
+    expect((await service.models(ID)).options.map((o) => [o.id, o.imageInput])).toEqual([
+      ['gpt-4o', false],
+      ['gpt-6.1-sol', true],
+      ['codex-mini-evil', undefined],
+      ['gpt-4o-text', undefined],
+      ['codex-mini-latest', undefined],
+    ])
+    const visionOf = async (model: string) => {
+      await service.setModel(ID, model)
+      return service.vision(ID)
+    }
+    // The list's text-only wins over a documented family that reads images.
+    expect(await visionOf('gpt-4o')).toMatchObject({ enabled: false, source: 'model' })
+    expect(await visionOf('gpt-6.1-sol')).toMatchObject({ enabled: true, source: 'model' })
+    // No word from the list: a documented id decides; a lookalike is unknown, so no images.
+    expect(await visionOf('codex-mini-latest')).toMatchObject({ enabled: true, source: 'model' })
+    for (const lookalike of ['codex-mini-evil', 'gpt-4o-text'])
+      expect([lookalike, await visionOf(lookalike)]).toEqual([
+        lookalike,
+        expect.objectContaining({ enabled: false, source: 'setting' }),
+      ])
   })
 
   it('runs a tool round trip on a granted folder with the namespaced, non-strict tools', async () => {

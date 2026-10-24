@@ -1,6 +1,7 @@
 import { createAgent, type AgentClient, type AgentEvent } from '../../agent'
 import type { AdapterFactory, AdapterHost, ConnectionDescriptor } from '../connection'
 import { SetupError, SubscriptionError } from '../errors'
+import { resolveVision, type PublishedVision } from '../vision'
 
 /** A connection that talks to a model API directly, through the app's own agent loop. */
 export interface AgentClientSpec extends ConnectionDescriptor {
@@ -24,6 +25,15 @@ export interface AgentClientSpec extends ConnectionDescriptor {
    * client throws, used by the agent loop and by failure().
    */
   errorEvent: (error: unknown) => Extract<AgentEvent, { type: 'error' }>
+  /**
+   * Whether `model` reads images, as the connection knows it (providers/vision.ts); null
+   * when it cannot say. Absent: images are never sent.
+   */
+  vision?: (model: string) => PublishedVision | Promise<PublishedVision>
+  /** How `vision` knows: it holds for every model ('connection') or per model ('model'). */
+  visionSource?: 'connection' | 'model'
+  /** Settings offers "This model can see images", which decides when `vision` says null. */
+  visionSetting?: boolean
 }
 
 /**
@@ -33,10 +43,35 @@ export interface AgentClientSpec extends ConnectionDescriptor {
  * ConnectionService.registerAdapter; see docs/connections.md.
  */
 export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
-  const { client, model, modelName, readyMessage, missingKeyMessage, errorEvent, ...descriptor } =
-    spec
+  const {
+    client,
+    model,
+    modelName,
+    readyMessage,
+    missingKeyMessage,
+    errorEvent,
+    vision,
+    visionSource = 'model',
+    visionSetting = false,
+    ...descriptor
+  } = spec
+  /** Never throws: a model that cannot be looked up is one nobody said reads images. */
+  const visionOf = async (host: AdapterHost, chosen?: string) => {
+    let published: PublishedVision = null
+    try {
+      if (vision) published = await vision(chosen ?? (await model(host)))
+    } catch {
+      published = null
+    }
+    return resolveVision(vision ? published : false, {
+      source: vision ? visionSource : 'connection',
+      configurable: visionSetting,
+      setting: host.settings?.vision(spec.id) ?? false,
+    })
+  }
   return (host) => ({
     ...descriptor,
+    vision: () => visionOf(host),
     failure: (error) => {
       // Setup and service errors already carry a message written here.
       if (error instanceof SetupError) return { code: error.code, message: error.message }
@@ -66,6 +101,7 @@ export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
         model: chosen,
         errorEvent,
         modelName: modelName ?? spec.shortLabel,
+        vision: (await visionOf(host, chosen)).enabled,
       })
     },
   })

@@ -126,6 +126,22 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
           error: null,
         }),
       ),
+      vision: vi.fn((_id: string) =>
+        Promise.resolve({
+          enabled: false,
+          source: 'setting' as const,
+          setting: false,
+          configurable: true,
+        }),
+      ),
+      setVision: vi.fn((_id: string, enabled: boolean) =>
+        Promise.resolve({
+          enabled,
+          source: 'setting' as const,
+          setting: enabled,
+          configurable: true,
+        }),
+      ),
     },
     apiKey: {
       hasKey: vi.fn(() => Promise.resolve(false)),
@@ -1083,6 +1099,29 @@ describe('provider IPC', () => {
         invoke(connectionsChannels.connectionsSetBaseUrl, appFrame, 'ollama', url),
       ).rejects.toThrow('Enter a valid address.')
     expect(services.connections.setBaseUrl).toHaveBeenCalledTimes(2)
+  })
+  it('reads and saves the image setting only for a listed connection and a boolean', async () => {
+    const { invoke, services } = setup()
+    expect(await invoke(connectionsChannels.connectionsVision, appFrame, 'ollama')).toMatchObject({
+      enabled: false,
+      configurable: true,
+    })
+    expect(
+      await invoke(connectionsChannels.connectionsSetVision, appFrame, 'ollama', true),
+    ).toMatchObject({ enabled: true, setting: true })
+    expect(services.connections.setVision).toHaveBeenCalledWith('ollama', true)
+    for (const bad of ['../ollama', 7, null, 'OLLAMA'])
+      await expect(invoke(connectionsChannels.connectionsVision, appFrame, bad)).rejects.toThrow(
+        'Unknown provider.',
+      )
+    for (const value of ['true', 1, null, undefined])
+      await expect(
+        invoke(connectionsChannels.connectionsSetVision, appFrame, 'ollama', value),
+      ).rejects.toThrow('Invalid choice.')
+    await expect(
+      invoke(connectionsChannels.connectionsSetVision, appFrame, 'nope', true),
+    ).rejects.toThrow('Unknown provider.')
+    expect(services.connections.setVision).toHaveBeenCalledTimes(1)
   })
   it('accepts explicit provider selection only through trusted IPC', async () => {
     const { invoke, services } = setup()

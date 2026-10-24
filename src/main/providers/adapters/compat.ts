@@ -23,7 +23,7 @@ export interface AdapterTestOptions {
 export function compatSpec(
   flavor: OpenAICompatFlavor,
   options: AdapterTestOptions = {},
-): Pick<ModelApiSpec, 'client' | 'list' | 'checkKey' | 'errorEvent'> {
+): Pick<ModelApiSpec, 'client' | 'list' | 'checkKey' | 'errorEvent' | 'listsVision'> {
   const hosted = flavor === 'openai' || flavor === 'openrouter'
   const connection = (key: string | null, baseUrl: string) => ({
     flavor,
@@ -44,6 +44,7 @@ export function compatSpec(
         id: model.id,
         label: model.name ?? model.id,
         toolSupport: model.toolSupport,
+        ...(model.vision !== undefined ? { vision: model.vision } : {}),
       }))
     },
     ...(hosted
@@ -59,6 +60,8 @@ export function compatSpec(
         }
       : {}),
     errorEvent: openAICompatErrorEvent,
+    // Only OpenRouter's list says which models read images (architecture.input_modalities).
+    ...(flavor === 'openrouter' ? { listsVision: true } : {}),
   }
 }
 

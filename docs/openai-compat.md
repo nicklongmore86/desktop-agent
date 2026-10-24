@@ -31,17 +31,18 @@ These are also rejected: credentials in the URL, query strings and fragments. Re
 
 ## Translation
 
-| Anthropic transcript             | Chat Completions                                                                      |
-| -------------------------------- | ------------------------------------------------------------------------------------- |
-| `system` (string or text blocks) | one `role: 'system'` message                                                          |
-| text blocks                      | `content` string (blocks joined with blank lines)                                     |
-| `tools[].input_schema`           | `tools: [{ type: 'function', function: { name, description, parameters } }]`          |
-| assistant `tool_use`             | assistant `tool_calls[{ id, type: 'function', function: { name, arguments: JSON } }]` |
-| user `tool_result`               | `role: 'tool'` messages (before any other user text), `tool_call_id` = `tool_use_id`  |
-| `tool_result.is_error: true`     | content prefixed with `[tool error] ` (tool messages have no error flag)              |
-| image / document blocks          | a placeholder sentence. The data is never sent.                                       |
-| thinking / redacted thinking     | dropped                                                                               |
-| `max_tokens`                     | `max_completion_tokens` (openai: `max_tokens` is deprecated there), else `max_tokens` |
+| Anthropic transcript             | Chat Completions                                                                                                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `system` (string or text blocks) | one `role: 'system'` message                                                                                                                                                           |
+| text blocks                      | `content` string (blocks joined with blank lines)                                                                                                                                      |
+| `tools[].input_schema`           | `tools: [{ type: 'function', function: { name, description, parameters } }]`                                                                                                           |
+| assistant `tool_use`             | assistant `tool_calls[{ id, type: 'function', function: { name, arguments: JSON } }]`                                                                                                  |
+| user `tool_result`               | `role: 'tool'` messages (before any other user text), `tool_call_id` = `tool_use_id`                                                                                                   |
+| `tool_result.is_error: true`     | content prefixed with `[tool error] ` (tool messages have no error flag)                                                                                                               |
+| image blocks                     | `image_url` parts with a `data:` URL; in a tool result, a `user` message after the `tool` messages, marked as tool output (`docs/provider-images.md`). A remote image is a placeholder |
+| document blocks                  | a placeholder sentence. The data is never sent.                                                                                                                                        |
+| thinking / redacted thinking     | dropped                                                                                                                                                                                |
+| `max_tokens`                     | `max_completion_tokens` (openai: `max_tokens` is deprecated there), else `max_tokens`                                                                                                  |
 
 Requests always set `stream: true` and `stream_options: { include_usage: true }`.
 
@@ -89,7 +90,7 @@ Messages are fixed, app-written text, capped at 300 characters. Provider respons
 
 ## Not supported
 
-- Images and documents (replaced by a placeholder), extended thinking/reasoning content, and Anthropic server tools.
+- Documents (replaced by a placeholder), extended thinking/reasoning content, and Anthropic server tools. Images are sent only to a model the connection says can see them.
 - `tool_choice` and `parallel_tool_calls` are not sent: Ollama does not support `tool_choice`.
 - Non-streaming servers: a 200 response that is not `text/event-stream` is a `protocol` error.
 - Prompt caching: `cache_control` markers are dropped. Cached-token counts are still reported where the provider returns them.

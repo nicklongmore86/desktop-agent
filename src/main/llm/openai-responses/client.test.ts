@@ -17,7 +17,7 @@ import {
   type Handler,
 } from '../openai-compat/test-support'
 import { MAX_EVENT_BYTES, MAX_STREAM_BYTES } from '../openai-compat/stream'
-import { TOOL_ERROR_PREFIX } from '../openai-compat/translate'
+import { TOOL_ERROR_PREFIX, TOOL_IMAGES_NOTE } from '../openai-compat/translate'
 import { createChatGPTResponsesClient, type ChatGPTResponsesClientOptions } from './client'
 import { MANAGE_USAGE_URL, ResponsesError } from './errors'
 import { ALLOWED_BODY_KEYS, OMITTED_BODY_KEYS, TOOL_NAMESPACE } from './translate'
@@ -263,6 +263,7 @@ describe('openai-responses client', () => {
           content: [
             { type: 'text', text: 'Look' },
             { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+            { type: 'image', source: { type: 'url', url: 'https://example.test/x.png' } },
           ],
         },
         {
@@ -287,10 +288,9 @@ describe('openai-responses client', () => {
         type: 'message',
         role: 'user',
         content: [
-          {
-            type: 'input_text',
-            text: expect.stringMatching(/^Look\n\n\[Image omitted/) as unknown,
-          },
+          { type: 'input_text', text: 'Look' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'auto' },
+          { type: 'input_text', text: expect.stringMatching(/^\[Image omitted/) as unknown },
         ],
       },
       {
@@ -304,7 +304,68 @@ describe('openai-responses client', () => {
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'And?' }] },
     ])
     expect(JSON.stringify(body)).not.toContain('secret plan')
-    expect(JSON.stringify(body)).not.toContain('AAAA')
+    expect(JSON.stringify(body)).not.toContain('example.test')
+  })
+
+  it('sends tool images in function_call_output, and in a marked user message once that is refused', async () => {
+    const history: MessageCreateParamsNonStreaming['messages'] = [
+      { role: 'user', content: 'Read it' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'f', input: {} }] },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_1',
+            content: [
+              { type: 'text', text: 'One page.' },
+              { type: 'text', text: '[Image: page 1]' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'JJJJ' } },
+            ],
+          },
+        ],
+      },
+    ]
+    const inOutput = {
+      type: 'function_call_output',
+      call_id: 'toolu_1',
+      output: [
+        { type: 'input_text', text: 'One page.' },
+        { type: 'input_text', text: '[Image: page 1]' },
+        { type: 'input_image', image_url: 'data:image/jpeg;base64,JJJJ', detail: 'auto' },
+      ],
+    }
+    const inMessage = [
+      { type: 'function_call_output', call_id: 'toolu_1', output: 'One page.\n\n[Image: page 1]' },
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: TOOL_IMAGES_NOTE },
+          { type: 'input_text', text: '[Image: page 1]' },
+          { type: 'input_image', image_url: 'data:image/jpeg;base64,JJJJ', detail: 'auto' },
+        ],
+      },
+    ]
+    const shared = client()
+    server.reply(
+      json(400, { error: { code: 'invalid_value', param: 'input', message: 'no images here' } }),
+      responsesSse([ev.message('ok'), ev.completed()]),
+    )
+    const message = await finalOf(shared, { ...params, messages: history })
+    expect(message.content).toEqual([{ type: 'text', text: 'ok', citations: null }])
+    expect(server.requests).toHaveLength(2)
+    expect((server.requests[0]?.body as { input: unknown[] }).input.at(-1)).toEqual(inOutput)
+    expect((server.requests[1]?.body as { input: unknown[] }).input.slice(-2)).toEqual(inMessage)
+    // The same client keeps to the form that worked.
+    await finalOf(shared, { ...params, messages: history })
+    expect((server.requests[2]?.body as { input: unknown[] }).input.slice(-2)).toEqual(inMessage)
+
+    // A refusal with no images in tool outputs is not retried.
+    server.requests.length = 0
+    server.reply(json(400, { error: { code: 'invalid_value', message: 'bad' } }))
+    await expect(finalOf(client(), params)).rejects.toMatchObject({ code: 'invalid_request' })
+    expect(server.requests).toHaveLength(1)
   })
 
   it('maps a usage limit that arrives mid-stream as response.failed, after text', async () => {

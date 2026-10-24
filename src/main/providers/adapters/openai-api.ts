@@ -1,4 +1,5 @@
 import { OPENAI_API } from '../../../shared/ipc-connections'
+import { openAIVision } from '../vision'
 import { compatSpec, type AdapterTestOptions } from './compat'
 import { modelApiAdapter } from './model-api'
 
@@ -25,6 +26,8 @@ export const openAIApiAdapter = (options: AdapterTestOptions = {}) =>
     readyMessage: () => 'OpenAI API mode uses your saved API key and separate API billing.',
     missingKeyMessage: 'Add your OpenAI API key in Settings.',
     noModelsMessage: 'This OpenAI key has no chat models available.',
+    // OpenAI's model list does not say; its documented families do.
+    vision: openAIVision,
   })
 
 export const createOpenAIApiAdapter = openAIApiAdapter()

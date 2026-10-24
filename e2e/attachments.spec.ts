@@ -80,7 +80,7 @@ test('drops real files on the composer, attaches them, sends, and sees the chips
     await expect(staged.getByText('screenshot.png')).toBeVisible()
     // The image chip is greyed, with the reason; the text file is not.
     const imageChip = staged.getByRole('listitem').filter({ hasText: 'screenshot.png' })
-    await expect(imageChip).toHaveAttribute('title', /Not sent to this model yet/)
+    await expect(imageChip).toHaveAttribute('title', /This model can’t see images/)
     // The preview is an object URL of the dropped File, which the CSP lets the image load.
     await expect(imageChip.locator('img')).toHaveAttribute('src', /^blob:/)
     await expect

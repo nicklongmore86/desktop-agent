@@ -187,7 +187,10 @@ between them. API connections use their client's `errorEvent` (above).
 
 `settings.json` version 3 has `connection` (was `provider`), `connectionModels` (was
 `providerModels`; same ids), `connections` (the configured connections,
-`{ id, baseUrl? }[]`) and `showPersonalUseConnections`. `baseUrl` is a local server's
+`{ id, baseUrl?, vision? }[]`) and `showPersonalUseConnections`. `vision` is "This
+model can see images" (absent means off), used only where the model list does not say
+(`docs/provider-images.md`); an older app version ignores it and drops it on its next
+write. `baseUrl` is a local server's
 API root when it is not the default; main saves it only after `resolveBaseUrl` accepts it
 (`http://` on `127.0.0.1`, `::1` or `localhost`, no credentials, query or fragment) and
 checks it again before every request, so a hand-edited file cannot point it elsewhere.
@@ -222,14 +225,15 @@ connection current, then `provider.login` / `cancelLogin` and the sign-in panel,
 before the connection is made puts back the connection chats went to, and takes the new
 one out of the set-up list again.
 
-Four small calls beside `connections.list()` make this possible (`ipc-connections.ts`):
+Small calls beside `connections.list()` make this possible (`ipc-connections.ts`):
 
-| Call                                   | Does                                                                       |
-| -------------------------------------- | -------------------------------------------------------------------------- |
-| `connections.state()`                  | The set-up connection ids, the current one, and `showPersonalUse`.         |
-| `connections.status(id)`               | Any listed connection's status, without switching to it.                   |
-| `connections.add(id)` / `remove(id)`   | Edit settings `connections`. `remove` refuses the current connection.      |
-| `connections.setShowPersonalUse(show)` | Sets `showPersonalUseConnections`; refuses to hide the current connection. |
+| Call                                           | Does                                                                                                 |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `connections.state()`                          | The set-up connection ids, the current one, and `showPersonalUse`.                                   |
+| `connections.status(id)`                       | Any listed connection's status, without switching to it.                                             |
+| `connections.add(id)` / `remove(id)`           | Edit settings `connections`. `remove` refuses the current connection.                                |
+| `connections.setShowPersonalUse(show)`         | Sets `showPersonalUseConnections`; refuses to hide the current connection.                           |
+| `connections.vision(id)` / `setVision(id, on)` | Whether images reach the current model, and "This model can see images" (`docs/provider-images.md`). |
 
 Every id is checked against the registry first (`parseConnectionId`), and removing a
 connection never touches chat history. Removing a connection with `forget()` (ChatGPT

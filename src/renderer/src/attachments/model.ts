@@ -4,7 +4,6 @@ import {
   type AttachmentRef,
 } from '../../../shared/attachments'
 import type { AttachErrorCode, AttachOutcome } from '../../../shared/ipc-attachments'
-import type { ConnectionId } from '../../../shared/ipc-connections'
 
 /** An attachment waiting in the composer. `outsideGrant`: a one-time snapshot of a file outside the granted folders. */
 export interface StagedAttachment {
@@ -14,20 +13,28 @@ export interface StagedAttachment {
 
 /** Shown on a chip the current connection cannot receive yet. */
 export const NOT_SENT_YET = 'Not sent to this model yet; it will see the file name only.'
+/** Shown on an image chip when the connection's model cannot see images. */
+export const NO_VISION =
+  'This model can’t see images; it will see the file name only. Switch to a vision model, or turn on “This model can see images” in Settings if it is one.'
 
 /** The per-message limits (ATTACHMENT_LIMITS), as the composer words them. */
 export const TOO_MANY_FILES = `You can attach up to ${String(ATTACHMENT_LIMITS.maxPerMessage)} files to a message.`
 export const TOO_MUCH_DATA = `A message can carry up to ${String(ATTACHMENT_LIMITS.messageBytes / (1024 * 1024))} MB of attachments.`
 
 /**
- * Whether `kind` reaches the model through `connection`. Today every provider gets text
- * files inline and PDFs converted to text by the document reader (with drawn pages as
- * images where the connection takes them), and only the file name for images and
- * documents (placeholders until per-provider translators land), so this does not depend
- * on the connection yet.
+ * Whether `kind` reaches the model: text files always (inline); PDFs always, as the
+ * text the document reader extracts (drawn pages go as images only to a vision model,
+ * a note otherwise); images when the connection's model can see them (`vision`, from
+ * main). Documents are still sent as their names only.
  */
-export function canReceive(kind: AttachmentKind, _connection?: ConnectionId | null): boolean {
-  return kind === 'text' || kind === 'pdf'
+export function canReceive(kind: AttachmentKind, vision = false): boolean {
+  return kind === 'text' || kind === 'pdf' || (kind === 'image' && vision)
+}
+
+/** The tooltip for a chip the model will not receive, or undefined when it will. */
+export function notReceivedNote(kind: AttachmentKind, vision = false): string | undefined {
+  if (canReceive(kind, vision)) return undefined
+  return kind === 'image' ? NO_VISION : NOT_SENT_YET
 }
 
 /** A short, readable file size: 1.2 KB, 3 MB. */

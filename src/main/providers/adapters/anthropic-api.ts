@@ -26,4 +26,7 @@ export const createAnthropicApiAdapter = agentClientAdapter({
   readyMessage: 'Anthropic API mode uses your saved API key and separate API billing.',
   missingKeyMessage: 'Add your Anthropic API key in Settings.',
   errorEvent: apiErrorEvent,
+  // Every Claude model offered in Settings reads images.
+  vision: () => true,
+  visionSource: 'connection',
 })

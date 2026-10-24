@@ -20,7 +20,7 @@ import {
   type FakeServer,
 } from './test-support'
 import { MAX_EVENT_BYTES } from './stream'
-import { IMAGE_PLACEHOLDER, TOOL_ERROR_PREFIX } from './translate'
+import { IMAGE_PLACEHOLDER, TOOL_ERROR_PREFIX, TOOL_IMAGES_NOTE } from './translate'
 
 let server: FakeServer
 let sb: Sandbox
@@ -321,6 +321,8 @@ describe('openai-compat client', () => {
                   type: 'image',
                   source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
                 },
+                // A remote image is never passed on: the app only sends bytes it holds.
+                { type: 'image', source: { type: 'url', url: 'https://example.test/x.png' } },
               ],
             },
             {
@@ -328,12 +330,25 @@ describe('openai-compat client', () => {
               content: [
                 { type: 'thinking', thinking: 'secret plan', signature: 'sig' },
                 { type: 'tool_use', id: 'toolu_1', name: 'f', input: { a: 1 } },
+                { type: 'tool_use', id: 'toolu_2', name: 'g', input: {} },
               ],
             },
             {
               role: 'user',
               content: [
                 { type: 'tool_result', tool_use_id: 'toolu_1', content: 'boom', is_error: true },
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'toolu_2',
+                  content: [
+                    { type: 'text', text: 'One page.' },
+                    { type: 'text', text: '[Image: page 1]' },
+                    {
+                      type: 'image',
+                      source: { type: 'base64', media_type: 'image/jpeg', data: 'JJJJ' },
+                    },
+                  ],
+                },
                 { type: 'text', text: 'And?' },
               ],
             },
@@ -344,19 +359,37 @@ describe('openai-compat client', () => {
       .finalMessage()
     const body = server.requests[0]?.body as { messages: unknown[] }
     expect(body.messages).toEqual([
-      { role: 'user', content: `Look\n\n${IMAGE_PLACEHOLDER}` },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Look' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+          { type: 'text', text: IMAGE_PLACEHOLDER },
+        ],
+      },
       {
         role: 'assistant',
         content: null,
         tool_calls: [
           { id: 'toolu_1', type: 'function', function: { name: 'f', arguments: '{"a":1}' } },
+          { id: 'toolu_2', type: 'function', function: { name: 'g', arguments: '{}' } },
         ],
       },
       { role: 'tool', tool_call_id: 'toolu_1', content: `${TOOL_ERROR_PREFIX}boom` },
+      { role: 'tool', tool_call_id: 'toolu_2', content: 'One page.\n\n[Image: page 1]' },
+      // Tool messages carry text only: the images follow, marked as tool output.
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: TOOL_IMAGES_NOTE },
+          { type: 'text', text: '[Image: page 1]' },
+          { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,JJJJ' } },
+        ],
+      },
       { role: 'user', content: 'And?' },
     ])
     expect(JSON.stringify(body)).not.toContain('secret plan')
-    expect(JSON.stringify(body)).not.toContain('AAAA')
+    expect(JSON.stringify(body)).not.toContain('example.test')
   })
 
   it('aborts mid-stream through the agent signal and through stream.abort()', async () => {

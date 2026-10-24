@@ -115,8 +115,9 @@ attachments and disposed on `will-quit`.
 When a chat is sent, `toModelConversation` (`src/main/chat/attachments.ts`) reads each
 PDF attachment with the same host: its text page by page in a fenced block marked as
 user-provided, untrusted data, and pages with little or no text (drawings, scans) as
-image blocks for connections whose requests carry them (the Claude API today), a note in
-their place for the rest. Results are cached per attachment id (16 PDFs), so sending a
+image blocks for every connection whose model can see images (`AgentRunner.vision`, see
+`docs/provider-images.md`: each client sends them in its own form, within the request's
+image budget), a note in their place for the rest. Results are cached per attachment id (16 PDFs), so sending a
 chat again does not parse its PDFs again; a PDF that cannot be read is sent as a
 placeholder saying why. PDF chips are no longer greyed in the composer.
 
@@ -133,7 +134,10 @@ against the entry's declared size and an archive-wide budget.
 - `read_document` (`src/main/tools/read-document.test.ts`, fake reader): output, ranges
   and regions, photos and the GPS gate with its audit fields, unsupported types, clean
   errors, and the guard (outside the grant, secret and protected files, symlink, hard
-  link, size). In real Electron, `e2e/read-document.spec.ts` runs the tool
+  link, size). `src/main/tools/read-document-providers.test.ts` runs the tool in the agent
+  loop against fake Claude API and OpenAI-compatible servers: its page images arrive in
+  the Claude `tool_result` and in the user message after the OpenAI `tool` message, and
+  never without vision. In real Electron, `e2e/read-document.spec.ts` runs the tool
   (`out/main/tools.js`, built from `src/main/tools/e2e-entry.ts`) over the real worker.
 - Unit (Vitest, Node): `sniff`, `limits`, `zip`, `exif`, `extract` (real PDFium WASM
   with stand-in codecs, including the malformed corpus), `reply` (every limit) and

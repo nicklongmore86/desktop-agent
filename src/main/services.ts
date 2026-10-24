@@ -228,9 +228,6 @@ export async function createAppServices(deps: AppServiceDeps) {
     ...(userShell ? { userShell } : {}),
     attachments: chatAttachments,
     ...(deps.documents ? { documents: deps.documents } : {}),
-    // Only the Claude API request carries image blocks as they are; every other connection
-    // gets a note in place of a PDF page image until its translator sends images.
-    sendsImages: () => settings.connection === ANTHROPIC_API,
     pins,
     onSaveError: (error) => {
       console.error('could not save the conversation', error)
@@ -352,6 +349,8 @@ export async function createAppServices(deps: AppServiceDeps) {
         }
       }
     },
+    vision: (id: ConnectionId) => connections.vision(id),
+    setVision: (id: ConnectionId, enabled: boolean) => connections.setVision(id, enabled),
   }
   /** Each API-key connection's key; the renderer only ever learns whether one is saved. */
   const apiKey = {

@@ -33,6 +33,8 @@ export interface ComposerProps {
   onOpenSettings: OpenSettings
   /** Files waiting to be sent with the message. */
   attach: AttachmentsControl
+  /** The connection's model can see images: image chips are active. */
+  vision: boolean
   /** Set to this composer's way of putting text at the caret (for `@` references from attachments). */
   insertRef: React.RefObject<(text: string) => void>
 }
@@ -59,6 +61,7 @@ export function Composer({
   usage,
   onOpenSettings,
   attach,
+  vision,
   insertRef,
 }: ComposerProps): React.JSX.Element {
   const notify = useToast()
@@ -82,7 +85,7 @@ export function Composer({
       {references.menu}
       <StagedChips
         staged={attach.staged}
-        connection={provider?.provider ?? null}
+        vision={vision}
         onRemove={attach.remove}
         onCopyIntoFolder={attach.copyIntoFolder}
       />

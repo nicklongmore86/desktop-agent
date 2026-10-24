@@ -2,8 +2,10 @@ import type { MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resource
 import { describe, expect, it } from 'vitest'
 import { httpError, sanitize } from './errors'
 import {
-  IMAGE_PLACEHOLDER,
+  GIF_PLACEHOLDER,
+  multimodalFunctionResponses,
   SKIP_SIGNATURE,
+  TOOL_IMAGES_NOTE,
   toGeminiRequest,
   toStopReason,
   toUsage,
@@ -116,13 +118,10 @@ describe('toGeminiRequest', () => {
         role: 'user',
         parts: [
           { functionResponse: { id: 'g-a', name: 'read', response: { output: 'contents' } } },
-          {
-            functionResponse: {
-              id: 'g-b',
-              name: 'list',
-              response: { error: `denied\n${IMAGE_PLACEHOLDER}` },
-            },
-          },
+          { functionResponse: { id: 'g-b', name: 'list', response: { error: 'denied' } } },
+          // Before Gemini 3, a function response holds no images: they follow, marked.
+          { text: TOOL_IMAGES_NOTE },
+          { inlineData: { mimeType: 'image/png', data: 'AA' } },
         ],
       },
     ])
@@ -130,7 +129,7 @@ describe('toGeminiRequest', () => {
     expect(JSON.stringify(request)).not.toContain('claude-sig')
   })
 
-  it('signs unknown calls with the documented skip value and drops images and empty turns', () => {
+  it('signs unknown calls with the documented skip value, sends images inline and drops empty turns', () => {
     const request = toGeminiRequest(
       params([
         {
@@ -156,7 +155,11 @@ describe('toGeminiRequest', () => {
     expect(request.contents).toEqual([
       {
         role: 'user',
-        parts: [{ text: IMAGE_PLACEHOLDER }, { text: 'What is this?' }, { text: 'Still there?' }],
+        parts: [
+          { inlineData: { mimeType: 'image/png', data: 'AA' } },
+          { text: 'What is this?' },
+          { text: 'Still there?' },
+        ],
       },
       {
         role: 'model',
@@ -278,5 +281,86 @@ describe('httpError', () => {
     expect(sanitize(`line\none\u0007 AIzaOtherKeyLooking_like_this-123456789`, KEY)).toBe(
       'line one [redacted]',
     )
+  })
+
+  it('puts tool images inside the function response on Gemini 3 and later, with their labels', () => {
+    const history: MessageCreateParamsNonStreaming['messages'] = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'read', input: {} }] },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 't1',
+            content: [
+              { type: 'text', text: 'Two pages.' },
+              { type: 'text', text: '[Image: page 1]' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'J1' } },
+              { type: 'text', text: '[Image: page 2]' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'P2' } },
+            ],
+          },
+          { type: 'text', text: 'And this?' },
+        ],
+      },
+    ]
+    const modern = toGeminiRequest(params(history, { model: 'gemini-3-pro-preview' }), new Map())
+    expect(modern.contents.at(-1)).toEqual({
+      role: 'user',
+      parts: [
+        {
+          functionResponse: {
+            name: 'read',
+            response: { output: 'Two pages.\n[Image: page 1]\n[Image: page 2]' },
+            parts: [
+              { inlineData: { mimeType: 'image/jpeg', data: 'J1' } },
+              { inlineData: { mimeType: 'image/png', data: 'P2' } },
+            ],
+          },
+        },
+        { text: 'And this?' },
+      ],
+    })
+    const older = toGeminiRequest(params(history, { model: 'gemini-2.5-flash' }), new Map())
+    expect(older.contents.at(-1)).toEqual({
+      role: 'user',
+      parts: [
+        {
+          functionResponse: {
+            name: 'read',
+            response: { output: 'Two pages.\n[Image: page 1]\n[Image: page 2]' },
+          },
+        },
+        { text: TOOL_IMAGES_NOTE },
+        { text: '[Image: page 1]' },
+        { inlineData: { mimeType: 'image/jpeg', data: 'J1' } },
+        { text: '[Image: page 2]' },
+        { inlineData: { mimeType: 'image/png', data: 'P2' } },
+        { text: 'And this?' },
+      ],
+    })
+  })
+
+  it('replaces a GIF, which Gemini does not read, with a placeholder', () => {
+    const request = toGeminiRequest(
+      params([
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/gif', data: 'R0' } },
+          ],
+        },
+      ]),
+      new Map(),
+    )
+    expect(request.contents).toEqual([{ role: 'user', parts: [{ text: GIF_PLACEHOLDER }] }])
+  })
+
+  it('knows which models take images in function responses', () => {
+    expect(multimodalFunctionResponses('gemini-3-flash')).toBe(true)
+    expect(multimodalFunctionResponses('models/gemini-3.1-pro')).toBe(true)
+    expect(multimodalFunctionResponses('gemini-2.5-pro')).toBe(false)
+    expect(multimodalFunctionResponses('gemini-flash-latest')).toBe(false)
+    expect(multimodalFunctionResponses('gemma-3-27b-it')).toBe(false)
   })
 })

@@ -6,6 +6,9 @@ import {
   canReceive,
   formatSize,
   middleTruncate,
+  NO_VISION,
+  NOT_SENT_YET,
+  notReceivedNote,
   refusalMessage,
   sortOutcomes,
   summarizeRefusals,
@@ -54,11 +57,17 @@ describe('chip text', () => {
     expect(formatSize(20 * 1024 * 1024)).toBe('20 MB')
   })
 
-  it('says text files and PDFs reach the model today', () => {
+  it('says text files and PDFs always reach the model, and images only a vision model', () => {
     expect(canReceive('text')).toBe(true)
-    expect(canReceive('image', 'anthropic-api')).toBe(false)
     expect(canReceive('pdf')).toBe(true)
-    expect(canReceive('document')).toBe(false)
+    expect(canReceive('pdf', true)).toBe(true)
+    expect(canReceive('image')).toBe(false)
+    expect(canReceive('image', true)).toBe(true)
+    expect(canReceive('document', true)).toBe(false)
+    expect(notReceivedNote('image')).toBe(NO_VISION)
+    expect(notReceivedNote('pdf')).toBeUndefined()
+    expect(notReceivedNote('document', true)).toBe(NOT_SENT_YET)
+    expect(notReceivedNote('image', true)).toBeUndefined()
   })
 })
 
