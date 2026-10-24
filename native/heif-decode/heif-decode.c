@@ -169,7 +169,7 @@ static int has_hevc_decoder(void) {
   return count > 0;
 }
 
-static void probe(void) {
+static __declspec(noreturn) void probe(void) {
   IWICImagingFactory *wic = factory();
   IWICBitmapDecoder *decoder = NULL;
   char line[96];
@@ -219,7 +219,7 @@ static void write_all(const BYTE *bytes, ULONG size) {
   }
 }
 
-static void decode(const GUID *container, unsigned long long long_edge,
+static __declspec(noreturn) void decode(const GUID *container, unsigned long long long_edge,
                    unsigned long long max_pixels, unsigned long long max_input) {
   IWICImagingFactory *wic;
   IWICStream *stream = NULL;
@@ -354,5 +354,4 @@ int wmain(int argc, wchar_t **argv) {
     fail("usage", E_INVALIDARG);
   lock_down(max_memory);
   decode(container, long_edge, max_pixels, max_input);
-  return 1;
 }
