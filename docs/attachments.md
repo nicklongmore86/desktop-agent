@@ -61,7 +61,8 @@ deletes blobs outright, with no reference counting. Because the store is content
 identical bytes attached in several chats are one blob under one id, and releasing it
 removes it for all of them: callers must only pass ids that no saved chat references any
 more. `sweep(keep,
-minAgeMs)` removes unreferenced blobs and stale temp files.
+minAgeMs)` removes unreferenced blobs and stale temp files, and sidecars whose blob is gone;
+all under the same `minAgeMs` age rule.
 
 Metadata: `issue(bytes, meta)` stores the blob and writes `<id>.json` next to it (same
 atomic, owner-only write) with the `AttachmentRef` main issued (name, kind, mime, size,
@@ -90,7 +91,7 @@ At startup, before the window can send, `sweep` removes blobs no saved chat (of 
 
 `src/renderer/src/attachments/` holds the pure rules (`model.ts`: limits, refusal wording, which kinds a connection can receive) and the `useAttachments` hook; `components/AttachmentChips.tsx` draws chips.
 
-- Chips above the text show a kind icon (or a preview of a dropped or pasted image, a `data:` URL kept only in memory for this window), the name (middle-truncated, in a `<bdi>`), size and a remove button. A chip is dashed and grey, with a tooltip, when the connection cannot receive its kind: today every connection gets text files inline and only the name of images, PDFs and documents.
+- Chips above the text show a kind icon (or a preview of a dropped or pasted image: a `blob:` object URL of the user's File, revoked when the chip is removed, the draft is sent or cleared, or the composer unmounts; the sent message shows the kind icon), the name (middle-truncated, in a `<bdi>`), size and a remove button. A chip is dashed and grey, with a tooltip, when the connection cannot receive its kind: today every connection gets text files inline and only the name of images, PDFs and documents.
 - Drop (chat column and message box), paste and the paperclip all end in `files.attachDropped`, `attachments.fromPaste` or `attachments.pick`. The Files tab shows a hint pointing to the message box and attaches nothing; tree-token drags still insert `@` references.
 - An `@"path"` outcome is inserted into the text; refusals are toasts (one line for a batch), with an "Open Settings" button for `grant-folder`. A snapshot from outside the grants offers "Copy into folder…", which uses the first granted folder and main's approval dialog.
 - The composer enforces 10 files and 20 MB per message before send; `send(text, attachmentIds)`. Attaching is paused exactly when sending is (a reply is running, or the chat is switching). Esc and approvals are unchanged.

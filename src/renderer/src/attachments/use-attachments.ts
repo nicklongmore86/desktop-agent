@@ -10,19 +10,23 @@ import {
   summarizeRefusals,
   type StagedAttachment,
 } from './model'
-import { readThumbnail, rememberThumbnail } from './thumbnails'
+import { releaseThumbnails, rememberThumbnail } from './thumbnails'
 
 /** Said when attaching is paused. */
 export const PAUSED_NOTE = 'Wait for the reply to finish before attaching files.'
 
-/** Keeps a preview of a dropped or pasted image, so its chip (and the sent message's) can show it. */
-async function remember(outcome: AttachOutcome, source: Blob): Promise<AttachOutcome> {
-  if (outcome.ok && outcome.kind === 'attachment' && outcome.attachment.kind === 'image') {
-    const url = await readThumbnail(source)
-    if (url) rememberThumbnail(outcome.attachment.id, url)
-  }
+/** Keeps a preview of a dropped or pasted image, so its staged chip can show it. */
+function remember(outcome: AttachOutcome, source: Blob): AttachOutcome {
+  if (outcome.ok && outcome.kind === 'attachment' && outcome.attachment.kind === 'image')
+    rememberThumbnail(outcome.attachment.id, source)
   return outcome
 }
+
+const attachedIds = (outcomes: readonly AttachOutcome[]): string[] =>
+  outcomes.flatMap((o) => (o.ok && o.kind === 'attachment' ? [o.attachment.id] : []))
+
+const stagedIds = (staged: readonly StagedAttachment[]): string[] =>
+  staged.map((item) => item.attachment.id)
 
 export interface AttachmentsControl {
   staged: StagedAttachment[]
@@ -64,6 +68,7 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
     mounted.current = true
     return () => {
       mounted.current = false
+      releaseThumbnails(stagedIds(stagedRef.current))
     }
   }, [])
 
@@ -73,6 +78,9 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
       const admission = admit(stagedRef.current, sorted.attachments)
       stagedRef.current = admission.staged
       setStaged(admission.staged)
+      // Files refused for the per-message limits get no chip, so no preview either.
+      const kept = new Set(stagedIds(admission.staged))
+      releaseThumbnails(attachedIds(outcomes).filter((id) => !kept.has(id)))
       if (sorted.references.length > 0) insertText(sorted.references.join(' '))
       const messages = [...sorted.refusals.map((r) => r.message), ...admission.refusals]
       const message = summarizeRefusals(messages)
@@ -103,7 +111,7 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
       const settled = await Promise.all(
         files.map(async (file): Promise<AttachOutcome> => {
           try {
-            return await remember(await api.files.attachDropped(file), file)
+            return remember(await api.files.attachDropped(file), file)
           } catch {
             return { ok: false, code: 'failed', reason: '' }
           }
@@ -114,6 +122,7 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
           settled,
           files.map((file) => file.name),
         )
+      else releaseThumbnails(attachedIds(settled))
     },
     [api, apply, disabled, notify],
   )
@@ -145,14 +154,14 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
           files.map(async (file): Promise<AttachOutcome> => {
             try {
               const outcome = await api.files.attachDropped(file)
-              if (outcome.ok || outcome.code !== 'invalid') return await remember(outcome, file)
+              if (outcome.ok || outcome.code !== 'invalid') return remember(outcome, file)
               const bytes = new Uint8Array(await file.arrayBuffer())
               const pasted = await api.attachments.fromPaste(
                 bytes,
                 file.type,
                 file.name || undefined,
               )
-              return await remember(pasted, file)
+              return remember(pasted, file)
             } catch {
               return { ok: false, code: 'failed', reason: '' }
             }
@@ -163,6 +172,7 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
             outcomes,
             files.map((file) => file.name || undefined),
           )
+        else releaseThumbnails(attachedIds(outcomes))
       })()
       return true
     },
@@ -170,9 +180,12 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
   )
 
   const remove = useCallback((id: string) => {
+    releaseThumbnails([id])
     setStaged((current) => current.filter((item) => item.attachment.id !== id))
   }, [])
+  // Sending clears the draft too: the sent message's chips show the kind icon instead.
   const clear = useCallback(() => {
+    releaseThumbnails(stagedIds(stagedRef.current))
     stagedRef.current = []
     setStaged([])
   }, [])
@@ -194,6 +207,7 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
           const result = await api.attachments.copyIntoFolder(id, { rootId: first.id, rel: '' })
           if (result.ok) {
             insertText(result.text)
+            releaseThumbnails([id])
             setStaged((current) => current.filter((item) => item.attachment.id !== id))
           } else if (!result.declined) notify(result.reason)
         } catch {
@@ -206,7 +220,7 @@ export function useAttachments({ insertText, onOpenSettings, disabled }: Deps): 
 
   return {
     staged,
-    ids: staged.map((item) => item.attachment.id),
+    ids: stagedIds(staged),
     disabled,
     attachFiles,
     pick,

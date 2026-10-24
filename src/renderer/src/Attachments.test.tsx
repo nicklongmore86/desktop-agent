@@ -8,11 +8,12 @@ import {
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AttachmentRef } from '../../shared/attachments'
 import type { AttachOutcome } from '../../shared/ipc-attachments'
 import { ApiContext } from './api'
 import { App } from './App'
+import { clearThumbnails } from './attachments/thumbnails'
 import { ToastProvider } from './components/Toast'
 import { fakeApi, type FakeApiOptions } from './test/fake-api'
 import { setViewport } from './test/viewport'
@@ -21,7 +22,7 @@ async function renderApp(options: FakeApiOptions = {}) {
   setViewport(1280)
   const fake = fakeApi(options)
   const user = userEvent.setup()
-  render(
+  const view = render(
     <ApiContext value={fake.api}>
       <ToastProvider>
         <App />
@@ -29,7 +30,7 @@ async function renderApp(options: FakeApiOptions = {}) {
     </ApiContext>,
   )
   await screen.findByRole('heading', { name: 'Workspace chat' })
-  return { ...fake, user }
+  return { ...fake, user, unmount: view.unmount }
 }
 
 const composer = () => screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Message' })
@@ -381,5 +382,117 @@ describe('sent messages', () => {
     await screen.findByText('Again')
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(api.chat.send).toHaveBeenCalledExactlyOnceWith('Again', [one.id])
+  })
+})
+
+describe('image previews', () => {
+  // jsdom has no object URLs.
+  let created: string[]
+  const createObjectURL = vi.fn((blob: Blob) => {
+    const url = `blob:app/${String(created.length)}-${blob instanceof File ? blob.name : ''}`
+    created.push(url)
+    return url
+  })
+  const revokeObjectURL = vi.fn()
+  beforeEach(() => {
+    created = []
+    createObjectURL.mockClear()
+    revokeObjectURL.mockClear()
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+  })
+  afterEach(() => {
+    clearThumbnails()
+    Reflect.deleteProperty(URL, 'createObjectURL')
+    Reflect.deleteProperty(URL, 'revokeObjectURL')
+  })
+
+  const png = (name: string) =>
+    new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' })
+  const imageRef = (n: number, name: string) =>
+    ref(n, { name, kind: 'image', mime: 'image/png', size: 4 })
+  const drop = (files: File[]) => {
+    const transfer = { types: ['Files'], files, dropEffect: 'none', getData: () => '' }
+    fireEvent.dragEnter(composer(), { dataTransfer: transfer })
+    fireEvent.drop(composer(), { dataTransfer: transfer })
+  }
+  const thumbs = () => Array.from(document.querySelectorAll('img.attachment-chip-thumb'))
+
+  async function dropImages(api: ReturnType<typeof fakeApi>['api'], names: string[]) {
+    names.forEach((name, i) => {
+      api.files.attachDropped.mockResolvedValueOnce(attachment(imageRef(i + 1, name)))
+    })
+    const files = names.map(png)
+    drop(files)
+    await waitFor(() => {
+      expect(thumbs()).toHaveLength(names.length)
+    })
+    return files
+  }
+
+  it('previews a dropped image with an object URL of the File, never a data: URL', async () => {
+    const { api } = await renderApp()
+    const [file] = await dropImages(api, ['shot.png'])
+    expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(file)
+    expect(thumbs().map((img) => img.getAttribute('src'))).toEqual(created)
+    expect(document.body.innerHTML).not.toContain('data:')
+  })
+
+  it('does not preview a file that is not a previewable image', async () => {
+    const { api } = await renderApp()
+    api.files.attachDropped.mockResolvedValueOnce(attachment(ref(1, { name: 'a.txt' })))
+    drop([new File(['a'], 'a.txt', { type: 'text/plain' })])
+    await screen.findByRole('list', { name: 'Attached files' })
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(thumbs()).toHaveLength(0)
+  })
+
+  it('revokes the preview when its chip is removed, and only that one', async () => {
+    const { api, user } = await renderApp()
+    await dropImages(api, ['one.png', 'two.png'])
+    const one = created.find((url) => url.endsWith('one.png'))
+    await user.click(within(chipList()).getByRole('button', { name: 'Remove one.png' }))
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith(one)
+    expect(thumbs().map((img) => img.getAttribute('src'))).toEqual(
+      created.filter((url) => url !== one),
+    )
+  })
+
+  it('revokes every preview when the draft is sent', async () => {
+    const { api, user } = await renderApp()
+    await dropImages(api, ['one.png', 'two.png'])
+    await user.type(composer(), 'Look')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => {
+      expect(chips()).toBeNull()
+    })
+    expect(revokeObjectURL.mock.calls.map(([url]) => url as string).sort()).toEqual(
+      [...created].sort(),
+    )
+  })
+
+  it('revokes the previews of files refused for the per-message limit', async () => {
+    const { api } = await renderApp()
+    api.attachments.pick.mockResolvedValueOnce(
+      Array.from({ length: 10 }, (_, i) => attachment(ref(100 + i))),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Attach files' }))
+    await waitFor(() => {
+      expect(within(chipList()).getAllByRole('listitem')).toHaveLength(10)
+    })
+    api.files.attachDropped.mockResolvedValueOnce(attachment(imageRef(1, 'extra.png')))
+    drop([png('extra.png')])
+    await screen.findByText('You can attach up to 10 files to a message.')
+    expect(created).toHaveLength(1)
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith(created[0])
+  })
+
+  it('revokes every staged preview on unmount', async () => {
+    const { api, unmount } = await renderApp()
+    await dropImages(api, ['one.png', 'two.png'])
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    unmount()
+    expect(revokeObjectURL.mock.calls.map(([url]) => url as string).sort()).toEqual(
+      [...created].sort(),
+    )
   })
 })

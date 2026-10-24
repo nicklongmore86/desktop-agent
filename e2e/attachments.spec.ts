@@ -81,7 +81,11 @@ test('drops real files on the composer, attaches them, sends, and sees the chips
     // The image chip is greyed, with the reason; the text file is not.
     const imageChip = staged.getByRole('listitem').filter({ hasText: 'screenshot.png' })
     await expect(imageChip).toHaveAttribute('title', /Not sent to this model yet/)
-    await expect(imageChip.locator('img')).toHaveAttribute('src', /^data:image\/png;base64,/)
+    // The preview is an object URL of the dropped File, which the CSP lets the image load.
+    await expect(imageChip.locator('img')).toHaveAttribute('src', /^blob:/)
+    await expect
+      .poll(() => imageChip.locator('img').evaluate((img: HTMLImageElement) => img.naturalWidth))
+      .toBeGreaterThan(0)
     await expect(
       staged.getByRole('listitem').filter({ hasText: 'budget-notes.txt' }),
     ).not.toHaveClass(/attachment-chip-muted/)
@@ -110,7 +114,8 @@ test('drops real files on the composer, attaches them, sends, and sees the chips
     await expect(
       message.getByRole('list', { name: 'Attached files' }).getByText('budget-notes.txt'),
     ).toBeVisible()
-    await expect(message.locator('img')).toHaveAttribute('src', /^data:image\/png/)
+    // Sending revokes the staged previews; the sent chip shows the kind icon.
+    await expect(message.locator('img')).toHaveCount(0)
     await expect(message.getByRole('button', { name: /^Remove/ })).toHaveCount(0)
     await expect(
       page.locator('.composer').getByRole('list', { name: 'Attached files' }),

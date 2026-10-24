@@ -29,6 +29,15 @@ describe('buildCsp', () => {
     expect(csp).not.toMatch(/\s\*(;|$|\s)/)
   })
 
+  it('allows blob: images (dropped-image previews) and blob: nowhere else', () => {
+    for (const dev of [false, true]) {
+      const csp = parse(buildCsp({ dev }))
+      expect(csp.get('img-src')).toEqual(["'self'", 'data:', 'blob:'])
+      for (const [name, sources] of csp)
+        if (name !== 'img-src') expect(sources).not.toContain('blob:')
+    }
+  })
+
   it('relaxes only what the Vite dev server needs in dev mode', () => {
     const csp = parse(buildCsp({ dev: true }))
     expect(csp.get('script-src')).toEqual(["'self'", "'unsafe-inline'"])
