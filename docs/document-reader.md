@@ -21,8 +21,13 @@ sandbox (below), used by the `read_document` tool and by PDF and Office attachme
   (capture time, camera, orientation) come back as text; GPS only with
   `includeLocation: true`. `exif.ts` is a small bounds-checked reader rather than a
   library: four tags need no 1.3 MB dependency in the attack surface.
-- Office and OpenDocument files: see [Office documents](#office-documents). HEIC, AVIF
-  and RTF are detected and answered with a "not supported yet" warning.
+- AVIF photos are decoded the same way (Chromium has an AV1 decoder; it applies the
+  `clap` crop and `irot`/`imir` itself). HEIC photos are decoded by Windows' own codec: see
+  [HEIC photos](#heic-photos). For both, `heif.ts` reads the container first (stored size,
+  crop, rotation, the Exif item), so the 100 MP check and the EXIF text work as for JPEG.
+  An EXIF orientation tag inside a HEIF file is ignored: `irot`/`imir` decide.
+- Office and OpenDocument files: see [Office documents](#office-documents). RTF is
+  detected and answered with a "not supported yet" warning.
 
 ## Office documents
 
@@ -85,6 +90,61 @@ All of it runs in the sandboxed worker, under the same 30 s timeout and memory c
   document is continued with `start` whatever its pages or sections; slides move like
   pages (`unit: 'slide'`, `meta.pageCount` is the slide count); workbooks move by sheet
   (`unit: 'sheet'`, `meta.sheets` lists them) and within a sheet by range.
+
+## HEIC photos
+
+No HEVC decoder is bundled (licensing and patents). HEIC is decoded by the Windows
+Imaging Component's HEIF decoder ("HEIF Image Extensions", Microsoft Store) and the HEVC
+decoder it uses ("HEVC Video Extensions", Microsoft Store), through a small helper of our
+own, `heif-decode.exe` (`native/heif-decode/heif-decode.c`), bundled and verified exactly
+like [job-run.exe](job-run.md#integrity-and-fallback).
+
+Why a helper: Chromium never uses the system's image codecs (it has no HEVC still-image
+decoder on any platform: `createImageBitmap` on a HEIC blob fails in the worker), and
+decoding through PowerShell/.NET would start a script host per photo (slow, and the kind
+of process antivirus watches) with no way to lock it down. A helper is a few hundred
+lines of C that imports only Windows' own DLLs.
+
+```
+main --bytes--> worker (sandboxed page)        reads ftyp/meta: ispe, clap, irot/imir, Exif;
+                                               100 MP check; EXIF text; asks for a decode
+main --the same original bytes--> heif-decode.exe (locked down, see below) --> PNG
+main --that PNG--> worker                      decodes it with Chromium, turns it upright if
+                                               the codec did not, scales, re-encodes
+main <-- checked twice (broker, main) -- one PNG or JPEG, no metadata
+```
+
+- Main never parses the photo or the helper's PNG: it hands the original bytes to the
+  helper (never anything the worker sent), counts the bytes coming back (at most 100 MB,
+  and they must start with a PNG signature), and gives them to the worker, whose answer is
+  checked by `reply.ts` like any image (real PNG/JPEG headers, dimensions, 5 MB).
+- The helper, before reading a byte of the photo: joins a Job Object of its own (no other
+  process may start in it, a memory ceiling equal to the worker's, 60 s of CPU, killed on an
+  unhandled exception, no desktop, clipboard, global atoms or other processes' USER
+  handles); lowers its token to Low integrity; turns on mitigations (no extension points, no
+  remote or Low-labelled DLLs, System32 first, no non-system fonts, strict handle checks).
+  If any step fails it decodes nothing and reports the step.
+- Only WIC's HEIF decoder sees the bytes (`CreateDecoder(GUID_ContainerFormatHeif)`); the
+  frame size the decoder reports is checked against 100 MP before any pixel is asked for
+  (the worker already checked `ispe`); the image is scaled to the request's long edge by
+  WIC and written as a 24-bit PNG with no metadata. Main kills it at the 30 s timeout.
+- One report line on stderr (`heif-decode:1 ok width=… height=…`, `… error=<step>
+code=0x…`, `… probe heif=0|1 hevc=0|1`), parsed strictly; anything else fails the job.
+- Orientation: reports disagree on whether WIC applies `irot`/`imir` itself (the more
+  recent say it does). The worker decides from the PNG: if a quarter turn should have
+  swapped portrait and landscape and did not, it turns the image itself
+  (`remainingTurn`); a turn that keeps the shape (180°, a mirror) is taken as applied.
+- Codec detection: `heif-decode.exe --probe`, under the same lockdown, checks for WIC's
+  HEIF decoder and for an HEVC decoder MFT (`MFTEnumEx`). Done once per session
+  (`SystemImageDecoder.support()`), never throws (any failure is "not available, because
+  …"), logged once, and shown on HEIC chips. Without the codecs a HEIC photo is refused
+  with `unsupported` and what to install: "This photo is HEIC. Install “HEIF Image
+  Extensions” and “HEVC Video Extensions” from the Microsoft Store, or export it as JPEG,
+  and try again." (or just the one that is missing). On Linux and macOS: "… can decode
+  only on Windows …". With `view: 'text'` (attachments for a model without vision) the
+  metadata is still read, and nothing is decoded.
+- `heif-decode.exe --decode --format jpeg` uses WIC's JPEG decoder instead: the Windows CI
+  runner has no Store codecs, so that is how the whole decode path is tested there.
 
 ## Sandbox
 
@@ -168,7 +228,9 @@ read_document with range: "Sales!A21:D60" to continue.]`), notes, and the last l
   `include_location`. The audit entry records `includeLocation` when it was asked for and
   `locationRead: true` when a location was actually returned, plus the kind and image
   count (`RunResult.audit`, merged into the entry's args by `defineTool`).
-- HEIC, AVIF and RTF are answered with a "not supported yet" error (`unsupported`), .ppt,
+- HEIC (where Windows' codecs are installed) and AVIF read like any photo; HEIC without
+  the codecs, or off Windows, is an `unsupported` error saying what to install. RTF is
+  answered with a "not supported yet" error (`unsupported`), .ppt,
   .xlsb and Word 95 with "save it as ..."; text files are pointed to `read_file` (CSV and
   TSV are read as tables), and `read_file`'s binary refusal points PDFs, images and
   Office files to `read_document`. The audit entry records `sheet`, `range` and
@@ -245,3 +307,20 @@ part, 10,000 cells per call, a 20 x 30 preview per sheet, 200 sheets listed.
   posts transferred ArrayBuffers, oversized and over-count replies, floods and junk:
   each job fails, main's event loop keeps turning, the broker and window are gone,
   and the next job works. Runs on Linux and Windows CI.
+- HEIC and AVIF: `heif.test.ts` (the container reader on real photos from
+  `heif-fixtures.test-util.ts`, irot/imir, truncation and random corruption), `extract`
+  (the decode request, the 100 MP refusal before any decode, AVIF in the worker,
+  `remainingTurn`), `reply` (a decode request only for HEIC, within limits), `worker-host`
+  (the original bytes to the decoder, the PNG back through the worker, a missing codec, a
+  caller cannot pass `systemDecoded`), `system-heif.test.ts` (non-Windows, each missing
+  package, the probe cached and never throwing, the decoder re-verified before each
+  decode, every reported failure, bad output, and the spawner against a real child
+  process). On Windows CI, `heif-decode.test.ts` runs the real exe: pin, probe (logged),
+  the codec-missing path, and the whole decode path with WIC's JPEG decoder (scaling, the
+  pixel cap, input cap, bad arguments); the installer job checks the packaged one. In
+  real Electron, `e2e/document-worker.spec.ts` decodes AVIF upright, refuses HEIC with the
+  platform's reason (or decodes it where the codecs are installed), refuses over-100 MP
+  headers, and turns a stand-in codec's stored-orientation PNG upright exactly once.
+- Manual (Windows with the codecs, which CI cannot have): attach an iPhone portrait photo
+  (`.HEIC`) to a chat with a vision model, and call `read_document` on one: it comes back
+  upright, with capture time and camera as text, and `include_location` adds GPS.

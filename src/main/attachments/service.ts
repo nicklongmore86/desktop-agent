@@ -7,6 +7,7 @@ import {
   ATTACHMENT_LIMITS,
   type AttachmentKind,
   type AttachmentRef,
+  type HeicSupport,
 } from '../../shared/attachments'
 import {
   ATTACHMENT_MAX_NAME,
@@ -51,6 +52,13 @@ export interface AttachmentsServiceDeps {
   runUserAction: (tool: AgentTool, input: unknown) => Promise<ToolResult>
   now?: () => number
   onAuditFailure?: (error: unknown) => void
+  /** Whether HEIC photos can be decoded here (the document reader's system decoder). */
+  heicSupport?: () => Promise<HeicSupport>
+}
+
+const NO_HEIC: HeicSupport = {
+  supported: false,
+  reason: 'HEIC photos cannot be decoded in this session. Export it as JPEG and try again.',
 }
 
 /** Ids issued this session that "Copy into folder…" can still use; the oldest are forgotten first. */
@@ -303,6 +311,8 @@ export function createAttachmentsService(deps: AttachmentsServiceDeps): Attachme
       return outcomes
     },
     fromPaste: (bytes, _mime, name) => audited('paste', () => attachPaste(bytes, name)),
+    heicSupport: () =>
+      (deps.heicSupport?.() ?? Promise.resolve(NO_HEIC)).catch((): HeicSupport => NO_HEIC),
     async copyIntoFolder(id: string, folder: FileLocation): Promise<CopyIntoFolderResult> {
       const source = isAttachmentId(id) ? sources.get(id) : undefined
       if (!source)

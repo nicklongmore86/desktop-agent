@@ -40,6 +40,8 @@ const READABLE = new Set<DocumentKind>([
   'webp',
   'bmp',
   'tiff',
+  'avif',
+  'heic',
   'docx',
   'xlsx',
   'pptx',
@@ -80,7 +82,8 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
   return {
     name: 'read_document',
     description:
-      'Read a PDF, an image (JPEG, PNG, GIF, WebP, BMP, TIFF), a Word document (.docx, best ' +
+      'Read a PDF, an image (JPEG, PNG, GIF, WebP, BMP, TIFF, AVIF, and HEIC on Windows with ' +
+      "Microsoft's HEIF and HEVC codecs), a Word document (.docx, best " +
       'effort for .doc), an Excel workbook (.xlsx, .xlsm, .xls) or CSV, a PowerPoint ' +
       'presentation (.pptx) or an OpenDocument file (.odt, .ods, .odp) inside the granted ' +
       'folders. Returns a header and the text: PDFs page by page (drawn or scanned pages and ' +
@@ -93,7 +96,7 @@ export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {
       `into part of a PDF page (up to ${String(DOCUMENT_LIMITS.maxRegionScale)}x) for small ` +
       'print or drawing detail. Photos are returned upright with their metadata removed; the ' +
       'capture time and camera come back as text, the location only with include_location. ' +
-      'Macros are never run. HEIC, AVIF and .ppt are not supported. Use read_file for other ' +
+      'Macros are never run. .ppt is not supported. Use read_file for other ' +
       'text files.',
     inputSchema: {
       type: 'object',

@@ -19,5 +19,6 @@ export const attachmentsApi = (invoke: Invoke): AttachmentsApi => ({
         : invoke(attachmentsChannels.attachmentsFromPaste, bytes, mime, name),
     copyIntoFolder: (id, folder) =>
       invoke(attachmentsChannels.attachmentsCopyIntoFolder, id, folder),
+    heicSupport: () => invoke(attachmentsChannels.attachmentsHeicSupport),
   },
 })

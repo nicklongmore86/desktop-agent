@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BUILD_MANIFEST, bundledPin, pinMarker } from './job-helper.mjs'
+import { BUILD_MANIFEST, bundledPin, HEIF_DECODE, pinMarker } from './job-helper.mjs'
 
 const PIN = 'a'.repeat(64)
 const OTHER = 'b'.repeat(64)
@@ -160,6 +160,24 @@ describe('bundledPin', () => {
       launcher(PIN) + `const again = "${pinMarker(PIN)}";\n`,
     )
     await expect(bundledPin(root)).rejects.toThrow(/pin marker 2 times/)
+  })
+
+  it("finds each helper's pin by its own marker", async () => {
+    await entry()
+    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
+    const heif = `const HEIF_DECODE_SHA256 = ${JSON.stringify(pinMarker(OTHER, HEIF_DECODE))};\n`
+    await write('out/main/chunks/index-x.js', launcher(PIN) + heif)
+    await expect(bundledPin(root)).resolves.toBe(PIN)
+    await expect(bundledPin(root, HEIF_DECODE)).resolves.toBe(OTHER)
+  })
+
+  it('fails when the heif-decode.exe pin is missing, even with the job-run.exe one', async () => {
+    await entry()
+    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
+    await write('out/main/chunks/index-x.js', launcher(PIN))
+    await expect(bundledPin(root, HEIF_DECODE)).rejects.toThrow(
+      'The app was built without the heif-decode.exe pin',
+    )
   })
 
   it('fails when the pin is missing', async () => {

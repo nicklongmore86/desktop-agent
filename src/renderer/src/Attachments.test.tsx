@@ -134,6 +134,51 @@ describe('chips above the composer', () => {
     expect(api.connections.vision).toHaveBeenCalledWith('anthropic-api')
   })
 
+  it('greys a HEIC chip with what to install when the codec is missing, and not when it is there', async () => {
+    const vision = {
+      enabled: true,
+      source: 'connection' as const,
+      setting: false,
+      configurable: false,
+    }
+    const photos = [
+      attachment(ref(1, { name: 'IMG_0001.HEIC', kind: 'document', mime: 'image/heic' })),
+      attachment(ref(2, { name: 'IMG_0002.avif', kind: 'document', mime: 'image/avif' })),
+    ]
+    const reason =
+      'This photo is HEIC. Install “HEIF Image Extensions” and “HEVC Video Extensions” from the Microsoft Store, or export it as JPEG, and try again.'
+    const missing = await renderApp({
+      vision: { 'anthropic-api': vision },
+      heicSupport: { supported: false, reason },
+    })
+    missing.api.attachments.pick.mockResolvedValueOnce(photos)
+    await missing.user.click(screen.getByRole('button', { name: 'Attach files' }))
+    let list = await screen.findByRole('list', { name: 'Attached files' })
+    await waitFor(() => {
+      expect(within(list).getAllByRole('listitem')[0]?.getAttribute('title')).toContain(reason)
+    })
+    expect(within(list).getAllByRole('listitem')[0]?.className).toContain('attachment-chip-muted')
+    // AVIF is decoded by Chromium itself.
+    expect(within(list).getAllByRole('listitem')[1]?.className).not.toContain(
+      'attachment-chip-muted',
+    )
+    missing.unmount()
+
+    const present = await renderApp({
+      vision: { 'anthropic-api': vision },
+      heicSupport: { supported: true },
+    })
+    present.api.attachments.pick.mockResolvedValueOnce(photos)
+    await present.user.click(screen.getByRole('button', { name: 'Attach files' }))
+    list = await screen.findByRole('list', { name: 'Attached files' })
+    await waitFor(() => {
+      expect(within(list).getAllByRole('listitem')[0]?.className).not.toContain(
+        'attachment-chip-muted',
+      )
+    })
+    expect(present.api.attachments.heicSupport).toHaveBeenCalled()
+  })
+
   it('offers "Copy into folder…" on a snapshot from outside the grants', async () => {
     const { api, user } = await renderApp()
     const outside = ref(3, { name: 'report.txt' })

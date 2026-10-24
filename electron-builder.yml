@@ -25,10 +25,11 @@ extraResources:
   - from: build/runtime-bundle
     to: runtimes
     filter: ['**/*']
-  # job-run.exe, built by `pnpm build:helpers`; checked against its pin after packing.
+  # job-run.exe and heif-decode.exe, built by `pnpm build:helpers`; checked against their
+  # pins after packing.
   - from: build/helpers
     to: helpers
-    filter: ['job-run.exe']
+    filter: ['job-run.exe', 'heif-decode.exe']
   # This project's own license; third-party notices are staged under runtimes/notices.
   - from: LICENSE
     to: LICENSE

@@ -1,3 +1,4 @@
+import { HEIC_NO_CODEC } from '../documents/system-heif'
 import { init, type WrappedPdfiumModule } from '@embedpdf/pdfium'
 import { promises as fs, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -320,13 +321,6 @@ describe('read_document', () => {
 
   it('says clearly what is not supported yet', async () => {
     const answers: Record<string, DocumentView> = {
-      'IMG.heic': {
-        ...pdfView({ sections: [], images: [] }),
-        meta: { kind: 'heic', mime: 'image/heic' },
-        warnings: [
-          'HEIC/HEIF images are not supported yet. Convert it to JPEG or PNG and try again.',
-        ],
-      },
       'notes.rtf': {
         ...pdfView({ sections: [], images: [] }),
         meta: { kind: 'rtf', mime: 'application/rtf' },
@@ -344,7 +338,34 @@ describe('read_document', () => {
       })
       expect(r.images).toBeUndefined()
     }
-    expect(h.audit.entries.map((entry) => entry.error)).toEqual(['unsupported', 'unsupported'])
+    expect(h.audit.entries.map((entry) => entry.error)).toEqual(['unsupported'])
+  })
+
+  it('reads a HEIC photo like any other, and says what to install when it cannot', async () => {
+    const heic = {
+      ...photoView(false),
+      meta: { kind: 'heic' as const, mime: 'image/heic', width: 3024, height: 4032 },
+    }
+    const { reader } = fakeReader(() => heic)
+    h = toolHarness(sb, { documents: reader })
+    const file = path.join(sb.root, 'IMG_0001.HEIC')
+    await put(file, 'ftyp')
+    const r = await run({ path: file })
+    expect(r.isError).toBeFalsy()
+    expect(r.content).toContain('HEIC/HEIF image')
+    expect(r.content).toContain('Camera: Pixel 9')
+    expect(r.images).toHaveLength(1)
+    expect(h.audit.entries[0]?.args).toMatchObject({ extra: { kind: 'heic', imageCount: 1 } })
+
+    const missing = fakeReader(() => {
+      throw new DocumentError('unsupported', HEIC_NO_CODEC)
+    })
+    h = toolHarness(sb, { documents: missing.reader })
+    const refused = await run({ path: file })
+    expect(refused).toMatchObject({ isError: true })
+    expect(refused.content).toContain('Install “HEIF Image Extensions” and “HEVC Video Extensions”')
+    expect(refused.content).toContain('or export it as JPEG')
+    expect(h.audit.entries.at(-1)?.error).toBe('unsupported')
   })
 
   it('passes on a reader refusal such as an old PowerPoint file', async () => {

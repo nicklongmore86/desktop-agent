@@ -46,38 +46,51 @@ export interface VerifyOptions {
  * link) whose real path is exactly that location, outside every granted folder, and
  * whose SHA-256 matches the compiled-in pin. It is never looked up on PATH.
  */
-export async function verifyJobLauncher(options: VerifyOptions): Promise<JobLauncher> {
+export function verifyJobLauncher(options: VerifyOptions): Promise<JobLauncher> {
+  return verifyPinnedHelper(options, JOB_RUN_PATH)
+}
+
+/**
+ * A helper bundled under resources (`file`, e.g. helpers\heif-decode.exe), checked the same
+ * way as job-run.exe: a regular file at exactly that real path, outside every granted
+ * folder, matching its compiled-in pin.
+ */
+export async function verifyPinnedHelper(
+  options: VerifyOptions,
+  file: readonly string[],
+): Promise<JobLauncher> {
   const { resources, sha256, platform } = options
-  if (!resources) return { ok: false, reason: 'job-run.exe is only bundled with the installed app' }
-  if (!sha256) return { ok: false, reason: 'this build has no pinned job-run.exe' }
+  const name = file.at(-1) ?? 'helper'
+  if (!resources) return { ok: false, reason: `${name} is only bundled with the installed app` }
+  if (!sha256) return { ok: false, reason: `this build has no pinned ${name}` }
   const P = platform === 'win32' ? path.win32 : path.posix
-  const expected = P.join(resources, ...JOB_RUN_PATH)
+  const expected = P.join(resources, ...file)
   let real: string
   let bytes: Buffer
   try {
     if (!(await fs.lstat(expected)).isFile()) {
-      return { ok: false, reason: 'job-run.exe is not a regular file' }
+      return { ok: false, reason: `${name} is not a regular file` }
     }
     real = await fs.realpath(expected)
     const realResources = await fs.realpath(resources)
-    if (!samePath(real, P.join(realResources, ...JOB_RUN_PATH), platform)) {
-      return { ok: false, reason: "job-run.exe resolves outside the app's resources folder" }
+    if (!samePath(real, P.join(realResources, ...file), platform)) {
+      return { ok: false, reason: `${name} resolves outside the app's resources folder` }
     }
     bytes = await fs.readFile(real)
   } catch {
-    return { ok: false, reason: 'job-run.exe is missing or unreadable' }
+    return { ok: false, reason: `${name} is missing or unreadable` }
   }
   if (options.grantedRoots().some((root) => isInside(real, root, platform))) {
-    return { ok: false, reason: 'job-run.exe is inside a granted folder' }
+    return { ok: false, reason: `${name} is inside a granted folder` }
   }
   if (createHash('sha256').update(bytes).digest('hex') !== sha256) {
-    return { ok: false, reason: 'job-run.exe failed its integrity check' }
+    return { ok: false, reason: `${name} failed its integrity check` }
   }
   return { ok: true, path: real }
 }
 
 /** The installed app's resources folder (it holds app.asar), or null in development. */
-function installedResources(): string | null {
+export function installedResources(): string | null {
   const resources = (process as { resourcesPath?: string }).resourcesPath
   return resources && existsSync(path.join(resources, 'app.asar')) ? resources : null
 }

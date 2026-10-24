@@ -579,6 +579,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
     fromPaste: () => Promise.resolve({ ok: false, code: 'binary', reason: 'Not attached.' }),
     copyIntoFolder: () => Promise.resolve({ ok: false, reason: 'Not copied.' }),
+    heicSupport: () => Promise.resolve({ supported: false, reason: 'No HEIC codec.' }),
   },
   projects: {
     state: () => Promise.resolve(projectsState()),

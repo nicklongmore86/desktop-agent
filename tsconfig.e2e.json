@@ -13,6 +13,8 @@
     "src/shared/attachments.ts",
     "src/main/documents/fixtures.test-util.ts",
     "src/main/documents/office-fixtures.test-util.ts",
+    "src/main/documents/heif-fixtures.test-util.ts",
+    "src/main/documents/heif.ts",
     "src/main/documents/exif.ts",
     "src/main/documents/limits.ts",
     "src/main/documents/types.ts"

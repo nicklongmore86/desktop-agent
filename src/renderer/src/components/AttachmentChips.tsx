@@ -13,6 +13,7 @@ import {
   type StagedAttachment,
 } from '../attachments/model'
 import { thumbnailFor } from '../attachments/thumbnails'
+import { useHeicSupport } from '../attachments/use-heic'
 
 function KindIcon({ kind }: { kind: AttachmentKind }): React.JSX.Element {
   const common = {
@@ -56,6 +57,8 @@ interface ChipProps {
   available?: boolean
   /** The connection cannot receive this kind yet. */
   unsupported?: boolean
+  /** Why not, for the tooltip (the kind's general note by default). */
+  unsupportedNote?: string | undefined
   /** Staged chips only. */
   onRemove?: () => void
   /** A snapshot from outside the granted folders: offers to copy it into one. */
@@ -67,6 +70,7 @@ export function AttachmentChip({
   attachment,
   available = true,
   unsupported = false,
+  unsupportedNote,
   onRemove,
   onCopyIntoFolder,
 }: ChipProps): React.JSX.Element {
@@ -74,7 +78,7 @@ export function AttachmentChip({
   const note = !available
     ? ATTACHMENT_UNAVAILABLE
     : unsupported
-      ? notReceivedNote(attachment.kind)
+      ? (unsupportedNote ?? notReceivedNote(attachment.kind))
       : undefined
   const size = formatSize(attachment.size)
   return (
@@ -143,6 +147,7 @@ export function StagedChips({
   onRemove: (id: string) => void
   onCopyIntoFolder: (id: string) => void
 }): React.JSX.Element | null {
+  const heic = useHeicSupport()
   if (staged.length === 0) return null
   const nearLimit =
     staged.length >= ATTACHMENT_LIMITS.maxPerMessage - 2 ||
@@ -154,7 +159,8 @@ export function StagedChips({
           <AttachmentChip
             key={attachment.id}
             attachment={attachment}
-            unsupported={!canReceive(attachment.kind, vision, attachment.mime)}
+            unsupported={!canReceive(attachment.kind, vision, attachment.mime, heic)}
+            unsupportedNote={notReceivedNote(attachment.kind, vision, attachment.mime, heic)}
             onRemove={() => {
               onRemove(attachment.id)
             }}

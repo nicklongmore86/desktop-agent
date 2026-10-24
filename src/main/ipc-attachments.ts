@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ATTACHMENT_ID_PATTERN } from '../shared/attachments'
+import { ATTACHMENT_ID_PATTERN, type HeicSupport } from '../shared/attachments'
 import {
   ATTACHMENT_MAX_MIME,
   ATTACHMENT_MAX_NAME,
@@ -19,6 +19,7 @@ export interface AttachmentsService {
   pick: () => Promise<AttachOutcome[]>
   fromPaste: (bytes: Uint8Array, mime: string, name?: string) => Promise<AttachOutcome>
   copyIntoFolder: (id: string, folder: FileLocation) => Promise<CopyIntoFolderResult>
+  heicSupport: () => Promise<HeicSupport>
 }
 
 // The path is checked in full by the service (checkSource); here only its type and length.
@@ -55,6 +56,8 @@ export function registerAttachmentsHandlers(
       ? attachments.fromPaste(bytes, parsedMime.data)
       : attachments.fromPaste(bytes, parsedMime.data, parsedName.data)
   })
+  // Takes no arguments.
+  handle(attachmentsChannels.attachmentsHeicSupport, () => attachments.heicSupport())
   handle(attachmentsChannels.attachmentsCopyIntoFolder, (id, folder) => {
     const parsedId = idSchema.safeParse(id)
     const parsedFolder = locationSchema.safeParse(folder)

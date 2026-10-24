@@ -21,6 +21,23 @@ export const READABLE_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   'application/vnd.ms-excel',
 ])
 
+/**
+ * Photos the document reader converts for a model that can see images: AVIF (decoded by
+ * Chromium) and HEIC/HEIF (decoded by Windows' own codec, when it is installed; see
+ * HeicSupport). TIFF and BMP are still sent as their names only.
+ */
+export const CONVERTIBLE_PHOTO_MIMES: ReadonlySet<string> = new Set([
+  'image/heic',
+  'image/heif',
+  'image/avif',
+])
+
+/** HEIC and HEIF: decoded only where Windows' codec is installed. */
+export const HEIC_MIMES: ReadonlySet<string> = new Set(['image/heic', 'image/heif'])
+
+/** Whether HEIC photos can be decoded here; `reason` says what to do when not. */
+export type HeicSupport = { supported: true } | { supported: false; reason: string }
+
 export interface AttachmentSource {
   /** Id of the original attachment this one was derived from (e.g. a rendered PDF page). */
   id: string

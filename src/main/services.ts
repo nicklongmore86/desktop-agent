@@ -15,6 +15,7 @@ import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
 import { createAttachmentsService } from './attachments/service'
 import type { DocumentReader } from './documents/types'
+import type { HeicSupport } from '../shared/attachments'
 import type { ImageScaler } from './attachments/image'
 import { AttachmentStore } from './attachments/store'
 import { createOrganizer } from './chat/organizer'
@@ -64,6 +65,8 @@ export interface AppServiceDeps {
    * for read_document and PDF attachments. Without one, both say reading is unavailable.
    */
   documents?: DocumentReader
+  /** Whether HEIC photos can be decoded (the document reader's system decoder). */
+  heicSupport?: () => Promise<HeicSupport>
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
@@ -261,6 +264,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     pickFiles: deps.pickFiles ?? (() => Promise.resolve([])),
     runUserAction: (tool, input) => chat.runUserAction(tool, input),
     onAuditFailure: reportAudit,
+    ...(deps.heicSupport ? { heicSupport: deps.heicSupport } : {}),
   })
 
   const metadataResult = async <T>(operation: () => Promise<T>): Promise<ProviderResult<T>> => {

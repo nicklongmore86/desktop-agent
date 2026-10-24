@@ -81,11 +81,29 @@ export const encodeRaster: EncodeRaster = (rgba, width, height, maxBytes) =>
   )
 
 /**
- * Decodes with Chromium's codecs, applying EXIF orientation, then scales to fit
- * `longEdge` (never up) and re-encodes from the canvas. The canvas holds only pixels,
- * so the output carries no EXIF, GPS or other metadata from the original.
+ * The canvas transform that draws a `width` x `height` picture turned by an EXIF
+ * orientation (2-8) onto a canvas of the turned size.
  */
-export const decodeImage: DecodeImage = async (bytes, kind, longEdge, maxBytes) => {
+const TURNS: Record<
+  number,
+  (w: number, h: number) => [number, number, number, number, number, number]
+> = {
+  2: (w) => [-1, 0, 0, 1, w, 0],
+  3: (w, h) => [-1, 0, 0, -1, w, h],
+  4: (_w, h) => [1, 0, 0, -1, 0, h],
+  5: () => [0, 1, 1, 0, 0, 0],
+  6: (_w, h) => [0, 1, -1, 0, h, 0],
+  7: (w, h) => [0, -1, -1, 0, h, w],
+  8: (w) => [0, -1, 1, 0, 0, w],
+}
+
+/**
+ * Decodes with Chromium's codecs, applying EXIF orientation (and `turn`, for pixels a
+ * system codec left as stored), then scales to fit `longEdge` (never up) and re-encodes
+ * from the canvas. The canvas holds only pixels, so the output carries no EXIF, GPS or
+ * other metadata from the original.
+ */
+export const decodeImage: DecodeImage = async (bytes, kind, longEdge, maxBytes, turn = 1) => {
   const source = await createImageBitmap(new Blob([bytes as Uint8Array<ArrayBuffer>]), {
     imageOrientation: 'from-image',
   })
@@ -93,12 +111,15 @@ export const decodeImage: DecodeImage = async (bytes, kind, longEdge, maxBytes) 
     const scale = Math.min(1, longEdge / Math.max(source.width, source.height))
     const width = Math.max(1, Math.round(source.width * scale))
     const height = Math.max(1, Math.round(source.height * scale))
+    const transform = TURNS[turn]
+    const swapped = transform !== undefined && turn >= 5
     return await encodeCanvas(
-      (context, w, h) => {
-        context.drawImage(source, 0, 0, w, h)
+      (context) => {
+        if (transform) context.transform(...transform(width, height))
+        context.drawImage(source, 0, 0, width, height)
       },
-      width,
-      height,
+      swapped ? height : width,
+      swapped ? width : height,
       maxBytes,
       kind === 'jpeg',
     )

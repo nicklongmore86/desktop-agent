@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { build as viteBuild, type Plugin } from 'vite'
 // @ts-expect-error -- a plain .mjs build script without type declarations
-import { BUILD_MANIFEST, pinMarker, readPin } from './scripts/job-helper.mjs'
+import { BUILD_MANIFEST, HEIF_DECODE, pinMarker, readPin } from './scripts/job-helper.mjs'
 import { buildCsp } from './src/shared/csp'
 
 // lowlight's package `exports` hides lib/, so resolve its entry point and step to lib/ beside it.
@@ -135,11 +135,17 @@ function buildManifestPlugin(): Plugin {
 
 export default defineConfig({
   main: {
-    // job-run.exe's digest from `pnpm build:helpers` (Windows) as a unique marker string, or
-    // none: see job-launcher.ts.
+    // The helpers' digests from `pnpm build:helpers` (Windows) as unique marker strings, or
+    // none: see job-launcher.ts and documents/system-heif.ts.
     define: {
       __JOB_RUN_PIN__: JSON.stringify(
         (pinMarker as (pin: string | null) => string | null)((readPin as () => string | null)()),
+      ),
+      __HEIF_DECODE_PIN__: JSON.stringify(
+        (pinMarker as (pin: string | null, helper: unknown) => string | null)(
+          (readPin as (helper: unknown) => string | null)(HEIF_DECODE),
+          HEIF_DECODE,
+        ),
       ),
     },
     plugins: [buildManifestPlugin(), documentWorkerPlugin()],

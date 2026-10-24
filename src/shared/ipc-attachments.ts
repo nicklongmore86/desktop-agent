@@ -9,7 +9,7 @@
  * sends a path back: the one path that crosses IPC is the dropped file's, which the
  * preload reads from the File itself (`webUtils.getPathForFile`).
  */
-import type { AttachmentRef } from './attachments'
+import type { AttachmentRef, HeicSupport } from './attachments'
 import type { FileLocation } from './ipc-files'
 
 export const attachmentsChannels = {
@@ -17,6 +17,7 @@ export const attachmentsChannels = {
   attachmentsPick: 'attachments:pick',
   attachmentsFromPaste: 'attachments:from-paste',
   attachmentsCopyIntoFolder: 'attachments:copy-into-folder',
+  attachmentsHeicSupport: 'attachments:heic-support',
 } as const
 
 /** Biggest paste (clipboard image or file bytes) the bridge sends; main checks it again. */
@@ -72,6 +73,8 @@ export interface AttachmentsApi {
      * `@"path"` reference.
      */
     copyIntoFolder: (id: string, folder: FileLocation) => Promise<CopyIntoFolderResult>
+    /** Whether HEIC photos can be decoded on this computer (checked once per session). */
+    heicSupport: () => Promise<HeicSupport>
   }
 }
 
