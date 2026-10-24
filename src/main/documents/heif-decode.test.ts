@@ -60,6 +60,9 @@ function exe(args: string[], input: Uint8Array) {
     stderr: result.stderr.toString('latin1'),
   }
 }
+/** The exit status and stderr, for an assertion's message. */
+const described = (result: ReturnType<typeof exe>) =>
+  `exit ${String(result.status)}, stderr ${JSON.stringify(result.stderr)}`
 const decodeArgs = (format: string, longEdge = 1568, maxPixels = 100_000_000) => [
   '--decode',
   '--format',
@@ -142,11 +145,11 @@ describe.runIf(process.platform === 'win32')('heif-decode.exe', () => {
   })
 
   it('refuses bad input and bad arguments cleanly', () => {
-    expect(exe(decodeArgs('jpeg'), new Uint8Array([1, 2, 3])).report).toMatchObject({
-      kind: 'error',
-    })
+    const garbage = exe(decodeArgs('jpeg'), new Uint8Array([1, 2, 3]))
+    expect(garbage.report, described(garbage)).toMatchObject({ kind: 'error' })
     // The JPEG decoder only ever sees the bytes it is told to: a JPEG is not HEIF.
-    expect(exe(decodeArgs('heif'), PLAIN_JPEG).report).toMatchObject({ kind: 'error' })
+    const notHeif = exe(decodeArgs('heif'), PLAIN_JPEG)
+    expect(notHeif.report, described(notHeif)).toMatchObject({ kind: 'error' })
     const tooBig = exe(
       [
         ...decodeArgs('jpeg').slice(0, 7),
@@ -157,7 +160,10 @@ describe.runIf(process.platform === 'win32')('heif-decode.exe', () => {
       ],
       PLAIN_JPEG,
     )
-    expect(tooBig.report).toMatchObject({ kind: 'error', step: 'input-too-large' })
+    expect(tooBig.report, described(tooBig)).toMatchObject({
+      kind: 'error',
+      step: 'input-too-large',
+    })
     for (const args of [
       [],
       ['--decode'],
@@ -165,7 +171,8 @@ describe.runIf(process.platform === 'win32')('heif-decode.exe', () => {
       [...decodeArgs('jpeg'), '--extra'],
       decodeArgs('jpeg').map((arg) => (arg === '1568' ? '-1' : arg)),
     ]) {
-      expect(exe(args, PLAIN_JPEG).report).toMatchObject({ kind: 'error', step: 'usage' })
+      const result = exe(args, PLAIN_JPEG)
+      expect(result.report, described(result)).toMatchObject({ kind: 'error', step: 'usage' })
     }
   })
 })
