@@ -54,10 +54,10 @@ describe('chip text', () => {
     expect(formatSize(20 * 1024 * 1024)).toBe('20 MB')
   })
 
-  it('says only text files reach the model today', () => {
+  it('says text files and PDFs reach the model today', () => {
     expect(canReceive('text')).toBe(true)
     expect(canReceive('image', 'anthropic-api')).toBe(false)
-    expect(canReceive('pdf')).toBe(false)
+    expect(canReceive('pdf')).toBe(true)
     expect(canReceive('document')).toBe(false)
   })
 })

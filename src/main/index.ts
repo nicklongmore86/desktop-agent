@@ -14,6 +14,7 @@ import { filesPushChannels } from '../shared/ipc-files'
 import { gitPushChannels } from '../shared/ipc-git'
 import { nativeImageScaler } from './attachments/native-image'
 import { cancelOnPageEnd } from './chat/lifecycle'
+import { DocumentWorkerHost, documentWorkerPaths } from './documents/worker-host'
 import { registerIpcHandlers } from './ipc-handlers'
 import { isTrustedIpcSender } from './security'
 import { createAppServices } from './services'
@@ -61,7 +62,13 @@ app.on('second-instance', () => {
 
 void app.whenReady().then(async () => {
   hardenSessions()
+  // One sandboxed document reader for the app: read_document and PDF attachments share it.
+  const documents = new DocumentWorkerHost(documentWorkerPaths(__dirname))
+  app.on('will-quit', () => {
+    void documents.dispose()
+  })
   const services = await createAppServices({
+    documents,
     userData: app.getPath('userData'),
     openUrl: (url) => shell.openExternal(url),
     // Electron 44's main-process clipboard.writeText resolves once the text is written.

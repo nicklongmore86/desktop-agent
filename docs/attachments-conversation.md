@@ -54,10 +54,11 @@ interface AttachmentStoreLike {
 
 ## What models receive
 
-Before a run, `toModelConversation` (`src/main/chat/attachments.ts`) turns every attachment block into a text block, for every provider (Claude API, Claude and Codex subscriptions, ChatGPT plan, OpenAI-compatible, Gemini):
+Before a run, `toModelConversation` (`src/main/chat/attachments.ts`) turns every attachment block into text blocks (and, for a PDF's drawn pages, image blocks where allowed), for every provider (Claude API, Claude and Codex subscriptions, ChatGPT plan, OpenAI-compatible, Gemini):
 
 - a text file the store can `read` is inlined in a fenced block, introduced as user-provided, untrusted file data; the fence is longer than any backtick run in the file;
-- anything else (images, PDFs and documents, until extraction and per-provider translators land) is the placeholder `[Attached file (user-provided, untrusted): name, kind, size — not sent to this model yet]`;
+- a PDF is read by the document reader (see `docs/document-reader.md`): its text page by page in a fenced block marked the same way, and its drawn or scanned pages as image blocks where the connection's requests carry images (the Claude API today) or a note in their place; one that cannot be read becomes `[Attached file (user-provided, untrusted): name, pdf, size — could not be read: reason]`;
+- anything else (images and documents, until per-provider translators and Office extraction land) is the placeholder `[Attached file (user-provided, untrusted): name, kind, size — not sent to this model yet]`;
 - a file the store no longer holds is `[Attachment no longer available (user-provided, untrusted): …]`.
 
 The saved history keeps the attachment blocks; only the request copy is translated.

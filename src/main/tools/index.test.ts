@@ -20,6 +20,7 @@ describe('createTools', () => {
       'list_granted_folders',
       'list_dir',
       'read_file',
+      'read_document',
       'search_files',
       'write_file',
       'move_file',

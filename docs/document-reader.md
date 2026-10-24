@@ -1,8 +1,8 @@
 # Document reader
 
-`src/main/documents/` reads documents and images for the agent. This first part is the
-parser and its sandbox; the `read_document` tool, attachments and sending images to
-providers come later.
+`src/main/documents/` reads documents and images for the agent: the parser and its
+sandbox (below), used by the `read_document` tool and by PDF attachments. Sending images
+to every provider comes later; Office documents come next.
 
 ## Shape
 
@@ -80,6 +80,46 @@ The worker page is built by a nested Vite build in `electron.vite.config.ts` int
 `out/document-worker/`; `out/main/documents.js`, `out/main/document-broker.js` and
 `out/preload/document-worker.js` are extra entries. Packaging needs nothing new: `files: out/**/*` covers them.
 
+## The `read_document` tool
+
+`src/main/tools/read-document.ts`, registered for every connection with the other file
+tools. Read-only like `read_file`: no approval, but every call is audited.
+
+- Input: `path`; one of `pages` (`"3"`, `"2-5"`, `"10-"`), `start` (the page a previous
+  call named) or `region` (`{page, x, y, width, height}` as fractions of the page, zoomed
+  up to 8x); `include_location`.
+- The path goes through the same guard as `read_file` (granted folders, realpath, the
+  secret and protected-path blocklist) and is opened with `openVerified` (no links, one
+  hard link, the handle re-checked); the worker gets a copy of the bytes, never the path.
+- `content` is text: a header (path, type, size, pages, range shown, title, author), the
+  text page by page (pages also attached as images say so), notes, and the last line says
+  where to continue (`start: N`) or that the document ended. `images` (`ToolImage`) holds
+  rendered pages (`label: "page 3"`), a zoomed region, or the photo (upright, scaled,
+  re-encoded without EXIF/GPS); `content` makes sense without them.
+- Photos: capture time and camera come back as text; the location only with
+  `include_location`. The audit entry records `includeLocation` when it was asked for and
+  `locationRead: true` when a location was actually returned, plus the kind and image
+  count (`RunResult.audit`, merged into the entry's args by `defineTool`).
+- HEIC, AVIF, Office and other recognised formats are answered with a "not supported yet"
+  error (`unsupported`); text files are pointed to `read_file`, and `read_file`'s binary
+  refusal points PDFs and images to `read_document`.
+- Reader refusals and worker failures (timeout, crash, memory, a misbehaving worker)
+  become ordinary error results with an audit category (`unreadable`, `out-of-range`,
+  `timeout`, `worker-failed`, ...); the agent never sees an exception.
+
+The app owns one `DocumentWorkerHost` (`src/main/index.ts`), shared by the tool and PDF
+attachments and disposed on `will-quit`.
+
+## PDF attachments
+
+When a chat is sent, `toModelConversation` (`src/main/chat/attachments.ts`) reads each
+PDF attachment with the same host: its text page by page in a fenced block marked as
+user-provided, untrusted data, and pages with little or no text (drawings, scans) as
+image blocks for connections whose requests carry them (the Claude API today), a note in
+their place for the rest. Results are cached per attachment id (16 PDFs), so sending a
+chat again does not parse its PDFs again; a PDF that cannot be read is sent as a
+placeholder saying why. PDF chips are no longer greyed in the composer.
+
 ## Limits
 
 `limits.ts`: 100 MB per document; 100 megapixels per decoded or rendered image, checked
@@ -90,6 +130,11 @@ against the entry's declared size and an archive-wide budget.
 
 ## Tests
 
+- `read_document` (`src/main/tools/read-document.test.ts`, fake reader): output, ranges
+  and regions, photos and the GPS gate with its audit fields, unsupported types, clean
+  errors, and the guard (outside the grant, secret and protected files, symlink, hard
+  link, size). In real Electron, `e2e/read-document.spec.ts` runs the tool
+  (`out/main/tools.js`, built from `src/main/tools/e2e-entry.ts`) over the real worker.
 - Unit (Vitest, Node): `sniff`, `limits`, `zip`, `exif`, `extract` (real PDFium WASM
   with stand-in codecs, including the malformed corpus), `reply` (every limit) and
   `worker-host` (mocked Electron and broker: no port held by main, timeout, broker

@@ -14,6 +14,7 @@ import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from 
 import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
 import { createAttachmentsService } from './attachments/service'
+import type { DocumentReader } from './documents/types'
 import type { ImageScaler } from './attachments/image'
 import { AttachmentStore } from './attachments/store'
 import { createOrganizer } from './chat/organizer'
@@ -58,6 +59,11 @@ export interface AppServiceDeps {
   adapters?: readonly AdapterFactory[]
   /** Replaces the attachment store the chat uses (tests). Default: the store under userData/attachments. */
   attachments?: AttachmentStoreLike
+  /**
+   * The app's one document reader (DocumentWorkerHost; the caller disposes it on quit),
+   * for read_document and PDF attachments. Without one, both say reading is unavailable.
+   */
+  documents?: DocumentReader
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
@@ -96,6 +102,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     audit,
     trash: deps.trash,
     onAuditFailure: reportAudit,
+    ...(deps.documents ? { documents: deps.documents } : {}),
   })
 
   const files = createFilesService({
@@ -220,6 +227,10 @@ export async function createAppServices(deps: AppServiceDeps) {
     // Commands typed in the command bar go through this same tool (no other spawn path).
     ...(userShell ? { userShell } : {}),
     attachments: chatAttachments,
+    ...(deps.documents ? { documents: deps.documents } : {}),
+    // Only the Claude API request carries image blocks as they are; every other connection
+    // gets a note in place of a PDF page image until its translator sends images.
+    sendsImages: () => settings.connection === ANTHROPIC_API,
     pins,
     onSaveError: (error) => {
       console.error('could not save the conversation', error)

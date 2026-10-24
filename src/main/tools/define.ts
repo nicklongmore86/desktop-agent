@@ -27,6 +27,10 @@ export type ErrorCode =
   | 'timeout'
   | 'kill-failed'
   | 'spawn-failed'
+  | 'unsupported'
+  | 'unreadable'
+  | 'out-of-range'
+  | 'worker-failed'
   | 'failed'
 
 /** Thrown by tool bodies for expected failures; becomes an error result with this message. */
@@ -42,6 +46,8 @@ export class ToolFailure extends Error {
 /** A tool body's result: a ToolResult plus, for errors, the category to audit. */
 export interface RunResult extends ToolResult {
   code?: ErrorCode
+  /** Facts learned while running, added to the audit entry's args (never file contents). */
+  audit?: Record<string, unknown>
 }
 
 export function errorResult(message: string, code: ErrorCode): RunResult {
@@ -167,7 +173,10 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
       try {
         await deps.audit.record({
           tool: spec.name,
-          args: input === undefined ? { invalidInput: true } : spec.summarize(input, approval),
+          args:
+            input === undefined
+              ? { invalidInput: true }
+              : { ...spec.summarize(input, approval), ...result.audit },
           paths,
           approval,
           origin: ctx.origin ?? 'agent',
@@ -182,7 +191,10 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
           // Reporting the failure failed too; the call's result still stands.
         }
       }
-      if (!result.isError) return { content: result.content }
+      if (!result.isError)
+        return result.images?.length
+          ? { content: result.content, images: result.images }
+          : { content: result.content }
       return errorCode === 'declined'
         ? { content: result.content, isError: true, declined: true }
         : { content: result.content, isError: true }
@@ -227,6 +239,15 @@ export class InputReader {
       throw new ToolInputError(`"${key}" must be an integer from ${String(min)} to ${String(max)}.`)
     }
     return value
+  }
+
+  optionalObject(key: string): Record<string, unknown> | undefined {
+    const value = this.obj[key]
+    if (value === undefined) return undefined
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new ToolInputError(`"${key}" must be an object.`)
+    }
+    return value as Record<string, unknown>
   }
 
   optionalBoolean(key: string): boolean | undefined {

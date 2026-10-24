@@ -24,14 +24,17 @@ import {
   type ConversationStore,
   type StoredMessage,
 } from '../storage/conversation-store'
+import type { DocumentReader } from '../documents/types'
 import type { ConversationHistory } from '../storage/history-store'
 import {
   AttachmentPins,
+  cachedPdfReading,
   checkAttachments,
   requestedIds,
   toModelConversation,
   unavailableAttachments,
   type AttachmentStoreLike,
+  type PdfReading,
 } from './attachments'
 import { toTranscript } from './transcript'
 import { userCommandMessage } from './user-command'
@@ -71,6 +74,10 @@ export interface ChatSessionDeps {
   attachments?: AttachmentStoreLike
   /** Shared with whatever releases attachment files (see AttachmentPins). */
   pins?: AttachmentPins
+  /** Reads PDF attachments for the model. Without it, a PDF is sent as a placeholder. */
+  documents?: DocumentReader
+  /** Whether the current connection's requests may carry image blocks. Default: no. */
+  sendsImages?: () => boolean
 }
 
 interface PendingApproval {
@@ -113,6 +120,7 @@ export class ChatSession {
   private readonly pending = new Map<string, PendingApproval>()
   private readonly newId: () => string
   private readonly pins: AttachmentPins
+  private readonly readPdf: PdfReading | null
   /** Bumped by every switch; a run or save from an older generation never touches history. */
   private generation = 0
   /** Loads and switches in flight. While > 0, send() is refused. */
@@ -122,6 +130,7 @@ export class ChatSession {
   constructor(private readonly deps: ChatSessionDeps) {
     this.newId = deps.newId ?? randomUUID
     this.pins = deps.pins ?? new AttachmentPins()
+    this.readPdf = deps.documents ? cachedPdfReading(deps.documents) : null
     this.history = deps.history
     this.store = deps.history.current()
   }
@@ -255,7 +264,10 @@ export class ChatSession {
     await this.persist()
     // The saved history keeps its attachment blocks; the runner gets their text form.
     const stored = this.conversation
-    const sent = await toModelConversation(stored, this.deps.attachments, this.unavailable)
+    const sent = await toModelConversation(stored, this.deps.attachments, this.unavailable, {
+      ...(this.readPdf ? { readPdf: this.readPdf } : {}),
+      images: this.deps.sendsImages?.() === true,
+    })
     if (cancelled()) {
       this.active = null
       release()

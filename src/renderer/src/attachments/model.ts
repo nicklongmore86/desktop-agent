@@ -21,11 +21,13 @@ export const TOO_MUCH_DATA = `A message can carry up to ${String(ATTACHMENT_LIMI
 
 /**
  * Whether `kind` reaches the model through `connection`. Today every provider gets text
- * files inline and only the file name for images, PDFs and documents (placeholders until
- * per-provider translators land), so this does not depend on the connection yet.
+ * files inline and PDFs converted to text by the document reader (with drawn pages as
+ * images where the connection takes them), and only the file name for images and
+ * documents (placeholders until per-provider translators land), so this does not depend
+ * on the connection yet.
  */
 export function canReceive(kind: AttachmentKind, _connection?: ConnectionId | null): boolean {
-  return kind === 'text'
+  return kind === 'text' || kind === 'pdf'
 }
 
 /** A short, readable file size: 1.2 KB, 3 MB. */
