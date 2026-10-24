@@ -409,8 +409,9 @@ export function makeDoc(
  * `result`, its 8-byte cached value: a BIFF8 formula always has one, but a writer that does
  * not calculate fills in a placeholder (an empty string, or a string with no STRING record
  * after it). SheetJS's .xls writer stores no formulas, so the record is patched in.
+ * `sheetName` renames the sheet (BMP characters only), past what SheetJS would write.
  */
-export function makeXlsFormula(result: number[]): Uint8Array {
+export function makeXlsFormula(result: number[], sheetName?: string): Uint8Array {
   const book = CFB.read(makeWorkbook({ Calc: [[1, 7]] }, 'biff8'), { type: 'array' })
   const index = book.FullPaths.findIndex((path) => /\/Workbook$/.test(path))
   const stream = Uint8Array.from(book.FileIndex[index]?.content ?? [])
@@ -420,7 +421,26 @@ export function makeXlsFormula(result: number[]): Uint8Array {
     const type = view.getUint16(at, true)
     const length = view.getUint16(at + 2, true)
     const cell = type === 0x0203 || type === 0x027e
-    if (cell && view.getUint16(at + 4, true) === 0 && view.getUint16(at + 6, true) === 1) {
+    if (type === 0x0085 && sheetName !== undefined) {
+      // BoundSheet8, renamed (UTF-16, any length the file format allows): its sheet's BOF
+      // moves by however much longer the record gets.
+      const name = Uint8Array.from(
+        Array.from(sheetName).flatMap((char) => {
+          const code = char.charCodeAt(0)
+          return [code & 0xff, code >> 8]
+        }),
+      )
+      const record = new Uint8Array(4 + 8 + name.length)
+      const out = new DataView(record.buffer)
+      out.setUint16(0, 0x0085, true)
+      out.setUint16(2, 8 + name.length, true)
+      out.setUint32(4, view.getUint32(at + 4, true) + record.length - (4 + length), true)
+      record.set(stream.subarray(at + 8, at + 10), 8)
+      record[10] = sheetName.length
+      record[11] = 1
+      record.set(name, 12)
+      records.push(record)
+    } else if (cell && view.getUint16(at + 4, true) === 0 && view.getUint16(at + 6, true) === 1) {
       // ptgRef A1 (relative), ptgInt 2, ptgMul.
       const rgce = [0x24, 0, 0, 0, 0xc0, 0x1e, 2, 0, 0x05]
       const record = new Uint8Array(4 + 22 + rgce.length)
