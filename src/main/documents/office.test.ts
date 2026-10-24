@@ -492,6 +492,29 @@ describe('Excel and CSV', () => {
     expect(missing.sections[0]?.text.split('\n')[2]).toBe('| 1 | 1 |  |')
   })
 
+  it('cautions that an .xls formula result of 0 may be an uncalculated placeholder', async () => {
+    const note =
+      'Some .xls formula results in "Calc" are 0 and may not have been calculated; recalculate in Excel and save as .xlsx to confirm.'
+    const zero = await read(makeXlsFormula([0, 0, 0, 0, 0, 0, 0, 0]))
+    expect(zero.sections[0]?.text.split('\n')[2]).toBe('| 1 | 1 | 0 (=A1*2; may be unsaved) |')
+    expect(zero.warnings.filter((warning) => warning === note)).toHaveLength(1)
+    // A non-zero result is shown as it was stored.
+    const two = await read(makeXlsFormula([0, 0, 0, 0, 0, 0, 0, 0x40]))
+    expect(two.sections[0]?.text.split('\n')[2]).toBe('| 1 | 1 | 2 |')
+    expect(two.warnings).not.toContain(note)
+    // .xlsx records results it did not calculate as missing, so its 0 is trusted.
+    const sheet =
+      '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+      '<row r="1"><c r="A1"><v>1</v></c><c r="B1"><f>A1-1</f><v>0</v></c></row>' +
+      '</sheetData></worksheet>'
+    const book = await repack(makeWorkbook({ Calc: [[1]] }), (name, data) =>
+      name === 'xl/worksheets/sheet1.xml' ? sheet : data,
+    )
+    const xlsx = await read(book)
+    expect(xlsx.sections[0]?.text.split('\n')[2]).toBe('| 1 | 1 | 0 |')
+    expect(xlsx.warnings.join('\n')).not.toContain('may not have been calculated')
+  })
+
   it('reads CSV and tab-separated text by name, with quoted fields', async () => {
     const csv = new TextEncoder().encode(
       '﻿name,note\n"Smith, J","said ""hi""\nthen left"\nLee,ok\n',

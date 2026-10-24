@@ -60,7 +60,9 @@ All of it runs in the sandboxed worker, under the same 30 s timeout and memory c
   Markdown table whose header is the column letters and whose first column is the row
   number, so every cell has its address. Values are the cached ones (`w`, else `v`);
   `includeFormulas` adds `(=formula)` after the value, and a formula with no value shows
-  its text. Nothing is recalculated. With no sheet or range, the view lists every sheet
+  its text. An .xls formula whose cached result is 0 shows as `0 (=A1*2; may be unsaved)`,
+  with a note once per sheet: writers that do not calculate (such as xlwt) store 0 as a
+  placeholder, which cannot be told from a computed 0. Nothing is recalculated. With no sheet or range, the view lists every sheet
   (name, used range, hidden) and shows its first 20 rows and 30 columns, until the text
   or cell budget is spent; a range (`Sheet1!A1:H200`, `'Q3 sales'!B2:F40`, `A:C`, `5:20`,
   `A21:H`) reads those cells, at most 10,000 per call and within the text budget, and
