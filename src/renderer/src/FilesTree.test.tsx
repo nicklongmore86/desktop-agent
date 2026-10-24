@@ -13,7 +13,7 @@ import type { FileEntry } from '../../shared/ipc-files'
 import { ApiContext } from './api'
 import { App } from './App'
 import { FILE_DRAG_TYPE } from './components/files/drag'
-import { EXTERNAL_DROP_MESSAGE } from './components/files/external-drop'
+import { ATTACH_DROP_HINT, FILES_TAB_DROP_HINT } from './components/files/external-drop'
 import { fileKind } from './components/files/file-kind'
 import { WINDOW_THRESHOLD } from './components/files/FileTree'
 import { ToastProvider } from './components/Toast'
@@ -61,6 +61,7 @@ function dataTransfer() {
     clearData: () => {
       data.clear()
     },
+    files: [] as File[],
     effectAllowed: 'all',
     dropEffect: 'none',
   }
@@ -334,20 +335,36 @@ describe('Files from outside the app', () => {
   it.each([
     ['the message box', composer],
     ['the chat column', chat],
-    ['the file tree pane', pane],
-  ])('hints over %s, refuses with a toast on drop, and inserts nothing', async (_name, zone) => {
+  ])('hints "Drop to attach" over %s and attaches what is dropped', async (_name, zone) => {
     const { api } = await renderApp()
+    const file = new File(['hi'], 'notes.txt', { type: 'text/plain' })
     const transfer = external()
+    transfer.files = [file]
     expect(fireEvent.dragEnter(zone(), { dataTransfer: transfer })).toBe(false)
     expect(fireEvent.dragOver(zone(), { dataTransfer: transfer })).toBe(false) // accepted so `drop` fires
     expect(transfer.dropEffect).toBe('copy')
     expect(screen.getAllByTestId('external-drop-hint')).toHaveLength(1)
+    expect(screen.getByTestId('external-drop-hint').textContent).toBe(ATTACH_DROP_HINT)
+    expect(ATTACH_DROP_HINT).toBe('Drop to attach')
     expect(fireEvent.drop(zone(), { dataTransfer: transfer })).toBe(false) // no navigation
     expect(screen.queryByTestId('external-drop-hint')).toBeNull()
-    expect((await screen.findByRole('status')).textContent).toBe(EXTERNAL_DROP_MESSAGE)
-    expect(EXTERNAL_DROP_MESSAGE).toContain('Settings → Folders')
+    await waitFor(() => {
+      expect(api.files.attachDropped).toHaveBeenCalledExactlyOnceWith(file)
+    })
     expect(composer().value).toBe('')
     expect(api.files.reference).not.toHaveBeenCalled()
+  })
+
+  it('points the file tree pane to the message box and attaches nothing there', async () => {
+    const { api } = await renderApp()
+    const transfer = external()
+    transfer.files = [new File(['x'], 'a.txt')]
+    fireEvent.dragEnter(pane(), { dataTransfer: transfer })
+    expect(screen.getByTestId('external-drop-hint').textContent).toBe(FILES_TAB_DROP_HINT)
+    expect(fireEvent.drop(pane(), { dataTransfer: transfer })).toBe(false)
+    expect((await screen.findByRole('status')).textContent).toBe(FILES_TAB_DROP_HINT)
+    expect(api.files.attachDropped).not.toHaveBeenCalled()
+    expect(composer().value).toBe('')
   })
 
   it('clears the hint when the drag leaves the zone', async () => {

@@ -1,12 +1,15 @@
+import { useEffect } from 'react'
 import type { ProviderStatus } from '../../../shared/ipc'
 import {
   CHATGPT_PLAN,
   type ConnectionId,
   type ConnectionInfo,
 } from '../../../shared/ipc-connections'
+import type { AttachmentsControl } from '../attachments/use-attachments'
 import type { OpenSettings } from '../open-settings'
 import type { ProviderModelPicker } from '../provider-models'
 import { summarizeUsage, type ProviderUsage } from '../usage'
+import { StagedChips } from './AttachmentChips'
 import { useComposerReferences } from './files/use-composer-references'
 import { useToast } from './Toast'
 import { ManageUsageLink } from './chatgpt-plan/ManageUsageLink'
@@ -28,6 +31,10 @@ export interface ComposerProps {
   models: ProviderModelPicker
   usage: ProviderUsage
   onOpenSettings: OpenSettings
+  /** Files waiting to be sent with the message. */
+  attach: AttachmentsControl
+  /** Set to this composer's way of putting text at the caret (for `@` references from attachments). */
+  insertRef: React.RefObject<(text: string) => void>
 }
 
 const DEFAULT_MODEL = ''
@@ -51,12 +58,18 @@ export function Composer({
   models,
   usage,
   onOpenSettings,
+  attach,
+  insertRef,
 }: ComposerProps): React.JSX.Element {
   const notify = useToast()
   const summary = summarizeUsage(usage.allowance)
   const { choice } = models
   // File references: the `@` menu, drops from the Files tree, "Insert reference into chat".
   const references = useComposerReferences({ draft, onDraft, inputRef })
+  useEffect(() => {
+    insertRef.current = references.insertText
+  })
+  const canSend = (draft.trim() !== '' || attach.staged.length > 0) && !sending && !switching
 
   return (
     <form
@@ -67,6 +80,12 @@ export function Composer({
       }}
     >
       {references.menu}
+      <StagedChips
+        staged={attach.staged}
+        connection={provider?.provider ?? null}
+        onRemove={attach.remove}
+        onCopyIntoFolder={attach.copyIntoFolder}
+      />
       <textarea
         {...references.textareaProps}
         ref={inputRef}
@@ -78,6 +97,9 @@ export function Composer({
           onDraft(event.target.value)
           references.onInput(event.target)
         }}
+        onPaste={(event) => {
+          if (attach.paste(event.clipboardData)) event.preventDefault()
+        }}
         onKeyDown={(event) => {
           if (references.onKeyDown(event)) return
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -87,6 +109,27 @@ export function Composer({
         }}
       />
       <div className="composer-bar">
+        <button
+          type="button"
+          className="composer-attach"
+          aria-label="Attach files"
+          title="Attach files"
+          disabled={attach.disabled}
+          onClick={() => {
+            void attach.pick()
+          }}
+        >
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+            <path
+              d="M13 7.5l-4.9 4.9a3 3 0 0 1-4.2-4.2l5.3-5.3a2 2 0 0 1 2.8 2.8L6.7 11a1 1 0 0 1-1.4-1.4L10 5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
         <div className="composer-pickers">
           <select
             className="composer-select"
@@ -168,7 +211,7 @@ export function Composer({
             className="composer-send button-primary"
             aria-label="Send"
             title="Send (Enter)"
-            disabled={!draft.trim() || sending || switching}
+            disabled={!canSend}
           >
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
               <path

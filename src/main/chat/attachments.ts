@@ -29,6 +29,8 @@ export interface AttachmentStoreLike {
   describe: (id: string) => Promise<AttachmentRef | null>
   /** Whether this id was issued to this app's renderer (attached by the user this session). */
   isIssued: (id: string) => boolean
+  /** Told the ids of every chat that is opened, so retrying or forking its history works after a restart. */
+  registerIssued?: (ids: readonly string[]) => void
 }
 
 export type AttachmentCheck =
@@ -186,6 +188,8 @@ export async function unavailableAttachments(
   store: AttachmentStoreLike | undefined,
 ): Promise<Set<string>> {
   const ids = new Set(messages.flatMap((message) => attachmentsOf(message).map((a) => a.id)))
+  // The chat was loaded, so its files count as issued: its history can be sent again.
+  if (ids.size > 0) store?.registerIssued?.([...ids])
   const missing = new Set<string>()
   await Promise.all(
     [...ids].map(async (id) => {

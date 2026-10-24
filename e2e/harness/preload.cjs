@@ -18,6 +18,35 @@ const subscribe = (set) => (listener) => {
   }
 }
 const resolve = (value) => () => Promise.resolve(value)
+
+// Attachments: stands in for main. A dropped File's outcome comes from its name (the real
+// one reads the path in the preload); the picker answers what the test set up.
+const attachRefs = new Map()
+const sendCalls = []
+let pickResult = []
+const hex64 = (name) =>
+  Array.from(new TextEncoder().encode(name))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .padEnd(64, '0')
+    .slice(0, 64)
+const attachOutcome = (file) => {
+  const name = file.name
+  if (name === '.env')
+    return { ok: false, code: 'secret', reason: 'Secret files are never attached.' }
+  if (name.endsWith('.reference.md'))
+    return { ok: true, kind: 'reference', text: `@"C:\\Users\\me\\Projects\\${name}"` }
+  const image = /\.(png|jpe?g)$/i.test(name)
+  const attachment = {
+    id: hex64(name),
+    name,
+    kind: image ? 'image' : 'text',
+    mime: image ? 'image/png' : 'text/plain',
+    size: file.size,
+  }
+  attachRefs.set(attachment.id, attachment)
+  return { ok: true, kind: 'attachment', attachment, outsideGrant: name.startsWith('outside-') }
+}
 let provider = { provider: 'anthropic-api', state: 'ready', message: 'API mode' }
 let loginState = { provider: null, active: false, url: null, result: null }
 let theme = 'system'
@@ -537,11 +566,15 @@ contextBridge.exposeInMainWorld('desktopApi', {
       return Promise.resolve({ ok: true, text: `@"${path}"` })
     },
     onChanged: subscribe(listeners.files),
-    attachDropped: () =>
-      Promise.resolve({ ok: false, code: 'invalid', reason: 'This item is not a file on disk.' }),
+    attachDropped: (file) => Promise.resolve(attachOutcome(file)),
   },
   attachments: {
-    pick: () => Promise.resolve([]),
+    pick: () => {
+      for (const outcome of pickResult)
+        if (outcome.ok && outcome.kind === 'attachment')
+          attachRefs.set(outcome.attachment.id, outcome.attachment)
+      return Promise.resolve(pickResult)
+    },
     fromPaste: () => Promise.resolve({ ok: false, code: 'binary', reason: 'Not attached.' }),
     copyIntoFolder: () => Promise.resolve({ ok: false, reason: 'Not copied.' }),
   },
@@ -744,7 +777,22 @@ contextBridge.exposeInMainWorld('desktopApi', {
   model: { get: resolve(model), set: resolve(model) },
   chat: {
     load: () => Promise.resolve(chatState()),
-    send: resolve({ ok: true }),
+    send: (text, ids = []) => {
+      sendCalls.push({ text, ids })
+      const attachments = ids.flatMap((id) => (attachRefs.has(id) ? [attachRefs.get(id)] : []))
+      const runId = `run-${String(sendCalls.length)}`
+      // Only a send with files plays back like main would; other sends stay silent, as before.
+      for (const listener of ids.length > 0 ? listeners.chat : []) {
+        listener({
+          type: 'run_started',
+          runId,
+          text,
+          ...(attachments.length ? { attachments } : {}),
+        })
+        listener({ type: 'run_finished', runId, stopReason: 'end_turn' })
+      }
+      return Promise.resolve({ ok: true })
+    },
     stop: () => {
       stopCalls += 1
       return Promise.resolve()
@@ -859,6 +907,11 @@ contextBridge.exposeInMainWorld('e2e', {
   pushApproval: (prompt) => {
     for (const listener of listeners.approval) listener(prompt)
   },
+  // What the next attachments.pick() answers.
+  setPickResult: (outcomes) => {
+    pickResult = outcomes
+  },
+  sendCalls: () => JSON.parse(JSON.stringify(sendCalls)),
   pushChat: (event) => {
     for (const listener of listeners.chat) listener(event)
   },

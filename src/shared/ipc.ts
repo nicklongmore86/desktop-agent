@@ -385,7 +385,8 @@ export interface DesktopApi extends FeatureApis {
   }
   chat: {
     load: () => Promise<ChatState>
-    send: (text: string) => Promise<SendResult>
+    /** `attachmentIds`: ids main issued (drop, picker, paste), in order. Main checks every one. */
+    send: (text: string, attachmentIds?: string[]) => Promise<SendResult>
     stop: () => Promise<void>
     newChat: () => Promise<ChatState>
     /** The current provider's saved conversations. */

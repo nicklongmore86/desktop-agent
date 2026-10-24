@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useToast } from '../Toast'
 import { FILE_DRAG_TYPE } from './drag'
 
-/** Shown over a drop zone while files from outside the app are dragged over it, and as the toast on drop. */
-export const EXTERNAL_DROP_MESSAGE =
-  'Attaching files from outside the app is coming. For now, add the folder in Settings → Folders, or drag from the Files panel.'
+/** Shown over the chat column and message box while files from outside the app are dragged over them. */
+export const ATTACH_DROP_HINT = 'Drop to attach'
+
+/** Shown over the Files tab, and as its toast on drop: files are attached from the message box, not the tree. */
+export const FILES_TAB_DROP_HINT = 'Drop files on the message box to attach them'
 
 /**
  * True for a drag of files from outside the app. Only the drag's type list is
@@ -17,13 +19,21 @@ export function isExternalFileDrag(data: DataTransfer | null): boolean {
   return types.includes('Files') && !types.includes(FILE_DRAG_TYPE)
 }
 
+interface ExternalDropOptions {
+  /**
+   * Called with the dropped files. Without it the zone attaches nothing: it shows
+   * FILES_TAB_DROP_HINT and a toast on drop (the Files tree is not an attach target).
+   */
+  onFiles?: (files: File[]) => void
+}
+
 /**
- * Feedback for files dragged in from outside: a hint overlay while hovering and a
- * toast on drop. Nothing is attached, read or inserted. Spread `zoneProps` on the
- * element that receives the drag and render `hint` inside it (it must be positioned).
+ * Files dragged in from outside: a hint overlay while hovering, then `onFiles` with the
+ * dropped files (or, without it, a toast pointing to the message box). Spread `zoneProps`
+ * on the element that receives the drag and render `hint` inside it (it must be positioned).
  * Every other drag, including the tree-to-composer token and chat drag and drop, is left alone.
  */
-export function useExternalFileDrop() {
+export function useExternalFileDrop({ onFiles }: ExternalDropOptions = {}) {
   const notify = useToast()
   const [over, setOver] = useState(false)
   const overRef = useRef(false)
@@ -71,13 +81,14 @@ export function useExternalFileDrop() {
     onDrop: (event: React.DragEvent) => {
       if (!accept(event)) return
       set(false)
-      notify(EXTERNAL_DROP_MESSAGE)
+      if (onFiles) onFiles(Array.from(event.dataTransfer.files))
+      else notify(FILES_TAB_DROP_HINT)
     },
   }
 
   const hint = over ? (
     <div className="external-drop-hint" aria-hidden="true" data-testid="external-drop-hint">
-      <p>{EXTERNAL_DROP_MESSAGE}</p>
+      <p>{onFiles ? ATTACH_DROP_HINT : FILES_TAB_DROP_HINT}</p>
     </div>
   ) : null
 

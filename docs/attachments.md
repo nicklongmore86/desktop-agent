@@ -79,3 +79,19 @@ One entry per attempt: `tool: 'attach'`, `origin: 'user'`, `args: { source, kind
 size, inGrant }`, the real path, and on refusal `error` (`secret`, `blocked`, `too-large`,
 `binary`, `link`, `not-found`, `invalid`, `grant-folder`, `too-many`, `failed`). Copies are
 audited as `tool: 'copy_into_folder'` with the approval answer. Never file contents.
+
+## Wiring and startup
+
+`createAppServices` builds one `AttachmentStore` under `userData/attachments` and passes it to the chat session (`attachments: AttachmentStoreLike`, replaced only by tests) and to the attachments service; it is returned as `attachmentStore`. When a saved chat is loaded (startup, opening a chat), `unavailableAttachments` calls the store's `registerIssued(ids)` with the ids it references, so sending, retrying or forking that history works after a restart.
+
+At startup, before the window can send, `sweep` removes blobs no saved chat (of any connection) or the open conversation references, and only those older than a day. It is skipped entirely when any chat file cannot be read, since its references are unknown (the same rule as `release`).
+
+## Composer (renderer)
+
+`src/renderer/src/attachments/` holds the pure rules (`model.ts`: limits, refusal wording, which kinds a connection can receive) and the `useAttachments` hook; `components/AttachmentChips.tsx` draws chips.
+
+- Chips above the text show a kind icon (or a preview of a dropped or pasted image, a `data:` URL kept only in memory for this window), the name (middle-truncated, in a `<bdi>`), size and a remove button. A chip is dashed and grey, with a tooltip, when the connection cannot receive its kind: today every connection gets text files inline and only the name of images, PDFs and documents.
+- Drop (chat column and message box), paste and the paperclip all end in `files.attachDropped`, `attachments.fromPaste` or `attachments.pick`. The Files tab shows a hint pointing to the message box and attaches nothing; tree-token drags still insert `@` references.
+- An `@"path"` outcome is inserted into the text; refusals are toasts (one line for a batch), with an "Open Settings" button for `grant-folder`. A snapshot from outside the grants offers "Copy into folder…", which uses the first granted folder and main's approval dialog.
+- The composer enforces 10 files and 20 MB per message before send; `send(text, attachmentIds)`. Attaching is paused exactly when sending is (a reply is running, or the chat is switching). Esc and approvals are unchanged.
+- Sent messages show the same chips read-only; a missing blob shows "Attachment no longer available". Retry resends the available attachments.
