@@ -678,17 +678,22 @@ describe('closing never hangs on main', () => {
     // The undo is queued behind the switch. The picker is locked while a switch runs; once it
     // lands, the undo checks where chats are (held open here) and the user picks Codex.
     const check = deferred<ProviderStatus>()
-    api.provider.get.mockImplementationOnce(() => check.promise)
+    let checking = false
+    api.provider.get.mockImplementationOnce(() => {
+      checking = true
+      return check.promise
+    })
     act(() => {
       first.resolve(ready('ollama'))
     })
+    // Earlier reads count too, so wait for this one. And user-event ignores a pick on a
+    // disabled <select>, so wait for the picker to unlock before picking.
+    const providerPicker = screen.getByRole('combobox', { name: 'Active provider' })
     await waitFor(() => {
-      expect(api.provider.get).toHaveBeenCalled()
+      expect(checking).toBe(true)
+      expect(providerPicker).toHaveProperty('disabled', false)
     })
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: 'Active provider' }),
-      'codex-subscription',
-    )
+    await user.selectOptions(providerPicker, 'codex-subscription')
     // The check finishes: chats are on Ollama, but the user has chosen since, so it is left alone.
     act(() => {
       check.resolve(ready('ollama'))
