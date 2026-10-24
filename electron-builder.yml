@@ -7,7 +7,8 @@ directories:
   output: release/${version}
   buildResources: build
 
-# Only the compiled app goes into app.asar; the renderer bundles its own deps.
+# Only the compiled app goes into app.asar; the renderer bundles its own deps. out/ includes
+# the sandboxed document worker (out/document-worker: page, PDFium WASM, its licenses).
 files:
   - out/**/*
   - package.json
