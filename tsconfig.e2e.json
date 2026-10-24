@@ -10,6 +10,7 @@
     "playwright.config.ts",
     "src/shared/ipc.ts",
     "src/shared/ipc-*.ts",
+    "src/shared/attachments.ts",
     "src/main/documents/fixtures.test-util.ts",
     "src/main/documents/exif.ts",
     "src/main/documents/limits.ts",

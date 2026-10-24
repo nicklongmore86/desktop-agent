@@ -13,13 +13,25 @@ import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
+import { createAttachmentsService } from './attachments/service'
+import type { ImageScaler } from './attachments/image'
+import {
+  AttachmentStore,
+  type AttachmentBlobs,
+  type AttachmentStoreLike,
+} from './attachments/store'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
 import { createGitService } from './git/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
 import { createKeyStore, type SafeStorage } from './secrets'
-import { openHistory, type ConversationHistory } from './storage/history-store'
+import { AttachmentPins, type AttachmentStoreLike } from './chat/attachments'
+import {
+  openHistory,
+  referencedAttachmentIds,
+  type ConversationHistory,
+} from './storage/history-store'
 import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
@@ -39,8 +51,14 @@ export interface AppServiceDeps {
   revealPath?: (path: string) => void
   onFilesChanged?: (change: FilesChanged) => void
   onGitChanged?: (change: GitChanged) => void
+  /** Shows the native multi-select file picker for attachments; [] when cancelled. */
+  pickFiles?: () => Promise<string[]>
+  /** Scales attached images down (Electron's nativeImage at wiring time). */
+  imageScaler?: ImageScaler
   /** Replaces the built-in connections (tests). */
   adapters?: readonly AdapterFactory[]
+  /** Holds attached files. Without it, sending attachments is refused. */
+  attachments?: AttachmentStoreLike
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
@@ -128,17 +146,44 @@ export async function createAppServices(deps: AppServiceDeps) {
   // per conversation. Opened (and migrated from the old single file) on first use.
   // Only a registered id ever becomes part of a path.
   const histories = new Map<ConnectionId, Promise<ConversationHistory>>()
+  const historyRoot = join(userData, 'history')
+  // Shared by the chat session (sends pin their files) and releases (see AttachmentPins).
+  const pins = new AttachmentPins()
+  /**
+   * A deleted chat's attachments go back to the store only when no saved chat
+   * of any connection (a fork, say), no send in flight and not the open
+   * conversation still references them. If any chat file cannot be read, its
+   * references are unknown, so nothing is released on that pass.
+   */
+  const releaseAttachments = async (ids: string[]): Promise<void> => {
+    const store = deps.attachments
+    if (!store?.release) return
+    await pins.release(
+      ids,
+      async () => {
+        const scan = await referencedAttachmentIds(historyRoot)
+        if (scan.unreadable > 0)
+          console.warn(
+            `kept ${String(ids.length)} attachment file(s): ${String(scan.unreadable)} chat file(s) could not be read`,
+          )
+        return { ids: scan.ids, skip: scan.unreadable > 0 }
+      },
+      () => chat.attachmentIds(),
+      (free) => store.release?.(free) ?? Promise.resolve(),
+    )
+  }
   const historyFor = (provider: ConnectionId): Promise<ConversationHistory> => {
     if (!connections.registry.has(provider)) return Promise.reject(new Error('Unknown chat.'))
     let history = histories.get(provider)
     if (!history) {
-      history = openHistory(join(userData, 'history', provider), {
+      history = openHistory(join(historyRoot, provider), {
+        releaseAttachments,
         legacyFile: join(
           userData,
           provider === ANTHROPIC_API ? 'conversation.json' : `conversation-${provider}.json`,
         ),
         onError: (error) => {
-          console.error('could not save the chat history list', error)
+          console.error('could not update the chat history', error)
         },
       })
       histories.set(provider, history)
@@ -171,11 +216,26 @@ export async function createAppServices(deps: AppServiceDeps) {
     promptApproval: deps.promptApproval,
     // Commands typed in the command bar go through this same tool (no other spawn path).
     ...(userShell ? { userShell } : {}),
+    ...(deps.attachments ? { attachments: deps.attachments } : {}),
+    pins,
     onSaveError: (error) => {
       console.error('could not save the conversation', error)
     },
   })
   await chat.init()
+
+  // Snapshots of attached files: userData/attachments/<sha256>. userData is a protected
+  // path, so the agent's tools can never reach the blobs directly.
+  const attachmentStore = new AttachmentStore(join(userData, 'attachments'))
+  const attachments = createAttachmentsService({
+    guard,
+    store: attachmentStore,
+    audit,
+    scaler: deps.imageScaler ?? { scale: () => Promise.resolve(null) },
+    pickFiles: deps.pickFiles ?? (() => Promise.resolve([])),
+    runUserAction: (tool, input) => chat.runUserAction(tool, input),
+    onAuditFailure: reportAudit,
+  })
 
   const metadataResult = async <T>(operation: () => Promise<T>): Promise<ProviderResult<T>> => {
     const selected = settings.connection
@@ -293,6 +353,9 @@ export async function createAppServices(deps: AppServiceDeps) {
   })
   return {
     apiKey,
+    attachments,
+    /** Blobs, their metadata and issued ids, for the conversation and provider code. */
+    attachmentStore: attachmentStore as AttachmentBlobs & AttachmentStoreLike,
     grants,
     settings,
     chat,

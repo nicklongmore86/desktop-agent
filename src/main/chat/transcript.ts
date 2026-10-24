@@ -1,5 +1,5 @@
-import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import type { ChatItem } from '../../shared/ipc'
+import type { StoredMessage } from '../storage/conversation-store'
 import { userCommandItem } from './user-command'
 
 function resultText(content: unknown): string {
@@ -21,9 +21,14 @@ function resultText(content: unknown): string {
  * The chat view of a Messages-API history: user and assistant text, and one
  * tool card per tool_use with its matching tool_result. Tool-result-only user
  * messages are folded into the cards, not shown as user text. A command the user
- * ran from the command bar is a card of its own (see user-command.ts).
+ * ran from the command bar is a card of its own (see user-command.ts). A prompt's
+ * attachments go on its bubble; those in `unavailable` (their stored file is gone)
+ * are marked so, and never make the chat fail to show.
  */
-export function toTranscript(messages: readonly MessageParam[]): ChatItem[] {
+export function toTranscript(
+  messages: readonly StoredMessage[],
+  unavailable: ReadonlySet<string> = new Set(),
+): ChatItem[] {
   const items: ChatItem[] = []
   const tools = new Map<string, Extract<ChatItem, { kind: 'tool' }>>()
   messages.forEach((message, m) => {
@@ -45,9 +50,18 @@ export function toTranscript(messages: readonly MessageParam[]): ChatItem[] {
         const last = items.at(-1)
         // Adjacent text blocks of one message read as one bubble.
         if (last && last.kind === role && last.id.startsWith(`h${String(m)}.`)) {
-          last.text += `\n\n${block.text}`
+          last.text = last.text ? `${last.text}\n\n${block.text}` : block.text
         } else {
           items.push({ kind: role, id, text: block.text })
+        }
+      } else if (block.type === 'attachment') {
+        const { type: _type, ...ref } = block
+        const attachment = { ...ref, available: !unavailable.has(block.id) }
+        const last = items.at(-1)
+        if (last?.kind === 'user' && last.id.startsWith(`h${String(m)}.`)) {
+          last.attachments = [...(last.attachments ?? []), attachment]
+        } else {
+          items.push({ kind: 'user', id, text: '', attachments: [attachment] })
         }
       } else if (block.type === 'tool_use') {
         const card: Extract<ChatItem, { kind: 'tool' }> = {

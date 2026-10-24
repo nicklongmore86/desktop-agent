@@ -537,6 +537,13 @@ contextBridge.exposeInMainWorld('desktopApi', {
       return Promise.resolve({ ok: true, text: `@"${path}"` })
     },
     onChanged: subscribe(listeners.files),
+    attachDropped: () =>
+      Promise.resolve({ ok: false, code: 'invalid', reason: 'This item is not a file on disk.' }),
+  },
+  attachments: {
+    pick: () => Promise.resolve([]),
+    fromPaste: () => Promise.resolve({ ok: false, code: 'binary', reason: 'Not attached.' }),
+    copyIntoFolder: () => Promise.resolve({ ok: false, reason: 'Not copied.' }),
   },
   projects: {
     state: () => Promise.resolve(projectsState()),

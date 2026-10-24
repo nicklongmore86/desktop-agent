@@ -6,6 +6,7 @@ import {
   type ChatEvent,
   type ThemePreference,
 } from '../shared/ipc'
+import { ATTACHMENT_PASTE_MAX_BYTES, attachmentsChannels } from '../shared/ipc-attachments'
 import { commandChannels } from '../shared/ipc-command'
 import { BUILTIN_CONNECTIONS, connectionsChannels } from '../shared/ipc-connections'
 import { FEATURE_CHANNELS } from '../shared/ipc-features'
@@ -165,6 +166,16 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
     },
     command: {
       run: vi.fn(() => Promise.resolve({ ok: true as const })),
+    },
+    attachments: {
+      attachDropped: vi.fn(() =>
+        Promise.resolve({ ok: true as const, kind: 'reference' as const, text: '@"/granted/a"' }),
+      ),
+      pick: vi.fn(() => Promise.resolve([])),
+      fromPaste: vi.fn(() =>
+        Promise.resolve({ ok: false as const, code: 'binary' as const, reason: 'no' }),
+      ),
+      copyIntoFolder: vi.fn(() => Promise.resolve({ ok: true as const, text: '@"/granted/a"' })),
     },
     files: {
       roots: vi.fn(() => [{ id: ROOT_ID, name: 'granted', path: '/granted' }]),
@@ -429,6 +440,87 @@ describe('registerIpcHandlers', () => {
         await expect(invoke(filesChannels.filesSearch, appFrame, bad)).rejects.toThrow(
           'Invalid search.',
         )
+    })
+  })
+
+  describe('attachments', () => {
+    const ID = 'a'.repeat(64)
+    const at = { rootId: ROOT_ID, rel: 'docs' }
+
+    it('passes a dropped path, the picker, pastes and copies on', async () => {
+      const { invoke, services } = setup()
+      await invoke(attachmentsChannels.attachmentsAttachDropped, appFrame, '/home/me/a.txt')
+      expect(services.attachments.attachDropped).toHaveBeenCalledWith('/home/me/a.txt')
+      // The picker takes no arguments: anything the renderer adds is ignored.
+      await invoke(attachmentsChannels.attachmentsPick, appFrame, '/etc/passwd')
+      expect(services.attachments.pick).toHaveBeenCalledWith()
+      const bytes = new Uint8Array([1, 2, 3])
+      await invoke(attachmentsChannels.attachmentsFromPaste, appFrame, bytes, 'image/png')
+      expect(services.attachments.fromPaste).toHaveBeenCalledWith(bytes, 'image/png')
+      await invoke(attachmentsChannels.attachmentsFromPaste, appFrame, bytes, 'text/plain', 'a.txt')
+      expect(services.attachments.fromPaste).toHaveBeenLastCalledWith(bytes, 'text/plain', 'a.txt')
+      await invoke(attachmentsChannels.attachmentsCopyIntoFolder, appFrame, ID, at)
+      expect(services.attachments.copyIntoFolder).toHaveBeenCalledWith(ID, at)
+    })
+
+    it('refuses a dropped "path" that is not a bounded string', async () => {
+      const { invoke, services } = setup()
+      for (const bad of [undefined, null, 7, ['/a'], { path: '/a' }, 'x'.repeat(5000)])
+        await expect(
+          invoke(attachmentsChannels.attachmentsAttachDropped, appFrame, bad),
+        ).rejects.toThrow('Unknown file.')
+      expect(services.attachments.attachDropped).not.toHaveBeenCalled()
+    })
+
+    it('refuses pastes that are not bounded bytes with a plain MIME type and name', async () => {
+      const { invoke, services } = setup()
+      const ok = new Uint8Array([1])
+      for (const [bytes, mime, name] of [
+        [[1, 2, 3], 'image/png'],
+        ['bytes', 'image/png'],
+        [{ length: 1 }, 'image/png'],
+        [new Uint8Array(ATTACHMENT_PASTE_MAX_BYTES + 1), 'image/png'],
+        [ok, undefined],
+        [ok, 'image png'],
+        [ok, '../../etc/passwd'],
+        [ok, `image/${'x'.repeat(200)}`],
+        [ok, 'image/png', 7],
+        [ok, 'image/png', ''],
+        [ok, 'image/png', 'x'.repeat(300)],
+      ] as const)
+        await expect(
+          invoke(attachmentsChannels.attachmentsFromPaste, appFrame, bytes, mime, name),
+        ).rejects.toThrow()
+      expect(services.attachments.fromPaste).not.toHaveBeenCalled()
+    })
+
+    it('refuses forged ids and absolute paths for Copy into folder', async () => {
+      const { invoke, services } = setup()
+      for (const [id, folder] of [
+        ['../../etc/passwd', at],
+        ['A'.repeat(64), at],
+        ['/home/me/a.txt', at],
+        [`${ID}/..`, at],
+        [{ id: ID }, at],
+        [ID, '/home/me'],
+        [ID, 'C:\\Users\\me'],
+        [ID, { rootId: 'C:\\Users', rel: '' }],
+        [ID, { rootId: ROOT_ID, rel: '', path: '/etc' }],
+        [ID, { rootId: ROOT_ID, rel: 'x'.repeat(5000) }],
+      ] as const)
+        await expect(
+          invoke(attachmentsChannels.attachmentsCopyIntoFolder, appFrame, id, folder),
+        ).rejects.toThrow('Unknown attachment.')
+      expect(services.attachments.copyIntoFolder).not.toHaveBeenCalled()
+    })
+
+    it('rejects every attachments channel from an untrusted frame', async () => {
+      const { invoke, services } = setup()
+      const evil: IpcSenderEvent = { senderFrame: { url: 'https://evil.example/', parent: null } }
+      for (const channel of Object.values(attachmentsChannels))
+        await expect(invoke(channel, evil, '/home/me/a.txt')).rejects.toThrow('untrusted')
+      expect(services.attachments.attachDropped).not.toHaveBeenCalled()
+      expect(services.attachments.pick).not.toHaveBeenCalled()
     })
   })
 
@@ -709,10 +801,13 @@ describe('registerIpcHandlers', () => {
   it('passes chat calls and approval answers through to the session', async () => {
     const { invoke, services } = setup()
     await invoke(IpcChannels.chatSend, appFrame, 'hello')
+    await invoke(IpcChannels.chatSend, appFrame, 'with files', [{ id: 'x' }])
     await invoke(IpcChannels.chatStop, appFrame)
     await invoke(IpcChannels.chatNew, appFrame)
     await invoke(IpcChannels.approvalRespond, appFrame, 'id-1', true)
-    expect(services.chat.send).toHaveBeenCalledWith('hello')
+    expect(services.chat.send).toHaveBeenCalledWith('hello', undefined)
+    // Main checks the attachments itself (ChatSession.send); IPC passes them on as they came.
+    expect(services.chat.send).toHaveBeenCalledWith('with files', [{ id: 'x' }])
     expect(services.chat.stop).toHaveBeenCalledOnce()
     expect(services.chat.newChat).toHaveBeenCalledOnce()
     expect(services.chat.respondApproval).toHaveBeenCalledWith('id-1', true)
