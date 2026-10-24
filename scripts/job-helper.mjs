@@ -56,9 +56,12 @@ export async function verifyHelpers(resources) {
   const bytes = await readFile(join(resources, ...PINNED_PATH.split('/')))
   if (sha256(bytes) !== pin) throw new Error('Packaged job-run.exe does not match its pin')
   checkHardening(bytes)
+  // Recursive: with several main entries, shared code (the job launcher) lands in out/main/chunks.
   const main = join(repoRoot, 'out', 'main')
   const bundles = await Promise.all(
-    (await readdir(main)).filter((f) => f.endsWith('.js')).map((f) => readFile(join(main, f))),
+    (await readdir(main, { recursive: true }))
+      .filter((f) => f.endsWith('.js'))
+      .map((f) => readFile(join(main, f))),
   )
   if (!bundles.some((code) => code.includes(pin)))
     throw new Error('The app was built without the job-run.exe pin: rebuild after build:helpers')
