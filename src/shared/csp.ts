@@ -13,7 +13,8 @@ export function buildCsp({ dev = false }: CspOptions = {}): string {
     'script-src': dev ? ["'self'", "'unsafe-inline'"] : ["'self'"],
     // Vite injects imported CSS as inline <style> tags in dev; the build emits files.
     'style-src': dev ? ["'self'", "'unsafe-inline'"] : ["'self'"],
-    'img-src': ["'self'", 'data:'],
+    // `blob:` is for previews of images the user dropped or pasted (object URLs of their File).
+    'img-src': ["'self'", 'data:', 'blob:'],
     'font-src': ["'self'"],
     'connect-src': dev ? ["'self'", 'ws://localhost:*'] : ["'self'"],
     'object-src': ["'none'"],

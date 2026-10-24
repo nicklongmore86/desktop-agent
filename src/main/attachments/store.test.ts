@@ -216,14 +216,22 @@ describe('AttachmentStore metadata and issued ids', () => {
     expect(await exists(path.join(store.dir, `${ref.id}.json`))).toBe(false)
   })
 
-  it('sweep removes a blob together with its sidecar, and orphaned sidecars', async () => {
+  it('sweep removes a blob together with its sidecar, and old orphaned sidecars', async () => {
     const old = await store.issue(Buffer.from('old'), meta)
     const orphan = sha('orphan')
     await put(path.join(store.dir, `${orphan}.json`), '{}')
     const past = new Date(Date.now() - 60_000)
     await fs.utimes(path.join(store.dir, old.id), past, past)
+    await fs.utimes(path.join(store.dir, `${orphan}.json`), past, past)
     expect(await store.sweep(() => false, 30_000)).toEqual([old.id])
     expect(await fs.readdir(store.dir)).toEqual([])
     expect(store.isIssued(old.id)).toBe(false)
+  })
+
+  it('sweep keeps an orphaned sidecar younger than the age limit', async () => {
+    const young = sha('young')
+    await put(path.join(store.dir, `${young}.json`), '{}')
+    expect(await store.sweep(() => false, 30_000)).toEqual([])
+    expect(await fs.readdir(store.dir)).toEqual([`${young}.json`])
   })
 })

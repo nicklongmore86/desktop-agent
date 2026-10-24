@@ -101,7 +101,17 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
         runId: event.runId,
         banner: null,
         loadError: null,
-        items: [...state.items, { kind: 'user', id: `${event.runId}:user`, text: event.text }],
+        items: [
+          ...state.items,
+          {
+            kind: 'user',
+            id: `${event.runId}:user`,
+            text: event.text,
+            ...(event.attachments && event.attachments.length > 0
+              ? { attachments: event.attachments.map((a) => ({ ...a, available: true })) }
+              : {}),
+          },
+        ],
       }
     case 'command_started':
       // A command typed in the command bar: its card, with the result to come.

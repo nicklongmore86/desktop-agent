@@ -66,11 +66,13 @@ export function useComposerReferences({
     element.setSelectionRange(caret, caret)
   }, [draft, inputRef])
 
-  useFileReferenceTarget((text) => {
+  /** Puts reference text at the caret (or replaces the selection). */
+  const insertText = (text: string): void => {
     const element = inputRef.current
     const from = element?.selectionStart ?? draft.length
     replaceRange(text, from, element?.selectionEnd ?? from)
-  })
+  }
+  useFileReferenceTarget(insertText)
 
   const close = (): void => {
     setMention(null)
@@ -225,5 +227,5 @@ export function useComposerReferences({
     </div>
   ) : null
 
-  return { onKeyDown, onInput: detect, textareaProps, menu }
+  return { onKeyDown, onInput: detect, textareaProps, menu, insertText }
 }

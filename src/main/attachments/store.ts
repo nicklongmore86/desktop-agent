@@ -247,10 +247,17 @@ export class AttachmentStore implements AttachmentStoreLike, AttachmentBlobs {
     for (const name of names) {
       const isTemp = name.startsWith('.') && name.endsWith(TEMP_SUFFIX)
       if (name.endsWith(SIDECAR)) {
-        // A sidecar goes with its blob: removed once the blob is gone.
+        // A sidecar goes with its blob: removed once the blob is gone, under the same age
+        // rule (a sidecar can briefly exist before its blob while an attachment is written).
         const id = name.slice(0, -SIDECAR.length)
-        if (isAttachmentId(id) && !blobs.has(id))
-          await fs.rm(path.join(this.dir, name), { force: true }).catch(() => {})
+        if (!isAttachmentId(id) || blobs.has(id)) continue
+        const file = path.join(this.dir, name)
+        try {
+          const stats = await fs.lstat(file)
+          if (stats.isFile() && now - stats.mtimeMs >= minAgeMs) await fs.rm(file, { force: true })
+        } catch {
+          // Gone already.
+        }
         continue
       }
       if (!isTemp && (!isAttachmentId(name) || keep(name))) continue

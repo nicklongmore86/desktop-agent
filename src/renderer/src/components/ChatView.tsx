@@ -1,16 +1,20 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProviderStatus } from '../../../shared/ipc'
 import {
   CHATGPT_PLAN,
   type ConnectionId,
   type ConnectionInfo,
 } from '../../../shared/ipc-connections'
+import type { ChatAttachment } from '../../../shared/ipc'
+import { canReceive } from '../attachments/model'
+import { useAttachments } from '../attachments/use-attachments'
 import type { ChatViewState } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
 import { useProviderModels } from '../provider-models'
 import { splitTurns } from '../turns'
 import { useProviderUsage } from '../usage'
 import { ActivityGroup } from './ActivityGroup'
+import { AttachmentChip } from './AttachmentChips'
 import { CommandCard } from './CommandCard'
 import { Composer } from './Composer'
 import { ErrorBanner } from './ErrorBanner'
@@ -24,7 +28,7 @@ export interface ChatViewProps {
   providerName: string
   grantedFolders: number
   state: ChatViewState
-  onSend: (text: string) => Promise<boolean>
+  onSend: (text: string, attachmentIds?: string[]) => Promise<boolean>
   onStop: () => Promise<void>
   onNewChat: () => Promise<void>
   onDismissBanner: () => void
@@ -77,7 +81,6 @@ export function ChatView({
 
   const usage = useProviderUsage(provider?.provider)
   const models = useProviderModels(provider?.provider)
-  const externalDrop = useExternalFileDrop()
   const refreshUsage = usage.refresh
   const refreshModels = models.refresh
 
@@ -118,19 +121,45 @@ export function ChatView({
 
   const busy = state.running || state.switching || sending
 
-  const submit = async (text: string, clearDraft: boolean): Promise<void> => {
-    if (!text || busy) return
+  // Sending is blocked while a reply runs, so attaching is too. Approvals are never affected:
+  // they are answered in their own dialog, and nothing here handles Esc.
+  const insertRef = useRef<(text: string) => void>(() => {})
+  const insertText = useCallback((text: string) => {
+    insertRef.current(text)
+  }, [])
+  const attach = useAttachments({ insertText, onOpenSettings, disabled: busy })
+  const externalDrop = useExternalFileDrop({ onFiles: (files) => void attach.attachFiles(files) })
+  const clearAttachments = attach.clear
+
+  const submit = async (
+    text: string,
+    clearDraft: boolean,
+    attachmentIds: string[] = [],
+  ): Promise<void> => {
+    if ((!text && attachmentIds.length === 0) || busy) return
     setSending(true)
     try {
-      if ((await onSend(text)) && clearDraft) setDraft('')
+      if (await onSend(text, attachmentIds)) {
+        if (clearDraft) {
+          setDraft('')
+          clearAttachments()
+        }
+      }
     } finally {
       setSending(false)
     }
   }
 
-  const retryFor = (text: string): { onRetry: () => void; retryDisabled: boolean } => ({
+  const retryFor = (
+    text: string,
+    attachments: readonly ChatAttachment[] = [],
+  ): { onRetry: () => void; retryDisabled: boolean } => ({
     onRetry: () => {
-      void submit(text, false)
+      void submit(
+        text,
+        false,
+        attachments.filter((a) => a.available).map((a) => a.id),
+      )
     },
     retryDisabled: busy,
   })
@@ -229,10 +258,24 @@ export function ChatView({
             <Fragment key={turn.user?.id ?? 'preamble'}>
               {turn.user && (
                 <li className="message message-user" data-prompt-id={turn.user.id}>
-                  <div className="message-body">{turn.user.text}</div>
+                  {turn.user.attachments && turn.user.attachments.length > 0 && (
+                    <ul className="attachment-chips" aria-label="Attached files">
+                      {turn.user.attachments.map((attachment) => (
+                        <AttachmentChip
+                          key={attachment.id}
+                          attachment={attachment}
+                          available={attachment.available}
+                          unsupported={!canReceive(attachment.kind, provider?.provider)}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                  {turn.user.text && <div className="message-body">{turn.user.text}</div>}
                   <MessageActions
                     text={turn.user.text}
-                    {...(turn.user === lastMessage && lastUser ? retryFor(lastUser.text) : {})}
+                    {...(turn.user === lastMessage && lastUser
+                      ? retryFor(lastUser.text, lastUser.attachments)
+                      : {})}
                   />
                 </li>
               )}
@@ -277,7 +320,9 @@ export function ChatView({
                     )}
                     <MessageActions
                       text={item.text}
-                      {...(item === lastMessage && lastUser ? retryFor(lastUser.text) : {})}
+                      {...(item === lastMessage && lastUser
+                        ? retryFor(lastUser.text, lastUser.attachments)
+                        : {})}
                     />
                   </li>
                 )
@@ -321,8 +366,10 @@ export function ChatView({
           running={state.running}
           switching={state.switching}
           sending={sending}
+          attach={attach}
+          insertRef={insertRef}
           onSubmit={() => {
-            void submit(draft.trim(), true)
+            void submit(draft.trim(), true, attach.ids)
           }}
           onStop={() => {
             void onStop()

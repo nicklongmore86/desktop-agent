@@ -22,6 +22,7 @@ import {
   type ConnectionsState,
 } from '../../../shared/ipc-connections'
 import { BUILTIN_CONNECTION_INFO } from '../../../shared/connections-fixture'
+import type { AttachOutcome, CopyIntoFolderResult } from '../../../shared/ipc-attachments'
 import type {
   FileEntry,
   FileLocation,
@@ -335,17 +336,18 @@ export function fakeApi(options: FakeApiOptions = {}) {
         return Promise.resolve({ ok: true as const, text: `@"${path}"` })
       }),
       onChanged: vi.fn(subscribe(filesListeners)),
-      attachDropped: vi.fn((_file: File) =>
-        Promise.resolve({ ok: false as const, code: 'invalid' as const, reason: 'Not a file.' }),
+      attachDropped: vi.fn((_file: File): Promise<AttachOutcome> =>
+        Promise.resolve({ ok: false, code: 'invalid', reason: 'Not a file.' }),
       ),
     },
     attachments: {
-      pick: vi.fn(() => Promise.resolve([])),
-      fromPaste: vi.fn((_bytes: Uint8Array, _mime: string, _name?: string) =>
-        Promise.resolve({ ok: false as const, code: 'binary' as const, reason: 'Not attached.' }),
+      pick: vi.fn((): Promise<AttachOutcome[]> => Promise.resolve([])),
+      fromPaste: vi.fn(
+        (_bytes: Uint8Array, _mime: string, _name?: string): Promise<AttachOutcome> =>
+          Promise.resolve({ ok: false, code: 'binary', reason: 'Not attached.' }),
       ),
-      copyIntoFolder: vi.fn((_id: string, _folder: FileLocation) =>
-        Promise.resolve({ ok: false as const, reason: 'Not copied.' }),
+      copyIntoFolder: vi.fn((_id: string, _folder: FileLocation): Promise<CopyIntoFolderResult> =>
+        Promise.resolve({ ok: false, reason: 'Not copied.' }),
       ),
     },
     git: {
@@ -576,7 +578,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
     },
     chat: {
       load: vi.fn(() => Promise.resolve(chatState())),
-      send: vi.fn((_text: string) => Promise.resolve({ ok: true as const })),
+      send: vi.fn((_text: string, _attachmentIds?: string[]): Promise<SendResult> =>
+        Promise.resolve({ ok: true }),
+      ),
       stop: vi.fn(() => Promise.resolve()),
       newChat: vi.fn((): Promise<ChatState> => {
         history = { ...history, activeId: null }
