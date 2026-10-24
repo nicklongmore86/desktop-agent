@@ -128,8 +128,10 @@ main <-- checked twice (broker, main) -- one PNG or JPEG, no metadata
   frame size the decoder reports is checked against 100 MP before any pixel is asked for
   (the worker already checked `ispe`); the image is scaled to the request's long edge by
   WIC and written as a 24-bit PNG with no metadata. Main kills it at the 30 s timeout.
-- One report line on stderr (`heif-decode:1 ok width=… height=…`, `… error=<step>
+- One report line, last on stderr (`heif-decode:1 ok width=… height=…`, `… error=<step>
 code=0x…`, `… probe heif=0|1 hevc=0|1`), parsed strictly; anything else fails the job.
+  Lines before it are the codec's own messages (WIC's JPEG decoder writes "Not a JPEG
+  file: …" there) and are ignored; main keeps the last 4 KB of stderr.
 - Orientation: reports disagree on whether WIC applies `irot`/`imir` itself (the more
   recent say it does). The worker decides from the PNG: if a quarter turn should have
   swapped portrait and landscape and did not, it turns the image itself

@@ -234,11 +234,18 @@ describe('parseDecoderReport', () => {
       step: 'decode',
       code: 0x88982f50,
     })
+    // The report is the last line: the codec's own messages before it are ignored.
+    expect(
+      parseDecoderReport(
+        'Not a JPEG file: starts with 0x01 0x02\r\nheif-decode:1 error=open code=0x88982F61\n',
+      ),
+    ).toEqual({ kind: 'error', step: 'open', code: 0x88982f61 })
     for (const bad of [
       '',
       'heif-decode:1 ok width=32 height=64',
-      'noise\nheif-decode:1 ok width=32 height=64\n',
       'heif-decode:1 ok width=32 height=64\nmore\n',
+      'heif-decode:1 ok width=32 height=64\n\n',
+      'noise heif-decode:1 ok width=32 height=64\n',
       'heif-decode:2 ok width=32 height=64\n',
       'heif-decode:1 ok width=123456 height=64\n',
       'heif-decode:1 error=Decode code=0x88982F50\n',
@@ -269,6 +276,18 @@ describe('runDecoder (a real child process)', () => {
     await expect(node(file, new Uint8Array([1, 2, 3]))).resolves.toEqual({
       stdout: new Uint8Array([3, 2, 1]),
       report: 'heif-decode:1 ok width=1 height=1\n',
+    })
+  })
+
+  it('keeps the report, last on stderr, after however much the codec wrote first', async () => {
+    const file = script(
+      "process.stderr.write('Not a JPEG file\\r\\n'.repeat(1000));process.stderr.write('heif-decode:1 error=open code=0x88982F61\\n')",
+    )
+    const result = await node(file, null)
+    expect('report' in result && parseDecoderReport(result.report)).toEqual({
+      kind: 'error',
+      step: 'open',
+      code: 0x88982f61,
     })
   })
 

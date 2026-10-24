@@ -54,7 +54,7 @@ export const HEIC_NO_HEIF =
 const heicUnavailable = (why: string): string =>
   `This photo is HEIC, and the app’s HEIC decoder is not available (${why}). Export it as JPEG and try again.`
 
-/** What heif-decode.exe reported on stderr: exactly one line. */
+/** What heif-decode.exe reported: the last line of its stderr. */
 export type DecoderReport =
   | { kind: 'probe'; heif: boolean; hevc: boolean }
   | { kind: 'ok'; width: number; height: number }
@@ -64,8 +64,12 @@ const PROBE = /^heif-decode:1 probe heif=([01]) hevc=([01])\r?\n$/
 const OK = /^heif-decode:1 ok width=(\d{1,5}) height=(\d{1,5})\r?\n$/
 const ERROR = /^heif-decode:1 error=([a-z-]{1,40}) code=0x([0-9A-F]{8})\r?\n$/
 
-/** Parses heif-decode.exe's report; null for anything else. */
-export function parseDecoderReport(text: string): DecoderReport | null {
+/**
+ * Parses heif-decode.exe's report, its stderr's last line; null for anything else. Lines before
+ * it are the codec's own messages (WIC's JPEG decoder writes "Not a JPEG file: …"), ignored.
+ */
+export function parseDecoderReport(stderr: string): DecoderReport | null {
+  const text = /(?:^|\n)([^\n]*\n)$/.exec(stderr)?.[1] ?? ''
   const probe = PROBE.exec(text)
   if (probe) return { kind: 'probe', heif: probe[1] === '1', hevc: probe[2] === '1' }
   const ok = OK.exec(text)
@@ -114,7 +118,7 @@ export function decodeFailure(step: string, code: number): DocumentError {
   return fail('worker-failed', `The HEIC decoder failed (${step}, ${hex(code)}).`)
 }
 
-/** Runs the decoder once: bytes in on stdin, a PNG out on stdout, one report line on stderr. */
+/** Runs the decoder once: bytes in on stdin, a PNG out on stdout, its report last on stderr. */
 export type RunDecoder = (
   file: string,
   args: string[],
@@ -148,7 +152,8 @@ export const runDecoder: RunDecoder = (file, args, input, limits) =>
     })
     child.stderr.setEncoding('latin1')
     child.stderr.on('data', (chunk: string) => {
-      if (err.length < MAX_REPORT_BYTES) err += chunk.slice(0, MAX_REPORT_BYTES - err.length)
+      // The tail: the report is the last line, after anything the codec wrote.
+      err = (err + chunk).slice(-MAX_REPORT_BYTES)
     })
     child.stdin.on('error', () => undefined)
     child.on('close', () => {

@@ -23,7 +23,8 @@
 // --long-edge and writes a 24-bit PNG (no metadata) to stdout. --format jpeg uses WIC's
 // JPEG decoder instead, so the whole path can be tested where no HEIF codec is installed.
 //
-// It writes exactly one report line to stderr, then exits (0 on success, 1 otherwise):
+// It writes one report line to stderr, last, then exits (0 on success, 1 otherwise). The
+// codec may write its own messages there first (WIC's JPEG decoder does); main ignores them:
 //   heif-decode:1 probe heif=<0|1> hevc=<0|1>
 //   heif-decode:1 ok width=<px> height=<px>
 //   heif-decode:1 error=<step> code=<0xHRESULT>
