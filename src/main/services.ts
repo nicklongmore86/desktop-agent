@@ -15,11 +15,7 @@ import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
 import { createAttachmentsService } from './attachments/service'
 import type { ImageScaler } from './attachments/image'
-import {
-  AttachmentStore,
-  type AttachmentBlobs,
-  type AttachmentStoreLike,
-} from './attachments/store'
+import { AttachmentStore, type AttachmentBlobs } from './attachments/store'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
