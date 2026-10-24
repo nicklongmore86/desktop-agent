@@ -86,7 +86,7 @@ it('releases nothing while any chat file cannot be read, and says so', async () 
   expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 chat file(s) could not be read'))
 })
 
-it('refuses attachments when no store is wired', async () => {
+it('refuses an attachment the real store never issued', async () => {
   const userData = await mkdtemp(join(tmpdir(), 'attach-none-'))
   dirs.push(userData)
   await writeFile(
@@ -108,7 +108,7 @@ it('refuses attachments when no store is wired', async () => {
   })
   expect(await chat.send('Read this', [notes.id])).toMatchObject({
     ok: false,
-    message: 'Attachments are unavailable.',
+    message: expect.stringContaining('ttach') as string,
   })
   expect(runner).not.toHaveBeenCalled()
   expect(chat.historyState().conversations).toEqual([])

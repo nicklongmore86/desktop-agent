@@ -4,11 +4,12 @@ import { join } from 'node:path'
 /**
  * Files dragged in from outside the app, in real Electron: a real DataTransfer
  * carrying a real File is dispatched onto the message box, the chat column and the
- * Files tree. Each shows the hint, accepts the drag so `drop` fires, refuses with the
- * toast, and the window neither navigates nor inserts anything.
+ * Files tree. Each shows its hint and accepts the drag so `drop` fires, and the window
+ * never navigates. The message box and chat column attach the file ("Drop to attach");
+ * the Files tree attaches nothing and points to the message box.
  */
 
-const MESSAGE = /Settings → Folders, or drag from the Files panel/
+const TREE_MESSAGE = 'Drop files on the message box to attach them'
 
 /** Dispatches `type` carrying a real File at `selector`; returns whether the event was default-prevented. */
 const dragFile = (page: Page, selector: string, type: 'dragenter' | 'dragover' | 'drop') =>
@@ -36,7 +37,7 @@ const dragFile = (page: Page, selector: string, type: 'dragenter' | 'dragover' |
     { selector, type },
   )
 
-test('files dragged in from outside are refused with a hint and a toast', async () => {
+test('files dragged in from outside attach on the composer and chat, and only hint on the tree', async () => {
   const app = await electron.launch({
     args: [
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
@@ -56,19 +57,28 @@ test('files dragged in from outside are refused with a hint and a toast', async 
     })
     const url = page.url()
 
-    for (const [name, selector] of [
-      ['message box', 'textarea[aria-label="Message"]'],
-      ['chat column', '.chat .chat-toolbar'],
-      ['file tree', '[role="tree"]'],
+    for (const [name, selector, attaches] of [
+      ['message box', 'textarea[aria-label="Message"]', true],
+      ['chat column', '.chat .chat-toolbar', true],
+      ['file tree', '[role="tree"]', false],
     ] as const) {
       const enter = await dragFile(page, selector, 'dragenter')
       expect(enter.types, name).toEqual(['Files'])
       expect(enter.prevented, `${name}: dragenter accepted`).toBe(true)
       expect((await dragFile(page, selector, 'dragover')).prevented, `${name}: dragover`).toBe(true)
-      await expect(page.getByTestId('external-drop-hint'), `${name}: hint`).toContainText(MESSAGE)
+      await expect(page.getByTestId('external-drop-hint'), `${name}: hint`).toHaveText(
+        attaches ? 'Drop to attach' : TREE_MESSAGE,
+      )
       expect((await dragFile(page, selector, 'drop')).prevented, `${name}: drop handled`).toBe(true)
-      await expect(page.getByRole('status').getByText(MESSAGE)).toBeVisible()
       await expect(page.getByTestId('external-drop-hint')).toHaveCount(0)
+      const chips = page.locator('.composer').getByRole('list', { name: 'Attached files' })
+      if (attaches) {
+        await expect(chips.getByText('notes.txt'), `${name}: chip`).toBeVisible()
+        await chips.getByRole('button', { name: 'Remove notes.txt' }).click()
+      } else {
+        await expect(page.getByRole('status').getByText(TREE_MESSAGE)).toBeVisible()
+        await expect(chips, `${name}: nothing attached`).toHaveCount(0)
+      }
       await expect(composer).toHaveValue('')
       expect(page.url()).toBe(url)
       expect(await page.evaluate(() => (window as unknown as { marker?: string }).marker)).toBe(

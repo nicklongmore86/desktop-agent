@@ -7,7 +7,7 @@ import { chatReducer, initialChatState, type ChatViewState, type SwitchKind } fr
 
 export interface ChatControls {
   state: ChatViewState
-  send: (text: string) => Promise<boolean>
+  send: (text: string, attachmentIds?: string[]) => Promise<boolean>
   /** Runs a command typed in the command bar (main asks for approval). False, with a banner, if refused. */
   runCommand: (command: string, cwd: string) => Promise<boolean>
   stop: () => Promise<void>
@@ -67,9 +67,12 @@ export function useChat(): ChatControls {
   }, [api])
 
   const send = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, attachmentIds?: string[]): Promise<boolean> => {
       try {
-        const result = await api.chat.send(text)
+        const result =
+          attachmentIds && attachmentIds.length > 0
+            ? await api.chat.send(text, attachmentIds)
+            : await api.chat.send(text)
         if (!result.ok) {
           dispatch({ type: 'banner', banner: { code: result.code, message: result.message } })
         }

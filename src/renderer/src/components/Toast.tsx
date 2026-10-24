@@ -1,8 +1,16 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 const TOAST_MS = 2000
+/** A toast with a button stays long enough to reach it. */
+const ACTION_TOAST_MS = 8000
 
-type Notify = (message: string) => void
+/** A button inside a toast ("Open Settings"). */
+export interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
+type Notify = (message: string, action?: ToastAction) => void
 
 const ToastContext = createContext<Notify>(() => {})
 
@@ -13,17 +21,22 @@ export function useToast(): Notify {
 
 /** Owns the polite live region that announces and shows toasts. */
 export function ToastProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const [toast, setToast] = useState<{ id: number; message: string } | null>(null)
+  const [toast, setToast] = useState<{ id: number; message: string; action?: ToastAction } | null>(
+    null,
+  )
   const counter = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  const notify = useCallback((message: string) => {
+  const notify = useCallback((message: string, action?: ToastAction) => {
     counter.current += 1
-    setToast({ id: counter.current, message })
+    setToast({ id: counter.current, message, ...(action ? { action } : {}) })
     clearTimeout(timer.current)
-    timer.current = setTimeout(() => {
-      setToast(null)
-    }, TOAST_MS)
+    timer.current = setTimeout(
+      () => {
+        setToast(null)
+      },
+      action ? ACTION_TOAST_MS : TOAST_MS,
+    )
   }, [])
 
   useEffect(
@@ -38,8 +51,21 @@ export function ToastProvider({ children }: { children: React.ReactNode }): Reac
       {children}
       <div className="toast-region" role="status" aria-live="polite">
         {toast && (
-          <div key={toast.id} className="toast">
-            {toast.message}
+          <div key={toast.id} className={toast.action ? 'toast toast-action' : 'toast'}>
+            <span>{toast.message}</span>
+            {toast.action && (
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => {
+                  const { onClick } = toast.action as ToastAction
+                  setToast(null)
+                  onClick()
+                }}
+              >
+                {toast.action.label}
+              </button>
+            )}
           </div>
         )}
       </div>

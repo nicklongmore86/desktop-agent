@@ -56,7 +56,10 @@ const api: DesktopApi = {
   },
   chat: {
     load: () => invoke(IpcChannels.chatLoad),
-    send: (text) => invoke(IpcChannels.chatSend, text),
+    send: (text, attachmentIds) =>
+      attachmentIds && attachmentIds.length > 0
+        ? invoke(IpcChannels.chatSend, text, attachmentIds)
+        : invoke(IpcChannels.chatSend, text),
     stop: () => invoke(IpcChannels.chatStop),
     newChat: () => invoke(IpcChannels.chatNew),
     history: () => invoke(IpcChannels.chatHistory),

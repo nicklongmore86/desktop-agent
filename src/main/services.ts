@@ -15,11 +15,7 @@ import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
 import { createAttachmentsService } from './attachments/service'
 import type { ImageScaler } from './attachments/image'
-import {
-  AttachmentStore,
-  type AttachmentBlobs,
-  type AttachmentStoreLike,
-} from './attachments/store'
+import { AttachmentStore } from './attachments/store'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
@@ -35,6 +31,9 @@ import {
 import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
+
+/** Attachment files younger than this are never removed by the startup cleanup. */
+const ATTACHMENT_SWEEP_AGE_MS = 24 * 60 * 60 * 1000
 
 export interface AppServiceDeps {
   openUrl?: (url: string) => Promise<void>
@@ -57,7 +56,7 @@ export interface AppServiceDeps {
   imageScaler?: ImageScaler
   /** Replaces the built-in connections (tests). */
   adapters?: readonly AdapterFactory[]
-  /** Holds attached files. Without it, sending attachments is refused. */
+  /** Replaces the attachment store the chat uses (tests). Default: the store under userData/attachments. */
   attachments?: AttachmentStoreLike
 }
 
@@ -147,6 +146,10 @@ export async function createAppServices(deps: AppServiceDeps) {
   // Only a registered id ever becomes part of a path.
   const histories = new Map<ConnectionId, Promise<ConversationHistory>>()
   const historyRoot = join(userData, 'history')
+  // Snapshots of attached files: userData/attachments/<sha256>. userData is a protected
+  // path, so the agent's tools can never reach the blobs directly.
+  const attachmentStore = new AttachmentStore(join(userData, 'attachments'))
+  const chatAttachments: AttachmentStoreLike = deps.attachments ?? attachmentStore
   // Shared by the chat session (sends pin their files) and releases (see AttachmentPins).
   const pins = new AttachmentPins()
   /**
@@ -156,8 +159,8 @@ export async function createAppServices(deps: AppServiceDeps) {
    * references are unknown, so nothing is released on that pass.
    */
   const releaseAttachments = async (ids: string[]): Promise<void> => {
-    const store = deps.attachments
-    if (!store?.release) return
+    const store = chatAttachments
+    if (!store.release) return
     await pins.release(
       ids,
       async () => {
@@ -216,7 +219,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     promptApproval: deps.promptApproval,
     // Commands typed in the command bar go through this same tool (no other spawn path).
     ...(userShell ? { userShell } : {}),
-    ...(deps.attachments ? { attachments: deps.attachments } : {}),
+    attachments: chatAttachments,
     pins,
     onSaveError: (error) => {
       console.error('could not save the conversation', error)
@@ -224,9 +227,24 @@ export async function createAppServices(deps: AppServiceDeps) {
   })
   await chat.init()
 
-  // Snapshots of attached files: userData/attachments/<sha256>. userData is a protected
-  // path, so the agent's tools can never reach the blobs directly.
-  const attachmentStore = new AttachmentStore(join(userData, 'attachments'))
+  // Startup cleanup: blobs no saved chat references (an attachment never sent, a chat
+  // deleted while the app was closed). Skipped when any chat file is unreadable, since its
+  // references are unknown, and for blobs younger than a day. Runs before the window can send.
+  if (!deps.attachments) {
+    try {
+      const scan = await referencedAttachmentIds(historyRoot)
+      if (scan.unreadable === 0) {
+        const open = new Set(chat.attachmentIds())
+        await attachmentStore.sweep(
+          (id) => scan.ids.has(id) || open.has(id),
+          ATTACHMENT_SWEEP_AGE_MS,
+        )
+      }
+    } catch (error) {
+      console.warn('could not clean up unused attachments', error)
+    }
+  }
+
   const attachments = createAttachmentsService({
     guard,
     store: attachmentStore,
@@ -355,7 +373,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     apiKey,
     attachments,
     /** Blobs, their metadata and issued ids, for the conversation and provider code. */
-    attachmentStore: attachmentStore as AttachmentBlobs & AttachmentStoreLike,
+    attachmentStore,
     grants,
     settings,
     chat,
