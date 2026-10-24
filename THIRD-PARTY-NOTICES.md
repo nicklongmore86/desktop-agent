@@ -88,3 +88,23 @@ portions, MIT) is:
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
+
+# PDFium (document reader)
+
+The document reader parses PDFs with PDFium compiled to WebAssembly, from the npm package
+`@embedpdf/pdfium` 2.15.1 (https://github.com/embedpdf/embed-pdf-viewer/tree/main/packages/pdfium).
+It is bundled, unmodified, into the app's `out/document-worker/` directory
+(`assets/pdfium.wasm` and the JavaScript glue in `assets/index.js`) and runs only inside
+the sandboxed document worker window.
+
+- `@embedpdf/pdfium` wrapper and build: MIT License, copyright (c) 2024 CloudPDF, Ji Chang.
+- PDFium: BSD 3-Clause License, copyright 2014 PDFium Authors; portions under the Apache
+  License 2.0. Source: https://pdfium.googlesource.com/pdfium/
+- Third-party libraries compiled into PDFium's WASM, under their own licenses (see
+  `third_party/` in the PDFium source): FreeType (FreeType License), libjpeg-turbo
+  (IJG and BSD 3-Clause), libpng (libpng License), zlib (zlib License), OpenJPEG
+  (BSD 2-Clause), Little CMS (MIT) and Anti-Grain Geometry (BSD-style AGG license).
+
+The package's `LICENSE` and PDFium's `LICENSE` (BSD 3-Clause and Apache 2.0 text) ship
+beside the worker as `out/document-worker/licenses/embedpdf-pdfium-LICENSE.txt` and
+`out/document-worker/licenses/pdfium-LICENSE.txt`.

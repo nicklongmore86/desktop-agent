@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.worker.tsbuildinfo"
+  },
+  // The worker page and the browser-safe modules it shares with the main process.
+  "include": [
+    "src/main/documents/worker/**/*",
+    "src/main/documents/exif.ts",
+    "src/main/documents/extract.ts",
+    "src/main/documents/limits.ts",
+    "src/main/documents/pdf.ts",
+    "src/main/documents/protocol.ts",
+    "src/main/documents/sniff.ts",
+    "src/main/documents/types.ts",
+    "src/main/documents/zip.ts"
+  ]
+}
