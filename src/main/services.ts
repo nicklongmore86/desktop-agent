@@ -90,7 +90,7 @@ export async function createAppServices(deps: AppServiceDeps) {
   // and on start for grants removed while the app was closed (load prunes them).
   const documentCache = new DocumentTextCache({
     dir: join(userData, 'document-text-cache'),
-    roots: () => grants.list(),
+    grants,
   })
   grants.onRemove((root) => documentCache.forgetGrant(root))
   void documentCache.load()

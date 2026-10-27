@@ -573,6 +573,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   ): Promise<CachedText | 'stopped'> {
     let bytes: Buffer
     let key: DocumentFileKey | null = null
+    // Taken before the file is read: a grant removed since (even if granted again) keeps nothing.
+    const token = cache && root !== null ? cache.token(root) : null
     try {
       const { handle, stats } = await openVerified(deps.guard, entry.path, 'read', entry.id)
       try {
@@ -624,8 +626,14 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       }
       return 'stopped'
     }
-    if (cache && key && outcome.cacheable && deps.guard.blockedReason(entry.path) === null) {
-      await cache.put(key, outcome.text)
+    if (
+      cache &&
+      key &&
+      token !== null &&
+      outcome.cacheable &&
+      deps.guard.blockedReason(entry.path) === null
+    ) {
+      await cache.put(key, outcome.text, token)
     }
     return outcome.text
   }

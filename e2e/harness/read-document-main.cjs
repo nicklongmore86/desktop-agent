@@ -54,7 +54,12 @@ app.whenReady().then(() => {
         trash: () => Promise.reject(new Error('not in this harness')),
         documents: host,
         ...(cacheDir
-          ? { documentCache: new DocumentTextCache({ dir: cacheDir, roots: () => [root] }) }
+          ? {
+              documentCache: new DocumentTextCache({
+                dir: cacheDir,
+                grants: { list: () => [root], token: (r) => (r === root ? 'grant' : null) },
+              }),
+            }
           : {}),
       })
     },

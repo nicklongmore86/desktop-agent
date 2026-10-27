@@ -47,8 +47,12 @@ const key = (overrides: Partial<DocumentFileKey> = {}): DocumentFileKey => ({
   ...overrides,
 })
 
+/** The token every granted root has here (GrantStore's are tested with the store). */
+const T = 'grant-token'
+const granted = { list: () => roots, token: (root: string) => (roots.includes(root) ? T : null) }
+
 const open = (options: Partial<ConstructorParameters<typeof DocumentTextCache>[0]> = {}) =>
-  new DocumentTextCache({ dir, roots: () => roots, ...options })
+  new DocumentTextCache({ dir, grants: granted, ...options })
 
 async function filesUnder(folder: string): Promise<string[]> {
   const out: string[] = []
@@ -63,7 +67,7 @@ async function filesUnder(folder: string): Promise<string[]> {
 describe('DocumentTextCache', () => {
   it('keeps an entry under its grant folder and reads it back', async () => {
     const cache = open()
-    expect(await cache.put(key(), text('Walk-In Freezer'))).toBe(true)
+    expect(await cache.put(key(), text('Walk-In Freezer'), T)).toBe(true)
     expect(cache.has(key())).toBe(true)
     expect(await cache.get(key())).toEqual(text('Walk-In Freezer'))
     expect(await filesUnder(dir)).toEqual([`${grantId(sb.root)}/${entryName(key())}`])
@@ -85,7 +89,7 @@ describe('DocumentTextCache', () => {
     ['device', { dev: 2050n }],
   ] as const)('misses when the file’s %s changed', async (_what, change) => {
     const cache = open()
-    await cache.put(key(), text('old text'))
+    await cache.put(key(), text('old text'), T)
     expect(cache.has(key(change))).toBe(false)
     expect(await cache.get(key(change))).toBeNull()
     expect(await cache.get(key())).toEqual(text('old text'))
@@ -96,7 +100,7 @@ describe('DocumentTextCache', () => {
     await fs.mkdir(other)
     roots = [sb.root, other]
     const cache = open()
-    await cache.put(key(), text('a'))
+    await cache.put(key(), text('a'), T)
     expect(await cache.get(key({ root: other }))).toBeNull()
   })
 
@@ -107,13 +111,13 @@ describe('DocumentTextCache', () => {
 
   it('writes nothing for a folder that is not granted', async () => {
     const cache = open()
-    expect(await cache.put(key({ root: sb.outside }), text('x'))).toBe(false)
+    expect(await cache.put(key({ root: sb.outside }), text('x'), T)).toBe(false)
     await expect(fs.readdir(dir)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it.skipIf(process.platform === 'win32')('makes its folders and entries owner-only', async () => {
     const cache = open()
-    await cache.put(key(), text('x'))
+    await cache.put(key(), text('x'), T)
     const folder = path.join(dir, grantId(sb.root))
     expect((await fs.stat(dir)).mode & 0o777).toBe(0o700)
     expect((await fs.stat(folder)).mode & 0o777).toBe(0o700)
@@ -125,14 +129,14 @@ describe('DocumentTextCache', () => {
     const body = 'x'.repeat(1000)
     // Every entry here has the same size: room for three.
     const probe = open({ dir: path.join(sb.base, 'probe') })
-    await probe.put(key(), text(body))
+    await probe.put(key(), text(body), T)
     const size = probe.usage().bytes
     const cache = open({ maxTotalBytes: size * 3 + 10, clock: () => (now += 1000) })
-    for (const ino of [1000001n, 1000002n, 1000003n]) await cache.put(key({ ino }), text(body))
+    for (const ino of [1000001n, 1000002n, 1000003n]) await cache.put(key({ ino }), text(body), T)
     expect(cache.usage().entries).toBe(3)
     // Using 1 makes 2 the oldest.
     expect(await cache.get(key({ ino: 1000001n }))).not.toBeNull()
-    await cache.put(key({ ino: 1000004n }), text(body))
+    await cache.put(key({ ino: 1000004n }), text(body), T)
     expect([1000001n, 1000002n, 1000003n, 1000004n].map((ino) => cache.has(key({ ino })))).toEqual([
       true,
       false,
@@ -145,18 +149,18 @@ describe('DocumentTextCache', () => {
 
   it('evicts by entry count, and never keeps an entry over the per-entry limit', async () => {
     const cache = open({ maxEntries: 2, maxEntryBytes: 600 })
-    expect(await cache.put(key({ ino: 1n }), text('a'))).toBe(true)
-    expect(await cache.put(key({ ino: 2n }), text('b'))).toBe(true)
-    expect(await cache.put(key({ ino: 3n }), text('c'))).toBe(true)
+    expect(await cache.put(key({ ino: 1n }), text('a'), T)).toBe(true)
+    expect(await cache.put(key({ ino: 2n }), text('b'), T)).toBe(true)
+    expect(await cache.put(key({ ino: 3n }), text('c'), T)).toBe(true)
     expect(cache.usage().entries).toBe(2)
     expect(cache.has(key({ ino: 1n }))).toBe(false)
-    expect(await cache.put(key({ ino: 4n }), text('y'.repeat(700)))).toBe(false)
+    expect(await cache.put(key({ ino: 4n }), text('y'.repeat(700)), T)).toBe(false)
     expect(cache.has(key({ ino: 4n }))).toBe(false)
   })
 
   it('evicts down to the limits on load', async () => {
     const big = open()
-    for (const ino of [1n, 2n, 3n]) await big.put(key({ ino }), text('x'.repeat(1000)))
+    for (const ino of [1n, 2n, 3n]) await big.put(key({ ino }), text('x'.repeat(1000)), T)
     const small = open({ maxTotalBytes: (big.usage().bytes / 3) * 2 + 10 })
     await small.load()
     expect(small.usage().entries).toBe(2)
@@ -168,8 +172,8 @@ describe('DocumentTextCache', () => {
     await fs.mkdir(other)
     roots = [sb.root, other]
     const cache = open()
-    await cache.put(key(), text('a'))
-    await cache.put(key({ root: other }), text('b'))
+    await cache.put(key(), text('a'), T)
+    await cache.put(key({ root: other }), text('b'), T)
     await cache.forgetGrant(sb.root)
     expect(cache.has(key())).toBe(false)
     expect(await fs.readdir(dir)).toEqual([grantId(other)])
@@ -179,13 +183,44 @@ describe('DocumentTextCache', () => {
   it('is deleted when the grant store removes the grant (the app’s wiring)', async () => {
     const grants = await GrantStore.open(path.join(sb.userData, 'grants.json'))
     await grants.add(sb.root)
-    const cache = new DocumentTextCache({ dir, roots: () => grants.list() })
+    const cache = new DocumentTextCache({ dir, grants })
     grants.onRemove((root) => cache.forgetGrant(root))
-    await cache.put(key(), text('a'))
+    await cache.put(key(), text('a'), grants.token(sb.root) ?? '')
     expect(await fs.readdir(dir)).toEqual([grantId(sb.root)])
     await grants.remove(sb.root)
     expect(await fs.readdir(dir)).toEqual([])
     expect(cache.has(key())).toBe(false)
+  })
+
+  it('writes nothing under a token from before the grant was removed and granted again', async () => {
+    const grants = await GrantStore.open(path.join(sb.userData, 'grants.json'))
+    await grants.add(sb.root)
+    const cache = new DocumentTextCache({ dir, grants })
+    grants.onRemove((root) => cache.forgetGrant(root))
+    const stale = cache.token(sb.root) ?? ''
+    await grants.remove(sb.root)
+    await grants.add(sb.root)
+    expect(await cache.put(key(), text('old grant'), stale)).toBe(false)
+    expect(cache.has(key())).toBe(false)
+    expect(await fs.readdir(dir).catch(() => [])).toEqual([])
+    // Under the new grant's own token it is kept.
+    expect(await cache.put(key(), text('new grant'), cache.token(sb.root) ?? '')).toBe(true)
+    expect(await cache.get(key())).toEqual(text('new grant'))
+  })
+
+  it('deletes an entry whose grant changed between its write and its rename', async () => {
+    let asked = 0
+    // The second question is the one after the rename: by then the grant is a new one.
+    const cache = open({
+      grants: {
+        list: () => roots,
+        token: () => (++asked === 2 ? 'regranted' : T),
+      },
+    })
+    expect(await cache.put(key(), text('a'), T)).toBe(false)
+    expect(asked).toBe(2)
+    expect(cache.has(key())).toBe(false)
+    expect(await filesUnder(dir)).toEqual([])
   })
 
   it('deletes on load the folders of grants removed while the app was closed, and junk', async () => {
@@ -193,8 +228,8 @@ describe('DocumentTextCache', () => {
     await fs.mkdir(other)
     roots = [sb.root, other]
     const before = open()
-    await before.put(key(), text('a'))
-    await before.put(key({ root: other }), text('b'))
+    await before.put(key(), text('a'), T)
+    await before.put(key({ root: other }), text('b'), T)
     const folder = path.join(dir, grantId(sb.root))
     await put(path.join(folder, 'abc.tmp'), 'half written')
     await put(path.join(folder, 'notes.txt'), 'junk')
@@ -212,7 +247,7 @@ describe('DocumentTextCache', () => {
     const outsideFile = path.join(sb.outside, 'victim.txt')
     await put(outsideFile, 'keep me')
     const cache = open()
-    await cache.put(key(), text('a'))
+    await cache.put(key(), text('a'), T)
     const entry = path.join(dir, grantId(sb.root), entryName(key()))
     await fs.rm(entry)
     if (!(await trySymlink(outsideFile, entry, 'file'))) return
@@ -225,13 +260,13 @@ describe('DocumentTextCache', () => {
     await again.load()
     expect(await fs.readFile(outsideFile, 'utf8')).toBe('keep me')
     expect(await fs.readdir(dir)).toEqual([])
-    expect(await again.put(key(), text('b'))).toBe(true)
+    expect(await again.put(key(), text('b'), T)).toBe(true)
     expect(await fs.readdir(sb.outside)).toEqual(['victim.txt'])
   })
 
   it('treats what it reads back as untrusted: anything but its own entry is dropped', async () => {
     const cache = open()
-    await cache.put(key(), text('a'))
+    await cache.put(key(), text('a'), T)
     const file = path.join(dir, grantId(sb.root), entryName(key()))
     const good = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, unknown>
     const bad: unknown[] = [
@@ -265,7 +300,7 @@ describe('DocumentTextCache', () => {
 
   it('refuses an entry grown past the per-entry limit on disk', async () => {
     const cache = open({ maxEntryBytes: 4096 })
-    await cache.put(key(), text('a'))
+    await cache.put(key(), text('a'), T)
     const file = path.join(dir, grantId(sb.root), entryName(key()))
     await fs.appendFile(file, ' '.repeat(5000))
     expect(await cache.get(key())).toBeNull()

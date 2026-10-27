@@ -40,6 +40,24 @@ describe('GrantStore', () => {
     expect((await GrantStore.open(file)).list()).toEqual([])
   })
 
+  it('gives each grant a token, new each time the folder is granted again', async () => {
+    await fs.writeFile(file, JSON.stringify({ version: 1, roots: [sb.root] }))
+    const store = await GrantStore.open(file)
+    const loaded = store.token(sb.root)
+    expect(loaded).toMatch(/^[0-9a-f-]{36}$/)
+    await store.add(sb.root)
+    expect(store.token(sb.root)).toBe(loaded)
+    expect(store.token(path.join(sb.root, 'sub'))).toBeNull()
+    await store.remove(sb.root)
+    expect(store.token(sb.root)).toBeNull()
+    await store.add(sb.root)
+    const regranted = store.token(sb.root)
+    expect(regranted).toMatch(/^[0-9a-f-]{36}$/)
+    expect(regranted).not.toBe(loaded)
+    // Another store (the app started again) has tokens of its own.
+    expect((await GrantStore.open(file)).token(sb.root)).not.toBe(regranted)
+  })
+
   it('does not add the same folder twice', async () => {
     const store = await GrantStore.open(file)
     await store.add(sb.root)

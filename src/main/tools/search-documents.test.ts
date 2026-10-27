@@ -20,6 +20,7 @@ import {
   type ExtractControl,
   type ExtractOptions,
 } from '../documents/types'
+import { GrantStore } from '../permissions/grants'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
 import type { ToolDeps } from './deps'
 import { DocumentTextCache } from './document-text-cache'
@@ -76,7 +77,7 @@ beforeEach(async () => {
   reader = realReader()
   cache = new DocumentTextCache({
     dir: path.join(sb.userData, 'document-text-cache'),
-    roots: () => [sb.root],
+    grants: { list: () => [sb.root], token: (root) => (root === sb.root ? 'grant' : null) },
   })
   h = harness()
 })
@@ -424,7 +425,10 @@ describe('search_files inside documents', () => {
     let granted = true
     cache = new DocumentTextCache({
       dir: path.join(sb.userData, 'document-text-cache'),
-      roots: () => (granted ? [sb.root] : []),
+      grants: {
+        list: () => (granted ? [sb.root] : []),
+        token: (root) => (granted && root === sb.root ? 'grant' : null),
+      },
     })
     const removing: DocumentReader = {
       extract: async (bytes, options) => {
@@ -449,6 +453,38 @@ describe('search_files inside documents', () => {
     h = harness()
     await search({ contentPattern: 'freezer' })
     expect(named(reader.calls)).toEqual(['a.pdf'])
+  })
+
+  it('keeps nothing for a grant removed and granted again while its document was read', async () => {
+    const grants = await GrantStore.open(path.join(sb.userData, 'grants.json'))
+    await grants.add(sb.root)
+    const cacheDir = path.join(sb.userData, 'document-text-cache')
+    // Wired as the app does it: removing the grant deletes its folder.
+    cache = new DocumentTextCache({ dir: cacheDir, grants })
+    grants.onRemove((root) => cache.forgetGrant(root))
+    const regranting: DocumentReader = {
+      extract: async (bytes, options) => {
+        const view = await extractDocument(bytes, options ?? {}, env())
+        await grants.remove(sb.root)
+        await grants.add(sb.root)
+        return view
+      },
+    }
+    h = harness({ documents: regranting })
+    await put(
+      path.join(sb.root, 'a.pdf'),
+      Buffer.from(makePdf([{ text: ['the walk-in freezer'] }])),
+    )
+    const first = await search({ contentPattern: 'freezer' })
+    expect(first.content).toContain('a.pdf')
+    const files = await fs.readdir(cacheDir, { recursive: true }).catch(() => [])
+    expect(files.filter((name) => name.endsWith('.json'))).toEqual([])
+    // Searched again under the new grant, it is read again, and now kept.
+    h = harness()
+    await search({ contentPattern: 'freezer' })
+    expect(named(reader.calls)).toEqual(['a.pdf'])
+    const kept = await fs.readdir(cacheDir, { recursive: true })
+    expect(kept.filter((name) => name.endsWith('.json'))).toHaveLength(1)
   })
 
   it('is cancelled while a document is being read', async () => {

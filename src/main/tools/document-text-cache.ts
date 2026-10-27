@@ -48,10 +48,17 @@ export interface CachedText {
   failure: string | null
 }
 
+/** The granted folders, and the token of each grant (GrantStore). */
+export interface GrantTokens {
+  list(): readonly string[]
+  /** Null when `root` is not granted; a new token each time it is granted again. */
+  token(root: string): string | null
+}
+
 export interface DocumentTextCacheOptions {
   dir: string
-  /** The granted folders now; an entry is only written for one of these. */
-  roots: () => readonly string[]
+  /** An entry is only written for a grant whose token is still the one its text was read under. */
+  grants: GrantTokens
   platform?: NodeJS.Platform
   /** Largest entry kept, serialized. Bigger texts are searched but not kept. */
   maxEntryBytes?: number
@@ -68,7 +75,13 @@ export interface DocumentTextCacheLike {
   get(key: DocumentFileKey): Promise<CachedText | null>
   /** Whether an entry is held for `key`, without reading it (false until the index is loaded). */
   has(key: DocumentFileKey): boolean
-  put(key: DocumentFileKey, value: CachedText): Promise<boolean>
+  /** The token of `root`'s grant now (null: not granted): taken before reading a file, for put. */
+  token(root: string): string | null
+  /**
+   * Keeps `value` if `key.root` is still granted under `token`; false when it was not kept.
+   * A grant removed (and perhaps granted again) since `token` was taken keeps nothing.
+   */
+  put(key: DocumentFileKey, value: CachedText, token: string): Promise<boolean>
   /** Deletes everything kept for a granted folder: called when its grant is removed. */
   forgetGrant(root: string): Promise<void>
 }
@@ -181,9 +194,13 @@ export class DocumentTextCache implements DocumentTextCacheLike {
     return value
   }
 
-  async put(key: DocumentFileKey, value: CachedText): Promise<boolean> {
+  token(root: string): string | null {
+    return this.options.grants.token(root)
+  }
+
+  async put(key: DocumentFileKey, value: CachedText, token: string): Promise<boolean> {
     await this.load()
-    if (!this.granted(key.root)) return false
+    if (this.token(key.root) !== token) return false
     const grant = grantId(key.root, this.platform)
     const data = Buffer.from(
       JSON.stringify({
@@ -216,15 +233,18 @@ export class DocumentTextCache implements DocumentTextCacheLike {
       console.error('document text cache: could not write an entry', error)
       return false
     }
+    // The grant may have been removed (and granted again) while this was written: the
+    // entry goes, and the folder too while the folder is not granted.
+    const now = this.token(key.root)
+    if (now !== token) {
+      if (now === null) await this.forgetGrant(key.root)
+      else await this.drop(file)
+      return false
+    }
     const before = this.index.get(file)
     if (before) this.total -= before.bytes
     this.index.set(file, { grant, bytes: data.length, used: this.clock() })
     this.total += data.length
-    // The grant may have been removed while this was written: its folder goes again.
-    if (!this.granted(key.root)) {
-      await this.forgetGrant(key.root)
-      return false
-    }
     await this.evict(file)
     return this.index.has(file)
   }
@@ -239,11 +259,6 @@ export class DocumentTextCache implements DocumentTextCacheLike {
       }
     }
     await fs.rm(path.join(this.dir, grant), { recursive: true, force: true })
-  }
-
-  private granted(root: string): boolean {
-    const id = grantId(root, this.platform)
-    return this.options.roots().some((r) => grantId(r, this.platform) === id)
   }
 
   private fileOf(key: DocumentFileKey): string {
@@ -324,7 +339,7 @@ export class DocumentTextCache implements DocumentTextCacheLike {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       throw error
     }
-    const grants = new Set(this.options.roots().map((root) => grantId(root, this.platform)))
+    const grants = new Set(this.options.grants.list().map((root) => grantId(root, this.platform)))
     for (const name of names) {
       const folder = path.join(this.dir, name)
       const stats = await fs.lstat(folder).catch(() => null)
