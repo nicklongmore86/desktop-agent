@@ -3,7 +3,7 @@ export const MAX_TITLE_LENGTH = 100
 
 // Controls, format characters (bidi overrides and isolates, zero-width), lone
 // surrogates, private use, and line/paragraph separators: none belong in a title.
-const UNSAFE_TITLE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/gu
+export const UNSAFE_TITLE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/gu
 
 /** One line of plain text: unsafe characters become spaces, runs of space collapse. */
 export function sanitizeTitle(text: string, max = MAX_TITLE_LENGTH): string {

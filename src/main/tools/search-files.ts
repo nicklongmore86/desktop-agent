@@ -1,8 +1,11 @@
 import { promises as fs } from 'node:fs'
+import { sniff } from '../documents/sniff'
+import { UNSAFE_TITLE_CHARS } from '../storage/plain-text'
 import { ToolFailure, ToolInputError, type RunResult, type ToolCall, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
 import { globToRegExp } from './glob'
 import { PatternMatcher, type MatchOutcome, type PatternSource } from './matcher'
+import { readableAsDocument } from './read-document'
 import { openVerified, readBounded } from './safe-fs'
 import { clip, decodeText, formatBytes, splitLines } from './text'
 import { walk, type WalkEntry } from './walk'
@@ -27,6 +30,66 @@ const BATCH = 256
 const NAME = 0
 const CONTENT = 1
 
+/** How many skipped files a content search names; the rest are only counted. */
+export const MAX_SKIPPED_LISTED = 50
+
+/**
+ * Extensions of files read_document opens, for ranking skipped files and for files too
+ * large to open (whose bytes are never sniffed). Not .ppt, which it cannot read.
+ */
+const DOCUMENT_EXTENSIONS = new Set([
+  'pdf',
+  'doc',
+  'docx',
+  'docm',
+  'xls',
+  'xlsx',
+  'xlsm',
+  'pptx',
+  'odt',
+  'ods',
+  'odp',
+  'csv',
+  'jpg',
+  'jpeg',
+  'png',
+  'gif',
+  'webp',
+  'bmp',
+  'tif',
+  'tiff',
+  'avif',
+  'heic',
+  'heif',
+])
+
+type SkipReason = 'document' | 'binary' | 'too-large' | 'hard-link' | 'unreadable'
+
+const SKIP_LABEL: Record<SkipReason, string> = {
+  document: 'document, not searched',
+  binary: 'binary, not searched',
+  'too-large': 'too large',
+  'hard-link': 'hard-linked',
+  unreadable: 'unreadable',
+}
+
+const extensionOf = (name: string): string => {
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
+}
+
+/** A path as one line of plain text: control, bidi and other invisible characters become U+FFFD. */
+export function safeRel(rel: string): string {
+  return rel.replace(UNSAFE_TITLE_CHARS, '\uFFFD')
+}
+
+/** Words of a content pattern worth looking for in skipped file names (cheap, not a parse). */
+export function queryTerms(pattern: string | undefined): string[] {
+  if (pattern === undefined) return []
+  const words = pattern.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []
+  return [...new Set(words)]
+}
+
 export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
   const { limits } = deps
   return {
@@ -35,9 +98,11 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       'Search a folder inside the granted folders by file name (glob, e.g. "*.ts" or "src/**/*.md") ' +
       'and/or by file content (substring, or a JavaScript regex with regex: true). Case-insensitive ' +
       'unless caseSensitive is true. Name-only searches list matching names of any file, binary ' +
-      'included; content matches are returned as "path:line: text" and never come from binary files, ' +
-      `files over ${formatBytes(limits.maxReadBytes)} or files with several hard links. Skips .git, ` +
-      'node_modules and protected files. Stops after maxResults ' +
+      'included. Content search covers plain text only: matches are returned as "path:line: text" ' +
+      'and never come from PDFs, Office files, images or other binary files, files over ' +
+      `${formatBytes(limits.maxReadBytes)} or files with several hard links; skipped files are ` +
+      'counted by reason and the likeliest documents named, to open with read_document. Skips ' +
+      '.git, node_modules and protected files. Stops after maxResults ' +
       `(default ${String(limits.defaultSearchResults)}), ${String(limits.searchTimeMs / 1000)} s, or ` +
       `${String(limits.maxSearchEntries)} entries visited.`,
     inputSchema: {
@@ -145,8 +210,31 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
 
   const results: string[] = []
   let visited = 0
-  let skipped = 0
   let unreadable = 0
+  let hidden = 0
+  const skips: Record<SkipReason, number> = {
+    document: 0,
+    binary: 0,
+    'too-large': 0,
+    'hard-link': 0,
+    unreadable: 0,
+  }
+  // Skipped files to name, best first: documents whose name has a query term, other
+  // documents, then the rest. Each tier keeps its first MAX_SKIPPED_LISTED in walk order.
+  const tiers: string[][] = [[], [], []]
+  const terms = queryTerms(input.contentPattern)
+  const skip = (entry: WalkEntry, reason: SkipReason): void => {
+    skips[reason]++
+    const document = reason === 'document' || DOCUMENT_EXTENSIONS.has(extensionOf(entry.name))
+    const named = terms.some((t) => entry.rel.toLowerCase().includes(t))
+    const tier = tiers[document ? (named ? 0 : 1) : 2] ?? []
+    if (tier.length >= MAX_SKIPPED_LISTED) return
+    const detail =
+      reason === 'too-large' ? `too large, ${formatBytes(entry.size)}` : SKIP_LABEL[reason]
+    tier.push(
+      `  ${safeRel(entry.rel)} (${document && reason !== 'document' ? `document, ${detail}` : detail})`,
+    )
+  }
   // An object so TypeScript does not narrow it across the helpers that set it.
   const state: { stop: string | null } = { stop: null }
   const stopFor = (outcome: MatchOutcome): string =>
@@ -161,8 +249,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
 
   /** Matching line numbers of one file, or null when the search must stop. */
   async function contentHits(entry: WalkEntry): Promise<string[] | null> {
-    if (entry.size > limits.maxReadBytes || entry.nlink > 1) {
-      skipped++
+    if (entry.nlink > 1) {
+      skip(entry, 'hard-link')
+      return []
+    }
+    if (entry.size > limits.maxReadBytes) {
+      skip(entry, 'too-large')
       return []
     }
     let bytes: Buffer
@@ -173,12 +265,19 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       } finally {
         await handle.close()
       }
-    } catch {
-      skipped++
+    } catch (error) {
+      // The handle's own link count can catch a hard link the listing missed.
+      skip(
+        entry,
+        error instanceof ToolFailure && error.code === 'hard-link' ? 'hard-link' : 'unreadable',
+      )
       return []
     }
     const decoded = decodeText(bytes)
-    if (decoded.binary) return []
+    if (decoded.binary) {
+      skip(entry, readableAsDocument(sniff(bytes).kind) ? 'document' : 'binary')
+      return []
+    }
     const lines = splitLines(decoded.text).map((l) => l.slice(0, MAX_MATCH_LINE))
     const room = input.maxResults - results.length
     let hits: number[] = []
@@ -212,6 +311,10 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     }
     for (const entry of candidates) {
       if (results.length >= input.maxResults) break
+      if (signal.aborted) {
+        state.stop = 'cancelled'
+        return
+      }
       if (input.contentPattern === undefined) {
         results.push(entry.kind === 'dir' ? `${entry.rel}/` : entry.rel)
       } else if (entry.kind === 'file') {
@@ -235,6 +338,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       maxDepth: input.maxDepth,
       signal,
       skipDirs: SKIPPED_DIRS,
+      onBlocked: () => hidden++,
       onError: () => unreadable++,
     })) {
       if (++visited > limits.maxSearchEntries) {
@@ -259,11 +363,31 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   call.throwIfAborted()
 
   const notes: string[] = []
-  if (state.stop !== null)
-    notes.push(`Search stopped early: ${state.stop}. Narrow the folder or pattern for more.`)
-  if (skipped > 0) {
-    notes.push(`${String(skipped)} files skipped (too large, hard-linked or unreadable).`)
+  if (state.stop !== null) {
+    notes.push(
+      `Search stopped early: ${state.stop}. Results are partial: files after that point were ` +
+        'neither searched nor counted below. Narrow the folder or pattern for more.',
+    )
   }
+  const skippedTotal = Object.values(skips).reduce((a, b) => a + b, 0)
+  if (skippedTotal > 0) {
+    const counts = (Object.keys(SKIP_LABEL) as SkipReason[])
+      .filter((reason) => skips[reason] > 0)
+      .map((reason) => `${String(skips[reason])} ${SKIP_LABEL[reason]}`)
+    notes.push(`${String(skippedTotal)} files skipped: ${counts.join('; ')}.`)
+    const listed = tiers.flat().slice(0, MAX_SKIPPED_LISTED)
+    notes.push(...listed)
+    if (skippedTotal > listed.length) {
+      notes.push(`  …and ${String(skippedTotal - listed.length)} more not listed.`)
+    }
+  }
+  if (tiers[0]?.length || tiers[1]?.length) {
+    notes.push(
+      'PDFs, Word, Excel and PowerPoint files and images are not searched by content: open the ' +
+        'likely ones above with read_document.',
+    )
+  }
+  if (hidden > 0) notes.push(`${String(hidden)} protected entries hidden.`)
   if (unreadable > 0) notes.push(`${String(unreadable)} entries could not be read.`)
   const header = `${String(results.length)} result${results.length === 1 ? '' : 's'} in ${dir}`
   return { content: [header, ...results, ...notes].join('\n') }

@@ -8,6 +8,8 @@ import {
   trySymlink,
   type Sandbox,
 } from '../permissions/test-support'
+import { DEFAULT_LIMITS } from './deps'
+import { MAX_SKIPPED_LISTED, queryTerms, safeRel } from './search-files'
 import { toolHarness, type ToolHarness } from './test-support'
 
 let sb: Sandbox
@@ -259,6 +261,7 @@ describe('search_files', () => {
       `2 results in ${sb.root}`,
       'src/index.ts',
       'src/util.ts',
+      '1 protected entries hidden.',
     ])
   })
 
@@ -275,7 +278,8 @@ describe('search_files', () => {
     expect(r.content).toContain('docs/guide.md:2: See the TODO list.')
     expect(r.content).not.toContain('hunter2')
     expect(r.content).not.toContain('node_modules')
-    expect(r.content).not.toContain('bin.dat')
+    expect(r.content).not.toContain('bin.dat:')
+    expect(r.content).toContain('  bin.dat (binary, not searched)')
     const exact = await run('search_files', {
       path: sb.root,
       contentPattern: 'TODO',
@@ -348,14 +352,15 @@ describe('search_files', () => {
     const byName = await run('search_files', { path: sb.root, namePattern: '*.dat' })
     expect(byName.content).toContain('bin.dat')
     const byContent = await run('search_files', { path: sb.root, contentPattern: 'TODO' })
-    expect(byContent.content).not.toContain('bin.dat')
+    expect(byContent.content).not.toContain('bin.dat:')
   })
 
   it('skips the content of hard-linked files', async () => {
     await fs.link(path.join(sb.root, 'docs', 'guide.md'), path.join(sb.outside, 'alias.md'))
     const r = await run('search_files', { path: sb.root, contentPattern: 'see the todo' })
     expect(r.content).toMatch(/^0 results/)
-    expect(r.content).toContain('1 files skipped (too large, hard-linked or unreadable)')
+    expect(r.content).toContain('2 files skipped: 1 binary, not searched; 1 hard-linked.')
+    expect(r.content).toContain('  docs/guide.md (hard-linked)')
   })
 
   it('combines name and content filters', async () => {
@@ -367,6 +372,7 @@ describe('search_files', () => {
     expect(r.content.split('\n')).toEqual([
       `1 result in ${sb.root}`,
       'docs/guide.md:2: See the TODO list.',
+      '1 protected entries hidden.',
     ])
   })
 
@@ -427,6 +433,130 @@ describe('search_files', () => {
     expect(logged).not.toContain('hunter2')
     expect(logged).not.toContain('secret')
     expect(logged).not.toContain('hun+ter')
+  })
+})
+
+describe('search_files skip report', () => {
+  const PDF = Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.from([0, 0, 0, 0])])
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d])
+  const BINARY = Buffer.from([0, 1, 2, 3])
+  const search = (contentPattern: string) => run('search_files', { path: sb.root, contentPattern })
+  const listed = (content: string) => content.split('\n').filter((l) => l.startsWith('  '))
+
+  it('counts each skip reason separately, never naming protected files', async () => {
+    h = toolHarness(sb, { limits: { maxReadBytes: 64 } })
+    await put(path.join(sb.root, 'plan.pdf'), PDF)
+    await put(path.join(sb.root, 'photo.png'), PNG)
+    await put(path.join(sb.root, 'blob.dat'), BINARY)
+    await put(path.join(sb.root, 'big.txt'), 'x'.repeat(65))
+    await put(path.join(sb.root, 'big.xlsx'), 'x'.repeat(65))
+    await put(path.join(sb.root, 'linked.txt'), 'needle')
+    await fs.link(path.join(sb.root, 'linked.txt'), path.join(sb.outside, 'alias.txt'))
+    await put(path.join(sb.root, '.env'), 'needle=1')
+    await put(path.join(sb.root, 'key.pem'), 'needle')
+    const r = await search('needle')
+    expect(r.isError).toBeUndefined()
+    expect(r.content).toContain(
+      '6 files skipped: 2 document, not searched; 1 binary, not searched; 2 too large; 1 hard-linked.',
+    )
+    expect(listed(r.content)).toEqual([
+      '  big.xlsx (document, too large, 65 B)',
+      '  photo.png (document, not searched)',
+      '  plan.pdf (document, not searched)',
+      '  big.txt (too large, 65 B)',
+      '  blob.dat (binary, not searched)',
+      '  linked.txt (hard-linked)',
+    ])
+    expect(r.content).toContain('2 protected entries hidden.')
+    expect(r.content).not.toContain('.env')
+    expect(r.content).not.toContain('key.pem')
+  })
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'counts files that cannot be opened as unreadable',
+    async () => {
+      const locked = path.join(sb.root, 'locked.txt')
+      await put(locked, 'needle')
+      await fs.chmod(locked, 0)
+      try {
+        const r = await search('needle')
+        expect(r.content).toContain('1 files skipped: 1 unreadable.')
+        expect(listed(r.content)).toEqual(['  locked.txt (unreadable)'])
+      } finally {
+        await fs.chmod(locked, 0o600)
+      }
+    },
+  )
+
+  it('names documents first, those matching the query terms before the rest', async () => {
+    await put(path.join(sb.root, 'a.dat'), BINARY)
+    await put(path.join(sb.root, 'b-drawing.pdf'), PDF)
+    await put(path.join(sb.root, 'c', 'RFI-012 response.pdf'), PDF)
+    const r = await search('rfi 012')
+    expect(listed(r.content)).toEqual([
+      '  c/RFI-012 response.pdf (document, not searched)',
+      '  b-drawing.pdf (document, not searched)',
+      '  a.dat (binary, not searched)',
+    ])
+  })
+
+  it(`names at most ${String(MAX_SKIPPED_LISTED)} skipped files and counts the rest`, async () => {
+    for (let i = 0; i < MAX_SKIPPED_LISTED + 10; i++) {
+      await put(path.join(sb.root, `scan-${String(i).padStart(3, '0')}.pdf`), PDF)
+    }
+    const r = await search('needle')
+    expect(r.content).toContain(`${String(MAX_SKIPPED_LISTED + 10)} files skipped:`)
+    expect(listed(r.content)).toHaveLength(MAX_SKIPPED_LISTED + 1)
+    expect(listed(r.content).at(-1)).toBe('  …and 10 more not listed.')
+  })
+
+  it('points to read_document only when documents were skipped', async () => {
+    await put(path.join(sb.root, 'blob.dat'), BINARY)
+    const binaryOnly = await search('needle')
+    expect(binaryOnly.content).toContain('1 binary, not searched')
+    expect(binaryOnly.content).not.toContain('read_document')
+    await put(path.join(sb.root, 'report.pdf'), PDF)
+    const withDocument = await search('needle')
+    expect(withDocument.content).toContain(
+      'PDFs, Word, Excel and PowerPoint files and images are not searched by content: open the ' +
+        'likely ones above with read_document.',
+    )
+  })
+
+  it('reports nothing skipped for a name-only search', async () => {
+    await put(path.join(sb.root, 'report.pdf'), PDF)
+    const r = await run('search_files', { path: sb.root, namePattern: '*.pdf' })
+    expect(r.content.split('\n')).toEqual([`1 result in ${sb.root}`, 'report.pdf'])
+  })
+
+  it('removes control and bidi characters from listed names', async () => {
+    expect(safeRel('a\u202Efdp.exe')).toBe('a\uFFFDfdp.exe')
+    expect(safeRel('x\ny\u0007z\u200B.pdf')).toBe('x\uFFFDy\uFFFDz\uFFFD.pdf')
+    const name = process.platform === 'win32' ? 'evil\u202Efdp.png' : 'evil\n\u202Efdp.png'
+    await put(path.join(sb.root, name), PNG)
+    const r = await search('needle')
+    expect(r.content).not.toContain('\u202E')
+    const expected = process.platform === 'win32' ? 'evil\uFFFDfdp.png' : 'evil\uFFFD\uFFFDfdp.png'
+    expect(listed(r.content)).toEqual([`  ${expected} (document, not searched)`])
+  })
+
+  it('takes name terms from the pattern, regex syntax ignored', () => {
+    expect(queryTerms('RFI-012 Response')).toEqual(['rfi', '012', 'response'])
+    expect(queryTerms('rfi\\s*\\d+|drawing')).toEqual(['rfi', 'drawing'])
+    expect(queryTerms(undefined)).toEqual([])
+  })
+
+  it('allows 30 s by default and says when the time limit made results partial', async () => {
+    expect(DEFAULT_LIMITS.searchTimeMs).toBe(30_000)
+    expect(toolHarness(sb).tool('search_files').description).toContain('30 s')
+    await put(path.join(sb.root, 'a.txt'), 'needle')
+    let clock = 0
+    h = toolHarness(sb, { now: () => (clock += 20_000) })
+    const r = await search('needle')
+    expect(r.content).toContain(
+      'Search stopped early: reached the 30 s time limit (a slow pattern is stopped there). ' +
+        'Results are partial',
+    )
   })
 })
 
