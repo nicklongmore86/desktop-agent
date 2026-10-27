@@ -8,6 +8,7 @@ const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 const {
   createTools,
+  DocumentTextCache,
   DocumentWorkerHost,
   documentWorkerPaths,
   PathGuard,
@@ -42,13 +43,19 @@ app.whenReady().then(() => {
     requestApproval: () => Promise.resolve(false),
   })
   globalThis.reader = {
-    /** Grants `root` (only), with `blocked` as the app's protected paths. */
-    grant: (root, blocked = []) => {
+    /**
+     * Grants `root` (only), with `blocked` as the app's protected paths, and keeps
+     * search_files' document text in `cacheDir` when one is given.
+     */
+    grant: (root, blocked = [], cacheDir) => {
       tools = createTools({
         guard: new PathGuard({ roots: () => [root], protectedPaths: blocked }),
         audit,
         trash: () => Promise.reject(new Error('not in this harness')),
         documents: host,
+        ...(cacheDir
+          ? { documentCache: new DocumentTextCache({ dir: cacheDir, roots: () => [root] }) }
+          : {}),
       })
     },
     /** A tool's result, with each image's bytes as base64 and its decoded size. */

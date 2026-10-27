@@ -33,6 +33,7 @@ import {
 import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
+import { DocumentTextCache } from './tools/document-text-cache'
 
 /** Attachment files younger than this are never removed by the startup cleanup. */
 const ATTACHMENT_SWEEP_AGE_MS = 24 * 60 * 60 * 1000
@@ -85,6 +86,14 @@ export async function createAppServices(deps: AppServiceDeps) {
     protectedPaths,
   })
   const guard = new PathGuard({ roots: () => grants.list(), protectedPaths })
+  // Text search_files extracted from documents, per granted folder: deleted with the grant,
+  // and on start for grants removed while the app was closed (load prunes them).
+  const documentCache = new DocumentTextCache({
+    dir: join(userData, 'document-text-cache'),
+    roots: () => grants.list(),
+  })
+  grants.onRemove((root) => documentCache.forgetGrant(root))
+  void documentCache.load()
 
   let audit: AuditLog | null = null
   const auditStatus = (): AuditStatus => ({
@@ -105,7 +114,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     audit,
     trash: deps.trash,
     onAuditFailure: reportAudit,
-    ...(deps.documents ? { documents: deps.documents } : {}),
+    ...(deps.documents ? { documents: deps.documents, documentCache } : {}),
   })
 
   const files = createFilesService({

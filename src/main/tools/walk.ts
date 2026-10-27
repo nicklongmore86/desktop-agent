@@ -16,6 +16,10 @@ export interface WalkEntry {
   kind: EntryKind
   size: number
   mtimeMs: number
+  /** Nanosecond times and allocated 512-byte blocks: a document's cache key, OneDrive placeholders. */
+  mtimeNs: bigint
+  ctimeNs: bigint
+  blocks: bigint
   nlink: number
   /** Device and inode at listing time; reads check the opened file against it. */
   id: Identity
@@ -153,6 +157,9 @@ export async function* walk(
           kind,
           size: Number(stats.size),
           mtimeMs: Number(stats.mtimeMs),
+          mtimeNs: stats.mtimeNs,
+          ctimeNs: stats.ctimeNs,
+          blocks: stats.blocks,
           nlink: Number(stats.nlink),
           id: { dev: stats.dev, ino: stats.ino },
         }

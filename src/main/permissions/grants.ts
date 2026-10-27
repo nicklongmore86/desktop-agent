@@ -27,6 +27,8 @@ function isGrantsFile(value: unknown): value is GrantsFile {
  * granted folder that is later swapped for a link stops matching (see PathGuard).
  */
 export class GrantStore {
+  private readonly removeListeners: ((root: string) => Promise<void> | void)[] = []
+
   private constructor(
     private readonly file: string,
     private roots: string[],
@@ -100,15 +102,32 @@ export class GrantStore {
     return { ok: true, root: real }
   }
 
-  /** Revokes a granted root. Returns false when it was not granted. */
+  /**
+   * Revokes a granted root. Returns false when it was not granted. Resolves once every
+   * `onRemove` listener has run (what the app keeps for the folder is deleted by then).
+   */
   async remove(folder: string): Promise<boolean> {
     const P = pathApi(this.platform)
     const target = P.resolve(folder)
-    const remaining = this.roots.filter((root) => !samePath(root, target, this.platform))
-    if (remaining.length === this.roots.length) return false
-    this.roots = remaining
+    const removed = this.roots.filter((root) => samePath(root, target, this.platform))
+    if (removed.length === 0) return false
+    this.roots = this.roots.filter((root) => !removed.includes(root))
     await this.save()
+    for (const root of removed) {
+      for (const listener of this.removeListeners) {
+        try {
+          await listener(root)
+        } catch (error) {
+          console.error('grant removal listener failed', error)
+        }
+      }
+    }
     return true
+  }
+
+  /** Calls `listener` with each root after it is revoked (data kept for it is deleted there). */
+  onRemove(listener: (root: string) => Promise<void> | void): void {
+    this.removeListeners.push(listener)
   }
 
   private async save(): Promise<void> {

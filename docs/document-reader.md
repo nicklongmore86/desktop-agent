@@ -1,7 +1,8 @@
 # Document reader
 
 `src/main/documents/` reads documents and images for the agent: the parser and its
-sandbox (below), used by the `read_document` tool and by PDF and Office attachments.
+sandbox (below), used by the `read_document` tool, by `search_files`' content search
+([below](#content-search)) and by PDF and Office attachments.
 
 ## Shape
 
@@ -269,6 +270,94 @@ untrusted data, with a note when only part was sent (`documentBlocks`). One that
 be read is a placeholder saying why. Their chips are no longer greyed (`canReceive`
 takes the MIME type); older PowerPoint, RTF and mail still are.
 
+## Content search
+
+`search_files` (`src/main/tools/search-files.ts`, `search-documents.ts`) also searches the
+text of documents, on by default (`documents: false` turns it off for a call).
+
+- Order and budgets: the walk searches plain text files first, as before; files whose magic
+  bytes say PDF, OOXML, ODF or OLE (and, past the 1 MB text cap, files named `.pdf`,
+  `.docx`, `.xlsx`, `.pptx`, `.odt`, ... `.csv`) are set aside. After the walk, documents
+  already in the cache are searched first, then those whose name has a query term, then the
+  rest. At most 25 are read through the reader per call (`maxSearchDocuments`), within
+  20 s (`searchDocumentTimeMs`) of the search's 30 s; per document, at most 40 reader calls
+  and 2 million characters (the rest is reported as "only partly searched").
+- Extraction is `read_document`'s: the same `DocumentWorkerHost` (sandboxed page, broker,
+  timeouts, memory ceiling), `view: 'text'` with no images, a part at a time: PDF pages and
+  slides by `start` (50 a call), Word/OpenDocument text by character, and every sheet's used
+  range by `range` (10,000 cells a call). Sheet tables are turned back into
+  `A1<TAB>value` lines in main (escapes undone), so a match says `'Q3 costs'!B12`. Main
+  only ever handles the checked reply, never the document.
+- Locations: `file.pdf (page 3): …`, `deck.pptx (slide 4): …`, `costs.xlsx (Sheet1!B12): …`,
+  `spec.docx (character 1200): …` (`read_document` with `start: 1200` reads from there).
+  Document matches come after a line saying they are untrusted file content, and each
+  line has control, format and bidi characters replaced and is cut to 200 characters.
+- Not searched, and said so with a reason: a PDF whose every page has fewer than 8
+  non-space characters is `no text layer (scanned) — open with read_document` (no OCR;
+  some blank pages in a PDF with text are listed as scanned pages); documents the reader
+  refuses (`could not be read: password-protected`, ...); names that look like secrets
+  (`credentials.xlsx`, `secrets.docx`: `isSecretName`) are never sent to the reader or
+  kept; hard-linked files; and the documents the budget did not reach (`not searched
+yet`), with "call search_files again with the same arguments": cached documents cost
+  no reader time, so each call gets further.
+- A reader call still running at the deadline is given up on (the reader has no cancel);
+  it finishes or is killed at its own 30 s timeout, so a `read_document` right after can
+  wait behind it.
+- Audit: `args.extra` gets `documentsSearched`, `documentsFromCache` and
+  `documentsNotSearched` (counts only); the pattern is logged by kind and length as before.
+
+### OneDrive Files-On-Demand
+
+Reading a cloud-only placeholder downloads it, so a search over a OneDrive folder could
+pull down gigabytes. Windows marks those files `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` (or
+`OFFLINE`), but Node exposes no file attributes. It does expose the allocation size:
+libuv fills `blocks` from `AllocationSize`, and a dehydrated placeholder has a size and
+nothing allocated ("Size on disk: 0 bytes"). So on Windows a file of 4 KB or more with
+`blocks === 0` is skipped as `cloud-only, not downloaded`, by the text pass too, before
+it is opened. Smaller files are never taken for placeholders, because NTFS keeps files of
+up to about 700 bytes (more on 4K-record volumes) inside the MFT with no allocation
+either. A never-written sparse file looks the same and is skipped too, which costs a
+search nothing. A native helper reading the real attributes would be exact, but would be
+one more signed binary to build, pin and ship for a check this one gets right in
+practice. Windows CI checks that written files have an allocation (so they are searched)
+and, where `fsutil` can make one, that a never-written sparse file has none and is
+skipped. Listing, `lstat` and opening a handle without reading (the cached path's link
+check) read no file data. Placeholders could not be tested for real (CI has no OneDrive);
+off Windows nothing is skipped this way.
+
+### The text cache
+
+`src/main/tools/document-text-cache.ts`, under `userData/document-text-cache/` (userData is
+protected: the agent's tools can never read or write it).
+
+- Layout: `<grant id>/<entry>.json`, where the grant id is the first 32 hex characters of
+  SHA-256 of the granted folder's path (case-folded on Windows) and the entry name is
+  SHA-256 of the cache format, grant id, device, inode (NTFS file id), size, mtime and
+  ctime in nanoseconds. Names are hashes, so nothing in them comes from a path or a file,
+  and a file whose size or times change (or that is replaced) is a different entry: a
+  stale text is never used. The key comes from the handle that read the bytes.
+- Contents: the text segments with their locations, the kind, scanned and blank-page
+  counts, truncation, and lasting refusals (password-protected, damaged, unsupported,
+  too large, reader timeout); a reader crash is not kept.
+- Writes go to a random temporary file (`wx`, mode 0600) renamed into place, in folders
+  created 0700 and checked not to be links (Windows: userData's own per-user ACL).
+- Limits: 8 MB per entry (bigger texts are searched but not kept), 256 MB and 5,000
+  entries in all; the least recently used go first (use is kept in memory and in the
+  file's mtime, so it survives a restart).
+- Read back as untrusted: a regular file (never a link, opened `O_NOFOLLOW` and checked
+  against its `lstat`) within the entry limit, parsed and checked field by field (only the
+  keys `put` writes, the format, grant and every key field equal to the request, kinds and
+  refusals as short codes, locations up to 300 characters, at most 200,000 segments and
+  4 million characters). Anything else is deleted and missed. The text then goes through
+  the same cleaning and untrusted marking as fresh text.
+- Never kept: secret-looking names, hard-linked files (refused before reading, and a
+  cached entry is only used after a handle proves the file still has one link), protected
+  paths (never walked; re-checked before writing), and folders that are no longer granted.
+- Deleted when the grant is removed (`GrantStore.onRemove`, awaited by the IPC handler),
+  and on start for grants removed while the app was closed, along with temporary files and
+  anything that is not an entry. An entry written while its grant was being removed is
+  deleted right after.
+
 ## Limits
 
 `limits.ts`: 100 MB per document; 100 megapixels per decoded or rendered image, checked
@@ -299,6 +388,18 @@ part, 10,000 cells per call, a 20 x 30 preview per sheet, 200 sheets listed.
   (real PDFium WASM with stand-in codecs, including the malformed corpus), `reply` (every limit, the Office shapes included) and
   `worker-host` (mocked Electron and broker: no port held by main, timeout, broker
   crash and violation, memory kill, recycling, request filter).
+- Content search: `src/main/tools/document-text-cache.test.ts` (keying and misses on any
+  size, time, inode or device change, grant folders, eviction by size, count and on load,
+  deletion with the grant through `GrantStore`, startup pruning, planted links, hostile
+  entries read back, owner-only modes) and `src/main/tools/search-documents.test.ts`
+  (search over the reader's real extraction code in-process, PDFium WASM included:
+  locations in PDF, Word, Excel, PowerPoint and ODF, every cell past the preview, cache
+  hits and re-reads after a change, the per-call document limit and continuing, the
+  document time budget, a stuck reader call, cancel, scanned and partly scanned PDFs,
+  refusals kept or not, partial texts, secret and hard-linked documents never read or
+  kept, cleaned lines, the cloud-only check, and on Windows the allocation it relies on).
+  `e2e/read-document.spec.ts` runs a search over the real sandboxed worker, then again
+  from the cache, and checks the audit holds counts only.
 - Real Electron (Playwright, `e2e/document-worker.spec.ts`, after `pnpm build`): a PDF
   (text, rendered page, region), a rotated JPEG with EXIF, the 5 MB image cap, the
   sandbox probe, every Office and OpenDocument format and the hostile Office corpus inside
