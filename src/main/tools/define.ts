@@ -31,6 +31,7 @@ export type ErrorCode =
   | 'unreadable'
   | 'out-of-range'
   | 'worker-failed'
+  | 'busy'
   | 'failed'
 
 /** Thrown by tool bodies for expected failures; becomes an error result with this message. */
@@ -53,13 +54,24 @@ export interface AuditExtras {
   kind?: string
   imageCount?: number
   locationRead?: boolean
+  /** search_files: documents whose text was searched (read now or from the cache). */
+  documentsSearched?: number
+  documentsFromCache?: number
+  /** search_files: documents found but not searched (limits, scanned, unreadable, secret). */
+  documentsNotSearched?: number
 }
+
+const count = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1_000_000
 
 const AUDIT_EXTRAS: Record<keyof AuditExtras, (value: unknown) => boolean> = {
   kind: (value) => typeof value === 'string' && /^[a-z][a-z0-9-]{0,15}$/.test(value),
   imageCount: (value) =>
     typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1000,
   locationRead: (value) => typeof value === 'boolean',
+  documentsSearched: count,
+  documentsFromCache: count,
+  documentsNotSearched: count,
 }
 
 /** The allowlisted, well-formed fields of a tool's audit extras, or undefined if none. */

@@ -1,5 +1,6 @@
 import type { DocumentReader } from '../documents/types'
 import type { AuditSink } from '../permissions/audit'
+import type { DocumentTextCacheLike } from './document-text-cache'
 import type { PathGuard } from '../permissions/guard'
 import type { FindJobLauncher } from './job-launcher'
 import type { KillTree, ShellSpawner } from './run-shell'
@@ -20,6 +21,14 @@ export interface ToolLimits {
   maxSearchEntries: number
   /** search_files stops after this long. */
   searchTimeMs: number
+  /** Of searchTimeMs, the most spent reading documents through the reader. */
+  searchDocumentTimeMs: number
+  /** Documents search_files reads through the reader per call (cached ones do not count). */
+  maxSearchDocuments: number
+  /** Characters of one document's text searched; the rest is reported as not searched. */
+  maxSearchDocumentChars: number
+  /** Reader calls for one document (pages, slides and cells come a part per call). */
+  maxSearchDocumentCalls: number
   /** move/delete of a folder scans it for blocked entries; bigger folders are refused. */
   maxScanEntries: number
   /** write_file refuses changes whose diff is bigger: the user must see the whole preview. */
@@ -48,6 +57,10 @@ export const DEFAULT_LIMITS: ToolLimits = {
   maxSearchDepth: 20,
   maxSearchEntries: 50_000,
   searchTimeMs: 30_000,
+  searchDocumentTimeMs: 20_000,
+  maxSearchDocuments: 25,
+  maxSearchDocumentChars: 2_000_000,
+  maxSearchDocumentCalls: 40,
   maxScanEntries: MAX_TREE_ENTRIES,
   maxDiffBytes: 256 * 1024,
   defaultShellTimeoutMs: 60_000,
@@ -81,6 +94,11 @@ export interface ToolDeps {
    * Without one, read_document answers that reading documents is unavailable.
    */
   documents?: DocumentReader
+  /**
+   * Keeps the text search_files extracts from documents (DocumentTextCache under userData).
+   * Without one, every search reads its documents again.
+   */
+  documentCache?: DocumentTextCacheLike
   /** Monotonic clock in ms, for time caps and audit durations. */
   now?: () => number
   /**
@@ -100,5 +118,6 @@ export interface ResolvedDeps {
   jobLauncher: FindJobLauncher
   env: NodeJS.ProcessEnv
   documents: DocumentReader | null
+  documentCache: DocumentTextCacheLike | null
   now: () => number
 }

@@ -41,6 +41,7 @@ export function createTools(deps: ToolDeps): AgentTool[] {
     jobLauncher: deps.jobLauncher ?? defaultJobLauncher(platform, deps.guard),
     env: shellEnv(deps.env ?? process.env),
     documents: deps.documents ?? null,
+    documentCache: deps.documentCache ?? null,
     now: deps.now ?? (() => performance.now()),
   }
   const wrap = {

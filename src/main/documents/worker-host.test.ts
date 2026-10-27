@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { pngShell } from './fixtures.test-util'
+import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
+import { toolHarness } from '../tools/test-support'
+import { makePdf, pngShell } from './fixtures.test-util'
 import { DEFAULT_LIMITS } from './limits'
 import type { ExtractJob, FromBroker, ToBroker } from './protocol'
 import { DocumentError, type DocumentView } from './types'
@@ -411,6 +413,216 @@ describe('DocumentWorkerHost', () => {
     electron.state.brokers[0]?.emit('exit', 1)
     await expect(job).rejects.toMatchObject({ code: 'worker-failed' })
     expect(killed(0)).toEqual({ window: true, broker: true })
+  })
+})
+
+describe('the reader queue', () => {
+  /** Holds every job until a test answers it; `sent` lists the jobs in the order they ran. */
+  function held() {
+    const sent: ExtractJob[] = []
+    const replies: ((message: unknown) => void)[] = []
+    electron.state.answer = (job, reply) => {
+      sent.push(job as ExtractJob)
+      replies.push(reply)
+    }
+    const answer = async (index: number) => {
+      await vi.waitFor(() => {
+        expect(sent.length).toBeGreaterThan(index)
+      })
+      replies[index]?.(result(sent[index]))
+    }
+    return { sent, answer }
+  }
+  const named = (name: string) => ({ name })
+
+  it('runs read_document and attachment jobs before waiting search jobs', async () => {
+    const { sent, answer } = held()
+    const h = host()
+    const first = h.extract(bytes, named('first'))
+    const search = h.extract(bytes, named('search'), { background: true })
+    const read = h.extract(bytes, named('read'))
+    await answer(0)
+    await answer(1)
+    await answer(2)
+    await Promise.all([first, search, read])
+    expect(sent.map((job) => job.options.name)).toEqual(['first', 'read', 'search'])
+    await h.dispose()
+  })
+
+  it('keeps at most one search job in the reader, waiting or running', async () => {
+    const { sent, answer } = held()
+    const h = host()
+    const running = h.extract(bytes, named('a'), { background: true })
+    await vi.waitFor(() => {
+      expect(sent).toHaveLength(1)
+    })
+    await expect(h.extract(bytes, named('b'), { background: true })).rejects.toMatchObject({
+      code: 'busy',
+      message: 'The document reader is still busy with an earlier search.',
+    })
+    expect(h.stats()).toMatchObject({ queued: 0, queuedBytes: 0 })
+    // read_document is not refused, and waits behind that one job only.
+    const read = h.extract(bytes, named('read'))
+    await answer(0)
+    await running
+    await answer(1)
+    await read
+    // Once it is done, the next search's job is taken.
+    const next = h.extract(bytes, named('c'), { background: true })
+    await answer(2)
+    await next
+    expect(sent.map((job) => job.options.name)).toEqual(['a', 'read', 'c'])
+    await h.dispose()
+  })
+
+  it('takes a waiting job out of the queue, bytes and all, when its caller stops waiting', async () => {
+    const { sent, answer } = held()
+    const h = host()
+    const read = h.extract(bytes, named('read'))
+    const stop = new AbortController()
+    const search = h.extract(bytes, named('search'), { background: true, signal: stop.signal })
+    expect(h.stats()).toMatchObject({ queued: 1, queuedBytes: bytes.length })
+    stop.abort()
+    await expect(search).rejects.toMatchObject({ code: 'cancelled' })
+    expect(h.stats()).toMatchObject({ queued: 0, queuedBytes: 0 })
+    await answer(0)
+    await read
+    // It never reached the worker, and no longer counts as the search's one job.
+    const next = h.extract(bytes, named('next'), { background: true })
+    await answer(1)
+    await next
+    expect(sent.map((job) => job.options.name)).toEqual(['read', 'next'])
+    // Already stopped: never queued at all.
+    await expect(
+      h.extract(bytes, named('late'), { background: true, signal: stop.signal }),
+    ).rejects.toMatchObject({ code: 'cancelled' })
+    expect(h.stats().queued).toBe(0)
+    await h.dispose()
+  })
+
+  it('lets a running job finish when its caller stops waiting', async () => {
+    const { answer } = held()
+    const h = host()
+    const stop = new AbortController()
+    const search = h.extract(bytes, named('search'), { background: true, signal: stop.signal })
+    await vi.waitFor(() => {
+      expect(h.stats().queued).toBe(0)
+    })
+    stop.abort()
+    await answer(0)
+    await expect(search).resolves.toMatchObject({ sections: [{ text: 'hi' }] })
+    await h.dispose()
+  })
+
+  it('refuses jobs past the queue’s job and byte limits, for every caller', async () => {
+    const { answer } = held()
+    const h = host({ maxQueuedJobs: 2, maxQueuedBytes: 12 })
+    const jobs = [h.extract(bytes), h.extract(bytes), h.extract(bytes)]
+    expect(h.stats()).toMatchObject({ queued: 2, queuedBytes: 10 })
+    const busy = {
+      code: 'busy',
+      message: 'The document reader is busy with other documents. Try again in a moment.',
+    }
+    await expect(h.extract(bytes)).rejects.toMatchObject(busy)
+    await expect(h.extract(bytes, {}, { background: true })).rejects.toMatchObject(busy)
+    expect(h.stats()).toMatchObject({ queued: 2, queuedBytes: 10 })
+    await answer(0)
+    await jobs[0]
+    // One waits now (5 bytes): another 5 fit in 12, then 15 would not.
+    expect(h.stats()).toMatchObject({ queued: 1, queuedBytes: 5 })
+    jobs.push(h.extract(bytes))
+    await expect(h.extract(bytes)).rejects.toMatchObject(busy)
+    for (let i = 1; i < 4; i++) await answer(i)
+    await Promise.all(jobs)
+    // A job on its own is taken whatever its size (the document limit bounds it).
+    const big = new Uint8Array(100)
+    const alone = h.extract(big)
+    await answer(4)
+    await alone
+    await h.dispose()
+  })
+})
+
+describe('search_files over the reader', () => {
+  let sb: Sandbox
+  beforeEach(async () => {
+    sb = await makeSandbox()
+    for (const name of ['a', 'b', 'c']) {
+      await put(join(sb.root, `${name}.pdf`), Buffer.from(makePdf([{ text: ['freezer'] }])))
+    }
+  })
+  afterEach(async () => {
+    await sb.cleanup()
+  })
+
+  it('never has more than one search job in the reader, however often it is searched', async () => {
+    const sent: ExtractJob[] = []
+    const replies: ((message: unknown) => void)[] = []
+    // Every job hangs until answered: each search gives up on its reader call.
+    electron.state.answer = (job, reply) => {
+      sent.push(job as ExtractJob)
+      replies.push(reply)
+    }
+    const h = host()
+    const tools = toolHarness(sb, { documents: h, limits: { searchDocumentTimeMs: 30 } })
+    const search = () =>
+      tools
+        .tool('search_files')
+        .execute({ path: sb.root, contentPattern: 'freezer' }, fakeContext().ctx)
+    const first = await search()
+    expect(first.content).toContain(
+      'Documents: 0 searched, 3 not searched yet (stopped at the 0.03 s time for reading documents).',
+    )
+    for (let i = 0; i < 5; i++) {
+      const again = await search()
+      expect(again.content).toContain(
+        'Documents: 0 searched, 3 not searched yet (stopped at the document reader, still busy ' +
+          'with an earlier search or other documents).',
+      )
+      expect(h.stats()).toMatchObject({ queued: 0, queuedBytes: 0 })
+    }
+    // Only the first search's one call ever reached the reader.
+    expect(sent).toHaveLength(1)
+    // read_document goes ahead of everything else and waits for that one job only.
+    const read = h.extract(Buffer.from(makePdf([{ text: ['x'] }])), { name: 'read.pdf' })
+    expect(h.stats().queued).toBe(1)
+    replies[0]?.({ type: 'error', id: sent[0]?.id, code: 'malformed', message: 'x' })
+    await vi.waitFor(() => {
+      expect(sent).toHaveLength(2)
+    })
+    expect(sent[1]?.options.name).toBe('read.pdf')
+    replies[1]?.(result(sent[1]))
+    await read
+    await h.dispose()
+  })
+
+  it('takes a search job that never started out of the queue at the deadline', async () => {
+    const sent: ExtractJob[] = []
+    const replies: ((message: unknown) => void)[] = []
+    electron.state.answer = (job, reply) => {
+      sent.push(job as ExtractJob)
+      replies.push(reply)
+    }
+    const h = host()
+    // A read_document job is running, so the search's job can only wait.
+    const read = h.extract(bytes, { name: 'read' })
+    const tools = toolHarness(sb, { documents: h, limits: { searchDocumentTimeMs: 30 } })
+    const r = await tools
+      .tool('search_files')
+      .execute({ path: sb.root, contentPattern: 'freezer' }, fakeContext().ctx)
+    expect(r.content).toContain('3 not searched yet')
+    expect(h.stats()).toMatchObject({ queued: 0, queuedBytes: 0 })
+    replies[0]?.(result(sent[0]))
+    await read
+    // The search's job never ran, and the next search's job is taken.
+    const next = h.extract(bytes, { name: 'next' }, { background: true })
+    await vi.waitFor(() => {
+      expect(sent).toHaveLength(2)
+    })
+    expect(sent.map((job) => job.options.name)).toEqual(['read', 'next'])
+    replies[1]?.(result(sent[1]))
+    await next
+    await h.dispose()
   })
 })
 

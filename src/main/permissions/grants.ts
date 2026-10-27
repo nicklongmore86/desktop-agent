@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { blocklistReason } from './blocklist'
 import { checkPathSyntax, isInside, pathApi, samePath } from './paths'
@@ -27,6 +28,10 @@ function isGrantsFile(value: unknown): value is GrantsFile {
  * granted folder that is later swapped for a link stops matching (see PathGuard).
  */
 export class GrantStore {
+  private readonly removeListeners: ((root: string) => Promise<void> | void)[] = []
+  /** Each granted root's token: new whenever it is granted, gone when it is revoked. */
+  private readonly tokens = new Map<string, string>()
+
   private constructor(
     private readonly file: string,
     private roots: string[],
@@ -34,7 +39,9 @@ export class GrantStore {
     private readonly protectedPaths: readonly string[],
     /** Set when the file existed but could not be read; the store then starts empty. */
     readonly loadError: string | null,
-  ) {}
+  ) {
+    for (const root of roots) this.tokens.set(root, randomUUID())
+  }
 
   /**
    * Loads the store from `file`. A missing file means no grants. An unreadable
@@ -60,6 +67,16 @@ export class GrantStore {
 
   list(): readonly string[] {
     return [...this.roots]
+  }
+
+  /**
+   * The token of the grant `folder` is under now, or null when it is not granted. It is
+   * fresh each time the folder is granted (in memory only), so work started under an
+   * earlier grant of the same folder can tell it was revoked, even if it is granted again.
+   */
+  token(folder: string): string | null {
+    const root = this.roots.find((r) => samePath(r, folder, this.platform))
+    return root === undefined ? null : (this.tokens.get(root) ?? null)
   }
 
   /** Grants `folder` (must be an existing local directory) and persists the change. */
@@ -95,20 +112,39 @@ export class GrantStore {
 
     if (!this.roots.some((root) => samePath(root, real, this.platform))) {
       this.roots = [...this.roots, real]
+      this.tokens.set(real, randomUUID())
       await this.save()
     }
     return { ok: true, root: real }
   }
 
-  /** Revokes a granted root. Returns false when it was not granted. */
+  /**
+   * Revokes a granted root. Returns false when it was not granted. Resolves once every
+   * `onRemove` listener has run (what the app keeps for the folder is deleted by then).
+   */
   async remove(folder: string): Promise<boolean> {
     const P = pathApi(this.platform)
     const target = P.resolve(folder)
-    const remaining = this.roots.filter((root) => !samePath(root, target, this.platform))
-    if (remaining.length === this.roots.length) return false
-    this.roots = remaining
+    const removed = this.roots.filter((root) => samePath(root, target, this.platform))
+    if (removed.length === 0) return false
+    this.roots = this.roots.filter((root) => !removed.includes(root))
+    for (const root of removed) this.tokens.delete(root)
     await this.save()
+    for (const root of removed) {
+      for (const listener of this.removeListeners) {
+        try {
+          await listener(root)
+        } catch (error) {
+          console.error('grant removal listener failed', error)
+        }
+      }
+    }
     return true
+  }
+
+  /** Calls `listener` with each root after it is revoked (data kept for it is deleted there). */
+  onRemove(listener: (root: string) => Promise<void> | void): void {
+    this.removeListeners.push(listener)
   }
 
   private async save(): Promise<void> {

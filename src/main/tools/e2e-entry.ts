@@ -3,3 +3,4 @@
 export { createTools } from './index'
 export { PathGuard } from '../permissions/guard'
 export { DocumentWorkerHost, documentWorkerPaths } from '../documents/worker-host'
+export { DocumentTextCache } from './document-text-cache'
