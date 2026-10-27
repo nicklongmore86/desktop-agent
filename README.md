@@ -141,7 +141,7 @@ const tools = createTools({
 | `list_granted_folders` | Current accessible grant roots, refreshed on each call; never adds permissions          | no                          |
 | `list_dir`             | Entries with type, size, mtime; optional depth (max 5), at most 1000 entries            | no                          |
 | `read_file`            | Text up to 1 MB (or a line range of a bigger file); refuses binary files                | no                          |
-| `search_files`         | Name glob and/or content substring/regex; result, depth, entry and 10 s time caps       | no                          |
+| `search_files`         | Name glob and/or content substring/regex; result, depth, entry and 30 s time caps       | no                          |
 | `write_file`           | Create or replace a file; diffs over 256 KB are refused                                 | always, with the full diff  |
 | `move_file`            | Move or rename within the grants                                                        | always                      |
 | `delete_path`          | Send to the Recycle Bin (never a permanent delete)                                      | always                      |

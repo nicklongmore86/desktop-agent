@@ -47,7 +47,7 @@ export const DEFAULT_LIMITS: ToolLimits = {
   maxSearchResults: 1000,
   maxSearchDepth: 20,
   maxSearchEntries: 50_000,
-  searchTimeMs: 10_000,
+  searchTimeMs: 30_000,
   maxScanEntries: MAX_TREE_ENTRIES,
   maxDiffBytes: 256 * 1024,
   defaultShellTimeoutMs: 60_000,
