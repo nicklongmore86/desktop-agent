@@ -300,9 +300,23 @@ text of documents, on by default (`documents: false` turns it off for a call).
   kept; hard-linked files; and the documents the budget did not reach (`not searched
 yet`), with "call search_files again with the same arguments": cached documents cost
   no reader time, so each call gets further.
-- A reader call still running at the deadline is given up on (the reader has no cancel);
-  it finishes or is killed at its own 30 s timeout, so a `read_document` right after can
-  wait behind it.
+- Search jobs are background jobs in the reader's queue (`ExtractControl`): they wait
+  behind every `read_document` and attachment job, and the host refuses a background job
+  with `busy` while another is waiting or running, so all searches together have at most
+  one job in the reader. A job given up on at the deadline or a cancel leaves the queue
+  if it has not started (its bytes are let go). One already running cannot be stopped:
+  it finishes or is killed at its own 30 s timeout, and its result is thrown away (it is
+  one part of a document, and finishing the rest in the background would be unbounded
+  work of its own); the next search reads that document again. While it runs, a search
+  sends no more documents to the reader, searches what is cached, and lists the rest as
+  `not searched yet (stopped at the document reader, still busy ...)`. So a
+  `read_document` waits behind at most one search job, never a queue of them.
+- The queue itself is bounded for every caller: at most 64 waiting jobs and 256 MB of
+  waiting documents (`maxQueuedJobs`, `maxQueuedBytes`; a job alone is always taken, the
+  100 MB document limit bounding it). Past that a job is refused with `busy` ("The
+  document reader is busy with other documents. Try again in a moment."), which
+  `read_document` reports with the `busy` code. A chat's attachments (10 per message,
+  20 MB in all) fit several messages over.
 - Audit: `args.extra` gets `documentsSearched`, `documentsFromCache` and
   `documentsNotSearched` (counts only); the pattern is logged by kind and length as before.
 
@@ -313,8 +327,8 @@ pull down gigabytes. Windows marks those files `FILE_ATTRIBUTE_RECALL_ON_DATA_AC
 `OFFLINE`), but Node exposes no file attributes. It does expose the allocation size:
 libuv fills `blocks` from `AllocationSize`, and a dehydrated placeholder has a size and
 nothing allocated ("Size on disk: 0 bytes"). So on Windows a file of 4 KB or more with
-`blocks === 0` is skipped as `cloud-only, not downloaded`, by the text pass too, before
-it is opened. Smaller files are never taken for placeholders, because NTFS keeps files of
+`blocks === 0` is skipped as `appears cloud-only (not downloaded) — open it in Explorer to
+download it, or use read_document`, by the text pass too, before it is opened. Smaller files are never taken for placeholders, because NTFS keeps files of
 up to about 700 bytes (more on 4K-record volumes) inside the MFT with no allocation
 either. A never-written sparse file looks the same and is skipped too, which costs a
 search nothing. A native helper reading the real attributes would be exact, but would be
@@ -324,6 +338,14 @@ and, where `fsutil` can make one, that a never-written sparse file has none and 
 skipped. Listing, `lstat` and opening a handle without reading (the cached path's link
 check) read no file data. Placeholders could not be tested for real (CI has no OneDrive);
 off Windows nothing is skipped this way.
+
+It is a heuristic, and can be wrong: a file deduplicated by Windows Server Data
+Deduplication, or some other reparse-point or file-system-specific storage, can also
+report no allocation and be skipped though it is local. The skip reason says how to get it
+read anyway (download it in Explorer, or `read_document`, which does not apply the check).
+UNC paths (`\\server\share\…`, `\\?\UNC\…`) are never guessed at, since the server's
+file system decides what the allocation size says there; a share mapped to a drive letter
+cannot be told from a local disk cheaply and still is.
 
 ### The text cache
 

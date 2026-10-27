@@ -66,12 +66,24 @@ const CLOUD_ONLY_MIN_SIZE = 4096n
  * attributes (RECALL_ON_DATA_ACCESS, OFFLINE), but libuv reports the allocation size as
  * `blocks`: a dehydrated placeholder has a size and no allocation ("size on disk: 0").
  * So does a sparse file that was never written, which is no loss to a search.
+ *
+ * A guess, so the skip says how to get the file read anyway. Never made on a UNC path
+ * (\\server\share, \\?\UNC\…), where the server's file system decides what the
+ * allocation size says; a network share mapped to a drive letter cannot be told apart
+ * cheaply and is still guessed at.
  */
 export function isCloudOnly(
-  entry: { size: number; blocks: bigint },
+  entry: { path: string; size: number; blocks: bigint },
   platform: NodeJS.Platform,
 ): boolean {
-  return platform === 'win32' && entry.blocks === 0n && BigInt(entry.size) >= CLOUD_ONLY_MIN_SIZE
+  if (platform !== 'win32' || isUncPath(entry.path)) return false
+  return entry.blocks === 0n && BigInt(entry.size) >= CLOUD_ONLY_MIN_SIZE
+}
+
+/** \\server\share\…, //server/share/… or \\?\UNC\server\share\…; not \\?\C:\…. */
+function isUncPath(path: string): boolean {
+  if (!/^[\\/]{2}/.test(path)) return false
+  return !/^[\\/]{2}[?.][\\/][A-Za-z]:/.test(path)
 }
 
 /** Refusals that will not change until the file does: kept in the cache like text. */
@@ -117,22 +129,33 @@ const EMPTY: CachedText = {
 
 export type ExtractOutcome =
   | { kind: 'text'; text: CachedText; cacheable: boolean }
-  | { kind: 'stopped'; why: 'time' | 'cancelled' }
+  /** `busy`: the reader refused the job (an earlier search's job is still in it, or it is full). */
+  | { kind: 'stopped'; why: 'time' | 'cancelled' | 'busy' }
 
-/** A reader call that is given up on (not stopped: the reader has no cancel) at the deadline. */
+/**
+ * A reader call made as a background job, given up on at the deadline or a cancel. A job
+ * still waiting in the reader's queue then leaves it; one already running cannot be
+ * stopped and finishes (or times out) on its own, its result thrown away: it is one part
+ * of a document, not the whole text the cache keeps. Until it ends the reader refuses
+ * any other search's job, so abandoned jobs never pile up.
+ */
 async function within(
-  work: Promise<DocumentView>,
+  reader: DocumentReader,
+  bytes: Uint8Array,
+  options: ExtractOptions,
   timeLeft: () => number,
   signal: AbortSignal,
 ): Promise<DocumentView | 'time' | 'cancelled'> {
-  work.catch(() => undefined)
   const ms = timeLeft()
   if (ms <= 0) return 'time'
   if (signal.aborted) return 'cancelled'
+  const stop = new AbortController()
+  const work = reader.extract(bytes, options, { background: true, signal: stop.signal })
+  work.catch(() => undefined)
   let timer: ReturnType<typeof setTimeout> | undefined
   let onAbort: (() => void) | undefined
   try {
-    return await Promise.race([
+    const outcome = await Promise.race([
       work,
       new Promise<'time'>((resolve) => {
         timer = setTimeout(() => {
@@ -146,6 +169,8 @@ async function within(
         signal.addEventListener('abort', onAbort, { once: true })
       }),
     ])
+    if (outcome === 'time' || outcome === 'cancelled') stop.abort()
+    return outcome
   } finally {
     clearTimeout(timer)
     if (onAbort) signal.removeEventListener('abort', onAbort)
@@ -222,7 +247,7 @@ export async function extractForSearch(
       budget: { maxChars: DOCUMENT_LIMITS.maxCharsPerCall, maxImages: 0 },
       ...(select ? { select } : {}),
     }
-    return within(reader.extract(bytes, options), timeLeft, signal)
+    return within(reader, bytes, options, timeLeft, signal)
   }
   const add = (segment: TextSegment): boolean => {
     const room = budget.maxChars - chars
@@ -233,6 +258,8 @@ export async function extractForSearch(
   }
   const failed = (error: unknown): ExtractOutcome => {
     const code: DocumentErrorCode = error instanceof DocumentError ? error.code : 'worker-failed'
+    // Nothing to do with this document: the next search reads it.
+    if (code === 'busy' || code === 'cancelled') return { kind: 'stopped', why: 'busy' }
     return {
       kind: 'text',
       text: { ...EMPTY, failure: code },

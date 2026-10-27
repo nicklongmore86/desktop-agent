@@ -76,6 +76,8 @@ const ERROR_CODES: Record<DocumentErrorCode, ErrorCode> = {
   timeout: 'timeout',
   memory: 'worker-failed',
   'worker-failed': 'worker-failed',
+  busy: 'busy',
+  cancelled: 'cancelled',
 }
 
 export function readDocumentTool(deps: ResolvedDeps): ToolSpec<Input> {

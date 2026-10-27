@@ -415,6 +415,14 @@ describe('read_document', () => {
         /stopped/,
         'worker-failed',
       ],
+      [
+        new DocumentError(
+          'busy',
+          'The document reader is busy with other documents. Try again in a moment.',
+        ),
+        /^Could not read .*a\.pdf: The document reader is busy with other documents\. Try again in a moment\.$/,
+        'busy',
+      ],
       [new Error('boom: /secret/internal/path'), /the document reader failed/, 'worker-failed'],
     ]
     let next = 0

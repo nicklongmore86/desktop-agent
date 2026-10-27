@@ -17,6 +17,7 @@ import {
   DocumentError,
   type DocumentReader,
   type DocumentView,
+  type ExtractControl,
   type ExtractOptions,
 } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
@@ -361,6 +362,95 @@ describe('search_files inside documents', () => {
     expect(r.content).toContain('Documents: 0 searched, 1 not searched yet (stopped at the 0.05 s')
   })
 
+  it('sends its reads as background jobs and takes a waiting one back at the deadline', async () => {
+    const controls: (ExtractControl | undefined)[] = []
+    const stuck: DocumentReader = {
+      extract: (_bytes, _options, control) => {
+        controls.push(control)
+        return new Promise<DocumentView>(() => undefined)
+      },
+    }
+    h = harness({ documents: stuck, limits: { searchDocumentTimeMs: 50 } })
+    await put(
+      path.join(sb.root, 'a.pdf'),
+      Buffer.from(makePdf([{ text: ['the walk-in freezer'] }])),
+    )
+    await search({ contentPattern: 'freezer' })
+    expect(controls).toHaveLength(1)
+    expect(controls[0]?.background).toBe(true)
+    // Aborted once the search stopped waiting, so the reader can drop it if not started.
+    expect(controls[0]?.signal?.aborted).toBe(true)
+  })
+
+  it('sends nothing more to a busy reader, and searches what is cached', async () => {
+    await put(
+      path.join(sb.root, 'cached.pdf'),
+      Buffer.from(makePdf([{ text: ['the walk-in freezer'] }])),
+    )
+    await search({ contentPattern: 'freezer' })
+    for (const name of ['a', 'b', 'c']) {
+      await put(
+        path.join(sb.root, `${name}.pdf`),
+        Buffer.from(makePdf([{ text: ['the walk-in freezer'] }])),
+      )
+    }
+    let calls = 0
+    const busy: DocumentReader = {
+      extract: () => {
+        calls++
+        return Promise.reject(
+          new DocumentError('busy', 'The document reader is still busy with an earlier search.'),
+        )
+      },
+    }
+    h = harness({ documents: busy })
+    const r = await search({ contentPattern: 'freezer' })
+    expect(calls).toBe(1)
+    expect(r.content).toContain('cached.pdf (page 1): the walk-in freezer')
+    expect(r.content).toContain(
+      'Documents: 1 searched (1 from the cache), 3 not searched yet (stopped at the document ' +
+        'reader, still busy with an earlier search or other documents).',
+    )
+    expect(r.content).toContain('Call search_files again with the same arguments')
+    // Nothing about the busy reader is kept: the next search reads them.
+    h = harness()
+    reader.calls.length = 0
+    const again = await search({ contentPattern: 'freezer' })
+    expect(named(reader.calls)).toEqual(['a.pdf', 'b.pdf', 'c.pdf'])
+    expect(again.content).toContain('Documents: 4 searched (1 from the cache).')
+  })
+
+  it('keeps nothing for a grant removed while its document was being read', async () => {
+    let granted = true
+    cache = new DocumentTextCache({
+      dir: path.join(sb.userData, 'document-text-cache'),
+      roots: () => (granted ? [sb.root] : []),
+    })
+    const removing: DocumentReader = {
+      extract: async (bytes, options) => {
+        const view = await extractDocument(bytes, options ?? {}, env())
+        granted = false
+        await cache.forgetGrant(sb.root)
+        return view
+      },
+    }
+    h = harness({ documents: removing })
+    await put(
+      path.join(sb.root, 'a.pdf'),
+      Buffer.from(makePdf([{ text: ['the walk-in freezer'] }])),
+    )
+    await search({ contentPattern: 'freezer' })
+    const files = await fs
+      .readdir(path.join(sb.userData, 'document-text-cache'), { recursive: true })
+      .catch(() => [])
+    expect(files.filter((name) => name.endsWith('.json'))).toEqual([])
+    // Granted again, it is read again: nothing was kept.
+    granted = true
+    h = harness()
+    await search({ contentPattern: 'freezer' })
+    expect(named(reader.calls)).toEqual(['a.pdf'])
+  })
+
   it('is cancelled while a document is being read', async () => {
     const stuck: DocumentReader = { extract: () => new Promise<DocumentView>(() => undefined) }
     h = harness({ documents: stuck })
@@ -543,13 +633,25 @@ describe('document text helpers', () => {
     expect(tableCells('(empty sheet)')).toBe('')
   })
 
-  it('takes only large Windows files with no allocation for cloud-only placeholders', () => {
-    expect(isCloudOnly({ size: 50_000, blocks: 0n }, 'win32')).toBe(true)
-    expect(isCloudOnly({ size: 50_000, blocks: 104n }, 'win32')).toBe(false)
+  it('takes only large local Windows files with no allocation for cloud-only placeholders', () => {
+    const local = 'C:\\Users\\me\\OneDrive\\a.pdf'
+    expect(isCloudOnly({ path: local, size: 50_000, blocks: 0n }, 'win32')).toBe(true)
+    expect(isCloudOnly({ path: local, size: 50_000, blocks: 104n }, 'win32')).toBe(false)
     // Small files live in the MFT with no allocation of their own.
-    expect(isCloudOnly({ size: 600, blocks: 0n }, 'win32')).toBe(false)
-    expect(isCloudOnly({ size: 50_000, blocks: 0n }, 'linux')).toBe(false)
-    expect(isCloudOnly({ size: 50_000, blocks: 0n }, 'darwin')).toBe(false)
+    expect(isCloudOnly({ path: local, size: 600, blocks: 0n }, 'win32')).toBe(false)
+    expect(isCloudOnly({ path: local, size: 50_000, blocks: 0n }, 'linux')).toBe(false)
+    expect(isCloudOnly({ path: local, size: 50_000, blocks: 0n }, 'darwin')).toBe(false)
+    expect(isCloudOnly({ path: '\\\\?\\C:\\long\\a.pdf', size: 50_000, blocks: 0n }, 'win32')).toBe(
+      true,
+    )
+    // Never on a network share, where the server decides what the allocation says.
+    for (const share of [
+      '\\\\server\\share\\a.pdf',
+      '//server/share/a.pdf',
+      '\\\\?\\UNC\\server\\share\\a.pdf',
+    ]) {
+      expect(isCloudOnly({ path: share, size: 50_000, blocks: 0n }, 'win32')).toBe(false)
+    }
   })
 
   it.runIf(process.platform === 'win32')(
@@ -579,7 +681,10 @@ describe('document text helpers', () => {
       if (fsutil.status === 0) {
         expect(byName['sparse.txt']?.blocks).toBe(0n)
         const all = await search({ contentPattern: 'nothing here' })
-        expect(all.content).toContain('  sparse.txt (cloud-only, not downloaded)')
+        expect(all.content).toContain(
+          '  sparse.txt (appears cloud-only (not downloaded) — open it in Explorer to download it, ' +
+            'or use read_document)',
+        )
       }
     },
   )

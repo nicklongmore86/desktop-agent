@@ -31,6 +31,7 @@ export type ErrorCode =
   | 'unreadable'
   | 'out-of-range'
   | 'worker-failed'
+  | 'busy'
   | 'failed'
 
 /** Thrown by tool bodies for expected failures; becomes an error result with this message. */

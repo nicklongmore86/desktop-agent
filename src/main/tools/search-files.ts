@@ -96,7 +96,8 @@ const SKIP_LABEL: Record<SkipReason, string> = {
   scanned: 'no text layer (scanned) — open with read_document',
   'unreadable-document': 'document, could not be read',
   secret: 'name looks like it holds secrets, not read',
-  'cloud-only': 'cloud-only, not downloaded',
+  'cloud-only':
+    'appears cloud-only (not downloaded) — open it in Explorer to download it, or use read_document',
   binary: 'binary, not searched',
   'too-large': 'too large',
   'hard-link': 'hard-linked',
@@ -446,7 +447,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     partial: [] as string[],
     blank: [] as string[],
   }
-  const docStop: { why: string | null } = { why: null }
+  const docStop: { why: string | null; busy: boolean } = { why: null, busy: false }
+  const READER_BUSY = 'the document reader, still busy with an earlier search or other documents'
 
   /**
    * The document pass: documents already in the cache first (they cost no reader time),
@@ -512,6 +514,11 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         }
         if (docTimeLeft() === 0) {
           docStop.why ??= `the ${String(limits.searchDocumentTimeMs / 1000)} s time for reading documents`
+          skip(entry, 'pending')
+          continue
+        }
+        // The reader refused a job: no more are sent this call (cached ones are still searched).
+        if (docStop.busy) {
           skip(entry, 'pending')
           continue
         }
@@ -607,6 +614,10 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     if (outcome.kind === 'stopped') {
       if (outcome.why === 'cancelled') {
         state.stop = 'cancelled'
+      } else if (outcome.why === 'busy') {
+        docStop.busy = true
+        docStop.why ??= READER_BUSY
+        skip(entry, 'pending')
       } else {
         docStop.why ??= `the ${String(limits.searchDocumentTimeMs / 1000)} s time for reading documents`
         skip(entry, 'pending')

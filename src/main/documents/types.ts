@@ -166,6 +166,10 @@ export type DocumentErrorCode =
   | 'timeout'
   | 'memory'
   | 'worker-failed'
+  /** The reader's queue is full, or a search already has a job in it: try again later. */
+  | 'busy'
+  /** A job taken out of the queue before it started (its caller stopped waiting). */
+  | 'cancelled'
 
 /** A refusal with a stable code and a message that can be shown to the user or model. */
 export class DocumentError extends Error {
@@ -183,5 +187,21 @@ export class DocumentError extends Error {
  * DocumentWorkerHost in the app, a fake in unit tests.
  */
 export interface DocumentReader {
-  extract(bytes: Uint8Array, options?: ExtractOptions): Promise<DocumentView>
+  extract(
+    bytes: Uint8Array,
+    options?: ExtractOptions,
+    control?: ExtractControl,
+  ): Promise<DocumentView>
+}
+
+/** How a job waits in the reader's queue. */
+export interface ExtractControl {
+  /**
+   * A search's read: queued behind every read_document and attachment job, and refused
+   * with `busy` while another background job is queued or running, so searches never
+   * have more than one job in the reader between them.
+   */
+  background?: boolean
+  /** Takes the job out of the queue (rejected with `cancelled`) if it has not started yet. */
+  signal?: AbortSignal
 }

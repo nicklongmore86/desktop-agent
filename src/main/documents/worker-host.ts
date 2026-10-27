@@ -18,6 +18,7 @@ import {
   DocumentError,
   type DocumentErrorCode,
   type DocumentView,
+  type ExtractControl,
   type ExtractOptions,
 } from './types'
 
@@ -47,6 +48,10 @@ export interface DocumentWorkerOptions {
   /** Working set above which a running job is killed; above 3/4 of it the worker is recycled. */
   memoryLimitBytes?: number
   maxJobsPerWorker?: number
+  /** Jobs that may wait (not counting the running one); more are refused with `busy`. */
+  maxQueuedJobs?: number
+  /** Bytes of documents that may wait; a job that would go over is refused with `busy`. */
+  maxQueuedBytes?: number
   idleMs?: number
   partition?: string
   /**
@@ -86,6 +91,17 @@ export function isWorkerRequestAllowed(url: string, workerDir: string): boolean 
 const START_TIMEOUT_MS = 10_000
 const MEMORY_POLL_MS = 250
 
+/** A job waiting for the worker, holding its copy of the bytes until it starts. */
+interface Queued {
+  bytes: Uint8Array
+  options: ExtractOptions
+  background: boolean
+  resolve: (view: DocumentView) => void
+  reject: (error: unknown) => void
+  /** Stops listening for the caller's abort. */
+  unlisten: () => void
+}
+
 interface Job {
   id: number
   options: ExtractOptions
@@ -110,8 +126,15 @@ export class DocumentWorkerHost {
   private readonly maxJobsPerWorker: number
   private readonly idleMs: number
   private readonly partition: string
+  private readonly maxQueuedJobs: number
+  private readonly maxQueuedBytes: number
   private worker: Promise<Worker> | null = null
-  private queue: Promise<unknown> = Promise.resolve()
+  /** Jobs waiting, read_document's and attachments' ahead of searches'. */
+  private waiting: Queued[] = []
+  private queuedBytes = 0
+  private running = false
+  /** Background jobs waiting or running: at most one. */
+  private background = 0
   /** System decodes run one at a time too, beside the worker's jobs. */
   private decodes: Promise<unknown> = Promise.resolve()
   private wasm: Promise<Uint8Array> | null = null
@@ -125,26 +148,110 @@ export class DocumentWorkerHost {
     this.timeoutMs = options.timeoutMs ?? 30_000
     this.memoryLimitBytes = options.memoryLimitBytes ?? 1536 * 1024 * 1024
     this.maxJobsPerWorker = options.maxJobsPerWorker ?? 25
+    // Room for a chat's attachments (10 per message) several times over, and for two of
+    // the largest documents the reader takes (100 MB) besides a few smaller ones.
+    this.maxQueuedJobs = options.maxQueuedJobs ?? 64
+    this.maxQueuedBytes = options.maxQueuedBytes ?? 256 * 1024 * 1024
     this.idleMs = options.idleMs ?? 60_000
     this.partition = options.partition ?? 'document-worker'
   }
 
-  /** Reads one document. Jobs run one at a time; a failure never affects the next job. */
-  extract(bytes: Uint8Array, options: ExtractOptions = {}): Promise<DocumentView> {
+  /**
+   * Reads one document. Jobs run one at a time; a failure never affects the next job.
+   * Background (search) jobs wait behind every other job, and only one may be in the
+   * reader at a time. The queue is bounded: past its limits a job is refused with `busy`.
+   */
+  extract(
+    bytes: Uint8Array,
+    options: ExtractOptions = {},
+    control: ExtractControl = {},
+  ): Promise<DocumentView> {
     checkDocumentSize(bytes.length, this.limits)
+    if (control.signal?.aborted) {
+      return Promise.reject(new DocumentError('cancelled', 'Reading the document was cancelled.'))
+    }
+    if (control.background && this.background > 0) {
+      return Promise.reject(
+        new DocumentError('busy', 'The document reader is still busy with an earlier search.'),
+      )
+    }
+    // A job on its own is always taken: checkDocumentSize already bounds it.
+    if (
+      this.waiting.length >= this.maxQueuedJobs ||
+      (this.waiting.length > 0 && this.queuedBytes + bytes.length > this.maxQueuedBytes)
+    ) {
+      return Promise.reject(
+        new DocumentError(
+          'busy',
+          'The document reader is busy with other documents. Try again in a moment.',
+        ),
+      )
+    }
     // A copy of exactly these bytes: a Buffer's view may sit in a shared pool.
     const copy = new Uint8Array(bytes)
     // Only the host asks for that.
     const { systemDecoded: _ignored, ...asked } = options
-    return this.enqueue(copy, asked).then((view) =>
+    return this.enqueue(copy, asked, control).then((view) =>
       view.systemDecode ? this.decodeWithSystem(copy, view, asked) : view,
     )
   }
 
-  private enqueue(bytes: Uint8Array, options: ExtractOptions): Promise<DocumentView> {
-    const run = this.queue.then(() => this.run(bytes, options))
-    this.queue = run.catch(() => undefined)
-    return run
+  private enqueue(
+    bytes: Uint8Array,
+    options: ExtractOptions,
+    control: ExtractControl = {},
+  ): Promise<DocumentView> {
+    return new Promise<DocumentView>((resolveJob, rejectJob) => {
+      const { signal } = control
+      const onAbort = (): void => {
+        const at = this.waiting.indexOf(job)
+        if (at < 0) return
+        this.waiting.splice(at, 1)
+        this.release(job)
+        job.reject(new DocumentError('cancelled', 'Reading the document was cancelled.'))
+      }
+      const job: Queued = {
+        bytes,
+        options,
+        background: control.background === true,
+        resolve: resolveJob,
+        reject: rejectJob,
+        unlisten: () => {
+          signal?.removeEventListener('abort', onAbort)
+        },
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (job.background) this.background++
+      this.queuedBytes += bytes.length
+      const firstBackground = this.waiting.findIndex((queued) => queued.background)
+      if (job.background || firstBackground < 0) this.waiting.push(job)
+      else this.waiting.splice(firstBackground, 0, job)
+      this.pump()
+    })
+  }
+
+  /** Lets go of a job taken out of the queue before it started. */
+  private release(job: Queued): void {
+    this.queuedBytes -= job.bytes.length
+    job.unlisten()
+    if (job.background) this.background--
+  }
+
+  /** Starts the next job when the worker is free. */
+  private pump(): void {
+    if (this.running) return
+    const job = this.waiting.shift()
+    if (!job) return
+    this.queuedBytes -= job.bytes.length
+    job.unlisten()
+    this.running = true
+    void this.run(job.bytes, job.options)
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        this.running = false
+        if (job.background) this.background--
+        this.pump()
+      })
   }
 
   /**
@@ -192,8 +299,14 @@ export class DocumentWorkerHost {
     return view
   }
 
-  stats(): { workersStarted: number; jobs: number; lastStartMs: number } {
-    return { ...this.counters }
+  stats(): {
+    workersStarted: number
+    jobs: number
+    lastStartMs: number
+    queued: number
+    queuedBytes: number
+  } {
+    return { ...this.counters, queued: this.waiting.length, queuedBytes: this.queuedBytes }
   }
 
   async dispose(): Promise<void> {
