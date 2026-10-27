@@ -3,6 +3,7 @@ import type {
   MessageParam,
   ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/messages'
+import { TURN_LIMIT } from '../../shared/ipc'
 import { apiErrorEvent, DEFAULT_MODEL } from './client'
 import { toolResultImages, withImageBudget, type LiveToolImages } from './images'
 import type {
@@ -60,12 +61,19 @@ export function withCacheBreakpoint(history: MessageParam[]): MessageParam[] {
   return [...history.slice(0, -1), { ...last, content }]
 }
 
+/**
+ * What a run that reached its turn limit says. Not an error: everything so far is saved,
+ * with every tool call answered, so sending again (Continue) carries on from here.
+ */
+export const pausedMessage = (steps: number): string =>
+  `Paused after ${String(steps)} steps. Your progress is saved.`
+
 export function createAgent({
   client,
   tools,
   model = DEFAULT_MODEL,
   systemPrompt = DEFAULT_SYSTEM_PROMPT,
-  maxTurns = 10,
+  maxTurns = TURN_LIMIT.default,
   maxTokens = 4096,
   errorEvent = apiErrorEvent,
   modelName = 'Claude',
@@ -243,10 +251,7 @@ export function createAgent({
               return fail('protocol', `${modelName} returned an unsupported stop reason.`)
           }
         }
-        return fail(
-          'max_turns',
-          'Agent reached its turn limit. Review the conversation before continuing.',
-        )
+        return fail('max_turns', pausedMessage(maxTurns))
       } catch (error) {
         if (signal.aborted) return fail('aborted', 'Agent run cancelled.')
         const event = errorEvent(error)

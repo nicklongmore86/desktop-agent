@@ -1,8 +1,18 @@
 import type { Message, MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApprovalPrompt, ChatEvent } from '../../shared/ipc'
-import { createAgent, type AgentClient, type AgentTool, type RunOptions } from '../agent'
-import type { ConversationStore } from '../storage/conversation-store'
+import {
+  createAgent,
+  withCacheBreakpoint,
+  type AgentClient,
+  type AgentTool,
+  type RunOptions,
+} from '../agent'
+import {
+  isWellFormed,
+  type ConversationStore,
+  type StoredMessage,
+} from '../storage/conversation-store'
 import { ChatSession, type AgentRunner, type RunnerResult } from './session'
 import { memoryHistory, memoryStore } from './test-support'
 
@@ -310,6 +320,76 @@ describe('ChatSession', () => {
       expect(decision).toBe(false)
       expect(prompts).toEqual([])
     })
+  })
+
+  it('continues a run paused at its turn limit from the saved, fully answered history', async () => {
+    let calls = 0
+    const requests: MessageParam[][] = []
+    // Asks for a tool until the conversation's last prompt is "Continue", then answers.
+    const client: AgentClient = {
+      messages: {
+        stream: (params) => {
+          requests.push(structuredClone(params.messages))
+          const done = JSON.stringify(params.messages.at(-1)).includes('"Continue"')
+          const id = `toolu_${String(++calls)}`
+          const message = {
+            id: `m${String(calls)}`,
+            type: 'message',
+            role: 'assistant',
+            model: 'test',
+            content: done
+              ? [{ type: 'text', text: 'All done.', citations: null }]
+              : [{ type: 'tool_use', id, name: 'noop', input: {} }],
+            stop_reason: done ? 'end_turn' : 'tool_use',
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          } as unknown as Message
+          return {
+            abort: () => {},
+            on: () => {},
+            finalMessage: () => Promise.resolve(message),
+          }
+        },
+      },
+    }
+    const noop: AgentTool = {
+      name: 'noop',
+      description: 'Does nothing',
+      inputSchema: { type: 'object', properties: {} },
+      execute: () => Promise.resolve({ content: 'Done.' }),
+    }
+    const { session, events, store } = setup(createAgent({ client, tools: [noop], maxTurns: 2 }))
+    await session.send('Tidy my folder')
+    await session.idle()
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'error',
+        code: 'max_turns',
+        message: 'Paused after 2 steps. Your progress is saved.',
+      }),
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', stopReason: 'max_turns' })
+    const paused = store.saved()
+    expect(isWellFormed(paused)).toBe(true)
+    expect(paused.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
+
+    // Continue is an ordinary send of "Continue".
+    await session.send('Continue')
+    await session.idle()
+    const sent = requests[2] ?? []
+    // The saved history, once, and then the continuation: no repeated or unanswered calls.
+    // (No attachments here, so the saved messages are already model messages.)
+    const resent = [...(paused as MessageParam[]), { role: 'user' as const, content: 'Continue' }]
+    expect(sent).toEqual(withCacheBreakpoint(resent))
+    expect(isWellFormed(sent as StoredMessage[])).toBe(true)
+    const ids = sent.flatMap((m) =>
+      typeof m.content === 'string'
+        ? []
+        : m.content.flatMap((b) => (b.type === 'tool_result' ? [b.tool_use_id] : [])),
+    )
+    expect(ids).toEqual(['toolu_1', 'toolu_2'])
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', stopReason: 'end_turn' })
+    expect(store.saved().at(-1)).toMatchObject({ role: 'assistant' })
   })
 
   it('works end to end with the real agent loop and a tool needing approval', async () => {

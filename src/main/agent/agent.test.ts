@@ -208,6 +208,41 @@ describe('agent', () => {
     expect(await f.run()).toMatchObject({ stopReason: 'max_turns', conversation: [{}, {}, {}] })
     expect(f.requests).toHaveLength(1)
   })
+  it('pauses after 35 turns by default, saying the progress is kept', async () => {
+    const requests: unknown[] = []
+    const client: AgentClient = {
+      messages: {
+        stream(params) {
+          requests.push(params)
+          return {
+            abort: vi.fn(),
+            on: vi.fn(),
+            finalMessage: () => Promise.resolve(reply('tool_use', [call()])),
+          }
+        },
+      },
+    }
+    const events: AgentEvent[] = []
+    const result = await createAgent({ client, tools: [tool()] }).run(
+      [{ role: 'user', content: 'Help' }],
+      {
+        signal: new AbortController().signal,
+        requestApproval: () => Promise.resolve(false),
+        onEvent: (event) => events.push(event),
+      },
+    )
+    expect(result.stopReason).toBe('max_turns')
+    expect(requests).toHaveLength(35)
+    // The prompt, then every call with its result.
+    expect(result.conversation).toHaveLength(1 + 35 * 2)
+    expect(events.filter((event) => event.type === 'error')).toEqual([
+      {
+        type: 'error',
+        code: 'max_turns',
+        message: 'Paused after 35 steps. Your progress is saved.',
+      },
+    ])
+  })
   it.each(['max_tokens', 'refusal', 'model_context_window_exceeded', 'stop_sequence'] as const)(
     'handles %s without retry',
     async (stop) => {

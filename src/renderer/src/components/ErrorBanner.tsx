@@ -19,7 +19,7 @@ const TITLES: Record<ChatErrorCode, string> = {
   network: 'Connection problem',
   api: 'Request failed',
   aborted: 'Stopped',
-  max_turns: 'Turn limit reached',
+  max_turns: 'Paused',
   max_tokens: 'Reply too long',
   refusal: 'Request declined',
   context_limit: 'Conversation too long',
@@ -47,16 +47,27 @@ export function ErrorBanner({
   onDismiss,
   onOpenSettings,
   onNewChat,
+  onContinue,
+  continueDisabled = false,
   manageUsage = false,
 }: {
   banner: Banner
   onDismiss: () => void
   onOpenSettings: OpenSettings
   onNewChat: () => void
+  /**
+   * A run paused at its turn limit: sends a continuation in this chat, through the normal
+   * send (so the same busy checks, approvals and audit apply). Without it, no button.
+   */
+  onContinue?: () => void
+  /** A reply, command or switch is in flight, so Continue cannot send yet. */
+  continueDisabled?: boolean
   /** ChatGPT · Plan is the connection in use: a limit or plan error offers Manage usage. */
   manageUsage?: boolean
 }): React.JSX.Element {
-  const info = banner.code === 'aborted'
+  // Stopping, and pausing at the turn limit, are not failures: neither is shown as an error.
+  const paused = banner.code === 'max_turns'
+  const info = banner.code === 'aborted' || paused
   return (
     <div
       className={`banner ${info ? 'banner-info' : 'banner-error'}`}
@@ -69,7 +80,9 @@ export function ErrorBanner({
         </span>
       )}
       <div className="banner-text">
-        <strong>{TITLES[banner.code]}.</strong> {plainText(banner.message)}
+        {/* The pause message names itself ("Paused after 35 steps…"). */}
+        {!paused && <strong>{TITLES[banner.code]}. </strong>}
+        {plainText(banner.message)}
       </div>
       <div className="banner-actions">
         {manageUsage && (banner.code === 'usage_limit' || banner.code === 'plan_not_entitled') && (
@@ -83,6 +96,16 @@ export function ErrorBanner({
             }}
           >
             Open Settings
+          </button>
+        )}
+        {paused && onContinue && (
+          <button
+            type="button"
+            className="button-primary"
+            disabled={continueDisabled}
+            onClick={onContinue}
+          >
+            Continue
           </button>
         )}
         {banner.code === 'context_limit' && (

@@ -1,4 +1,9 @@
-import type { ProviderFailure, ProviderModels, ProviderStatus } from '../../../shared/ipc'
+import {
+  TURN_LIMIT,
+  type ProviderFailure,
+  type ProviderModels,
+  type ProviderStatus,
+} from '../../../shared/ipc'
 import { CHATGPT_PLAN, type ConnectionVision } from '../../../shared/ipc-connections'
 import { createAgent, type AgentClient, type AgentErrorCode, type AgentEvent } from '../../agent'
 import { OpenAICompatError, openAICompatErrorEvent } from '../../llm/openai-compat/errors'
@@ -330,6 +335,7 @@ export const chatgptPlanAdapter =
           client: observed(client),
           tools,
           model: chosen,
+          maxTurns: host.settings?.turnLimit ?? TURN_LIMIT.default,
           errorEvent,
           modelName: 'ChatGPT',
           vision: (await visionOf(chosen)).enabled,

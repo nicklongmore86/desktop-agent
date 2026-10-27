@@ -9,12 +9,19 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod/v4'
 import type { AgentTool, RunResult } from '../agent'
-import { DEFAULT_SYSTEM_PROMPT } from '../agent'
+import { DEFAULT_SYSTEM_PROMPT, pausedMessage } from '../agent'
 import type { AgentRunner } from '../chat/session'
 import { imageLabel, ToolBridge, transcriptInput } from './bridge'
 import { CLAUDE_FAILURES, SubscriptionError, mapFailure, plausibleReset } from './errors'
 import type { ProviderFailure } from '../../shared/ipc'
 import type { RuntimeContext } from './codex'
+
+/**
+ * The runtime's own turn limit. Not the Settings turn limit (TURN_LIMIT): ToolBridge allows
+ * 40 tool calls per reply and the runner stops after three minutes, so a higher setting
+ * could not take effect here, and the runtime counts its turns itself.
+ */
+export const CLAUDE_MAX_TURNS = 40
 
 export function claudeOptions(context: RuntimeContext): Options {
   return {
@@ -39,7 +46,7 @@ export function claudeOptions(context: RuntimeContext): Options {
     settings: { disableAllHooks: true },
     persistSession: false,
     includePartialMessages: true,
-    maxTurns: 40,
+    maxTurns: CLAUDE_MAX_TURNS,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     permissionMode: 'default',
     canUseTool: () =>
@@ -233,7 +240,11 @@ export function createClaudeSubscriptionRunner(
         options.onEvent({
           type: 'error',
           code,
-          message: options.signal.aborted ? 'Reply stopped.' : failure.message,
+          message: options.signal.aborted
+            ? 'Reply stopped.'
+            : code === 'max_turns'
+              ? pausedMessage(CLAUDE_MAX_TURNS)
+              : failure.message,
           ...(failure.resetsAt ? { resetsAt: failure.resetsAt } : {}),
         })
         bridge.flush()

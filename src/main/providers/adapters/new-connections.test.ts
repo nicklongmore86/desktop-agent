@@ -615,6 +615,46 @@ describe('the OpenAI-compatible API connections', () => {
   )
 })
 
+describe('the turn limit from Settings', () => {
+  const noop: AgentTool = {
+    name: 'noop',
+    description: 'Does nothing',
+    inputSchema: { type: 'object', properties: {} },
+    execute: () => Promise.resolve({ content: 'Done.' }),
+  }
+  // A model that asks for a tool on every turn, so only the limit ends the run.
+  const endless = async (): Promise<{
+    stopReason: string
+    events: AgentEvent[]
+    turns: number
+  }> => {
+    const { service, keys } = serviceWith(openAIApiAdapter({ fetch: fetchFor(OPENAI) }))
+    keys.saved.set('openai-api', 'sk-x')
+    await settings.setSelection('openai-api', 'some-model')
+    route(
+      'POST /v1/chat/completions',
+      sse(callDelta('call_1', 'noop', {}), delta({}, 'tool_calls')),
+    )
+    const result = await run(service, 'openai-api', [noop])
+    return { ...result, turns: seen.filter((r) => r.path === '/v1/chat/completions').length }
+  }
+
+  it('pauses after the default 35 steps when none was chosen', async () => {
+    const { stopReason, events, turns } = await endless()
+    expect(stopReason).toBe('max_turns')
+    expect(turns).toBe(35)
+    expect(errorOf(events)?.message).toBe('Paused after 35 steps. Your progress is saved.')
+  })
+
+  it('pauses after the number of steps saved in Settings, read at each send', async () => {
+    await settings.setTurnLimit(7)
+    const { stopReason, events, turns } = await endless()
+    expect(stopReason).toBe('max_turns')
+    expect(turns).toBe(7)
+    expect(errorOf(events)?.message).toBe('Paused after 7 steps. Your progress is saved.')
+  })
+})
+
 describe('images and vision per connection', () => {
   /** A tool that returns one PNG with its text. */
   const looker: AgentTool = {

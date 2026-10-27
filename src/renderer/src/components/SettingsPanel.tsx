@@ -8,6 +8,7 @@ import type {
 import type { ConnectionId } from '../../../shared/ipc-connections'
 import type { SettingsSection } from '../open-settings'
 import { AccountsSection } from './settings/AccountsSection'
+import { AgentSection } from './settings/AgentSection'
 import { FoldersSection } from './settings/FoldersSection'
 import { AppearanceSection, PrivacySection, AboutSection } from './settings/OtherSections'
 export interface SettingsPanelProps {
@@ -26,6 +27,7 @@ export interface SettingsPanelProps {
 
 export const SETTINGS_SECTIONS = {
   accounts: 'Accounts & providers',
+  agent: 'Agent',
   folders: 'Folders & permissions',
   appearance: 'Appearance',
   privacy: 'Privacy & audit log',
@@ -38,6 +40,7 @@ export function SettingsPanel(
   return (
     <div className="settings" aria-label="Settings">
       {(!section || section === 'accounts') && <AccountsSection {...props} />}
+      {(!section || section === 'agent') && <AgentSection />}
       {(!section || section === 'folders') && (
         <FoldersSection grants={props.grants} onGrants={props.onGrants} />
       )}

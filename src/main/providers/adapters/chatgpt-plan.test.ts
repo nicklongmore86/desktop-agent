@@ -334,6 +334,25 @@ describe('ChatGPT plan connection', () => {
     await expectNoSecrets()
   })
 
+  it('pauses at the turn limit saved in Settings, with the progress kept', async () => {
+    const service = await signedIn()
+    await settings.setTurnLimit(5)
+    // Every response asks for a tool, so only the limit ends the run.
+    responses = [sse(...call('list_dir', { path: sb.root }))]
+    const { result, error } = await send(service)
+    expect(result?.stopReason).toBe('max_turns')
+    expect(responsesRequests()).toHaveLength(5)
+    expect(error).toMatchObject({
+      code: 'max_turns',
+      message: 'Paused after 5 steps. Your progress is saved.',
+    })
+    // The prompt, then five answered calls: nothing left unpaired to continue from.
+    expect(result?.conversation.map((m) => m.role)).toEqual([
+      'user',
+      ...Array<string[]>(5).fill(['assistant', 'user']).flat(),
+    ])
+  })
+
   it('refreshes an access token near expiry before the request', async () => {
     const service = await signedIn()
     await send(service)

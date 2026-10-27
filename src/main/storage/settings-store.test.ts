@@ -129,6 +129,72 @@ it('serializes layout writes with the other settings writes', async () => {
   }
 })
 
+describe('turn limit', () => {
+  const dirs: string[] = []
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+  })
+  const fileWith = async (content?: unknown): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), 'turn-limit-'))
+    dirs.push(dir)
+    const file = join(dir, 'settings.json')
+    if (content !== undefined) await writeFile(file, JSON.stringify(content))
+    return file
+  }
+
+  it('starts at the default with no file, and in a file saved before the setting existed', async () => {
+    expect((await openSettingsStore(await fileWith())).turnLimit).toBe(35)
+    for (const content of [
+      { version: 1, model: 'claude-haiku-5-5' },
+      { version: 2, model: 'claude-haiku-5-5', provider: 'codex-subscription' },
+      { version: 3, model: 'claude-haiku-5-5', connection: 'anthropic-api', theme: 'dark' },
+    ]) {
+      const store = await openSettingsStore(await fileWith(content))
+      expect(store.turnLimit).toBe(35)
+      expect(store.model).toBe('claude-haiku-5-5')
+    }
+  })
+
+  it.each([4, 101, 12.5, '20', null, -1, { steps: 20 }])(
+    'reads a saved %j as the default, keeping the other settings',
+    async (turnLimit) => {
+      const store = await openSettingsStore(
+        await fileWith({ version: 3, model: 'claude-opus-5-5', theme: 'dark', turnLimit }),
+      )
+      expect(store.turnLimit).toBe(35)
+      expect(store.theme).toBe('dark')
+      expect(store.model).toBe('claude-opus-5-5')
+    },
+  )
+
+  it('saves a valid limit, keeps it across restarts and other writes', async () => {
+    const file = await fileWith({ version: 3, model: 'claude-opus-5-5', theme: 'dark' })
+    const store = await openSettingsStore(file)
+    expect(await store.setTurnLimit(60)).toBe(60)
+    await store.setTheme('light')
+    const reopened = await openSettingsStore(file)
+    expect(reopened.turnLimit).toBe(60)
+    expect(reopened.theme).toBe('light')
+    expect(reopened.model).toBe('claude-opus-5-5')
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ version: 3, turnLimit: 60 })
+    for (const edge of [5, 100]) {
+      await store.setTurnLimit(edge)
+      expect((await openSettingsStore(file)).turnLimit).toBe(edge)
+    }
+  })
+
+  it('refuses a limit outside 5 to 100 or not a whole number, and keeps the saved one', async () => {
+    const file = await fileWith()
+    const store = await openSettingsStore(file)
+    await store.setTurnLimit(20)
+    for (const bad of [4, 101, 0, 12.5, Number.NaN, Infinity]) {
+      await expect(store.setTurnLimit(bad)).rejects.toThrow()
+    }
+    expect(store.turnLimit).toBe(20)
+    expect((await openSettingsStore(file)).turnLimit).toBe(20)
+  })
+})
+
 describe('settings v3 migration', () => {
   const dirs: string[] = []
   afterEach(async () => {
@@ -167,6 +233,7 @@ describe('settings v3 migration', () => {
     expect(store.layout).toEqual(layout)
     expect(store.connections).toEqual(BUILTIN)
     expect(store.showPersonalUseConnections).toBe(true)
+    expect(store.turnLimit).toBe(35)
     // Reading never rewrites the file.
     expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(v2)
     await store.setTheme('light')
@@ -178,6 +245,7 @@ describe('settings v3 migration', () => {
       connections: BUILTIN,
       showPersonalUseConnections: true,
       theme: 'light',
+      turnLimit: 35,
       layout,
     })
   })
