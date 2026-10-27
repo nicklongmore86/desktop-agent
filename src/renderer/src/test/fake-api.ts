@@ -15,6 +15,7 @@ import type {
   SendResult,
   ThemePreference,
 } from '../../../shared/ipc'
+import { TURN_LIMIT } from '../../../shared/ipc'
 import {
   type ConnectionBaseUrl,
   type ConnectionVision,
@@ -162,6 +163,7 @@ export interface FakeApiOptions {
   provider?: ProviderStatus
   audit?: AuditStatus
   theme?: ThemePreference
+  turnLimit?: number
   history?: HistoryState
   layout?: LayoutPrefs
   files?: Record<string, FileEntry[]>
@@ -218,6 +220,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
     ],
   }
   let theme: ThemePreference = options.theme ?? 'system'
+  let turnLimit = options.turnLimit ?? TURN_LIMIT.default
   let layout: LayoutPrefs = options.layout ?? DEFAULT_LAYOUT
   let history: HistoryState = options.history ?? { conversations: [], activeId: null }
   // What main has open; New chat and opening a chat replace it.
@@ -588,6 +591,13 @@ export function fakeApi(options: FakeApiOptions = {}) {
       set: vi.fn((next: ThemePreference) => {
         theme = next
         return Promise.resolve(theme)
+      }),
+    },
+    turnLimit: {
+      get: vi.fn(() => Promise.resolve(turnLimit)),
+      set: vi.fn((next: number) => {
+        turnLimit = next
+        return Promise.resolve(turnLimit)
       }),
     },
     chat: {

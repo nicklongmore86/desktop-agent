@@ -31,6 +31,8 @@ export const IpcChannels = {
   modelSet: 'model:set',
   themeGet: 'theme:get',
   themeSet: 'theme:set',
+  turnLimitGet: 'turn-limit:get',
+  turnLimitSet: 'turn-limit:set',
 
   chatLoad: 'chat:load',
   chatSend: 'chat:send',
@@ -89,6 +91,13 @@ export type LoginCodeResult = { ok: true } | { ok: false; error: string }
 /** The colour theme: follow the operating system, or force light or dark. */
 export const THEMES = ['system', 'light', 'dark'] as const
 export type ThemePreference = (typeof THEMES)[number]
+
+/**
+ * Steps (model turns) the app's own agent loop takes for one message before it pauses:
+ * Claude API, ChatGPT · Plan, Gemini and the OpenAI-compatible connections. The
+ * subscription runtimes (Claude, Codex) keep their own limits. A whole number.
+ */
+export const TURN_LIMIT = { min: 5, max: 100, default: 35 } as const
 
 export interface AppInfo {
   runtimes?: { name: string; version: string; location: string | null }[]
@@ -384,6 +393,11 @@ export interface DesktopApi extends FeatureApis {
     get: () => Promise<ThemePreference>
     /** Saves the choice and answers with what is now stored. */
     set: (theme: ThemePreference) => Promise<ThemePreference>
+  }
+  turnLimit: {
+    get: () => Promise<number>
+    /** Saves the limit (see TURN_LIMIT) and answers with what is now stored. */
+    set: (limit: number) => Promise<number>
   }
   chat: {
     load: () => Promise<ChatState>

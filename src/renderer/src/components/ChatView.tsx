@@ -26,6 +26,9 @@ import { MessageActions } from './MessageActions'
 import { PromptRail } from './PromptRail'
 import { WorkFold } from './WorkFold'
 
+/** What Continue sends after a reply paused at its turn limit: like typing it. */
+const CONTINUE_TEXT = 'Continue'
+
 export interface ChatViewProps {
   providerName: string
   grantedFolders: number
@@ -364,6 +367,10 @@ export function ChatView({
           onNewChat={() => {
             void onNewChat()
           }}
+          onContinue={() => {
+            void submit(CONTINUE_TEXT, false)
+          }}
+          continueDisabled={busy}
         />
       )}
       {notice}

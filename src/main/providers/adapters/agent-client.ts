@@ -1,3 +1,4 @@
+import { TURN_LIMIT } from '../../../shared/ipc'
 import { createAgent, type AgentClient, type AgentEvent } from '../../agent'
 import type { AdapterFactory, AdapterHost, ConnectionDescriptor } from '../connection'
 import { SetupError, SubscriptionError } from '../errors'
@@ -99,6 +100,7 @@ export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
         client: client({ key, model: chosen }),
         tools,
         model: chosen,
+        maxTurns: host.settings?.turnLimit ?? TURN_LIMIT.default,
         errorEvent,
         modelName: modelName ?? spec.shortLabel,
         vision: (await visionOf(host, chosen)).enabled,

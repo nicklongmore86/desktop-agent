@@ -245,6 +245,11 @@ it.each([
   if (state === 'free') expect(sentInput).toBe(false)
   if (state === 'limit')
     expect(events.at(-1)).toMatchObject({ resetsAt: '2027-01-15T08:00:00.000Z' })
+  // The runtime's own limit, not the Settings one: it pauses like the app's agent loop.
+  if (state === 'max-turns')
+    expect(events.at(-1)).toMatchObject({
+      message: 'Paused after 40 steps. Your progress is saved.',
+    })
   expect(query).toHaveBeenCalledTimes(1)
 })
 

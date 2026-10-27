@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   THEMES,
+  TURN_LIMIT,
   type ModelOption,
   type ModelSettings,
   type ThemePreference,
@@ -77,6 +78,8 @@ interface SettingsFile {
   layout?: LayoutPrefs
   /** Added later without a version bump: a missing or invalid value means none yet. */
   chatgptAuth?: ChatgptAuthSettings
+  /** Added later without a version bump: a missing or invalid value means TURN_LIMIT.default. */
+  turnLimit?: number
 }
 
 export interface SettingsStore {
@@ -103,6 +106,10 @@ export interface SettingsStore {
   readonly theme: ThemePreference
   /** Throws for a theme that is not offered. */
   setTheme: (theme: ThemePreference) => Promise<ThemePreference>
+  /** Steps the app's own agent loop takes for one message before it pauses (see TURN_LIMIT). */
+  readonly turnLimit: number
+  /** Throws for a value outside TURN_LIMIT or not a whole number. */
+  setTurnLimit: (limit: number) => Promise<number>
   readonly layout: LayoutPrefs
   /** Validates (never throws): bad fields reset to their defaults, unknown keys are dropped. */
   setLayout: (layout: unknown) => Promise<LayoutPrefs>
@@ -126,6 +133,7 @@ export const MODEL_ID = /^(?![a-zA-Z]:\/)(?!.*(?:\.\.|\/\/))[a-zA-Z0-9][a-zA-Z0-
 const connectionIdSchema = z.string().regex(CONNECTION_ID)
 const selectionSchema = z.partialRecord(connectionIdSchema, z.string().regex(MODEL_ID))
 const baseUrlSchema = z.string().min(1).max(2048)
+export const turnLimitSchema = z.number().int().min(TURN_LIMIT.min).max(TURN_LIMIT.max)
 const connectionsSchema = z
   .array(
     z.object({
@@ -172,6 +180,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let connections = defaultConnections()
   let showPersonalUseConnections = true
   let theme: ThemePreference = 'system'
+  let turnLimit: number = TURN_LIMIT.default
   let layout: LayoutPrefs = { ...DEFAULT_LAYOUT }
   let connectionModels: Partial<Record<ConnectionId, string>> = {}
   let chatgptAuth: ChatgptAuthSettings | undefined
@@ -202,6 +211,8 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     if (isOffered(parsed?.['model'])) model = parsed['model']
     if (THEMES.includes(parsed?.['theme'] as ThemePreference))
       theme = parsed?.['theme'] as ThemePreference
+    const limit = turnLimitSchema.safeParse(parsed?.['turnLimit'])
+    if (limit.success) turnLimit = limit.data
     layout = parseLayout(parsed?.['layout'])
     const auth = chatgptAuthSchema.safeParse(parsed?.['chatgptAuth'])
     if (auth.success) chatgptAuth = withoutUndefined(auth.data)
@@ -223,6 +234,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     connections,
     showPersonalUseConnections,
     theme,
+    turnLimit,
     layout,
     ...(chatgptAuth ? { chatgptAuth } : {}),
     ...changes,
@@ -333,6 +345,17 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
         await writeJsonFile(file, snapshot({ theme: next }))
         theme = next
         return theme
+      })
+    },
+    get turnLimit() {
+      return turnLimit
+    },
+    async setTurnLimit(next) {
+      const validated = turnLimitSchema.parse(next)
+      return serial(async () => {
+        await writeJsonFile(file, snapshot({ turnLimit: validated }))
+        turnLimit = validated
+        return turnLimit
       })
     },
     get layout() {

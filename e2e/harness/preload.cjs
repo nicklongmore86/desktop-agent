@@ -50,6 +50,7 @@ const attachOutcome = (file) => {
 let provider = { provider: 'anthropic-api', state: 'ready', message: 'API mode' }
 let loginState = { provider: null, active: false, url: null, result: null }
 let theme = 'system'
+let turnLimit = 35
 let stopCalls = 0
 let layout = {
   version: 1,
@@ -736,6 +737,13 @@ contextBridge.exposeInMainWorld('desktopApi', {
     set: (next) => {
       theme = next
       return Promise.resolve(theme)
+    },
+  },
+  turnLimit: {
+    get: () => Promise.resolve(turnLimit),
+    set: (next) => {
+      turnLimit = next
+      return Promise.resolve(turnLimit)
     },
   },
   getAppInfo: resolve({ name: 'desktop-agent', version: '0.0.0-e2e', platform: process.platform }),

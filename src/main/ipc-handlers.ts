@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   IpcChannels,
   THEMES,
+  TURN_LIMIT,
   type ThemePreference,
   type DesktopApi,
   type ApiKeyStatus,
@@ -19,7 +20,7 @@ import { parseConnectionId } from './ipc-connections'
 import { registerFeatureHandlers, type FeatureServices } from './ipc-features'
 import type { AddGrantResult } from './permissions'
 import { CONVERSATION_ID } from './storage/history-store'
-import { MODEL_ID } from './storage/settings-store'
+import { MODEL_ID, turnLimitSchema } from './storage/settings-store'
 
 /** The parts of an IPC invoke event the handlers look at. */
 export interface IpcSenderEvent {
@@ -74,6 +75,8 @@ export interface IpcServices extends FeatureServices {
     setModel: (model: string) => Promise<ModelSettings>
     readonly theme: ThemePreference
     setTheme: (theme: ThemePreference) => Promise<ThemePreference>
+    readonly turnLimit: number
+    setTurnLimit: (limit: number) => Promise<number>
   }
   chat: ChatService
   revealAudit: () => void
@@ -214,6 +217,16 @@ export function registerIpcHandlers(
     const parsed = themeSchema.safeParse(theme)
     if (!parsed.success) throw new Error('Unknown theme.')
     return services.settings.setTheme(parsed.data)
+  })
+
+  handle(IpcChannels.turnLimitGet, () => services.settings.turnLimit)
+  handle(IpcChannels.turnLimitSet, (limit) => {
+    const parsed = turnLimitSchema.safeParse(limit)
+    if (!parsed.success)
+      throw new Error(
+        `Choose a whole number of steps from ${String(TURN_LIMIT.min)} to ${String(TURN_LIMIT.max)}.`,
+      )
+    return services.settings.setTurnLimit(parsed.data)
   })
 
   handle(IpcChannels.chatLoad, () => services.chat.state())

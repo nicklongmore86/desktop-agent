@@ -54,6 +54,10 @@ const api: DesktopApi = {
     get: () => invoke(IpcChannels.themeGet),
     set: (theme) => invoke(IpcChannels.themeSet, theme),
   },
+  turnLimit: {
+    get: () => invoke(IpcChannels.turnLimitGet),
+    set: (limit) => invoke(IpcChannels.turnLimitSet, limit),
+  },
   chat: {
     load: () => invoke(IpcChannels.chatLoad),
     send: (text, attachmentIds) =>
