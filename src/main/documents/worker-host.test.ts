@@ -564,20 +564,22 @@ describe('search_files over the reader', () => {
       replies.push(reply)
     }
     const h = host()
-    const tools = toolHarness(sb, { documents: h, limits: { searchDocumentTimeMs: 30 } })
+    const tools = toolHarness(sb, { documents: h, limits: { searchTimeMs: 500 } })
     const search = () =>
       tools
         .tool('search_files')
         .execute({ path: sb.root, contentPattern: 'freezer' }, fakeContext().ctx)
     const first = await search()
     expect(first.content).toContain(
-      'Documents: 0 searched, 3 not searched yet (stopped at the 0.03 s time for reading documents).',
+      'Searched 0 of 3 documents; the 0.5 s time budget ran out. To search the rest',
     )
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
+      // The reader refuses each try while the first job runs: the search waits and tries
+      // again until its time is up, never queueing a second job.
       const again = await search()
       expect(again.content).toContain(
-        'Documents: 0 searched, 3 not searched yet (stopped at the document reader, still busy ' +
-          'with an earlier search or other documents).',
+        'Searched 0 of 3 documents; the 0.5 s time budget ran out (the document reader was ' +
+          'busy with an earlier job).',
       )
       expect(h.stats()).toMatchObject({ queued: 0, queuedBytes: 0 })
     }
@@ -606,11 +608,11 @@ describe('search_files over the reader', () => {
     const h = host()
     // A read_document job is running, so the search's job can only wait.
     const read = h.extract(bytes, { name: 'read' })
-    const tools = toolHarness(sb, { documents: h, limits: { searchDocumentTimeMs: 30 } })
+    const tools = toolHarness(sb, { documents: h, limits: { searchTimeMs: 300 } })
     const r = await tools
       .tool('search_files')
       .execute({ path: sb.root, contentPattern: 'freezer' }, fakeContext().ctx)
-    expect(r.content).toContain('3 not searched yet')
+    expect(r.content).toContain('Searched 0 of 3 documents; the 0.3 s time budget ran out.')
     expect(h.stats()).toMatchObject({ queued: 0, queuedBytes: 0 })
     replies[0]?.(result(sent[0]))
     await read

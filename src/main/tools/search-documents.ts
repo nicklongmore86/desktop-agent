@@ -370,12 +370,14 @@ export async function extractForSearch(
 export interface DocumentLine {
   at: string
   text: string
+  /** Which segment (page, slide, sheet part or run of text) the line is in: context stays inside one. */
+  segment: number
 }
 
 /** Every line of a document's text with its location: page, slide, sheet!cell or character. */
 export function documentLines(text: CachedText, maxLine: number): DocumentLine[] {
   const lines: DocumentLine[] = []
-  for (const segment of text.segments) {
+  for (const [index, segment] of text.segments.entries()) {
     let position = 0
     for (let line of segment.text.split('\n')) {
       const start = position
@@ -389,14 +391,16 @@ export function documentLines(text: CachedText, maxLine: number): DocumentLine[]
         lines.push({
           at: segment.at ? `${sheetRef(segment.at)}!${cell}` : cell,
           text: line.slice(tab + 1, tab + 1 + maxLine),
+          segment: index,
         })
       } else if (segment.offset !== undefined) {
         lines.push({
           at: `character ${String(segment.offset + start)}`,
           text: line.slice(0, maxLine),
+          segment: index,
         })
       } else {
-        lines.push({ at: segment.at, text: line.slice(0, maxLine) })
+        lines.push({ at: segment.at, text: line.slice(0, maxLine), segment: index })
       }
     }
   }
