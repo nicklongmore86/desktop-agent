@@ -7,7 +7,23 @@ import { App } from './App'
 import { ErrorBanner } from './components/ErrorBanner'
 import { fakeApi, type FakeApiOptions } from './test/fake-api'
 
-const PAUSED = 'Paused after 35 steps. Your progress is saved.'
+const PAUSED = 'Paused after 100 steps. Your progress is saved.'
+/** Every reason a run pauses, as main words it: the notice shows each one as it is. */
+const REASONS = [
+  ['the step limit', PAUSED],
+  [
+    'the time budget',
+    'Paused after 20 minutes of work on this message (the time budget). Your progress is saved.',
+  ],
+  [
+    'a repeated call',
+    'Paused because the agent appears stuck: read_file returned the same result for the same request 3 times. Your progress is saved.',
+  ],
+  [
+    'failing calls',
+    'Paused because the agent appears stuck: every tool call failed in 3 steps in a row. Your progress is saved.',
+  ],
+] as const
 
 async function renderApp(options: FakeApiOptions = {}) {
   const fake = fakeApi(options)
@@ -22,10 +38,14 @@ async function renderApp(options: FakeApiOptions = {}) {
 }
 
 /** A run that reached its turn limit: main's error comes before run_finished. */
-function pausedRun(pushChat: (event: ChatEvent) => void, finish = true): void {
+function pausedRun(
+  pushChat: (event: ChatEvent) => void,
+  finish = true,
+  message: string = PAUSED,
+): void {
   act(() => {
     pushChat({ type: 'run_started', runId: 'r1', text: 'Tidy my folder' })
-    pushChat({ type: 'error', runId: 'r1', code: 'max_turns', message: PAUSED })
+    pushChat({ type: 'error', runId: 'r1', code: 'max_turns', message })
   })
   if (finish)
     act(() => {
@@ -112,6 +132,19 @@ describe('Continue after a paused run', () => {
     expect(screen.queryByText(PAUSED)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
   })
+
+  it.each(REASONS)(
+    'says why it paused (%s) and Continue sends "Continue" through the normal send',
+    async (_reason, message) => {
+      const { api, user, pushChat } = await renderApp()
+      pausedRun(pushChat, true, message)
+      const status = screen.getByText(message).closest('.banner') as HTMLElement
+      expect(status.getAttribute('role')).toBe('status')
+      expect(status.textContent).toContain(message)
+      await user.click(continueButton())
+      expect(api.chat.send).toHaveBeenCalledExactlyOnceWith('Continue')
+    },
+  )
 
   it('goes through the normal send, so a refusal is shown like any other', async () => {
     const { api, user, pushChat } = await renderApp()

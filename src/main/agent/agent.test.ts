@@ -208,7 +208,7 @@ describe('agent', () => {
     expect(await f.run()).toMatchObject({ stopReason: 'max_turns', conversation: [{}, {}, {}] })
     expect(f.requests).toHaveLength(1)
   })
-  it('pauses after 35 turns by default, saying the progress is kept', async () => {
+  it('pauses after 100 turns by default while making progress, saying the progress is kept', async () => {
     const requests: unknown[] = []
     const client: AgentClient = {
       messages: {
@@ -222,8 +222,11 @@ describe('agent', () => {
         },
       },
     }
+    // Each call returns something new, so the run is never treated as stuck.
+    let step = 0
+    const progressing = tool(() => Promise.resolve({ content: `page ${String(++step)}` }))
     const events: AgentEvent[] = []
-    const result = await createAgent({ client, tools: [tool()] }).run(
+    const result = await createAgent({ client, tools: [progressing] }).run(
       [{ role: 'user', content: 'Help' }],
       {
         signal: new AbortController().signal,
@@ -232,14 +235,14 @@ describe('agent', () => {
       },
     )
     expect(result.stopReason).toBe('max_turns')
-    expect(requests).toHaveLength(35)
+    expect(requests).toHaveLength(100)
     // The prompt, then every call with its result.
-    expect(result.conversation).toHaveLength(1 + 35 * 2)
+    expect(result.conversation).toHaveLength(1 + 100 * 2)
     expect(events.filter((event) => event.type === 'error')).toEqual([
       {
         type: 'error',
         code: 'max_turns',
-        message: 'Paused after 35 steps. Your progress is saved.',
+        message: 'Paused after 100 steps. Your progress is saved.',
       },
     ])
   })

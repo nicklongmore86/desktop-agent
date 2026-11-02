@@ -56,7 +56,7 @@ export function ErrorBanner({
   onOpenSettings: OpenSettings
   onNewChat: () => void
   /**
-   * A run paused at its turn limit: sends a continuation in this chat, through the normal
+   * A paused run (step limit, time budget or stuck): sends a continuation in this chat, through the normal
    * send (so the same busy checks, approvals and audit apply). Without it, no button.
    */
   onContinue?: () => void
@@ -65,7 +65,7 @@ export function ErrorBanner({
   /** ChatGPT · Plan is the connection in use: a limit or plan error offers Manage usage. */
   manageUsage?: boolean
 }): React.JSX.Element {
-  // Stopping, and pausing at the turn limit, are not failures: neither is shown as an error.
+  // Stopping, and pausing (step limit, time budget, stuck), are not failures: neither is shown as an error.
   const paused = banner.code === 'max_turns'
   const info = banner.code === 'aborted' || paused
   return (
@@ -80,7 +80,7 @@ export function ErrorBanner({
         </span>
       )}
       <div className="banner-text">
-        {/* The pause message names itself ("Paused after 35 steps…"). */}
+        {/* The pause message names itself and why ("Paused after 100 steps…", "…the time budget…"). */}
         {!paused && <strong>{TITLES[banner.code]}. </strong>}
         {plainText(banner.message)}
       </div>

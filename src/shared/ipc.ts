@@ -96,8 +96,18 @@ export type ThemePreference = (typeof THEMES)[number]
  * Steps (model turns) the app's own agent loop takes for one message before it pauses:
  * Claude API, ChatGPT · Plan, Gemini and the OpenAI-compatible connections. The
  * subscription runtimes (Claude, Codex) keep their own limits. A whole number.
+ * `legacyDefault` is the default before 100: a file that still holds it never chose it.
  */
-export const TURN_LIMIT = { min: 5, max: 100, default: 35 } as const
+export const TURN_LIMIT = { min: 5, max: 300, default: 100, legacyDefault: 35 } as const
+
+/**
+ * The rest of the app's own agent loop budget for one message (TURN_LIMIT is the first
+ * part). Each one pauses the run like the step limit: progress saved, Continue offered.
+ * `minutes`: working time for one message, not counting time spent waiting for the user
+ * to answer an approval. `repeats`: the same call with the same result, or steps in a row
+ * where every tool call failed, before the run is treated as stuck.
+ */
+export const AGENT_BUDGET = { minutes: 20, repeats: 3 } as const
 
 export interface AppInfo {
   runtimes?: { name: string; version: string; location: string | null }[]
