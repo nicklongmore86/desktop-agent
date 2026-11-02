@@ -1,4 +1,4 @@
-import type { AuditApproval, AuditSink } from '../permissions/audit'
+import type { AuditApproval, AuditEntry, AuditSink } from '../permissions/audit'
 import type { PathGuard, ResolveOptions } from '../permissions/guard'
 import type { AgentTool, ApprovalRequest, JsonSchema, ToolContext, ToolResult } from './types'
 
@@ -86,18 +86,37 @@ export function auditExtras(raw: unknown): AuditExtras | undefined {
   return Object.keys(kept).length ? kept : undefined
 }
 
+/**
+ * One file of a call that works on several (read_document with `paths`). Each part is
+ * recorded as its own audit entry, in place of the call's single entry.
+ */
+export interface AuditPart {
+  /** A summary of this file's arguments, as `summarize` would give: never file contents. */
+  args: Record<string, unknown>
+  /** The resolved path (or, when refused, the path as asked). */
+  paths: string[]
+  outcome: 'ok' | 'error'
+  /** For a failed part, a short category (an ErrorCode or a Node code), never a message. */
+  error?: string
+  /** Facts learned while reading this file; see AuditExtras. */
+  audit?: AuditExtras
+  durationMs: number
+}
+
 /** A tool body's result: a ToolResult plus, for errors, the category to audit. */
 export interface RunResult extends ToolResult {
   code?: ErrorCode
   /** Facts learned while running; see AuditExtras. */
   audit?: AuditExtras
+  /** When set and not empty: one audit entry per part instead of one for the call. */
+  auditParts?: AuditPart[]
 }
 
 export function errorResult(message: string, code: ErrorCode): RunResult {
   return { content: message, isError: true, code }
 }
 
-function errnoCode(error: unknown): string {
+export function errnoCode(error: unknown): string {
   const code = (error as { code?: unknown } | null)?.code
   return typeof code === 'string' && /^E[A-Z]+$/.test(code) ? code : 'internal'
 }
@@ -150,7 +169,8 @@ function messageOf(error: unknown): string {
 
 /**
  * Turns a ToolSpec into an AgentTool: validates input, never throws (every
- * failure becomes an `isError` result), and writes one audit entry per call.
+ * failure becomes an `isError` result), and writes one audit entry per call (or,
+ * when the body returns `auditParts`, one per part: a file of a multi-file call).
  */
 export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unknown> {
   return {
@@ -213,9 +233,35 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
         }
       }
 
-      try {
+      const record = async (entry: Omit<AuditEntry, 'ts'>): Promise<void> => {
+        try {
+          await deps.audit.record(entry)
+        } catch (error) {
+          try {
+            deps.onAuditFailure(error)
+          } catch {
+            // Reporting the failure failed too; the call's result still stands.
+          }
+        }
+      }
+      const origin = ctx.origin ?? 'agent'
+      const parts = result.auditParts ?? []
+      for (const part of parts) {
+        const extra = auditExtras(part.audit)
+        await record({
+          tool: spec.name,
+          args: { ...part.args, ...(extra ? { extra } : {}) },
+          paths: [...part.paths],
+          approval,
+          origin,
+          outcome: part.outcome,
+          ...(part.error === undefined ? {} : { error: part.error }),
+          durationMs: Math.max(0, Math.round(part.durationMs)),
+        })
+      }
+      if (parts.length === 0) {
         const extra = auditExtras(result.audit)
-        await deps.audit.record({
+        await record({
           tool: spec.name,
           args:
             input === undefined
@@ -223,17 +269,11 @@ export function defineTool<I>(spec: ToolSpec<I>, deps: WrapDeps): AgentTool<unkn
               : { ...spec.summarize(input, approval), ...(extra ? { extra } : {}) },
           paths,
           approval,
-          origin: ctx.origin ?? 'agent',
+          origin,
           outcome: result.isError ? 'error' : 'ok',
           ...(errorCode === undefined ? {} : { error: errorCode }),
           durationMs: Math.max(0, Math.round(deps.now() - started)),
         })
-      } catch (error) {
-        try {
-          deps.onAuditFailure(error)
-        } catch {
-          // Reporting the failure failed too; the call's result still stands.
-        }
       }
       if (!result.isError)
         return result.images?.length
@@ -281,6 +321,20 @@ export class InputReader {
     if (value === undefined) return undefined
     if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
       throw new ToolInputError(`"${key}" must be an integer from ${String(min)} to ${String(max)}.`)
+    }
+    return value
+  }
+
+  optionalStringArray(key: string, min: number, max: number): string[] | undefined {
+    const value = this.obj[key]
+    if (value === undefined) return undefined
+    if (!Array.isArray(value) || !value.every((item): item is string => typeof item === 'string')) {
+      throw new ToolInputError(`"${key}" must be an array of strings.`)
+    }
+    if (value.length < min || value.length > max) {
+      throw new ToolInputError(
+        `"${key}" must have ${String(min)} to ${String(max)} entries (it has ${String(value.length)}).`,
+      )
     }
     return value
   }
