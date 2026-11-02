@@ -19,12 +19,15 @@ export interface ToolLimits {
   maxSearchDepth: number
   /** search_files stops after visiting this many entries. */
   maxSearchEntries: number
-  /** search_files stops after this long. */
+  /**
+   * One search_files call's time budget, documents included. A call that runs out says how
+   * far it got; calling again continues, documents already read coming from the cache.
+   */
   searchTimeMs: number
-  /** Of searchTimeMs, the most spent reading documents through the reader. */
-  searchDocumentTimeMs: number
-  /** Documents search_files reads through the reader per call (cached ones do not count). */
-  maxSearchDocuments: number
+  /** One pattern match over one file's lines (or a batch of names); a slower pattern ends the search. */
+  searchPatternTimeMs: number
+  /** Characters of matches (and their context) one search_files result holds; the rest is cut. */
+  maxSearchOutputChars: number
   /** Characters of one document's text searched; the rest is reported as not searched. */
   maxSearchDocumentChars: number
   /** Reader calls for one document (pages, slides and cells come a part per call). */
@@ -56,9 +59,9 @@ export const DEFAULT_LIMITS: ToolLimits = {
   maxSearchResults: 1000,
   maxSearchDepth: 20,
   maxSearchEntries: 50_000,
-  searchTimeMs: 30_000,
-  searchDocumentTimeMs: 20_000,
-  maxSearchDocuments: 25,
+  searchTimeMs: 3 * 60_000,
+  searchPatternTimeMs: 30_000,
+  maxSearchOutputChars: 40_000,
   maxSearchDocumentChars: 2_000_000,
   maxSearchDocumentCalls: 40,
   maxScanEntries: MAX_TREE_ENTRIES,

@@ -20,7 +20,7 @@ import {
   SEARCHABLE_EXTENSIONS,
   searchableKind,
 } from './search-documents'
-import { clip, decodeText, formatBytes, splitLines } from './text'
+import { decodeText, formatBytes, splitLines } from './text'
 import { walk, type WalkEntry } from './walk'
 
 interface Input {
@@ -33,6 +33,8 @@ interface Input {
   maxDepth: number
   /** Search inside PDFs, Word, Excel, PowerPoint and OpenDocument files too. */
   documents: boolean
+  /** Lines of surrounding text shown before and after each content match. */
+  context: number
 }
 
 const SKIPPED_DIRS = new Set(['.git', 'node_modules'])
@@ -45,8 +47,25 @@ const BATCH = 256
 const NAME = 0
 const CONTENT = 1
 
+/** Lines of context around each content match when the call does not say. */
+export const DEFAULT_CONTEXT = 1
+/** The most lines of context a call may ask for, before and after each match. */
+export const MAX_CONTEXT = 5
+/** A line of a result, match or context, is cut to this many characters. */
+export const LINE_CHARS = 200
+/** Characters of context one match shows at most, its lines before and after together. */
+export const MAX_CONTEXT_CHARS = 1000
+
 /** How many skipped files a content search names; the rest are only counted. */
-export const MAX_SKIPPED_LISTED = 50
+export const MAX_SKIPPED_LISTED = 10
+/** How long a search waits before sending a document again to a reader that was busy. */
+const BUSY_RETRY_MS = 250
+
+/**
+ * Readers a search is reading documents through right now: one search at a time per
+ * reader. Another search meanwhile searches only what is cached and says so.
+ */
+const readingDocuments = new WeakSet<DocumentReader>()
 
 /**
  * Extensions of files read_document opens, for ranking skipped files and for files too
@@ -80,8 +99,8 @@ const DOCUMENT_EXTENSIONS = new Set([
 
 type SkipReason =
   | 'document'
-  | 'pending'
   | 'scanned'
+  | 'password'
   | 'unreadable-document'
   | 'secret'
   | 'cloud-only'
@@ -92,8 +111,8 @@ type SkipReason =
 
 const SKIP_LABEL: Record<SkipReason, string> = {
   document: 'document, not searched',
-  pending: 'document, not searched yet',
-  scanned: 'no text layer (scanned) — open with read_document',
+  scanned: 'no text layer (scanned)',
+  password: 'password-protected',
   'unreadable-document': 'document, could not be read',
   secret: 'name looks like it holds secrets, not read',
   'cloud-only':
@@ -107,19 +126,33 @@ const SKIP_LABEL: Record<SkipReason, string> = {
 /** Reasons that are about a document even when its extension says nothing. */
 const DOCUMENT_REASONS = new Set<SkipReason>([
   'document',
-  'pending',
   'scanned',
+  'password',
   'unreadable-document',
 ])
+
+/** Why a search stopped before searching everything it found. */
+type Stop =
+  'cancelled' | 'time' | 'pattern-time' | 'pattern-failed' | 'entries' | 'max-results' | 'output'
 
 const extensionOf = (name: string): string => {
   const dot = name.lastIndexOf('.')
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
 }
 
+/** Text cut to at most `max` characters, an ellipsis included. */
+export function cut(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`
+}
+
+/** "30 s", "1.5 s" or "3 min". */
+export function formatDuration(ms: number): string {
+  return ms >= 60_000 && ms % 60_000 === 0 ? `${String(ms / 60_000)} min` : `${String(ms / 1000)} s`
+}
+
 /** A path as one line of plain text: control, bidi and other invisible characters become U+FFFD. */
 export function safeRel(rel: string): string {
-  return rel.replace(UNSAFE_TITLE_CHARS, '\uFFFD')
+  return rel.replace(UNSAFE_TITLE_CHARS, '�')
 }
 
 /** A line of extracted document text as one line of plain text, unsafe characters removed. */
@@ -134,6 +167,60 @@ export function queryTerms(pattern: string | undefined): string[] {
   return [...new Set(words)]
 }
 
+/**
+ * A matched line cut to `max` characters. For a substring search, a long line is cut
+ * around the first match so the match is shown; a regex is never run in main, so a long
+ * line it matched is cut from its start.
+ */
+export function matchWindow(
+  text: string,
+  needle: string | null,
+  caseSensitive: boolean,
+  max: number,
+): string {
+  if (text.length <= max || !needle) return cut(text, max)
+  const at = (caseSensitive ? text : text.toLowerCase()).indexOf(
+    caseSensitive ? needle : needle.toLowerCase(),
+  )
+  if (at < 0 || at + needle.length < max) return cut(text, max)
+  // Room for an ellipsis on each side.
+  const width = Math.max(1, max - 2)
+  const start = Math.max(
+    1,
+    Math.min(at - Math.floor(Math.max(0, width - needle.length) / 2), text.length - width),
+  )
+  const end = start + width
+  return `…${text.slice(start, end)}${end < text.length ? '…' : ''}`
+}
+
+/** Characters each context line keeps, so one match's context stays within MAX_CONTEXT_CHARS. */
+export const contextLineChars = (context: number): number =>
+  context === 0 ? 0 : Math.min(LINE_CHARS, Math.floor(MAX_CONTEXT_CHARS / (2 * context)))
+
+/**
+ * The matched lines with `context` lines around each, as groups of line indexes: context
+ * stays inside the unit (page, slide, sheet) of its match, and groups that touch merge.
+ */
+export function contextGroups(
+  hits: readonly number[],
+  count: number,
+  context: number,
+  unit: (index: number) => number = () => 0,
+): { from: number; to: number }[] {
+  const groups: { from: number; to: number; unit: number }[] = []
+  for (const hit of [...hits].sort((a, b) => a - b)) {
+    const u = unit(hit)
+    let from = hit
+    while (from > 0 && hit - from < context && unit(from - 1) === u) from--
+    let to = hit
+    while (to < count - 1 && to - hit < context && unit(to + 1) === u) to++
+    const last = groups.at(-1)
+    if (last && last.unit === u && from <= last.to + 1) last.to = Math.max(last.to, to)
+    else groups.push({ from, to, unit: u })
+  }
+  return groups.map(({ from, to }) => ({ from, to }))
+}
+
 export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
   const { limits } = deps
   return {
@@ -142,19 +229,22 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       'Search a folder inside the granted folders by file name (glob, e.g. "*.ts" or "src/**/*.md") ' +
       'and/or by file content (substring, or a JavaScript regex with regex: true). Case-insensitive ' +
       'unless caseSensitive is true. Name-only searches list matching names of any file, binary ' +
-      'included. Content search covers plain text files ("path:line: text") and, after them, the ' +
-      'text of PDFs, Word (.docx, .doc, .odt), Excel (.xlsx, .xlsm, .xls, .ods, .csv) and ' +
+      'included. One call searches the whole folder: plain text files ("path:12: text"), then ' +
+      'the text of PDFs, Word (.docx, .doc, .odt), Excel (.xlsx, .xlsm, .xls, .ods, .csv) and ' +
       'PowerPoint (.pptx, .odp) files, read by the sandboxed document reader ("path (page 3): ' +
       'text", "(Sheet1!B12)", "(slide 4)", "(character 1200)"); documents: false skips them. ' +
-      `At most ${String(limits.maxSearchDocuments)} documents are read per call, within ` +
-      `${String(limits.searchDocumentTimeMs / 1000)} s; their text is kept, so calling again ` +
-      'with the same arguments continues with the documents not searched yet. Never searched: ' +
+      `Each match comes with context lines around it (default ${String(DEFAULT_CONTEXT)}, at most ` +
+      `${String(MAX_CONTEXT)}; marked "-" instead of ":"): use context to see enough of each ` +
+      'match instead of opening the files. Document text is cached, so a repeat search is ' +
+      `quick. A call stops at maxResults matches (default ${String(limits.defaultSearchResults)}), ` +
+      `${String(limits.maxSearchOutputChars)} characters of results, ` +
+      `${String(limits.maxSearchEntries)} entries or ${formatDuration(limits.searchTimeMs)}; ` +
+      'if the time runs out it says how far it got, and calling again with the same arguments ' +
+      'continues. For very large folders, narrow the search with a subfolder path or ' +
+      'namePattern. Do not run several search_files calls in parallel. Never searched: ' +
       'images, scanned PDFs with no text layer, cloud-only files (not downloaded), files with ' +
       `several hard links, and plain text files over ${formatBytes(limits.maxReadBytes)}; ` +
-      'skipped files are counted by reason and the likeliest named, to open with read_document. ' +
-      'Skips .git, node_modules and protected files. Stops after maxResults ' +
-      `(default ${String(limits.defaultSearchResults)}), ${String(limits.searchTimeMs / 1000)} s, or ` +
-      `${String(limits.maxSearchEntries)} entries visited.`,
+      'skipped files are counted by reason. Skips .git, node_modules and protected files.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -173,6 +263,15 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
           type: 'boolean',
           description:
             'Also search inside PDFs and Office documents when contentPattern is given (default true).',
+        },
+        context: {
+          type: 'integer',
+          minimum: 0,
+          maximum: MAX_CONTEXT,
+          description:
+            `Lines of surrounding text shown before and after each content match (default ` +
+            `${String(DEFAULT_CONTEXT)}; lines are cut to ${String(LINE_CHARS)} characters, a ` +
+            `match's context to ${String(MAX_CONTEXT_CHARS)}).`,
         },
       },
       required: ['path'],
@@ -217,6 +316,7 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
         maxDepth:
           input.optionalInteger('maxDepth', 1, limits.maxSearchDepth) ?? limits.maxSearchDepth,
         documents: input.optionalBoolean('documents') ?? true,
+        context: input.optionalInteger('context', 0, MAX_CONTEXT) ?? DEFAULT_CONTEXT,
       }
     },
     // Patterns can carry anything (even secrets the model has seen): only their shape is logged.
@@ -237,6 +337,9 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       maxResults: input.maxResults,
       maxDepth: input.maxDepth,
       ...(input.documents ? {} : { documents: false }),
+      ...(input.contentPattern !== undefined && input.context !== DEFAULT_CONTEXT
+        ? { context: input.context }
+        : {}),
     }),
     run: (input, call) => runSearch(input, call, deps),
   }
@@ -251,6 +354,23 @@ function grantRootOf(file: string, deps: ResolvedDeps): string | null {
     }
   }
   return best
+}
+
+/** Waits `ms` (at most until the deadline), or less when the signal aborts. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted || ms <= 0) {
+      resolve()
+      return
+    }
+    const done = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
 }
 
 async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Promise<RunResult> {
@@ -279,17 +399,22 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const reader: DocumentReader | null =
     input.contentPattern !== undefined && input.documents ? deps.documents : null
   const cache = reader ? deps.documentCache : null
+  const contextChars = contextLineChars(input.context)
 
+  // Result lines: plain text matches (or names), then document matches under their warning.
   const results: string[] = []
   const documentResults: string[] = []
-  const resultCount = (): number => results.length + documentResults.length
+  let matches = 0
+  let outputChars = 0
+  // An object so TypeScript does not narrow it across the helpers that set it.
+  const shown = { context: false }
   let visited = 0
   let unreadable = 0
   let hidden = 0
   const skips: Record<SkipReason, number> = {
     document: 0,
-    pending: 0,
     scanned: 0,
+    password: 0,
     'unreadable-document': 0,
     secret: 0,
     'cloud-only': 0,
@@ -320,18 +445,43 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     tier.push(`  ${safeRel(entry.rel)} (${prefix}${detail})`)
   }
   // An object so TypeScript does not narrow it across the helpers that set it.
-  const state: { stop: string | null } = { stop: null }
-  const stopFor = (outcome: MatchOutcome): string =>
+  const state: { stop: Stop | null } = { stop: null }
+  const stopFor = (outcome: MatchOutcome, byPattern: boolean): Stop =>
     outcome.kind === 'timeout'
-      ? `reached the ${String(limits.searchTimeMs / 1000)} s time limit (a slow pattern is stopped there)`
+      ? byPattern
+        ? 'pattern-time'
+        : 'time'
       : outcome.kind === 'cancelled'
         ? 'cancelled'
-        : 'the pattern could not be run'
+        : 'pattern-failed'
 
   const needsWorker = input.namePattern !== undefined || patterns[CONTENT]?.source !== ''
   const matcher = needsWorker ? new PatternMatcher(patterns) : null
   /** Documents found by the text pass, searched after it. */
   const documents: WalkEntry[] = []
+
+  /** Runs the worker on some items within the time left and the per-match cap. */
+  async function workerMatch(
+    which: number,
+    items: string[],
+    room: number,
+  ): Promise<number[] | null> {
+    if (!matcher) return []
+    const left = timeLeft()
+    const byPattern = limits.searchPatternTimeMs < left
+    const outcome = await matcher.match(
+      which,
+      items,
+      room,
+      byPattern ? limits.searchPatternTimeMs : left,
+      signal,
+    )
+    if (outcome.kind !== 'ok') {
+      state.stop = stopFor(outcome, byPattern)
+      return null
+    }
+    return outcome.hits
+  }
 
   /** Indexes of the lines that match, at most `room`, or null when the search must stop. */
   async function matchLines(lines: string[], room: number): Promise<number[] | null> {
@@ -344,30 +494,65 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       }
       return hits
     }
-    if (!matcher) return []
-    const outcome = await matcher.match(CONTENT, lines, room, timeLeft(), signal)
-    if (outcome.kind !== 'ok') {
-      state.stop = stopFor(outcome)
-      return null
-    }
-    return outcome.hits
+    return workerMatch(CONTENT, lines, room)
   }
 
-  /** Matching line numbers of one file, or null when the search must stop. */
-  async function contentHits(entry: WalkEntry): Promise<string[] | null> {
+  /**
+   * Adds lines to the result unless they would take it past maxSearchOutputChars, in
+   * which case the search stops there. Returns whether they were added.
+   */
+  function emit(target: string[], lines: string[]): boolean {
+    const size = lines.reduce((sum, line) => sum + line.length + 1, 0)
+    if (outputChars + size > limits.maxSearchOutputChars) {
+      state.stop = 'output'
+      return false
+    }
+    outputChars += size
+    target.push(...lines)
+    return true
+  }
+
+  /**
+   * One file's matches with their context, as result lines. `render` gives a line as a
+   * match (`:`) or as context (`-`), cut to `max` characters.
+   */
+  function emitHits(
+    target: string[],
+    hits: number[],
+    count: number,
+    render: (index: number, match: boolean, max: number) => string,
+    unit?: (index: number) => number,
+  ): void {
+    const hitSet = new Set(hits)
+    for (const { from, to } of contextGroups(hits, count, input.context, unit)) {
+      const group: string[] = []
+      if (input.context > 0 && target.length > 0) group.push('--')
+      for (let i = from; i <= to; i++) {
+        const match = hitSet.has(i)
+        if (!match) shown.context = true
+        group.push(render(i, match, match ? LINE_CHARS : contextChars))
+      }
+      if (!emit(target, group)) return
+      matches += [...hitSet].filter((h) => h >= from && h <= to).length
+    }
+    if (matches >= input.maxResults && state.stop === null) state.stop = 'max-results'
+  }
+
+  /** Searches one plain text file, setting documents aside; false when the search must stop. */
+  async function searchFile(entry: WalkEntry): Promise<boolean> {
     if (entry.nlink > 1) {
       skip(entry, 'hard-link')
-      return []
+      return true
     }
     // Reading a cloud-only file would download it.
     if (isCloudOnly(entry, deps.platform)) {
       skip(entry, 'cloud-only')
-      return []
+      return true
     }
     if (entry.size > limits.maxReadBytes) {
       if (reader && SEARCHABLE_EXTENSIONS.has(extensionOf(entry.name))) documents.push(entry)
       else skip(entry, 'too-large')
-      return []
+      return true
     }
     let bytes: Buffer
     try {
@@ -383,82 +568,86 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         entry,
         error instanceof ToolFailure && error.code === 'hard-link' ? 'hard-link' : 'unreadable',
       )
-      return []
+      return true
     }
     // By magic bytes first: a PDF with uncompressed streams also decodes as text.
     const kind = sniff(bytes).kind
     if (reader && searchableKind(kind)) {
       documents.push(entry)
-      return []
+      return true
     }
     if (readableAsDocument(kind)) {
       skip(entry, 'document')
-      return []
+      return true
     }
     const decoded = decodeText(bytes)
     if (decoded.binary) {
       skip(entry, 'binary')
-      return []
+      return true
     }
     const lines = splitLines(decoded.text).map((l) => l.slice(0, MAX_MATCH_LINE))
-    const hits = await matchLines(lines, input.maxResults - resultCount())
-    if (hits === null) return null
-    return hits.map((i) => `${entry.rel}:${String(i + 1)}: ${clip((lines[i] ?? '').trim(), 200)}`)
+    const hits = await matchLines(lines, input.maxResults - matches)
+    if (hits === null) return false
+    if (hits.length === 0) return true
+    emitHits(results, hits, lines.length, (i, match, max) => {
+      const text = (lines[i] ?? '').trim()
+      const n = String(i + 1)
+      return match
+        ? `${entry.rel}:${n}: ${matchWindow(text, substring, input.caseSensitive, max)}`
+        : `${entry.rel}-${n}- ${cut(text, max)}`
+    })
+    return state.stop === null
   }
 
   async function processBatch(batch: WalkEntry[]): Promise<void> {
     let candidates = batch
     if (input.namePattern !== undefined && matcher) {
       const names = batch.map((e) => (matchFullPath ? e.rel : e.name))
-      const outcome = await matcher.match(NAME, names, names.length, timeLeft(), signal)
-      if (outcome.kind !== 'ok') {
-        state.stop = stopFor(outcome)
-        return
-      }
-      candidates = outcome.hits.flatMap((i) => (batch[i] ? [batch[i]] : []))
+      const hits = await workerMatch(NAME, names, names.length)
+      if (hits === null) return
+      candidates = hits.flatMap((i) => (batch[i] ? [batch[i]] : []))
     }
     for (const entry of candidates) {
-      if (resultCount() >= input.maxResults) break
       if (signal.aborted) {
         state.stop = 'cancelled'
         return
       }
       if (input.contentPattern === undefined) {
-        results.push(entry.kind === 'dir' ? `${entry.rel}/` : entry.rel)
-      } else if (entry.kind === 'file') {
-        if (timeLeft() === 0) {
-          state.stop = stopFor({ kind: 'timeout' })
+        if (!emit(results, [entry.kind === 'dir' ? `${entry.rel}/` : entry.rel])) return
+        if (++matches >= input.maxResults) {
+          state.stop = 'max-results'
           return
         }
-        const hits = await contentHits(entry)
-        if (hits === null) return
-        results.push(...hits)
+      } else if (entry.kind === 'file') {
+        if (timeLeft() === 0) {
+          state.stop = 'time'
+          return
+        }
+        if (!(await searchFile(entry))) return
       }
-    }
-    if (resultCount() >= input.maxResults) {
-      state.stop = `reached maxResults (${String(input.maxResults)})`
     }
   }
 
   const docs = {
     searched: 0,
     fromCache: 0,
-    read: 0,
+    /** Found but not reached: the time ran out, the search stopped, or another search reads. */
+    notReached: 0,
+    timedOut: false,
+    readerBusy: false,
+    /** Another search held the reader: only cached documents were searched. */
+    locked: false,
     partial: [] as string[],
     blank: [] as string[],
   }
-  const docStop: { why: string | null; busy: boolean } = { why: null, busy: false }
-  const READER_BUSY = 'the document reader, still busy with an earlier search or other documents'
 
   /**
    * The document pass: documents already in the cache first (they cost no reader time),
-   * then those whose name has a query term, then the rest in walk order. At most
-   * maxSearchDocuments are read per call, within searchDocumentTimeMs of the search's time.
+   * then those whose name has a query term, then the rest in walk order, until all are
+   * searched or the search's time runs out.
    */
   async function searchDocuments(): Promise<void> {
     if (!reader || documents.length === 0) return
-    const docDeadline = Math.min(deadline, deps.now() + limits.searchDocumentTimeMs)
-    const docTimeLeft = (): number => Math.max(0, docDeadline - deps.now())
     await cache?.load()
     const keyOf = (entry: WalkEntry, root: string): DocumentFileKey => ({
       root,
@@ -476,101 +665,121 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       })
       .sort((a, b) => a.rank - b.rank || a.order - b.order)
 
-    for (const { entry, root } of ranked) {
-      if (state.stop === 'cancelled' || signal.aborted) {
-        state.stop = 'cancelled'
-        return
-      }
-      if (state.stop === null && timeLeft() === 0) state.stop = stopFor({ kind: 'timeout' })
-      if (resultCount() >= input.maxResults || state.stop !== null) {
-        skip(entry, 'pending')
-        continue
-      }
-      // A name like credentials.xlsx is never sent through the reader or kept.
-      if (isSecretName(entry.name)) {
-        skip(entry, 'secret')
-        continue
-      }
-      let text: CachedText | null = null
-      if (cache && root !== null && cache.has(keyOf(entry, root))) {
-        try {
-          // The listing's link count and identity, proven through a handle (not read).
-          await assertSingleLinkHandle(entry.path, entry.id)
-        } catch (error) {
+    const holder = !readingDocuments.has(reader)
+    if (holder) readingDocuments.add(reader)
+    try {
+      for (const { entry, root } of ranked) {
+        if (state.stop === 'cancelled' || signal.aborted) {
+          state.stop = 'cancelled'
+          return
+        }
+        if (state.stop !== null) {
+          docs.notReached++
+          continue
+        }
+        if (timeLeft() === 0) {
+          docs.timedOut = true
+          docs.notReached++
+          continue
+        }
+        // A name like credentials.xlsx is never sent through the reader or kept.
+        if (isSecretName(entry.name)) {
+          skip(entry, 'secret')
+          continue
+        }
+        let text: CachedText | null = null
+        if (cache && root !== null && cache.has(keyOf(entry, root))) {
+          try {
+            // The listing's link count and identity, proven through a handle (not read).
+            await assertSingleLinkHandle(entry.path, entry.id)
+          } catch (error) {
+            skip(
+              entry,
+              error instanceof ToolFailure && error.code === 'hard-link'
+                ? 'hard-link'
+                : 'unreadable',
+            )
+            continue
+          }
+          text = await cache.get(keyOf(entry, root))
+        }
+        const cached = text !== null
+        if (!text) {
+          if (!holder) {
+            docs.locked = true
+            docs.notReached++
+            continue
+          }
+          const read = await readDocument(entry, root)
+          if (read === 'not-reached') {
+            docs.notReached++
+            continue
+          }
+          if (read === 'skipped') continue
+          text = read
+        }
+        if (text.failure === 'password-protected') {
+          skip(entry, 'password')
+          continue
+        }
+        if (text.failure !== null) {
           skip(
             entry,
-            error instanceof ToolFailure && error.code === 'hard-link' ? 'hard-link' : 'unreadable',
+            'unreadable-document',
+            FAILURE_LABEL[text.failure] ?? 'the document reader failed',
           )
           continue
         }
-        text = await cache.get(keyOf(entry, root))
-      }
-      const cached = text !== null
-      if (!text) {
-        if (docs.read >= limits.maxSearchDocuments) {
-          docStop.why ??= `the limit of ${String(limits.maxSearchDocuments)} documents read per search`
-          skip(entry, 'pending')
+        if (text.scanned) {
+          skip(entry, 'scanned')
           continue
         }
-        if (docTimeLeft() === 0) {
-          docStop.why ??= `the ${String(limits.searchDocumentTimeMs / 1000)} s time for reading documents`
-          skip(entry, 'pending')
-          continue
+        docs.searched++
+        if (cached) docs.fromCache++
+        if (text.truncated !== null) {
+          docs.partial.push(`  ${safeRel(entry.rel)} (${text.truncated})`)
         }
-        // The reader refused a job: no more are sent this call (cached ones are still searched).
-        if (docStop.busy) {
-          skip(entry, 'pending')
-          continue
+        if (text.blankPages > 0) {
+          docs.blank.push(`  ${safeRel(entry.rel)} (${String(text.blankPages)} pages)`)
         }
-        const read = await readDocument(entry, root, docTimeLeft)
-        if (read === 'stopped') continue
-        text = read
-      }
-      if (text.failure !== null) {
-        skip(
-          entry,
-          'unreadable-document',
-          FAILURE_LABEL[text.failure] ?? 'the document reader failed',
+        const lines = documentLines(text, MAX_MATCH_LINE)
+        const hits = await matchLines(
+          lines.map((line) => line.text),
+          input.maxResults - matches,
         )
-        continue
+        if (hits === null) continue
+        if (hits.length === 0) continue
+        const name = safeRel(entry.rel)
+        emitHits(
+          documentResults,
+          hits,
+          lines.length,
+          (i, match, max) => {
+            const line = lines[i]
+            const at = line?.at ? ` (${safeLine(line.at)})` : ''
+            const clean = safeLine(line?.text ?? '')
+            return match
+              ? `${name}${at}: ${matchWindow(clean, substring, input.caseSensitive, max)}`
+              : `${name}${at}- ${cut(clean, max)}`
+          },
+          (i) => lines[i]?.segment ?? -1,
+        )
       }
-      if (text.scanned) {
-        skip(entry, 'scanned')
-        continue
-      }
-      docs.searched++
-      if (cached) docs.fromCache++
-      if (text.truncated !== null) docs.partial.push(`  ${safeRel(entry.rel)} (${text.truncated})`)
-      if (text.blankPages > 0) {
-        docs.blank.push(`  ${safeRel(entry.rel)} (${String(text.blankPages)} pages)`)
-      }
-      const lines = documentLines(text, MAX_MATCH_LINE)
-      const hits = await matchLines(
-        lines.map((line) => line.text),
-        input.maxResults - resultCount(),
-      )
-      if (hits === null) return
-      for (const i of hits) {
-        const line = lines[i]
-        if (!line) continue
-        const at = line.at ? ` (${safeLine(line.at)})` : ''
-        documentResults.push(`${safeRel(entry.rel)}${at}: ${clip(safeLine(line.text), 200)}`)
-      }
-      if (resultCount() >= input.maxResults) {
-        state.stop = `reached maxResults (${String(input.maxResults)})`
-      }
+    } finally {
+      if (holder) readingDocuments.delete(reader)
     }
   }
 
   /**
-   * Reads one document through the reader and keeps its text, or 'stopped' (counted as
-   * not searched yet, or the search cancelled) when time ran out mid-document.
+   * Reads one document through the reader and keeps its text; 'skipped' when it cannot be
+   * (counted as skipped), 'not-reached' when time ran out or the search was cancelled.
+   * A busy reader (another job of a search in it, or its queue full) is asked again
+   * after a moment, until the search's time runs out.
    */
   async function readDocument(
     entry: WalkEntry,
     root: string | null,
-    docTimeLeft: () => number,
-  ): Promise<CachedText | 'stopped'> {
+  ): Promise<CachedText | 'skipped' | 'not-reached'> {
     let bytes: Buffer
     let key: DocumentFileKey | null = null
     // Taken before the file is read: a grant removed since (even if granted again) keeps nothing.
@@ -580,7 +789,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       try {
         if (stats.size > BigInt(DOCUMENT_LIMITS.maxDocumentBytes)) {
           skip(entry, 'too-large')
-          return 'stopped'
+          return 'skipped'
         }
         bytes = await readBounded(handle, Number(stats.size))
       } finally {
@@ -602,40 +811,43 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         entry,
         error instanceof ToolFailure && error.code === 'hard-link' ? 'hard-link' : 'unreadable',
       )
-      return 'stopped'
+      return 'skipped'
     }
-    docs.read++
-    const outcome = await extractForSearch(
-      reader as DocumentReader,
-      bytes,
-      entry.name,
-      { maxChars: limits.maxSearchDocumentChars, maxCalls: limits.maxSearchDocumentCalls },
-      docTimeLeft,
-      signal,
-    )
-    if (outcome.kind === 'stopped') {
-      if (outcome.why === 'cancelled') {
-        state.stop = 'cancelled'
-      } else if (outcome.why === 'busy') {
-        docStop.busy = true
-        docStop.why ??= READER_BUSY
-        skip(entry, 'pending')
-      } else {
-        docStop.why ??= `the ${String(limits.searchDocumentTimeMs / 1000)} s time for reading documents`
-        skip(entry, 'pending')
+    for (;;) {
+      const outcome = await extractForSearch(
+        reader as DocumentReader,
+        bytes,
+        entry.name,
+        { maxChars: limits.maxSearchDocumentChars, maxCalls: limits.maxSearchDocumentCalls },
+        timeLeft,
+        signal,
+      )
+      if (outcome.kind === 'stopped') {
+        if (outcome.why === 'busy') {
+          docs.readerBusy = true
+          await pause(Math.min(BUSY_RETRY_MS, timeLeft()), signal)
+        }
+        if (signal.aborted || outcome.why === 'cancelled') {
+          state.stop = 'cancelled'
+          return 'not-reached'
+        }
+        if (timeLeft() === 0 || outcome.why === 'time') {
+          docs.timedOut = true
+          return 'not-reached'
+        }
+        continue
       }
-      return 'stopped'
+      if (
+        cache &&
+        key &&
+        token !== null &&
+        outcome.cacheable &&
+        deps.guard.blockedReason(entry.path) === null
+      ) {
+        await cache.put(key, outcome.text, token)
+      }
+      return outcome.text
     }
-    if (
-      cache &&
-      key &&
-      token !== null &&
-      outcome.cacheable &&
-      deps.guard.blockedReason(entry.path) === null
-    ) {
-      await cache.put(key, outcome.text, token)
-    }
-    return outcome.text
   }
 
   try {
@@ -648,11 +860,11 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       onError: () => unreadable++,
     })) {
       if (++visited > limits.maxSearchEntries) {
-        state.stop = `visited ${String(limits.maxSearchEntries)} entries`
+        state.stop = 'entries'
         break
       }
       if (timeLeft() === 0) {
-        state.stop = stopFor({ kind: 'timeout' })
+        state.stop = 'time'
         break
       }
       batch.push(entry)
@@ -670,37 +882,82 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   call.throwIfAborted()
 
   const notes: string[] = []
-  if (state.stop !== null) {
-    notes.push(
-      `Search stopped early: ${state.stop}. Results are partial: files after that point were ` +
-        'neither searched nor counted below. Narrow the folder or pattern for more.',
-    )
+  const narrow = 'narrow the search with a subfolder path or namePattern'
+  switch (state.stop) {
+    case 'max-results':
+      notes.push(
+        `Matches truncated: reached maxResults (${String(input.maxResults)}); files after that ` +
+          `point were not searched. Use a more specific pattern, ${narrow}, or raise maxResults ` +
+          `(at most ${String(limits.maxSearchResults)}).`,
+      )
+      break
+    case 'output':
+      notes.push(
+        `Matches truncated: the result reached ${String(limits.maxSearchOutputChars)} ` +
+          `characters, so later matches are not shown and files after that point were not ` +
+          `searched. Use a more specific pattern or less context, or ${narrow}.`,
+      )
+      break
+    case 'time':
+      notes.push(
+        `Search stopped early: reached the ${formatDuration(limits.searchTimeMs)} time limit ` +
+          `before every file was searched. Results are partial: ${narrow}.`,
+      )
+      break
+    case 'pattern-time':
+      notes.push(
+        `Search stopped early: the pattern took longer than ` +
+          `${formatDuration(limits.searchPatternTimeMs)} on one file (a slow pattern is stopped ` +
+          'there). Results are partial.',
+      )
+      break
+    case 'entries':
+      notes.push(
+        `Search stopped early: visited ${String(limits.maxSearchEntries)} entries. Results are ` +
+          `partial: ${narrow}.`,
+      )
+      break
+    case 'pattern-failed':
+      notes.push('Search stopped early: the pattern could not be run. Results are partial.')
+      break
+    default:
+      break
   }
   if (reader && documents.length > 0) {
-    const fromCache = docs.fromCache ? ` (${String(docs.fromCache)} from the cache)` : ''
-    let line = `Documents: ${String(docs.searched)} searched${fromCache}`
-    if (skips.pending > 0) {
-      line += `, ${String(skips.pending)} not searched yet${docStop.why ? ` (stopped at ${docStop.why})` : ''}`
+    const total = documents.length
+    const fromCache = docs.fromCache ? ` (${String(docs.fromCache)} from cache)` : ''
+    let line = `Searched ${String(docs.searched)} of ${String(total)} document${total === 1 ? '' : 's'}${fromCache}`
+    if (docs.notReached === 0) {
+      line += '.'
+    } else if (state.stop !== null) {
+      line += ` before the search stopped (${String(docs.notReached)} not reached).`
+    } else if (docs.locked) {
+      line +=
+        `; ${String(docs.notReached)} not read because another search_files call is reading ` +
+        'documents. Wait for it to finish, then call search_files again with the same ' +
+        'arguments to continue (do not run searches in parallel).'
+    } else {
+      line +=
+        `; the ${formatDuration(limits.searchTimeMs)} time budget ran out` +
+        `${docs.readerBusy ? ' (the document reader was busy with an earlier job)' : ''}. ` +
+        (cache
+          ? 'Call search_files again with the same arguments to continue: documents already ' +
+            'searched come from the cache.'
+          : `To search the rest, ${narrow}.`)
     }
-    notes.push(`${line}.`)
-    if (skips.pending > 0 && state.stop === null) {
-      notes.push(
-        cache
-          ? 'Call search_files again with the same arguments to search the rest: documents ' +
-              'already read come from the cache, so each call gets further.'
-          : 'Narrow the folder to search the rest, or open the likely ones with read_document.',
-      )
+    notes.push(line)
+    const listCapped = (title: string, items: string[]): void => {
+      if (items.length === 0) return
+      notes.push(title, ...items.slice(0, MAX_SKIPPED_LISTED))
+      if (items.length > MAX_SKIPPED_LISTED) {
+        notes.push(`  …and ${String(items.length - MAX_SKIPPED_LISTED)} more.`)
+      }
     }
-    if (docs.partial.length > 0) {
-      notes.push('Documents only partly searched (too long):', ...docs.partial.slice(0, 10))
-    }
-    if (docs.blank.length > 0) {
-      notes.push(
-        'PDFs with scanned pages (no text layer there, so those pages were not searched; open ' +
-          'them with read_document):',
-        ...docs.blank.slice(0, 10),
-      )
-    }
+    listCapped('Documents only partly searched (too long):', docs.partial)
+    listCapped(
+      'PDFs with scanned pages (no text layer there, so those pages were not searched):',
+      docs.blank,
+    )
   }
   const skippedTotal = Object.values(skips).reduce((a, b) => a + b, 0)
   if (skippedTotal > 0) {
@@ -714,22 +971,23 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       notes.push(`  …and ${String(skippedTotal - listed.length)} more not listed.`)
     }
   }
-  if (tiers[0]?.length || tiers[1]?.length) {
+  if (input.contentPattern !== undefined && !reader && skips.document > 0) {
     notes.push(
-      reader
-        ? 'Images, and documents listed above as not searched or unreadable, are not searched ' +
-            'by content: open the likely ones with read_document.'
-        : 'PDFs, Word, Excel and PowerPoint files and images are not searched by content: open the ' +
-            'likely ones above with read_document.',
+      input.documents
+        ? 'PDF, Word, Excel and PowerPoint files were not searched by content: the document ' +
+            'reader is unavailable.'
+        : 'PDF, Word, Excel and PowerPoint files were not searched by content (documents: false).',
     )
+  }
+  if (shown.context) {
+    notes.push('Lines marked "-" instead of ":" are context around a match; "--" separates groups.')
   }
   if (documentResults.some((line) => /^[^\n]* \(character \d+\): /.test(line))) {
     notes.push('A "(character N)" match is read in context with read_document and start: N.')
   }
   if (hidden > 0) notes.push(`${String(hidden)} protected entries hidden.`)
   if (unreadable > 0) notes.push(`${String(unreadable)} entries could not be read.`)
-  const count = resultCount()
-  const header = `${String(count)} result${count === 1 ? '' : 's'} in ${dir}`
+  const header = `${String(matches)} result${matches === 1 ? '' : 's'} in ${dir}`
   const fromDocuments = documentResults.length
     ? [
         '[The matches below were extracted from documents (page, slide, cell or character in ' +

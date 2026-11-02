@@ -279,9 +279,11 @@ text of documents, on by default (`documents: false` turns it off for a call).
   bytes say PDF, OOXML, ODF or OLE (and, past the 1 MB text cap, files named `.pdf`,
   `.docx`, `.xlsx`, `.pptx`, `.odt`, ... `.csv`) are set aside. After the walk, documents
   already in the cache are searched first, then those whose name has a query term, then the
-  rest. At most 25 are read through the reader per call (`maxSearchDocuments`), within
-  20 s (`searchDocumentTimeMs`) of the search's 30 s; per document, at most 40 reader calls
-  and 2 million characters (the rest is reported as "only partly searched").
+  rest. One call searches every document it found: there is no per-call document cap,
+  only the call's 3 min time budget (`searchTimeMs`, the walk and text files included);
+  per document, at most 40 reader calls and 2 million characters (the rest is reported as
+  "only partly searched"). Stop/Esc cancels between documents and while waiting on a
+  reader call.
 - Extraction is `read_document`'s: the same `DocumentWorkerHost` (sandboxed page, broker,
   timeouts, memory ceiling), `view: 'text'` with no images, a part at a time: PDF pages and
   slides by `start` (50 a call), Word/OpenDocument text by character, and every sheet's used
@@ -292,14 +294,22 @@ text of documents, on by default (`documents: false` turns it off for a call).
   `spec.docx (character 1200): …` (`read_document` with `start: 1200` reads from there).
   Document matches come after a line saying they are untrusted file content, and each
   line has control, format and bidi characters replaced and is cut to 200 characters.
-- Not searched, and said so with a reason: a PDF whose every page has fewer than 8
-  non-space characters is `no text layer (scanned) — open with read_document` (no OCR;
-  some blank pages in a PDF with text are listed as scanned pages); documents the reader
-  refuses (`could not be read: password-protected`, ...); names that look like secrets
-  (`credentials.xlsx`, `secrets.docx`: `isSecretName`) are never sent to the reader or
-  kept; hard-linked files; and the documents the budget did not reach (`not searched
-yet`), with "call search_files again with the same arguments": cached documents cost
-  no reader time, so each call gets further.
+- Context: `context` (0-5 lines, default 1) shows the lines around each match, marked
+  `-` instead of `:` (`notes.txt-11- ...`, `RFI.pdf (page 2)- ...`), with `--` between
+  groups; a document's context stays on the match's page, slide or sheet. Context lines
+  are cut so one match's context is at most 1,000 characters, and for a substring search
+  a long matched line is cut around the match. The whole result is cut at 40,000
+  characters (`maxSearchOutputChars`), and maxResults counts matches; either one says
+  `Matches truncated: ...`.
+- Not searched, and counted by reason (at most 10 files named, protected files never):
+  a PDF whose every page has fewer than 8 non-space characters is `no text layer
+(scanned)` (no OCR; some blank pages in a PDF with text are listed as scanned pages);
+  documents the reader refuses (`password-protected`, `could not be read: ...`); names
+  that look like secrets (`credentials.xlsx`, `secrets.docx`: `isSecretName`) are never
+  sent to the reader or kept; hard-linked files. The summary is one line, `Searched 1000
+of 1000 documents (612 from cache).`; only when the time budget ran out does it add
+  `the 3 min time budget ran out. Call search_files again with the same arguments to
+continue`: cached documents cost no reader time, so the next call carries on.
 - Search jobs are background jobs in the reader's queue (`ExtractControl`): they wait
   behind every `read_document` and attachment job, and the host refuses a background job
   with `busy` while another is waiting or running, so all searches together have at most
@@ -308,9 +318,13 @@ yet`), with "call search_files again with the same arguments": cached documents 
   it finishes or is killed at its own 30 s timeout, and its result is thrown away (it is
   one part of a document, and finishing the rest in the background would be unbounded
   work of its own); the next search reads that document again. While it runs, a search
-  sends no more documents to the reader, searches what is cached, and lists the rest as
-  `not searched yet (stopped at the document reader, still busy ...)`. So a
-  `read_document` waits behind at most one search job, never a queue of them.
+  that gets `busy` waits a moment and tries again, until its own time runs out (it then
+  says the reader was busy). So a `read_document` waits behind at most one search job,
+  never a queue of them.
+- One search reads documents at a time (per reader). A `search_files` call made while
+  another is reading documents searches only what is cached and says `N not read because
+another search_files call is reading documents ... (do not run searches in parallel)`;
+  the tool description tells the model not to run searches in parallel.
 - The queue itself is bounded for every caller: at most 64 waiting jobs and 256 MB of
   waiting documents (`maxQueuedJobs`, `maxQueuedBytes`; a job alone is always taken, the
   100 MB document limit bounding it). Past that a job is refused with `busy` ("The

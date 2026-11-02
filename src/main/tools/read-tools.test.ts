@@ -368,6 +368,7 @@ describe('search_files', () => {
       path: sb.root,
       namePattern: '*.md',
       contentPattern: 'todo',
+      context: 0,
     })
     expect(r.content.split('\n')).toEqual([
       `1 result in ${sb.root}`,
@@ -510,17 +511,25 @@ describe('search_files skip report', () => {
     expect(listed(r.content).at(-1)).toBe('  …and 10 more not listed.')
   })
 
-  it('points to read_document only when documents were skipped', async () => {
+  it('says documents were not searched by content only when some were skipped', async () => {
     await put(path.join(sb.root, 'blob.dat'), BINARY)
     const binaryOnly = await search('needle')
     expect(binaryOnly.content).toContain('1 binary, not searched')
+    expect(binaryOnly.content).not.toContain('not searched by content')
     expect(binaryOnly.content).not.toContain('read_document')
     await put(path.join(sb.root, 'report.pdf'), PDF)
     const withDocument = await search('needle')
     expect(withDocument.content).toContain(
-      'PDFs, Word, Excel and PowerPoint files and images are not searched by content: open the ' +
-        'likely ones above with read_document.',
+      'PDF, Word, Excel and PowerPoint files were not searched by content: the document ' +
+        'reader is unavailable.',
     )
+    expect(withDocument.content).not.toContain('read_document')
+    const off = await run('search_files', {
+      path: sb.root,
+      contentPattern: 'needle',
+      documents: false,
+    })
+    expect(off.content).toContain('(documents: false)')
   })
 
   it('reports nothing skipped for a name-only search', async () => {
@@ -546,16 +555,35 @@ describe('search_files skip report', () => {
     expect(queryTerms(undefined)).toEqual([])
   })
 
-  it('allows 30 s by default and says when the time limit made results partial', async () => {
-    expect(DEFAULT_LIMITS.searchTimeMs).toBe(30_000)
-    expect(toolHarness(sb).tool('search_files').description).toContain('30 s')
+  it('allows 3 min by default and says when the time limit made results partial', async () => {
+    expect(DEFAULT_LIMITS.searchTimeMs).toBe(180_000)
+    const description = toolHarness(sb).tool('search_files').description
+    expect(description).toContain('3 min')
+    expect(description).toContain('One call searches the whole folder')
+    expect(description).toContain('Do not run several search_files calls in parallel')
+    expect(description).toContain('narrow the search with a subfolder path or namePattern')
     await put(path.join(sb.root, 'a.txt'), 'needle')
     let clock = 0
-    h = toolHarness(sb, { now: () => (clock += 20_000) })
+    h = toolHarness(sb, { now: () => (clock += 100_000) })
     const r = await search('needle')
     expect(r.content).toContain(
-      'Search stopped early: reached the 30 s time limit (a slow pattern is stopped there). ' +
-        'Results are partial',
+      'Search stopped early: reached the 3 min time limit before every file was searched. ' +
+        'Results are partial: narrow the search with a subfolder path or namePattern.',
+    )
+  })
+
+  it('stops a slow pattern at the per-pattern cap, well inside the search time', async () => {
+    const clock = 0
+    h = toolHarness(sb, { now: () => clock, limits: { searchPatternTimeMs: 300 } })
+    await put(path.join(sb.root, 'evil.txt'), `${'a'.repeat(100)}!\n`)
+    const r = await run('search_files', {
+      path: sb.root,
+      contentPattern: '(a|aa)+$',
+      regex: true,
+    })
+    expect(r.content).toContain(
+      'Search stopped early: the pattern took longer than 0.3 s on one file (a slow pattern is ' +
+        'stopped there). Results are partial.',
     )
   })
 })

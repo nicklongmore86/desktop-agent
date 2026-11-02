@@ -329,7 +329,10 @@ test.describe('read_document over the sandboxed worker', () => {
     writeFileSync(join(folder, 'credentials.docx'), makeDocx(wp('Walk-In Freezer code 4321')))
 
     const search = () =>
-      reader(app).run({ path: folder, contentPattern: 'walk-in freezer' }, 'search_files')
+      reader(app).run(
+        { path: folder, contentPattern: 'walk-in freezer', context: 0 },
+        'search_files',
+      )
     const first = await search()
     expect(first.isError).toBeUndefined()
     const lines = first.content.split('\n')
@@ -342,10 +345,8 @@ test.describe('read_document over the sandboxed worker', () => {
       'deck.pptx (slide 2): Walk-In Freezer in week 12',
       expect.stringMatching(/^spec\.docx \(character \d+\): Refrigeration: provide one/),
     ])
-    expect(first.content).toContain('Documents: 4 searched.')
-    expect(first.content).toContain(
-      '  scan.pdf (no text layer (scanned) — open with read_document)',
-    )
+    expect(first.content).toContain('Searched 4 of 6 documents.')
+    expect(first.content).toContain('  scan.pdf (no text layer (scanned))')
     expect(first.content).toContain(
       '  credentials.docx (document, name looks like it holds secrets, not read)',
     )
@@ -353,7 +354,7 @@ test.describe('read_document over the sandboxed worker', () => {
 
     const second = await search()
     expect(second.content.split('\n').slice(0, 7)).toEqual(lines.slice(0, 7))
-    expect(second.content).toContain('Documents: 4 searched (4 from the cache).')
+    expect(second.content).toContain('Searched 4 of 6 documents (4 from cache).')
     const audit = (await reader(app).audit()).slice(-2)
     expect(audit.map((entry) => [entry.tool, entry.outcome, entry.args['extra']])).toEqual([
       [
