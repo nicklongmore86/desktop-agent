@@ -221,10 +221,44 @@ let codexModels = []
 let savedCodexModel = null
 let history = { conversations: [], activeId: null }
 const historyCalls = { open: [], rename: [], remove: [] }
-const chatState = () => ({ items: [], running: false, loadError: null, history })
-const pushHistory = () => {
-  for (const listener of listeners.chat) listener({ type: 'history_changed', history })
+// The open chat's messages (e2e.setChat) and, once a chat of another home is opened, which
+// chat that is (undefined: derived from history.activeId and the current connection).
+// The connection whose home folder `history.conversations` is (fixed when the list is set).
+let historyHome = 'anthropic-api'
+let chatItems = []
+let activeRef
+// The one shared list main sends: every connection's chats, and the open one.
+const historyView = () => {
+  const active =
+    activeRef !== undefined
+      ? activeRef
+      : history.activeId
+        ? { provider: historyHome, id: history.activeId }
+        : null
+  return {
+    ...history,
+    activeId: active?.id ?? null,
+    active,
+    chats: [...history.conversations.map((c) => ({ ...c, provider: historyHome })), ...others],
+  }
 }
+const chatState = () => ({
+  items: chatItems,
+  running: false,
+  loadError: null,
+  history: historyView(),
+})
+const pushHistory = () => {
+  for (const listener of listeners.chat)
+    listener({ type: 'history_changed', history: historyView() })
+}
+const pushReset = () => {
+  for (const listener of listeners.chat)
+    listener({ type: 'conversation_reset', state: chatState() })
+}
+// provider.set waits for releaseSwitch() while a test holds it, to look at the switching state.
+let holdSwitch = false
+let releaseSwitch = () => {}
 // Projects and other providers' organised chats, like main's organizer.
 let projects = []
 let others = []
@@ -239,7 +273,7 @@ const withField = (chat, key, value) => {
 }
 const organize = (chat, key, value) => {
   projectCalls.push([key, chat, value])
-  if (chat.provider === provider.provider) {
+  if (chat.provider === historyHome) {
     history = {
       ...history,
       conversations: history.conversations.map((c) =>
@@ -645,14 +679,34 @@ contextBridge.exposeInMainWorld('desktopApi', {
       }
       return Promise.resolve({ chat: { provider: chat.provider, id }, state: projectsState() })
     },
-    rename: (chat, title) => organize(chat, 'title', title),
+    rename: (chat, title) => {
+      historyCalls.rename.push([chat.id, title])
+      return organize(chat, 'title', title)
+    },
     remove: (chat) => {
-      others = others.filter((c) => c.id !== chat.id)
+      historyCalls.remove.push(chat.id)
+      others = others.filter((c) => !(c.provider === chat.provider && c.id === chat.id))
+      if (chat.provider === historyHome) {
+        const wasOpen = history.activeId === chat.id && activeRef === undefined
+        history = {
+          activeId: wasOpen ? null : history.activeId,
+          conversations: history.conversations.filter((c) => c.id !== chat.id),
+        }
+      }
+      if (activeRef?.provider === chat.provider && activeRef.id === chat.id) {
+        activeRef = undefined
+        history = { ...history, activeId: null }
+      }
+      pushReset()
+      pushHistory()
       return Promise.resolve(projectsState())
     },
+    // Opens a chat of any home on the CURRENT connection: the provider is not switched.
     open: (chat) => {
       projectCalls.push(['open', chat])
-      provider = { provider: chat.provider, state: 'ready', message: 'Ready.' }
+      if (chat.provider === historyHome) historyCalls.open.push(chat.id)
+      activeRef = chat
+      pushReset()
       return Promise.resolve(provider)
     },
   },
@@ -670,7 +724,18 @@ contextBridge.exposeInMainWorld('desktopApi', {
       if (!configured.includes(next)) configured = [...configured, next]
       const signsIn = connectionInfo(next)?.capabilities.authKind === 'chatgpt-login'
       provider = statuses[next] ?? (firstRun || signsIn ? statusOf(next) : READY(next))
-      return Promise.resolve(provider)
+      // Like main: the open chat continues on `next`, and the window gets the same chat back.
+      const done = () => {
+        pushReset()
+        return provider
+      }
+      if (!holdSwitch) return Promise.resolve(done())
+      holdSwitch = false
+      return new Promise((resolve) => {
+        releaseSwitch = () => {
+          resolve(done())
+        }
+      })
     },
     login: () => {
       loginCallsLog.login.push(provider.provider)
@@ -810,12 +875,15 @@ contextBridge.exposeInMainWorld('desktopApi', {
     },
     newChat: () => {
       history = { ...history, activeId: null }
+      activeRef = undefined
+      chatItems = []
       return Promise.resolve(chatState())
     },
-    history: () => Promise.resolve(history),
+    history: () => Promise.resolve(historyView()),
     open: (id) => {
       historyCalls.open.push(id)
       history = { ...history, activeId: id }
+      activeRef = undefined
       return Promise.resolve(chatState())
     },
     rename: (id, title) => {
@@ -824,7 +892,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
         ...history,
         conversations: history.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
       }
-      return Promise.resolve(history)
+      return Promise.resolve(historyView())
     },
     remove: (id) => {
       historyCalls.remove.push(id)
@@ -832,7 +900,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
         activeId: history.activeId === id ? null : history.activeId,
         conversations: history.conversations.filter((c) => c.id !== id),
       }
-      return Promise.resolve(history)
+      return Promise.resolve(historyView())
     },
   },
   approvals: {
@@ -989,10 +1057,23 @@ contextBridge.exposeInMainWorld('e2e', {
   keyCalls: () => keyCalls.slice(),
   // Replace the saved chats and push them like main does after a save.
   setHistory: (next) => {
+    historyHome = provider.provider
     history = next
     pushHistory()
   },
   historyCalls: () => JSON.parse(JSON.stringify(historyCalls)),
+  // The open chat's messages (saved items, with the reply provenance), pushed as main's reset.
+  setChat: (items) => {
+    chatItems = items
+    pushReset()
+  },
+  // The next provider.set waits until releaseSwitch().
+  holdNextSwitch: () => {
+    holdSwitch = true
+  },
+  releaseSwitch: () => {
+    releaseSwitch()
+  },
   // Replace the projects and other providers' organised chats (the list reloads on a push).
   setProjects: (next, nextOthers = []) => {
     projects = next

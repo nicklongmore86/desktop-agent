@@ -6,7 +6,7 @@ per-feature module, see `ipc-modules.md`); main: `src/main/chat/organizer.ts`.
 
 ## Where things are stored
 
-**Chats** stay where they were: one history per provider,
+**Chats** stay where they were: one history folder per home connection,
 `userData/history/<provider>/index.json` plus `<id>.json` per chat. Each index entry
 gains optional fields (index format 2):
 
@@ -39,12 +39,43 @@ Chat and project ids are random v4 UUIDs made in main. Main builds a path only f
 id that matches that pattern; the IPC handlers refuse anything else (and any provider
 that is not one of the three) before it reaches a store.
 
-## Other providers' chats
+## One list for every connection
 
-A project can hold chats of several providers. The open provider's chats come with the
-chat history; other providers' chats are listed only when pinned or filed in a project.
-Opening one switches provider first, through the same switch as Settings (a running
-reply is stopped and its approvals denied), and then opens that chat.
+The sidebar shows **one shared list**: `HistoryState.chats` holds every registered
+connection's chats (hidden personal-use and removed connections included), newest first,
+archived ones too. Each has its **home** connection (`provider`, the folder it is saved
+in, which never changes) and, once it has a reply, `lastConnection` (the connection that
+answered last). Pinned, Projects, Chats (by date) and the Archived filter all work over
+that merged list; a project can hold chats of any connection.
+
+- A row's badge is `lastConnection`, or the home until the chat has a reply, by the
+  connection's short name (plain text; an id main no longer lists is shown as its id).
+- The open chat is `HistoryState.active` (home + id), so two chats with the same id in
+  different homes are never confused. `null` is a new chat that is not saved yet.
+- Every row action (open, rename, delete, pin, archive, move, fork, drag and drop, Undo)
+  takes a `ChatRef` (`{ provider: home, id }`).
+- **Opening a chat never switches connection.** `projects.chats.open(ref)` continues the
+  chat on the connection that is current; a running reply is stopped first (its approvals
+  are denied), like any switch of chat.
+
+## Switching connection with a chat open
+
+Picking another connection in the composer (or Settings) **continues the open chat on it**.
+The renderer's switch kind `'connection'` keeps the messages and the list on screen,
+shows "Switching to <connection>…" (the input is read-only meanwhile), and ignores events
+from the old run until main's `conversation_reset` **for the same chat** arrives (a reset
+for another chat is not its own). History pushes (`history_changed`) are applied live in
+the meantime. If the switch fails, the chat main still has open is shown again, with the
+list untouched. A reply running when the picker changes is stopped ("stop and switch").
+"New chat" starts on the current connection and clears the screen, as before.
+
+## Provider badges on replies
+
+Each saved reply carries the connection (and model, when known) that wrote it. The chat
+shows a badge (connection and model, as plain text) on the first reply, and only on the
+replies where the connection or the model differs from the previous reply. A reply with
+nothing recorded (saved before it was) gets no badge and does not move the comparison.
+A reply streamed in the open window is stamped with the connection and model it started on.
 
 ## Fork
 
@@ -56,8 +87,6 @@ keeps that many prompts and their full replies; the cut is always just before a 
 so a tool call is never separated from its result, and the copy is checked with the
 same well-formedness rules as a loaded chat.
 
-Forking a chat that belongs to another provider (reached through Pinned or Projects)
-copies it within that provider, then switches the active provider to open the fork,
-exactly as opening that chat would. The switch is needed because the renderer only shows
-and sends to the active provider's chat, so the new chat could not be opened otherwise;
-like any switch it stops a running reply and denies its approvals.
+Forking a chat copies it within its home connection, and the fork then opens on the
+current connection, exactly as opening any chat does (no switch of connection). Like any
+open it stops a running reply and denies its approvals.

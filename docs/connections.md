@@ -246,6 +246,14 @@ Small calls beside `connections.list()` make this possible (`ipc-connections.ts`
 | `connections.setShowPersonalUse(show)`         | Sets `showPersonalUseConnections`; refuses to hide the current connection.                           |
 | `connections.vision(id)` / `setVision(id, on)` | Whether images reach the current model, and "This model can see images" (`docs/provider-images.md`). |
 
+**Chat history is shared across connections.** The chat list shows every connection's chats in
+one list (each row badged with the connection that last answered), and the history folders
+stay per connection (a chat's _home_). Opening a chat that lives under another connection
+**does not switch connection**: it continues on the current one. Picking another connection
+with a chat open **continues that chat on it**: the messages stay on screen while main
+switches, and each reply is badged with the connection and model that wrote it where they
+change. See `chat-organizing.md`.
+
 Every id is checked against the registry first (`parseConnectionId`), and removing a
 connection never touches chat history. Removing a connection with `forget()` (ChatGPT
 Plan) signs it out first; if its stored sign-in cannot be deleted it stays listed, and an
