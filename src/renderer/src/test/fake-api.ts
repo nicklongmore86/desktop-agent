@@ -12,6 +12,7 @@ import type {
   ModelSettings,
   ProviderLoginState,
   ProviderStatus,
+  ConfirmSharingResult,
   SendResult,
   ThemePreference,
 } from '../../../shared/ipc'
@@ -633,6 +634,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
         }
         return Promise.resolve(history)
       }),
+      confirmSharing: vi.fn((_id: string): Promise<ConfirmSharingResult> =>
+        Promise.resolve({ ok: true }),
+      ),
     },
     approvals: {
       respond: vi.fn((_id: string, _approved: boolean) => Promise.resolve()),

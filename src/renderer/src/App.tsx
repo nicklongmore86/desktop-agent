@@ -14,6 +14,7 @@ import {
 } from '../../shared/ipc-connections'
 import { useApi } from './api'
 import { ApprovalCard } from './components/ApprovalCard'
+import { SharingDialog } from './components/SharingDialog'
 import { ChatView } from './components/ChatView'
 import { CommandBar } from './components/CommandBar'
 import {
@@ -236,7 +237,11 @@ function AppWindow(): React.JSX.Element {
         focusInput(view)
       },
     },
-    approval !== undefined || listDialog || wizard !== null || planNoticeVisible,
+    approval !== undefined ||
+      listDialog ||
+      wizard !== null ||
+      planNoticeVisible ||
+      chat.sharing !== null,
   )
   useViewModeHotkey(
     () => {
@@ -246,7 +251,8 @@ function AppWindow(): React.JSX.Element {
       settingsSection !== null ||
       listDialog ||
       wizard !== null ||
-      planNoticeVisible,
+      planNoticeVisible ||
+      chat.sharing !== null,
   )
   /** A choice the user made: it waits its turn behind any switch in flight, and counts as intent. */
   const userSwitch = <T,>(task: () => Promise<T>): Promise<T> => {
@@ -487,6 +493,20 @@ function AppWindow(): React.JSX.Element {
 
       {showPlanNotice && (
         <PlanNotice suspended={Boolean(approval)} onDismiss={markPlanNoticeSeen} />
+      )}
+
+      {chat.sharing && (
+        <SharingDialog
+          key={chat.sharing.id}
+          prompt={chat.sharing}
+          suspended={Boolean(approval)}
+          onCancel={() => {
+            chat.answerSharing(false)
+          }}
+          onConfirm={() => {
+            chat.answerSharing(true)
+          }}
+        />
       )}
 
       {approval && (

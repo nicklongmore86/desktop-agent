@@ -43,7 +43,7 @@ export type AgentErrorCode =
   | 'max_turns'
   | 'max_tokens'
   | 'refusal'
-  | 'context_limit'
+  | 'context_too_long'
   | 'protocol'
 export type AgentEvent =
   | { type: 'text_delta'; turn: number; text: string }

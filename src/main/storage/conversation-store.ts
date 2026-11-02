@@ -39,14 +39,26 @@ export interface MessageOrigin {
 }
 
 /**
- * A chat file. `origin` was added later at the top level, never on messages: older
- * builds pass messages to the model APIs as they are, so an extra key there would be
- * sent and refused. Older builds ignore it (and drop it when they save).
+ * The user confirmed that this chat's first `through` messages may be sent to
+ * `connection` (docs/connections.md, "Continuing a chat on another vendor"). Content
+ * added after that point needs a new confirmation when it would need one at all.
+ */
+export interface SharingConfirmation {
+  connection: ConnectionId
+  through: number
+}
+
+/**
+ * A chat file. `origin` and `sharing` were added later at the top level, never on
+ * messages: older builds pass messages to the model APIs as they are, so an extra key
+ * there would be sent and refused. Older builds ignore both (and drop them when they
+ * save, so a chat saved by one asks again).
  */
 interface ConversationFile {
   version: 1
   messages: StoredMessage[]
   origin?: MessageOrigin[]
+  sharing?: SharingConfirmation[]
 }
 
 export interface LoadedConversation {
@@ -54,13 +66,22 @@ export interface LoadedConversation {
   error: string | null
   /** Reply provenance; absent or [] when none was recorded. */
   origin?: MessageOrigin[]
+  /** Confirmations to send this chat to other connections; absent or [] when none. */
+  sharing?: SharingConfirmation[]
 }
 
 export interface ConversationStore {
   /** The saved history, or an empty one plus `error` when the file cannot be read. */
   load: () => Promise<LoadedConversation>
-  /** `origin`: the reply provenance to keep with it (left out: none). */
-  save: (messages: StoredMessage[], origin?: readonly MessageOrigin[]) => Promise<void>
+  /**
+   * `origin`: the reply provenance to keep with it (left out: none). `sharing`: the
+   * confirmations to keep with it (left out: none).
+   */
+  save: (
+    messages: StoredMessage[],
+    origin?: readonly MessageOrigin[],
+    sharing?: readonly SharingConfirmation[],
+  ) => Promise<void>
   clear: () => Promise<void>
   /** The saved chat's id, once it has one (null for a draft never saved). Optional for tests. */
   id?: () => string | null
@@ -99,6 +120,34 @@ export function parseOrigin(value: unknown, messages: number): MessageOrigin[] {
     origin.push({ fromIndex, connection, model: model ?? null })
   }
   return origin
+}
+
+/** At most one confirmation per connection: anything longer is not something this app wrote. */
+const MAX_SHARING = 256
+
+/**
+ * Saved `sharing`, read leniently: anything malformed reads as no confirmation at all
+ * (the user is asked again), never as an unreadable chat. A count past the messages is
+ * capped to them: a confirmation never covers messages added later.
+ */
+export function parseSharing(value: unknown, messages: number): SharingConfirmation[] {
+  if (!Array.isArray(value) || value.length > MAX_SHARING) return []
+  const sharing: SharingConfirmation[] = []
+  for (const entry of value) {
+    if (!isObject(entry)) return []
+    const { connection, through } = entry
+    if (
+      typeof connection !== 'string' ||
+      !CONNECTION_ID.test(connection) ||
+      typeof through !== 'number' ||
+      !Number.isSafeInteger(through) ||
+      through < 0 ||
+      sharing.some((other) => other.connection === connection)
+    )
+      return []
+    sharing.push({ connection, through: Math.min(through, messages) })
+  }
+  return sharing
 }
 
 /** The provenance of the first `length` messages (a fork or a cut keeps only those). */
@@ -427,10 +476,12 @@ export function createConversationStore(file: string): ConversationStore {
         if (parsed === undefined) return { messages: [], error: null }
         if (isConversationFile(parsed)) {
           const origin = parseOrigin(parsed.origin, parsed.messages.length)
+          const sharing = parseSharing(parsed.sharing, parsed.messages.length)
           return {
             messages: parsed.messages,
             error: null,
             ...(origin.length > 0 ? { origin } : {}),
+            ...(sharing.length > 0 ? { sharing } : {}),
           }
         }
       } catch {
@@ -441,12 +492,14 @@ export function createConversationStore(file: string): ConversationStore {
         error: 'The saved conversation could not be read, so a new one was started.',
       }
     },
-    save: (messages, origin = []) => {
+    save: (messages, origin = [], sharing = []) => {
       const kept = trimOrigin(origin, messages.length)
+      const confirmed = parseSharing(sharing, messages.length)
       return writeJsonFile(file, {
         version: 1,
         messages,
         ...(kept.length > 0 ? { origin: kept } : {}),
+        ...(confirmed.length > 0 ? { sharing: confirmed } : {}),
       } satisfies ConversationFile)
     },
     clear: () => removeFile(file),

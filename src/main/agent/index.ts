@@ -6,6 +6,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages'
 import { AGENT_BUDGET, TURN_LIMIT } from '../../shared/ipc'
 import { apiErrorEvent, DEFAULT_MODEL } from './client'
+import { contextTooLongMessage, estimateTokens } from './context-window'
 import { toolResultImages, withImageBudget, type LiveToolImages } from './images'
 import type {
   AgentClient,
@@ -162,6 +163,7 @@ export function createAgent({
   errorEvent = apiErrorEvent,
   modelName = 'Claude',
   vision = false,
+  contextWindow,
 }: {
   client: AgentClient
   tools: AgentTool[]
@@ -185,6 +187,12 @@ export function createAgent({
    * attached images become a note saying so (agent/images.ts).
    */
   vision?: boolean
+  /**
+   * The model's context window in tokens, when its model list says. A request whose
+   * estimate (a low one, see context-window.ts) is over it is never sent: the run stops
+   * with context_too_long, nothing cut. Absent: the provider's own error says so.
+   */
+  contextWindow?: number
 }) {
   if (
     !Number.isSafeInteger(maxTurns) ||
@@ -231,17 +239,25 @@ export function createAgent({
           // Between steps, so every tool call so far already has its result.
           if (turn > 1 && worked() >= timeBudgetMs)
             return fail('max_turns', timePausedMessage(Math.round(timeBudgetMs / 60_000)))
+          const messages = withCacheBreakpoint(withImageBudget(history, live, vision))
+          const toolDefinitions = tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.inputSchema,
+          }))
+          // Never cut to fit: a history over the model's window is refused as it is.
+          if (
+            contextWindow !== undefined &&
+            estimateTokens(messages, [systemPrompt, toolDefinitions]) > contextWindow
+          )
+            return fail('context_too_long', contextTooLongMessage(model))
           const stream = client.messages.stream(
             {
               model,
               max_tokens: maxTokens,
-              messages: withCacheBreakpoint(withImageBudget(history, live, vision)),
+              messages,
               system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-              tools: tools.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                input_schema: tool.inputSchema,
-              })),
+              tools: toolDefinitions,
             },
             { signal },
           )
@@ -373,10 +389,7 @@ export function createAgent({
                 `${modelName} declined this request. Rephrase it before trying again.`,
               )
             case 'model_context_window_exceeded':
-              return fail(
-                'context_limit',
-                'Conversation exceeds the model context window. Start a shorter conversation.',
-              )
+              return fail('context_too_long', contextTooLongMessage(model))
             default:
               return fail('protocol', `${modelName} returned an unsupported stop reason.`)
           }

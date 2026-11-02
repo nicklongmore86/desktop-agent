@@ -101,10 +101,14 @@ export function httpError(
       'authentication',
       'Gemini rejected the API key. Check or replace it in settings.',
     )
-  if (httpStatus === 400 && /token count|exceeds the maximum number of tokens|too long/i.test(raw))
+  // "The input token count (N) exceeds the maximum number of tokens allowed (M)." Matched only.
+  if (
+    (httpStatus === 400 || httpStatus === 413) &&
+    /token count|exceeds the maximum number of tokens|too long|context window/i.test(raw)
+  )
     return new GeminiError(
-      'context_limit',
-      'The conversation is too long for this Gemini model. Start a shorter conversation.',
+      'context_too_long',
+      'This chat is too long for this Gemini model. Start a new chat or fork from a later prompt.',
     )
   if (httpStatus === 400 || httpStatus === 413 || httpStatus === 416)
     return new GeminiError('invalid_request', withDetail('Gemini rejected the request.'))

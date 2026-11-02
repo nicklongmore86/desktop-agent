@@ -51,9 +51,16 @@ export function providerError(body: unknown): { kind: string; text: string; code
   return { kind, text, ...(typeof inner.code === 'number' ? { code: inner.code } : {}) }
 }
 
-/** Matched internally only; the text itself is never surfaced. */
+/**
+ * Matched internally only; the text itself is never surfaced. OpenAI and OpenRouter
+ * (`context_length_exceeded`, "maximum context length"), LM Studio ("when context the
+ * overflows", "greater than the context length") and Ollama ("exceeds the context
+ * length", "prompt too long").
+ */
 const CONTEXT_LIMIT =
-  /context_length_exceeded|context[ _-]?(length|window)|maximum context|too many tokens|prompt is too long|exceeds? the (model'?s? )?(context|maximum)/i
+  /context_length_exceeded|context[ _-]?(length|window)|maximum context|too many tokens|prompt (is )?too long|exceeds? the (model'?s? )?(context|maximum)|context the overflows/i
+/** Statuses a context-length answer comes with: local servers also answer 422 or 500. */
+const CONTEXT_STATUSES: ReadonlySet<number> = new Set([400, 413, 422, 500])
 const MODEL_MISSING = /model_not_found|model[ _-]?not[ _-]?found|no such model|does not exist/i
 
 /** `retry-after-ms`, `retry-after` (seconds or HTTP date), then OpenAI's `x-ratelimit-reset-*` ("6m0s"). */
@@ -91,10 +98,10 @@ export function statusError(
 ): OpenAICompatError {
   const { kind, text } = providerError(body)
   const opts = { status }
-  if (CONTEXT_LIMIT.test(kind) || ((status === 400 || status === 413) && CONTEXT_LIMIT.test(text)))
+  if (CONTEXT_LIMIT.test(kind) || (CONTEXT_STATUSES.has(status) && CONTEXT_LIMIT.test(text)))
     return new OpenAICompatError(
-      'context_limit',
-      'Conversation exceeds the model context window. Start a shorter conversation.',
+      'context_too_long',
+      `This chat is too long for this ${label} model. Start a new chat or fork from a later prompt.`,
       opts,
     )
   if (status === 401)

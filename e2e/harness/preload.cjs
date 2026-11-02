@@ -23,6 +23,10 @@ const resolve = (value) => () => Promise.resolve(value)
 // one reads the path in the preload); the picker answers what the test set up.
 const attachRefs = new Map()
 const sendCalls = []
+// Stands in for main's sharing check: set by e2e.requireSharing(prompt), it refuses every
+// send with 'confirmation_required' until confirmSharing quotes the prompt's id.
+let sharingPrompt = null
+const sharingCalls = []
 let pickResult = []
 const hex64 = (name) =>
   Array.from(new TextEncoder().encode(name))
@@ -790,6 +794,13 @@ contextBridge.exposeInMainWorld('desktopApi', {
     load: () => Promise.resolve(chatState()),
     send: (text, ids = []) => {
       sendCalls.push({ text, ids })
+      if (sharingPrompt)
+        return Promise.resolve({
+          ok: false,
+          code: 'confirmation_required',
+          message: `Confirm before this chat is sent to ${sharingPrompt.destination}.`,
+          sharing: structuredClone(sharingPrompt),
+        })
       const attachments = ids.flatMap((id) => (attachRefs.has(id) ? [attachRefs.get(id)] : []))
       const runId = `run-${String(sendCalls.length)}`
       // Only a send with files plays back like main would; other sends stay silent, as before.
@@ -833,6 +844,13 @@ contextBridge.exposeInMainWorld('desktopApi', {
         conversations: history.conversations.filter((c) => c.id !== id),
       }
       return Promise.resolve(history)
+    },
+    confirmSharing: (id) => {
+      sharingCalls.push(id)
+      if (!sharingPrompt || sharingPrompt.id !== id)
+        return Promise.resolve({ ok: false, message: 'That confirmation is no longer current.' })
+      sharingPrompt = null
+      return Promise.resolve({ ok: true })
     },
   },
   approvals: {
@@ -940,6 +958,10 @@ contextBridge.exposeInMainWorld('e2e', {
     pickResult = outcomes
   },
   sendCalls: () => JSON.parse(JSON.stringify(sendCalls)),
+  requireSharing: (prompt) => {
+    sharingPrompt = prompt
+  },
+  sharingCalls: () => [...sharingCalls],
   pushChat: (event) => {
     for (const listener of listeners.chat) listener(event)
   },

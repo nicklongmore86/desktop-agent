@@ -251,7 +251,7 @@ describe('agent', () => {
     async (stop) => {
       const f = fixture([reply(stop)])
       expect((await f.run()).stopReason).toBe(
-        stop === 'model_context_window_exceeded' ? 'context_limit' : stop,
+        stop === 'model_context_window_exceeded' ? 'context_too_long' : stop,
       )
       expect(f.requests).toHaveLength(1)
     },

@@ -18,6 +18,8 @@ export interface ListedModel {
   toolSupport?: 'supported' | 'unknown'
   /** Whether the list says the model reads images; absent when it does not say. */
   vision?: boolean
+  /** The model's context window in tokens, when the list says (OpenRouter, Gemini). */
+  contextWindow?: number
 }
 
 /** What a list or key check gets: the saved key (null for local servers) and the API root. */
@@ -64,6 +66,8 @@ export interface ModelApiSpec extends ConnectionDescriptor {
   vision?: (model: string) => PublishedVision
   /** The model list says which models read images (ListedModel.vision): OpenRouter's does. */
   listsVision?: boolean
+  /** The model list gives context windows (ListedModel.contextWindow): OpenRouter, Gemini. */
+  listsContextWindow?: boolean
 }
 
 const STATUS_TIMEOUT_MS = 3_000
@@ -88,6 +92,7 @@ export function modelApiAdapter(spec: ModelApiSpec): AdapterFactory {
     baseUrlRule,
     vision,
     listsVision,
+    listsContextWindow,
     ...rest
   } = spec
   const { id, missingKeyMessage } = spec
@@ -209,6 +214,18 @@ export function modelApiAdapter(spec: ModelApiSpec): AdapterFactory {
       },
       visionSource: 'model',
       visionSetting: true,
+      // The model list's word only, from the last list fetched for this key and server
+      // (Settings, the picker, a Send without a saved model): never a request of its own.
+      ...(listsContextWindow
+        ? {
+            contextWindow: async (model: string) => {
+              const key = await readKey().catch(() => undefined)
+              if (key === undefined || !cache || cache.key !== key || cache.baseUrl !== baseUrl())
+                return undefined
+              return cache.models.find((candidate) => candidate.id === model)?.contextWindow
+            },
+          }
+        : {}),
     })(host)
 
     const errorStatus = (failure: ProviderFailure): ProviderStatus => ({

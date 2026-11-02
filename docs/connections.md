@@ -266,3 +266,63 @@ when it is `false`, `connections.list()` leaves the connection out, main refuses
 switch to it, and a saved choice of it falls back to the default. The default keeps the
 app as it was for its current user. Settings → Accounts & providers has the
 "Show personal-use connections" toggle.
+
+## Continuing a chat on another vendor
+
+Any connection can continue any chat (`provider.set` keeps the open chat; `projects.chats.open`
+continues another home's chat on the current connection). Continuing sends the chat's earlier
+content to the new connection: prompts and replies, tool calls with their output (file contents,
+command output) and earlier attachments. Two cases ask the user first:
+
+| The chat's earlier content came from…             | Going to…                                             | Asks?                    |
+| ------------------------------------------------- | ----------------------------------------------------- | ------------------------ |
+| a **local** connection (Ollama, LM Studio)        | any cloud connection                                  | yes (`local-to-cloud`)   |
+| another vendor (or a connection this build lacks) | **Gemini · API** (a key may be free tier)             | yes (`gemini-free-tier`) |
+| anything                                          | a local connection                                    | no                       |
+| a cloud vendor                                    | another cloud vendor (not Gemini), or the same vendor | no (unchanged)           |
+
+**Local vs cloud** is the registry's `vendor`: `'local'` (Ollama and LM Studio, whose base URL
+is loopback-only, see "Settings and keys") is local; every other vendor is cloud. **Who wrote
+what** comes from the chat file's top-level `origin` (`{ fromIndex, connection, model }[]`);
+messages before its first entry (an older chat, a chat's first prompt) count as the chat's home
+connection's. A connection id the registry does not know counts as another vendor that is not
+local. The app cannot tell a free Gemini key from a paid one, so any Gemini key asks, with the
+same free-tier wording Settings shows (`GEMINI_FREE_TIER_NOTICE`).
+
+**Main enforces it** (`chat/sharing.ts`, `ChatSession.send`), before a runner is built: the send
+is refused with `{ ok: false, code: 'confirmation_required', sharing: SharingPrompt }`, nothing is
+added to the chat or saved. `SharingPrompt` names the destination, the source connections'
+labels, what is included (`messages`, `toolOutput`, `attachments`) and, for Gemini, the notice;
+every string is written in main. The renderer (`components/SharingDialog.tsx`) shows it; Confirm
+calls `chat.confirmSharing(id)` and sends the same message again, Cancel or Escape confirms
+nothing and keeps the draft, so the user can switch back. An approval prompt takes priority (the
+dialog is hidden and inert under it). Main accepts only the id of the newest prompt it issued,
+once, and only while the same chat, message count and connection are open; a runner built for
+another connection than the one checked is never run.
+
+**Stored** in the chat file, top level, never on messages: `sharing: [{ connection, through }]`,
+meaning the first `through` messages may go to `connection`. A send on a confirmed connection
+moves `through` to cover the new prompt; local (or other-vendor, for Gemini) content added after
+`through` asks again. Read leniently (`parseSharing`): anything malformed is no confirmation. Older
+builds ignore it and drop it when they save, so the chat asks again. A fork does not copy it.
+
+### Too long for the model
+
+A chat that does not fit the target model's context window stops with `context_too_long` and
+"This chat is too long for <model>. Start a new chat, fork from a later prompt, or switch to a model
+with a larger context." Nothing is cut and no provider text is shown. Two ways it is found:
+
+- **Before sending**, when the model list gives a context window (OpenRouter's `context_length`,
+  Gemini's `inputTokenLimit`, read from the last list fetched; never a request of its own):
+  `createAgent`'s `contextWindow` refuses a request whose estimate is over it. The estimate is low
+  on purpose (5 characters a token, images a fixed 1,600), so it only refuses what the model would.
+- **From the provider's error**, mapped by each client: Anthropic 400 "prompt is too long" or 413
+  `request_too_large`; OpenAI-compatible `context_length_exceeded` or context-length text on
+  400/413/422/500 (OpenAI, OpenRouter, LM Studio, Ollama); Responses `context_length_exceeded` /
+  `context_window_exceeded` or that text in-stream; Gemini 400 "input token count … exceeds";
+  Claude Code "Prompt is too long" and Codex `contextWindowExceeded` (`mapFailure`). The session
+  rewrites the message to the wording above, naming the run's model.
+
+Limitations: Ollama's OpenAI-compatible API may cut an over-long prompt to its `num_ctx` on the
+server without an error, which the app cannot see; Anthropic and OpenAI model lists give no window,
+so for them only the provider's error applies.

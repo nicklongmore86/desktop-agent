@@ -8,8 +8,10 @@ import type {
   ChatRef,
   ChatEvent,
   ChatState,
+  ConfirmSharingResult,
   HistoryState,
   SendResult,
+  SharingPrompt,
 } from '../../shared/ipc'
 import type { ConnectionId } from '../../shared/ipc-connections'
 import type {
@@ -26,8 +28,10 @@ import {
   type AttachmentBlock,
   type ConversationStore,
   type MessageOrigin,
+  type SharingConfirmation,
   type StoredMessage,
 } from '../storage/conversation-store'
+import { contextTooLongMessage } from '../agent/context-window'
 import type { DocumentReader } from '../documents/types'
 import type { ConversationHistory } from '../storage/history-store'
 import {
@@ -41,6 +45,7 @@ import {
   type PdfReading,
 } from './attachments'
 import { singleLibrary, type ChatLibrary } from './library'
+import { sharingMessage, sharingNeed, withSharing, type DescribeConnection } from './sharing'
 import { toTranscript } from './transcript'
 import { userCommandMessage } from './user-command'
 
@@ -108,6 +113,20 @@ export interface ChatSessionDeps {
   pins?: AttachmentPins
   /** Reads PDF attachments for the model. Without it, a PDF is sent as a placeholder. */
   documents?: DocumentReader
+  /**
+   * The registry's description of a connection, for the sharing check (chat/sharing.ts):
+   * a chat with content from a model on this computer, or going to a Gemini key, is
+   * refused until the user confirms. Without it nothing is checked (tests of other parts).
+   */
+  describeConnection?: DescribeConnection
+}
+
+/** The sharing prompt a refused send issued: only it can be confirmed, and only unchanged. */
+interface PendingSharing {
+  id: string
+  connection: ConnectionId
+  generation: number
+  length: number
 }
 
 interface PendingApproval {
@@ -146,6 +165,9 @@ export class ChatSession {
   private conversation: StoredMessage[] = []
   /** The open conversation's reply provenance (the chat file's `origin`). */
   private origin: MessageOrigin[] = []
+  /** The open chat's confirmations to send it to other connections (the chat file's `sharing`). */
+  private sharing: SharingConfirmation[] = []
+  private pendingSharing: PendingSharing | null = null
   /** Attachment ids in the open conversation whose stored file is gone. */
   private unavailable: ReadonlySet<string> = new Set()
   private readonly library: ChatLibrary
@@ -192,10 +214,11 @@ export class ChatSession {
     this.resets += 1
     const loaded = this.resetQueue.then(async () => {
       try {
-        const { messages, error, origin } = await this.store.load()
+        const { messages, error, origin, sharing } = await this.store.load()
         const unavailable = await unavailableAttachments(messages, this.deps.attachments)
         this.conversation = messages
         this.origin = origin ?? []
+        this.sharing = sharing ?? []
         this.unavailable = unavailable
         this.loadError = error
       } finally {
@@ -265,6 +288,16 @@ export class ChatSession {
       return { ok: false, code: 'busy', message: 'Chat is busy. Try again in a moment.' }
     if (this.active)
       return { ok: false, code: 'busy', message: 'Wait for the current reply, or stop it.' }
+    // Before anything else: the chat goes nowhere new until the user has confirmed it.
+    const target = this.library.connection()
+    const sharing = this.sharingPrompt(target)
+    if (sharing)
+      return {
+        ok: false,
+        code: 'confirmation_required',
+        message: sharingMessage(sharing),
+        sharing,
+      }
     const generation = this.generation
     // Claim the slot before awaiting, so two quick sends cannot both start.
     const id = this.newId()
@@ -303,7 +336,9 @@ export class ChatSession {
       } catch {
         built = { ok: false, code: 'internal', message: 'Could not start the agent.' }
       }
-      if (!built.ok || cancelled()) {
+      // Built for another connection than the one checked: never send it there unasked.
+      const elsewhere = built.ok && built.origin !== undefined && built.origin.connection !== target
+      if (!built.ok || cancelled() || elsewhere) {
         this.active = null
         release()
         return built.ok
@@ -311,12 +346,18 @@ export class ChatSession {
           : {
               ok: false,
               code: built.code,
-              message: built.message,
+              message:
+                built.code === 'context_too_long'
+                  ? contextTooLongMessage(this.modelName(target, null))
+                  : built.message,
               ...(built.resetsAt ? { resetsAt: built.resetsAt } : {}),
             }
       }
 
       this.conversation = [...this.conversation, promptMessage(text, checked.attachments)]
+      // The new prompt is the user's own, typed for `target`: a confirmation covers it.
+      if (this.sharing.some((entry) => entry.connection === target))
+        this.sharing = withSharing(this.sharing, target, this.conversation.length)
     } finally {
       // Referenced by the open conversation now (or never will be).
       unpin()
@@ -376,7 +417,7 @@ export class ChatSession {
         onEvent: (event) => {
           if (generation !== this.generation || controller.signal.aborted) return
           if (event.type === 'approval_requested') approvalToolUseId = event.id
-          this.forward(runId, event)
+          this.forward(runId, event, run.origin)
         },
         requestApproval: (request) => {
           const toolUseId = approvalToolUseId
@@ -412,7 +453,7 @@ export class ChatSession {
     this.notify({ type: 'run_finished', runId, stopReason: result.stopReason })
   }
 
-  private forward(runId: string, event: AgentEvent): void {
+  private forward(runId: string, event: AgentEvent, origin: RunOrigin | null): void {
     switch (event.type) {
       case 'text_delta':
         this.notify({ type: 'text_delta', runId, turn: event.turn, text: event.text })
@@ -445,7 +486,11 @@ export class ChatSession {
           type: 'error',
           runId,
           code: toChatCode(event.code),
-          message: event.message,
+          // One wording for every connection, naming the model; never provider text.
+          message:
+            event.code === 'context_too_long' && origin
+              ? contextTooLongMessage(this.modelName(origin.connection, origin.model))
+              : event.message,
           ...(event.resetsAt ? { resetsAt: event.resetsAt } : {}),
         })
         break
@@ -615,6 +660,61 @@ export class ChatSession {
       this.active = null
       release()
     }
+  }
+
+  /**
+   * The sharing prompt a send to `target` needs now, or null. Issuing one replaces the
+   * one before: only the newest can be confirmed.
+   */
+  private sharingPrompt(target: ConnectionId): SharingPrompt | null {
+    const describe = this.deps.describeConnection
+    if (!describe) return null
+    const need = sharingNeed({
+      conversation: this.conversation,
+      origin: this.origin,
+      home: this.home,
+      target,
+      sharing: this.sharing,
+      describe,
+    })
+    if (!need) return null
+    const id = this.newId()
+    this.pendingSharing = {
+      id,
+      connection: target,
+      generation: this.generation,
+      length: this.conversation.length,
+    }
+    return { id, chat: this.openRef, ...need }
+  }
+
+  /**
+   * Records the user's confirmation of the newest sharing prompt: the open chat's
+   * messages so far may go to the connection it named. Refused unless `id` is that
+   * prompt's and the same chat, messages and connection are still open, and while a
+   * reply, command or switch is in flight. Saved in the chat file's `sharing`.
+   */
+  async confirmSharing(id: unknown): Promise<ConfirmSharingResult> {
+    const pending = this.pendingSharing
+    if (typeof id !== 'string' || !pending || pending.id !== id)
+      return { ok: false, message: 'That confirmation is no longer current. Send again.' }
+    if (this.resets > 0 || this.active)
+      return { ok: false, message: 'Chat is busy. Try again in a moment.' }
+    this.pendingSharing = null
+    if (
+      pending.generation !== this.generation ||
+      pending.length !== this.conversation.length ||
+      pending.connection !== this.library.connection()
+    )
+      return { ok: false, message: 'The chat changed. Send again to see what will be shared.' }
+    this.sharing = withSharing(this.sharing, pending.connection, this.conversation.length)
+    await this.persist()
+    return { ok: true }
+  }
+
+  /** The model a message names: its id when known, else its connection's label. */
+  private modelName(connection: ConnectionId, model: string | null): string {
+    return model ?? this.deps.describeConnection?.(connection)?.label ?? 'this model'
   }
 
   /**
@@ -815,6 +915,8 @@ export class ChatSession {
         this.openId = next.id
         this.conversation = loaded.messages
         this.origin = loaded.origin ?? []
+        this.sharing = loaded.sharing ?? []
+        this.pendingSharing = null
         this.unavailable = unavailable
         this.loadError = loaded.error
         this.notify({ type: 'conversation_reset', state: this.state() })
@@ -838,7 +940,7 @@ export class ChatSession {
 
   private async persist(): Promise<void> {
     try {
-      await this.store.save(this.conversation, this.origin)
+      await this.store.save(this.conversation, this.origin, this.sharing)
       // A new chat's first save gives it an id: it is the open chat from now on.
       const id = this.store.id?.() ?? this.openId
       if (id !== this.openId) {

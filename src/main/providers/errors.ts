@@ -99,7 +99,7 @@ export function mapFailure(value: unknown, wording: FailureWording): Subscriptio
     plan_not_entitled: 'plan_not_entitled',
     model_access_denied: 'plan_not_entitled',
     model_not_found: 'model_unavailable',
-    contextWindowExceeded: 'context_limit',
+    contextWindowExceeded: 'context_too_long',
     serverOverloaded: 'overloaded',
     badRequest: 'invalid_request',
     error_max_turns: 'max_turns',
@@ -201,9 +201,13 @@ export function mapFailure(value: unknown, wording: FailureWording): Subscriptio
     message = wording.usageLimit
     if (resetsAt) message += ` It resets at ${resetDescription(resetsAt)}.`
     else message += ' Check your allowance in Settings or wait for it to reset.'
-  } else if (/context_limit|contextWindowExceeded|context.*window.*exceed/i.test(text)) {
-    code = 'context_limit'
-    message = 'This conversation exceeds the model context window. Start a new chat.'
+  } else if (
+    /context_too_long|contextWindowExceeded|context_length_exceeded|context.*window.*exceed|exceed.*context.*(?:window|limit|length)|prompt is too long|input is too long/i.test(
+      text,
+    )
+  ) {
+    code = 'context_too_long'
+    message = 'This chat is too long for this model. Start a new chat or fork from a later prompt.'
   } else if (/serverOverloaded|overloaded|\b503\b/i.test(text)) {
     code = 'overloaded'
     message = 'The provider is overloaded. Try again later.'

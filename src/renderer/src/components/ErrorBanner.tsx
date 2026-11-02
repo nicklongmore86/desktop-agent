@@ -22,7 +22,8 @@ const TITLES: Record<ChatErrorCode, string> = {
   max_turns: 'Paused',
   max_tokens: 'Reply too long',
   refusal: 'Request declined',
-  context_limit: 'Conversation too long',
+  context_too_long: 'Conversation too long',
+  confirmation_required: 'Confirmation needed',
   protocol: 'Unexpected response',
   no_api_key: 'No API key',
   key_unreadable: 'API key cannot be read',
@@ -108,7 +109,7 @@ export function ErrorBanner({
             Continue
           </button>
         )}
-        {banner.code === 'context_limit' && (
+        {banner.code === 'context_too_long' && (
           <button type="button" onClick={onNewChat}>
             New chat
           </button>

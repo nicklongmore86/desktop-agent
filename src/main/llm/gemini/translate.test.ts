@@ -224,7 +224,11 @@ describe('httpError', () => {
       'authentication',
     ],
     [400, body('INVALID_ARGUMENT', 'Invalid JSON payload'), 'invalid_request'],
-    [400, body('INVALID_ARGUMENT', 'The input token count exceeds the maximum'), 'context_limit'],
+    [
+      400,
+      body('INVALID_ARGUMENT', 'The input token count exceeds the maximum'),
+      'context_too_long',
+    ],
     [401, undefined, 'authentication'],
     [402, undefined, 'usage_limit'],
     [403, body('PERMISSION_DENIED', 'Your API key was reported as leaked.'), 'authentication'],
