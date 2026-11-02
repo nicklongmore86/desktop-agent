@@ -70,6 +70,7 @@ const api: DesktopApi = {
     open: (id) => invoke(IpcChannels.chatOpen, id),
     rename: (id, title) => invoke(IpcChannels.chatRename, id, title),
     remove: (id) => invoke(IpcChannels.chatDelete, id),
+    confirmSharing: (id) => invoke(IpcChannels.chatConfirmSharing, id),
   },
   approvals: {
     respond: (id, approved) => invoke(IpcChannels.approvalRespond, id, approved),

@@ -186,21 +186,21 @@ Typed events include `text_delta`, `tool_use` (complete input, immediately befor
 
 Cancellation aborts the SDK stream and passes the same signal to tools. Pending tools and approval waits release the run promptly; tools must cooperate with the signal to stop underlying I/O or child processes. Aborted tool batches retain paired error results; incomplete streamed messages are not persisted. A truncated response containing tool calls is discarded without executing those calls. `pause_turn` continues the assistant response within the turn budget; `end_turn` and `stop_sequence` finish normally. Truncation, refusal, context exhaustion and turn exhaustion return explicit errors without automatic continuation. Reaching the turn limit, the time budget or the stuck check is a pause, not a failure: every tool call made so far is saved with its result, and the chat shows the reason ("Paused after N steps. Your progress is saved.", "…the time budget…", "…the agent appears stuck…") with a **Continue** button. Continue sends "Continue" through the normal send (the same busy checks, approvals and audit; disabled while a reply, command or switch is in flight), exactly as if it had been typed, and the notice is cleared by the next send, New chat, opening another chat or switching provider. These behaviors follow Anthropic's [stop-reason guidance](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons). API errors expose sanitized messages, never raw SDK errors. Error codes:
 
-| Code              | Meaning                                                                 |
-| ----------------- | ----------------------------------------------------------------------- |
-| `authentication`  | The API key was rejected (401)                                          |
-| `permission`      | The key lacks access, for example to the model (403)                    |
-| `invalid_request` | The request was rejected (400, 404, 413): model, format or size         |
-| `rate_limit`      | Rate limited (429, or a streamed `rate_limit_error`)                    |
-| `overloaded`      | The API is overloaded (529, or a streamed `overloaded_error`)           |
-| `network`         | Could not connect                                                       |
-| `api`             | Any other API failure                                                   |
-| `aborted`         | The run was cancelled                                                   |
-| `max_turns`       | The run paused (steps, time or stuck); its progress is saved (Continue) |
-| `max_tokens`      | A response hit the output token limit                                   |
-| `refusal`         | Claude declined the request                                             |
-| `context_limit`   | The conversation exceeds the model's context window                     |
-| `protocol`        | An unexpected response (unknown stop reason, tool use without calls…)   |
+| Code               | Meaning                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| `authentication`   | The API key was rejected (401)                                                                  |
+| `permission`       | The key lacks access, for example to the model (403)                                            |
+| `invalid_request`  | The request was rejected (400, 404, 413): model, format or size                                 |
+| `rate_limit`       | Rate limited (429, or a streamed `rate_limit_error`)                                            |
+| `overloaded`       | The API is overloaded (529, or a streamed `overloaded_error`)                                   |
+| `network`          | Could not connect                                                                               |
+| `api`              | Any other API failure                                                                           |
+| `aborted`          | The run was cancelled                                                                           |
+| `max_turns`        | The run paused (steps, time or stuck); its progress is saved (Continue)                         |
+| `max_tokens`       | A response hit the output token limit                                                           |
+| `refusal`          | Claude declined the request                                                                     |
+| `context_too_long` | The conversation exceeds the model's context window (or is refused by the provider as too long) |
+| `protocol`         | An unexpected response (unknown stop reason, tool use without calls…)                           |
 
 The chat session adds its own codes for the UI: `no_api_key`, `key_unreadable`, `busy` (a run, New chat, provider switch or the initial load is in progress) and `internal`. It also reuses `invalid_request` for an empty message, `aborted` for a run stopped before its reply started, and `authentication` when the selected subscription is unavailable. The SDK handles transient retries; the loop never retries tool side effects. Two ephemeral cache breakpoints are set: on the system text (which also covers the tool definitions before it) and on the last block of the last message, added to the request's copy only so persisted history never carries `cache_control`. Cache hits depend on Anthropic's minimum prompt size. Empty text blocks are dropped before an assistant message is saved, and a message with nothing else is not saved at all.
 

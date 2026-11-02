@@ -40,7 +40,13 @@ export const geminiApiAdapter = (options: { fetch?: typeof fetch } = {}) => {
       const models = await listGeminiModels(key ?? '', { signal, ...fetchOption })
       return models
         .filter((model) => !NOT_CHAT.test(model.id))
-        .map((model) => ({ id: model.id, label: model.displayName }))
+        .map((model) => ({
+          id: model.id,
+          label: model.displayName,
+          ...(model.inputTokenLimit !== undefined && model.inputTokenLimit > 0
+            ? { contextWindow: model.inputTokenLimit }
+            : {}),
+        }))
     },
     async checkKey({ key, signal }) {
       const result = await validateGeminiKey(key, { signal, ...fetchOption })
@@ -49,6 +55,8 @@ export const geminiApiAdapter = (options: { fetch?: typeof fetch } = {}) => {
       return { code, message }
     },
     errorEvent: geminiErrorEvent,
+    // models.list gives each model's inputTokenLimit.
+    listsContextWindow: true,
     // Flash first: it is on the free tier and quick enough for a tool loop.
     recommended: ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-pro'],
     readyMessage: () =>

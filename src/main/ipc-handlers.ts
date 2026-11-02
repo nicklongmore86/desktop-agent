@@ -13,6 +13,7 @@ import {
   type GrantsState,
   type HistoryState,
   type ModelSettings,
+  type ConfirmSharingResult,
   type SendResult,
 } from '../shared/ipc'
 import type { ConnectionId } from '../shared/ipc-connections'
@@ -61,6 +62,8 @@ export interface ChatService {
   rename: (id: string, title: string) => Promise<HistoryState>
   remove: (id: string) => Promise<HistoryState>
   respondApproval: (id: unknown, approved: unknown) => boolean
+  /** Checks `id` against the sharing prompt it issued last (see ChatSession.confirmSharing). */
+  confirmSharing: (id: unknown) => Promise<ConfirmSharingResult>
 }
 
 export interface IpcServices extends FeatureServices {
@@ -251,6 +254,8 @@ export function registerIpcHandlers(
     if (!parsed.success) throw new Error('Unknown chat.')
     return services.chat.remove(parsed.data)
   })
+  // Main checks the id against the prompt it issued last (ChatSession.confirmSharing).
+  handle(IpcChannels.chatConfirmSharing, (id) => services.chat.confirmSharing(id))
   handle(IpcChannels.approvalRespond, (id, approved) => {
     services.chat.respondApproval(id, approved)
   })

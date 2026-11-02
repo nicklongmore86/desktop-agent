@@ -441,8 +441,13 @@ describe('openai-compat client', () => {
       { 'retry-after': '30' },
       'rate_limit',
     ],
-    [400, { error: { code: 'context_length_exceeded', message: 'too long' } }, {}, 'context_limit'],
-    [400, { error: "This model's maximum context length is 8192 tokens" }, {}, 'context_limit'],
+    [
+      400,
+      { error: { code: 'context_length_exceeded', message: 'too long' } },
+      {},
+      'context_too_long',
+    ],
+    [400, { error: "This model's maximum context length is 8192 tokens" }, {}, 'context_too_long'],
     [400, { error: { message: 'bad' } }, {}, 'invalid_request'],
     [500, { error: { message: 'oops' } }, {}, 'api'],
     [502, 'Bad gateway', {}, 'api'],
@@ -486,7 +491,7 @@ describe('openai-compat client', () => {
     // Under the cap: unchanged, the body's text still decides (here a context limit).
     const longError = `This model's maximum context length is 8192 tokens.${' '.repeat(60 * 1024)}`
     server.reply(json(400, { error: longError }))
-    expect((await failure(finalOf())).code).toBe('context_limit')
+    expect((await failure(finalOf())).code).toBe('context_too_long')
     // Past it: refused outright, so only the status is used.
     server.reply(json(400, { error: `${longError}${' '.repeat(8 * 1024)}` }))
     expect(await failure(finalOf())).toMatchObject({ code: 'invalid_request', status: 400 })

@@ -1,28 +1,45 @@
 // Helpers for the chat session tests. Not imported by app code.
 import { vi } from 'vitest'
-import type { ConversationStore, MessageOrigin, StoredMessage } from '../storage/conversation-store'
+import type {
+  ConversationStore,
+  MessageOrigin,
+  SharingConfirmation,
+  StoredMessage,
+} from '../storage/conversation-store'
 import type { ChatRef } from '../../shared/ipc'
 import type { ConversationHistory } from '../storage/history-store'
 import type { ChatLibrary } from './library'
 
 export type MemoryStore = ConversationStore & { saved: () => StoredMessage[] }
 
-export function memoryStore(initial: StoredMessage[] = []): MemoryStore {
+export function memoryStore(
+  initial: StoredMessage[] = [],
+  initialOrigin: MessageOrigin[] = [],
+): MemoryStore {
   let saved = structuredClone(initial)
-  let origin: MessageOrigin[] = []
+  let origin: MessageOrigin[] = structuredClone(initialOrigin)
+  let sharing: SharingConfirmation[] = []
   return {
     load: vi.fn(() =>
       Promise.resolve({
         messages: structuredClone(saved),
         error: null,
         ...(origin.length > 0 ? { origin: structuredClone(origin) } : {}),
+        ...(sharing.length > 0 ? { sharing: structuredClone(sharing) } : {}),
       }),
     ),
-    save: vi.fn((messages: StoredMessage[], next: readonly MessageOrigin[] = []) => {
-      saved = structuredClone(messages)
-      origin = structuredClone([...next])
-      return Promise.resolve()
-    }),
+    save: vi.fn(
+      (
+        messages: StoredMessage[],
+        next: readonly MessageOrigin[] = [],
+        confirmed: readonly SharingConfirmation[] = [],
+      ) => {
+        saved = structuredClone(messages)
+        origin = structuredClone([...next])
+        sharing = structuredClone([...confirmed])
+        return Promise.resolve()
+      },
+    ),
     clear: vi.fn(() => {
       saved = []
       return Promise.resolve()

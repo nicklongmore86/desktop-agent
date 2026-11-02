@@ -17,6 +17,12 @@ export function apiErrorEvent(error: unknown): Extract<AgentEvent, { type: 'erro
       ? (error.type ??
         (typeof body === 'object' && body !== null && 'type' in body ? body.type : undefined))
       : undefined
+  if ((status === 400 || status === 413) && isContextError(body))
+    return {
+      type: 'error',
+      code: 'context_too_long',
+      message: 'This chat is too long for Claude. Start a new chat or fork from a later prompt.',
+    }
   if (status === 400 || status === 404 || status === 413)
     return {
       type: 'error',
@@ -60,4 +66,22 @@ export function apiErrorEvent(error: unknown): Extract<AgentEvent, { type: 'erro
       message: 'Could not connect to Claude. Check your connection and try again.',
     }
   return { type: 'error', code: 'api', message: 'The Claude request failed. Please try again.' }
+}
+
+/**
+ * Anthropic's answer to a history over the context window: 400 `invalid_request_error`
+ * "prompt is too long: … tokens > … maximum" (or "input length and `max_tokens` exceed
+ * context limit"), or 413 `request_too_large`. Matched only; the text is never shown.
+ */
+const CONTEXT_ERROR =
+  /prompt is too long|exceed(?:s|ed)? (?:the )?context (?:limit|window)|context[ _-]?window|request_too_large/i
+
+function isContextError(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) return false
+  const inner: unknown = 'error' in body ? body.error : undefined
+  const record = typeof inner === 'object' && inner !== null ? inner : body
+  const type = 'type' in record && typeof record.type === 'string' ? record.type : ''
+  const message =
+    'message' in record && typeof record.message === 'string' ? record.message.slice(0, 2000) : ''
+  return type === 'request_too_large' || CONTEXT_ERROR.test(message)
 }

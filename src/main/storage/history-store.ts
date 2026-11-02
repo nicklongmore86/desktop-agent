@@ -255,12 +255,13 @@ class FileHistory implements ConversationHistory {
           messages: loaded.messages,
           error,
           ...(loaded.origin ? { origin: loaded.origin } : {}),
+          ...(loaded.sharing ? { sharing: loaded.sharing } : {}),
         }
       },
-      save: async (messages, origin = []) => {
+      save: async (messages, origin = [], sharing = []) => {
         if (id === null) id = this.newId()
         const saving = id
-        await createConversationStore(this.file(saving)).save(messages, origin)
+        await createConversationStore(this.file(saving)).save(messages, origin, sharing)
         const now = this.now()
         const existing = this.entries.get(saving)
         const last = lastConnectionOf(origin, messages.length)
@@ -384,7 +385,8 @@ class FileHistory implements ConversationHistory {
     const forkId = this.newId()
     const file = this.file(forkId)
     if (this.entries.has(forkId)) throw new Error('Could not fork the chat.')
-    // The copied replies keep their provenance; entries past the cut go with it.
+    // The copied replies keep their provenance; entries past the cut go with it. Sharing
+    // confirmations are not copied: a fork is a new chat and asks again.
     const origin = trimOrigin(loaded.origin ?? [], messages.length)
     await createConversationStore(file).save(structuredClone(messages), origin)
     const now = this.now()

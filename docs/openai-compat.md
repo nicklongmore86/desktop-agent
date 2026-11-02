@@ -93,7 +93,7 @@ Messages are fixed, app-written text, capped at 300 characters. Provider respons
 | 402 (OpenRouter credits), 429 `insufficient_quota`            | `usage_limit`                                                                               |
 | 403                                                           | `permission`                                                                                |
 | 404, or a `model_not_found` code                              | `model_unavailable`                                                                         |
-| 400/413 with `context_length_exceeded` or context-length text | `context_limit`                                                                             |
+| 400/413 with `context_length_exceeded` or context-length text | `context_too_long`                                                                          |
 | 429                                                           | `rate_limit`, with `resetsAt` from `retry-after-ms`, `retry-after` or `x-ratelimit-reset-*` |
 | other 400/413/422                                             | `invalid_request`                                                                           |
 | 503, 529                                                      | `overloaded`                                                                                |

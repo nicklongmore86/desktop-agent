@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useReducer } from 'react'
-import type { ChatState, ProviderStatus } from '../../shared/ipc'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import type { ChatState, ProviderStatus, SendResult, SharingPrompt } from '../../shared/ipc'
 import type { ConnectionId } from '../../shared/ipc-connections'
 import type { ChatRef } from '../../shared/ipc-projects'
 import { useApi } from './api'
@@ -30,7 +30,17 @@ export interface ChatControls {
   switchProvider: (provider: ConnectionId) => Promise<ProviderStatus>
   dismissBanner: () => void
   dismissStorageWarning: () => void
+  /**
+   * Main refused a send until the user confirms sending the chat to another vendor
+   * (SharingDialog shows it); null otherwise. The send stays pending until it is answered.
+   */
+  sharing: SharingPrompt | null
+  /** Answers `sharing`: confirmed, main records it and the message is sent again. */
+  answerSharing: (confirmed: boolean) => void
 }
+
+/** How many times one send asks again when the chat changed while the dialog was open. */
+const SHARING_ROUNDS = 3
 
 /** Chat state for the whole app: subscribes to main's pushes, then loads the saved chat. */
 export function useChat(): ChatControls {
@@ -66,13 +76,42 @@ export function useChat(): ChatControls {
     }
   }, [api])
 
+  const [sharing, setSharing] = useState<SharingPrompt | null>(null)
+  const sharingAnswer = useRef<((confirmed: boolean) => void) | null>(null)
+  const askSharing = useCallback(
+    (prompt: SharingPrompt) =>
+      new Promise<boolean>((resolve) => {
+        sharingAnswer.current = resolve
+        setSharing(prompt)
+      }),
+    [],
+  )
+  const answerSharing = useCallback((confirmed: boolean) => {
+    const answer = sharingAnswer.current
+    sharingAnswer.current = null
+    setSharing(null)
+    answer?.(confirmed)
+  }, [])
+
   const send = useCallback(
     async (text: string, attachmentIds?: string[]): Promise<boolean> => {
       try {
-        const result =
+        const sendOnce = (): Promise<SendResult> =>
           attachmentIds && attachmentIds.length > 0
-            ? await api.chat.send(text, attachmentIds)
-            : await api.chat.send(text)
+            ? api.chat.send(text, attachmentIds)
+            : api.chat.send(text)
+        let result = await sendOnce()
+        // Main refuses until the user confirms; Cancel leaves the chat and the draft as they are.
+        for (let round = 0; round < SHARING_ROUNDS; round++) {
+          if (result.ok || result.code !== 'confirmation_required' || !result.sharing) break
+          if (!(await askSharing(result.sharing))) return false
+          const recorded = await api.chat.confirmSharing(result.sharing.id)
+          if (!recorded.ok) {
+            dispatch({ type: 'banner', banner: { code: 'busy', message: recorded.message } })
+            return false
+          }
+          result = await sendOnce()
+        }
         if (!result.ok) {
           dispatch({ type: 'banner', banner: { code: result.code, message: result.message } })
         }
@@ -85,7 +124,7 @@ export function useChat(): ChatControls {
         return false
       }
     },
-    [api],
+    [api, askSharing],
   )
 
   const runCommand = useCallback(
@@ -196,5 +235,7 @@ export function useChat(): ChatControls {
     switchProvider,
     dismissBanner,
     dismissStorageWarning,
+    sharing,
+    answerSharing,
   }
 }

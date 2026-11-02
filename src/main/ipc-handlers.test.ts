@@ -182,6 +182,7 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       rename: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
       remove: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
       respondApproval: vi.fn(() => true),
+      confirmSharing: vi.fn(() => Promise.resolve({ ok: true as const })),
     },
     command: {
       run: vi.fn(() => Promise.resolve({ ok: true as const })),
@@ -861,6 +862,12 @@ describe('registerIpcHandlers', () => {
     expect(services.chat.stop).toHaveBeenCalledOnce()
     expect(services.chat.newChat).toHaveBeenCalledOnce()
     expect(services.chat.respondApproval).toHaveBeenCalledWith('id-1', true)
+  })
+
+  it('passes a sharing confirmation to the session, which checks the id itself', async () => {
+    const { invoke, services } = setup()
+    expect(await invoke(IpcChannels.chatConfirmSharing, appFrame, 'id-7')).toEqual({ ok: true })
+    expect(services.chat.confirmSharing).toHaveBeenCalledWith('id-7')
   })
 
   it('passes history calls through only with a valid id and title', async () => {

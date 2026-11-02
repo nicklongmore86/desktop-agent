@@ -42,6 +42,7 @@ export const IpcChannels = {
   chatOpen: 'chat:open',
   chatRename: 'chat:rename',
   chatDelete: 'chat:delete',
+  chatConfirmSharing: 'chat:confirm-sharing',
 
   approvalRespond: 'approval:respond',
   auditStatus: 'audit:status',
@@ -218,7 +219,10 @@ export type ChatErrorCode =
   | 'max_turns'
   | 'max_tokens'
   | 'refusal'
-  | 'context_limit'
+  /** The chat (with the new prompt) does not fit the model's context window. */
+  | 'context_too_long'
+  /** The chat would go to another vendor and needs the user's confirmation first (SharingPrompt). */
+  | 'confirmation_required'
   | 'protocol'
   | 'no_api_key'
   | 'key_unreadable'
@@ -348,7 +352,56 @@ export interface ChatState {
 }
 
 export type SendResult =
-  { ok: true } | { ok: false; code: ChatErrorCode; message: string; resetsAt?: string }
+  | { ok: true }
+  | {
+      ok: false
+      code: ChatErrorCode
+      message: string
+      resetsAt?: string
+      /** Set with code 'confirmation_required': what to ask the user (see chat.confirmSharing). */
+      sharing?: SharingPrompt
+    }
+
+/**
+ * Why sending a chat to another connection needs the user's confirmation: earlier
+ * messages came from a model on this computer and the target is a cloud service
+ * ('local-to-cloud'), or the target is a Gemini API key, whose free tier may use what
+ * it is sent ('gemini-free-tier').
+ */
+export type SharingReason = 'local-to-cloud' | 'gemini-free-tier'
+
+/**
+ * Main's question before an open chat's earlier content goes to `connection` for the
+ * first time. Every string is written in main (labels from the registry, never chat
+ * text). The renderer answers by quoting `id` to chat.confirmSharing.
+ */
+export interface SharingPrompt {
+  /** Random per prompt; only the newest one for the open chat is accepted. */
+  id: string
+  /** The open chat it is for (null only if it could not be saved yet). */
+  chat: ChatRef | null
+  /** Where the chat would go: the current connection, and its label ("OpenAI · API"). */
+  connection: ConnectionId
+  destination: string
+  reasons: SharingReason[]
+  /** Labels of the connections that wrote the earlier content ("Ollama · Local"). */
+  sources: string[]
+  /** What would be sent: the earlier content, and this message's attachments. */
+  includes: {
+    /** Earlier messages (prompts and replies). */
+    messages: number
+    /** Earlier tool calls and their output (file contents, command output). */
+    toolOutput: boolean
+    /** Every attached file that would be sent: earlier prompts' and this message's. */
+    attachments: number
+    /** How many of `attachments` are attached to the message being sent. */
+    attachmentsInMessage: number
+  }
+  /** Shown for 'gemini-free-tier': the same notice Settings shows for the connection. */
+  notice?: { title: string; text: string }
+}
+
+export type ConfirmSharingResult = { ok: true } | { ok: false; message: string }
 
 /** Streamed main -> renderer while a run is in flight. */
 export type ChatEvent =
@@ -469,6 +522,12 @@ export interface DesktopApi extends FeatureApis {
     rename: (id: string, title: string) => Promise<HistoryState>
     /** Deletes a saved conversation; deleting the open one starts a new chat. */
     remove: (id: string) => Promise<HistoryState>
+    /**
+     * Records the user's confirmation of a SharingPrompt (from a refused send) for the
+     * open chat and the current connection. Main accepts only the id it issued last,
+     * while the same chat, connection and messages are open; send again afterwards.
+     */
+    confirmSharing: (id: string) => Promise<ConfirmSharingResult>
   }
   approvals: {
     respond: (id: string, approved: boolean) => Promise<void>

@@ -1,5 +1,6 @@
 import { TURN_LIMIT } from '../../../shared/ipc'
 import { createAgent, type AgentClient, type AgentEvent } from '../../agent'
+import { contextWindowOf } from '../../agent/context-window'
 import type { AdapterFactory, AdapterHost, ConnectionDescriptor } from '../connection'
 import { SetupError, SubscriptionError } from '../errors'
 import { resolveVision, type PublishedVision } from '../vision'
@@ -35,6 +36,8 @@ export interface AgentClientSpec extends ConnectionDescriptor {
   visionSource?: 'connection' | 'model'
   /** Settings offers "This model can see images", which decides when `vision` says null. */
   visionSetting?: boolean
+  /** `model`'s context window in tokens when known (its model list says); else undefined. */
+  contextWindow?: (model: string) => Promise<number | undefined>
 }
 
 /**
@@ -54,6 +57,7 @@ export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
     vision,
     visionSource = 'model',
     visionSetting = false,
+    contextWindow,
     ...descriptor
   } = spec
   /** Never throws: a model that cannot be looked up is one nobody said reads images. */
@@ -96,6 +100,7 @@ export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
         if (!key) throw new SetupError('no_api_key', missingKeyMessage)
       }
       const chosen = await model(host)
+      const window = contextWindowOf(await contextWindow?.(chosen).catch(() => undefined))
       return createAgent({
         client: client({ key, model: chosen }),
         tools,
@@ -104,6 +109,7 @@ export function agentClientAdapter(spec: AgentClientSpec): AdapterFactory {
         errorEvent,
         modelName: modelName ?? spec.shortLabel,
         vision: (await visionOf(host, chosen)).enabled,
+        ...(window !== undefined ? { contextWindow: window } : {}),
       })
     },
   })

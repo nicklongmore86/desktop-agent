@@ -405,7 +405,7 @@ describe('openai-responses client', () => {
     server.reply(
       responsesSse([{ type: 'error', code: 'context_length_exceeded', message: 'long' }]),
     )
-    expect((await failure(finalOf())).code).toBe('context_limit')
+    expect((await failure(finalOf())).code).toBe('context_too_long')
     // Only response.completed is success: a stream that just stops is a failure.
     server.reply(responsesSse([ev.textDelta('Hello'), ev.message('Hello')]))
     expect(await failure(finalOf())).toMatchObject({
@@ -634,7 +634,7 @@ describe('openai-responses client', () => {
     [401, { detail: `token ${TOKEN} rejected` }, 'auth_expired', false],
     [403, { detail: 'region not permitted' }, 'permission', false],
     [503, { detail: 'direct routing unavailable' }, 'overloaded', true],
-    [400, { error: { code: 'context_length_exceeded', message: 'x' } }, 'context_limit', false],
+    [400, { error: { code: 'context_length_exceeded', message: 'x' } }, 'context_too_long', false],
     [404, { error: { code: 'model_not_found', message: 'x' } }, 'model_unavailable', false],
     [429, { error: { code: 'rate_limit_exceeded', message: 'x' } }, 'rate_limit', true],
     [400, { error: { message: 'bad' } }, 'invalid_request', false],

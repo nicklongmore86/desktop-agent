@@ -224,7 +224,11 @@ describe('httpError', () => {
       'authentication',
     ],
     [400, body('INVALID_ARGUMENT', 'Invalid JSON payload'), 'invalid_request'],
-    [400, body('INVALID_ARGUMENT', 'The input token count exceeds the maximum'), 'context_limit'],
+    [
+      400,
+      body('INVALID_ARGUMENT', 'The input token count exceeds the maximum'),
+      'context_too_long',
+    ],
     [401, undefined, 'authentication'],
     [402, undefined, 'usage_limit'],
     [403, body('PERMISSION_DENIED', 'Your API key was reported as leaked.'), 'authentication'],
@@ -235,6 +239,39 @@ describe('httpError', () => {
     [504, body('DEADLINE_EXCEEDED', 'slow'), 'api'],
   ] as const)('%i -> %s', (status, response, code) => {
     expect(httpError(status, response, KEY).code).toBe(code)
+  })
+
+  it('maps only the input-token-limit refusal to context_too_long', () => {
+    for (const message of [
+      'The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).',
+      'The input token count exceeds the maximum number of tokens allowed.',
+      'Request exceeds the input token limit for this model.',
+    ])
+      expect(httpError(400, body('INVALID_ARGUMENT', message), KEY).code).toBe('context_too_long')
+    expect(
+      httpError(
+        413,
+        body('INVALID_ARGUMENT', 'The input token count (2000000) exceeds the maximum'),
+        KEY,
+      ).code,
+    ).toBe('context_too_long')
+  })
+
+  it('keeps ordinary validation errors that mention token counts generic', () => {
+    for (const [status, message] of [
+      [400, 'Unable to submit request because the token count of max_output_tokens is invalid.'],
+      [
+        400,
+        'The specified max_output_tokens (100000) exceeds the maximum number of tokens allowed (65536).',
+      ],
+      [400, 'thinking_budget token count must be between 0 and 24576.'],
+      [400, 'Invalid value at token count field; the value is too long for this field.'],
+      [413, 'Request payload token count is invalid.'],
+      [400, 'The cached content is smaller than the minimum context window token count.'],
+    ] as const) {
+      const error = httpError(status, body('INVALID_ARGUMENT', message), KEY)
+      expect(error.code).toBe('invalid_request')
+    }
   })
 
   it('maps 429 to a rate limit or a daily usage limit with the retry delay', () => {

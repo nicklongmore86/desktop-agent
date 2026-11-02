@@ -123,6 +123,9 @@ const KNOWN: Record<
 
 /** Matched internally only; the text itself is never surfaced. */
 const CONTEXT_LIMIT = /context_length_exceeded|context_window_exceeded/
+/** The same in the message of an error without that code (400 or in-stream). Matched only. */
+const CONTEXT_TEXT =
+  /exceeds the context window|maximum context length|context_length_exceeded|input is too long/i
 const MODEL_MISSING = /model_not_found/
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -325,10 +328,14 @@ export function responsesError(
   const kind = [e.code, e.type].filter((v) => typeof v === 'string').join(' ')
   const fail = (code: AgentErrorCode, message: string, retryable: boolean, resetsAt?: string) =>
     make(code, message, { retryable, ...(resetsAt ? { resetsAt } : {}) })
-  if (CONTEXT_LIMIT.test(kind))
+  const text = typeof e.message === 'string' ? e.message.slice(0, 2000) : ''
+  if (
+    CONTEXT_LIMIT.test(kind) ||
+    ((status === undefined || status === 400) && CONTEXT_TEXT.test(text))
+  )
     return fail(
-      'context_limit',
-      'Conversation exceeds the model context window. Start a shorter conversation.',
+      'context_too_long',
+      'This chat is too long for this ChatGPT model. Start a new chat or fork from a later prompt.',
       false,
     )
   if (MODEL_MISSING.test(kind) || status === 404)

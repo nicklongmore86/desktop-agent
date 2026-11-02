@@ -21,6 +21,8 @@ import { AttachmentStore } from './attachments/store'
 import { createChatLibrary } from './chat/library'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
+import type { SharingConnection } from './chat/sharing'
+import { GEMINI_FREE_TIER_NOTICE } from './llm/gemini'
 import { createFilesService } from './files/service'
 import { createGitService } from './git/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
@@ -226,9 +228,30 @@ export async function createAppServices(deps: AppServiceDeps) {
   }
   const start = await startingChat()
   const userShell = tools.find((tool) => tool.name === 'run_shell')
+  /**
+   * The sharing check's view of a connection (chat/sharing.ts): its vendor ('local' is
+   * Ollama and LM Studio, on this computer) and label. A Gemini key may be a free-tier
+   * key (nothing says which), so it always carries the free-tier notice.
+   */
+  const describeConnection = (id: ConnectionId): SharingConnection | undefined => {
+    const adapter = connections.registry.get(id)
+    if (!adapter) return undefined
+    const geminiKey = adapter.vendor === 'google' && adapter.capabilities.authKind === 'api-key'
+    return {
+      vendor: adapter.vendor,
+      label: adapter.label,
+      ...(geminiKey
+        ? {
+            geminiKey: true,
+            notice: { title: GEMINI_FREE_TIER_NOTICE.title, text: GEMINI_FREE_TIER_NOTICE.text },
+          }
+        : {}),
+    }
+  }
   const chat = new ChatSession({
     ...start,
     library,
+    describeConnection,
     async createRunner(signal) {
       const connection = settings.connection
       try {

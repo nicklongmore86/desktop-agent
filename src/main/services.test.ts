@@ -525,3 +525,104 @@ it('lists every registered connection’s chats as one list and continues any of
   for (const text of texts) expect(text).not.toContain(SECRET)
   expect(await readFile(join(userData, 'settings.json'), 'utf8')).not.toContain(SECRET)
 })
+
+it('refuses to send a local chat to a cloud connection until the user confirms, across restarts', async () => {
+  const userData = await mkdtemp(join(tmpdir(), 'cross-vendor-'))
+  dirs.push(userData)
+  const ID = '4d5e6f7a-8b9c-4dae-8f0a-3b4c5d6e7f8a'
+  const home = join(userData, 'history', 'ollama')
+  await mkdir(home, { recursive: true })
+  // A chat answered by Ollama, with a file the agent read on this computer.
+  await writeFile(
+    join(home, `${ID}.json`),
+    JSON.stringify({
+      version: 1,
+      messages: [
+        { role: 'user', content: 'read it' },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 't1', name: 'read_file', input: {} }],
+        },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 't1', content: 'LOCAL ONLY' }],
+        },
+        { role: 'assistant', content: 'done' },
+      ],
+      origin: [{ fromIndex: 1, connection: 'ollama', model: 'llama3' }],
+    }),
+  )
+  await writeFile(
+    join(home, 'index.json'),
+    JSON.stringify({
+      version: 1,
+      format: 3,
+      activeId: ID,
+      conversations: [{ id: ID, title: 'read it', createdAt: 1, updatedAt: 2 }],
+    }),
+  )
+  await writeFile(
+    join(userData, 'settings.json'),
+    JSON.stringify({
+      version: 3,
+      model: 'claude-opus-5-5',
+      connection: 'anthropic-api',
+      connectionModels: {},
+      connections: [{ id: 'anthropic-api' }, { id: 'ollama' }],
+      showPersonalUseConnections: false,
+      activeChat: { provider: 'ollama', id: ID },
+    }),
+  )
+  const sent: unknown[] = []
+  const runner = vi.spyOn(ConnectionService.prototype, 'runner').mockImplementation(() =>
+    Promise.resolve({
+      model: 'claude-opus-5-5',
+      run: (conversation) => {
+        sent.push(conversation)
+        return Promise.resolve({
+          conversation: [...conversation, { role: 'assistant', content: 'cloud reply' }],
+          stopReason: 'end_turn',
+        })
+      },
+    }),
+  )
+  const open = () =>
+    createAppServices({
+      userData,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (text) => Buffer.from(text),
+        decryptString: (value) => value.toString(),
+      },
+      trash: () => Promise.resolve(),
+      emit: vi.fn(),
+      promptApproval: vi.fn(),
+      onAuditStatus: vi.fn(),
+    })
+  const services = await open()
+  expect(services.chat.openRef).toEqual({ provider: 'ollama', id: ID })
+  const result = await services.chat.send('now in the cloud')
+  expect(result).toMatchObject({
+    ok: false,
+    code: 'confirmation_required',
+    sharing: {
+      connection: 'anthropic-api',
+      destination: 'Claude · API',
+      reasons: ['local-to-cloud'],
+      sources: [expect.stringContaining('Ollama')],
+      includes: { messages: 4, toolOutput: true, attachments: 0, attachmentsInMessage: 0 },
+    },
+  })
+  expect(runner).not.toHaveBeenCalled()
+  const id = result.ok ? '' : (result.sharing?.id ?? '')
+  expect(await services.chat.confirmSharing(id)).toEqual({ ok: true })
+  expect(await services.chat.send('now in the cloud')).toEqual({ ok: true })
+  await services.chat.idle()
+  expect(JSON.stringify(sent)).toContain('LOCAL ONLY')
+
+  // Restarted: the saved confirmation still holds.
+  const restarted = await open()
+  expect(await restarted.chat.send('and again')).toEqual({ ok: true })
+  await restarted.chat.idle()
+  expect(runner).toHaveBeenCalledTimes(2)
+})
