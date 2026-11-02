@@ -155,10 +155,18 @@ describe('optional ChatGPT plan request features', () => {
     server.reply(...(await twoReads()))
     const { result, events } = await agentRun(ON)
     expect(result.stopReason).toBe('end_turn')
-    expect(events.filter((e) => e.type === 'tool_result').map((e) => e.id)).toEqual([
+    // Both calls from the one response ran; the agent runs them concurrently, so their
+    // results may finish in either order.
+    expect(events.filter((e) => e.type === 'tool_use').map((e) => e.id)).toEqual([
       'call_a',
       'call_b',
     ])
+    expect(
+      events
+        .filter((e) => e.type === 'tool_result')
+        .map((e) => e.id)
+        .sort(),
+    ).toEqual(['call_a', 'call_b'])
     for (const i of [0, 1]) {
       expect(bodyOf(i)).toMatchObject({
         parallel_tool_calls: true,
@@ -397,6 +405,40 @@ describe('reasoning size limits count UTF-8 bytes as sent', () => {
     expect(kept.map((i) => i.id)).toEqual(['rs_1', 'rs_2'])
     expect(kept[1]).toEqual(parts[1])
     expect(bytes(kept)).toBeLessThanOrEqual(MAX_REASONING_BYTES)
+  })
+
+  it("gives back a replaced entry's bytes, so nothing newer is evicted", () => {
+    const memory = new ReasoningMemory()
+    const a = [item('rs_a', 20 * MiB, 0)]
+    const small = [item('rs_a2', 1024, 10)]
+    const b = [item('rs_b', 20 * MiB, 0)]
+    const c = [item('rs_c', 10 * MiB, 0)]
+    memory.set(['call_a'], a)
+    memory.set(['call_a'], small)
+    expect(memory.bytes).toBe(bytes(small))
+    memory.set(['call_b'], b)
+    memory.set(['call_c'], c)
+    // About 30 MiB in all: within the limit, so all three stay.
+    expect(memory.get(['call_a'])).toEqual(small)
+    expect(memory.get(['call_b'])).toEqual(b)
+    expect(memory.get(['call_c'])).toEqual(c)
+    expect(memory.bytes).toBe(bytes([...small, ...b, ...c]))
+  })
+
+  it('makes a replaced key the newest for eviction', () => {
+    const memory = new ReasoningMemory()
+    const ten = (id: string) => [item(id, 10 * MiB, 0)]
+    memory.set(['call_a'], ten('rs_a'))
+    memory.set(['call_b'], ten('rs_b'))
+    const again = ten('rs_a2')
+    memory.set(['call_a'], again)
+    const c = [item('rs_c', 15 * MiB, 0)]
+    memory.set(['call_c'], c)
+    // Over 32 MiB: the oldest (b, since a was replaced after it) goes, and only it.
+    expect(memory.get(['call_b'])).toBeUndefined()
+    expect(memory.get(['call_a'])).toEqual(again)
+    expect(memory.get(['call_c'])).toEqual(c)
+    expect(memory.bytes).toBe(bytes([...again, ...c]))
   })
 
   it('keeps a run within 32 MiB of bytes, dropping the oldest', () => {

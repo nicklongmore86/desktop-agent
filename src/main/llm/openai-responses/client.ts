@@ -92,8 +92,15 @@ export class ReasoningMemory {
     return this.kept.get(ids.join('\n'))?.items
   }
   set(ids: readonly string[], items: readonly ResponsesReasoningItem[]): void {
+    const key = ids.join('\n')
     const size = items.reduce((total, item) => total + reasoningItemBytes(item), 0)
-    this.kept.set(ids.join('\n'), { items, size })
+    // A replaced entry gives back its bytes, and its key becomes the newest.
+    const replaced = this.kept.get(key)
+    if (replaced) {
+      this.kept.delete(key)
+      this.size -= replaced.size
+    }
+    this.kept.set(key, { items, size })
     this.size += size
     // The oldest go first: the model needs the latest calls' reasoning most.
     for (const [key, entry] of this.kept) {
