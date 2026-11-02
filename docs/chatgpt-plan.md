@@ -33,6 +33,42 @@ ChatGPT Plus and Pro"; ChatGPT Free and the other plans keep using Free / Subscr
 - There is no usage report: Settings shows the model picker and no usage bars. A limit
   shows as an error when it is reached.
 
+## Requests
+
+Every request is `POST /v1/responses` with `store: false`, `stream: true` and the whole
+history in `input`. `ALLOWED_BODY_KEYS` (`translate.ts`) lists every field that may be sent;
+anything else is refused before the request goes out, and the fields OpenAI's
+[preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+say to omit (`OMITTED_BODY_KEYS`) can never be added to it.
+
+### Optional features (off by default)
+
+Two Responses features are not mentioned on the ChatGPT plan pages: they are neither in the
+"omit" list nor described as supported. They are built but stay **off** unless the main
+process starts with `DESKTOP_AGENT_CHATGPT_PLAN_FEATURES` set (comma-separated:
+`parallel_tool_calls`, `reasoning`, or `all`).
+
+| Feature               | Sent                                                                                 | Source                                                                                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `parallel_tool_calls` | `parallel_tool_calls: true`, only when tools are offered                             | Responses API reference (default `true`); [function calling guide](https://developers.openai.com/api/docs/guides/function-calling)                                 |
+| `reasoning`           | `include: ["reasoning.encrypted_content"]`, and reasoning items sent back in `input` | [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning), "Keeping reasoning items in context" and "Preserve reasoning without stored responses" |
+
+Reasoning continuity:
+
+- Reasoning items with `encrypted_content` from a response that called tools are kept in the
+  client's memory and sent back, just before those calls, in the requests that answer them.
+  Only the calls since the last message the user typed get their reasoning back.
+- The client is built for each run (each message), so the memory ends with the run and on any
+  provider switch. Nothing of it enters the transcript: it is never saved with the chat, shown,
+  logged or put in an error message. At most 4 MiB per response and 32 MiB per run are kept.
+
+Refusals: a 400/422 (or in-stream failure) whose `error.param` names `parallel_tool_calls`,
+`include…`, or an `input[n]…` that is a reasoning item, is sent once more without that part,
+but only if no text has streamed yet. The part is then left out for the rest of the app
+session, and every later error message's details say so, for example
+`Details: HTTP 500, application/json, code server_error, without parallel_tool_calls.` A
+second refusal is shown as the error; there is no retry loop.
+
 ## Errors
 
 | When                                                        | Code                | Message (written in the app)                                                                                        |

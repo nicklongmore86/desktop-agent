@@ -3,10 +3,14 @@ import { OpenAICompatError } from '../openai-compat/errors'
 import type { SecretCheck } from '../openai-compat/http'
 import { transcriptToolId } from '../openai-compat/translate'
 import { LABEL, responsesError } from './errors'
-import { TOOL_NAMESPACE } from './translate'
+import { TOOL_NAMESPACE, type ResponsesReasoningItem } from './translate'
 
 const MAX_ARGS = 8 * 1024 * 1024
 const MAX_ITEMS = 1024
+/** Encrypted reasoning bigger than this is not kept (and so not sent back). */
+export const MAX_REASONING_BYTES = 4 * 1024 * 1024
+const MAX_SUMMARY = 64
+const ITEM_ID = /^[A-Za-z0-9_-]{1,128}$/
 
 interface Call {
   callId: string
@@ -35,6 +39,8 @@ export class ResponsesAccumulator {
   private text = ''
   private refusal = false
   private readonly calls: Call[] = []
+  private readonly reasoning: ResponsesReasoningItem[] = []
+  private reasoningBytes = 0
   private items = 0
   private id = ''
   private terminal: Terminal | null = null
@@ -144,8 +150,39 @@ export class ResponsesAccumulator {
         name: typeof item.name === 'string' ? item.name : '',
         args,
       })
-    }
+    } else if (item.type === 'reasoning') this.addReasoning(item)
     // Reasoning and any other item types have no transcript form.
+  }
+
+  /**
+   * Keeps a reasoning item that carries encrypted content, so the client can send it back
+   * with the call outputs. Never part of finalMessage(), and never in an error.
+   */
+  private addReasoning(item: Record<string, unknown>): void {
+    const encrypted = item.encrypted_content
+    if (typeof encrypted !== 'string' || !encrypted) return
+    const summary = list(item.summary)
+      .map(record)
+      .flatMap((part) =>
+        part.type === 'summary_text' && typeof part.text === 'string'
+          ? [{ type: 'summary_text' as const, text: part.text }]
+          : [],
+      )
+      .slice(0, MAX_SUMMARY)
+    const bytes = encrypted.length + summary.reduce((total, part) => total + part.text.length, 0)
+    if (this.reasoningBytes + bytes > MAX_REASONING_BYTES) return
+    this.reasoningBytes += bytes
+    this.reasoning.push({
+      type: 'reasoning',
+      ...(typeof item.id === 'string' && ITEM_ID.test(item.id) ? { id: item.id } : {}),
+      summary,
+      encrypted_content: encrypted,
+    })
+  }
+
+  /** The reasoning items with encrypted content, in output order (see addReasoning). */
+  reasoningItems(): readonly ResponsesReasoningItem[] {
+    return this.reasoning
   }
 
   finalMessage(): Message {
