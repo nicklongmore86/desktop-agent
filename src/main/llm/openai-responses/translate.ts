@@ -33,6 +33,57 @@ export type ResponsesInputItem =
       call_id: string
       output: string | ResponsesInputContent[]
     }
+  | ResponsesReasoningItem
+
+/**
+ * A reasoning item from an earlier response in the same run, sent back so the model keeps
+ * its reasoning between tool calls (reasoning guide, "Keeping reasoning items in context").
+ * It lives only in the client's memory: it never enters the Anthropic-shaped transcript,
+ * so it is never saved, shown, logged or put in an error message.
+ */
+export interface ResponsesReasoningItem {
+  type: 'reasoning'
+  id?: string
+  summary: { type: 'summary_text'; text: string }[]
+  encrypted_content: string
+}
+
+/**
+ * Request features the ChatGPT plan docs neither list as supported nor as rejected
+ * (preview-limitations.md lists only what to omit). They stay off unless turned on with
+ * PLAN_FEATURES_ENV, and each is dropped for the session once OpenAI refuses it.
+ */
+export interface PlanFeatures {
+  /** Send `parallel_tool_calls: true` (the Responses default for other routes). */
+  parallelToolCalls: boolean
+  /** Ask for encrypted reasoning and send reasoning items back within a run. */
+  reasoning: boolean
+}
+export const PLAN_FEATURES_ENV = 'DESKTOP_AGENT_CHATGPT_PLAN_FEATURES'
+/** Off by default: `parallel_tool_calls`, `reasoning`, or `all`, comma-separated. */
+export function planFeaturesFrom(value: string | undefined): PlanFeatures {
+  const names = new Set(
+    (value ?? '')
+      .split(',')
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean),
+  )
+  const all = names.has('all')
+  return {
+    parallelToolCalls: all || names.has('parallel_tool_calls'),
+    reasoning: all || names.has('reasoning'),
+  }
+}
+export const INCLUDE_REASONING = 'reasoning.encrypted_content'
+
+/** What one request carries beyond the base fields; the client turns parts off on refusal. */
+export interface RequestFeatures {
+  parallelToolCalls?: boolean
+  /** Send `include: ["reasoning.encrypted_content"]`. */
+  include?: boolean
+  /** Reasoning items for an assistant message, by its tool_use ids, if any are kept. */
+  reasoningFor?: (toolUseIds: readonly string[]) => readonly ResponsesReasoningItem[] | undefined
+}
 
 /**
  * Where tool images go: inside `function_call_output` (the Responses API's own form), or,
@@ -59,6 +110,8 @@ export interface ResponsesRequest {
   instructions?: string
   input: ResponsesInputItem[]
   tools?: ResponsesNamespaceTool[]
+  parallel_tool_calls?: true
+  include?: [typeof INCLUDE_REASONING]
   store: false
   stream: true
 }
@@ -69,6 +122,8 @@ export const ALLOWED_BODY_KEYS: readonly string[] = [
   'instructions',
   'input',
   'tools',
+  'parallel_tool_calls',
+  'include',
   'store',
   'stream',
 ]
@@ -148,6 +203,7 @@ function translateMessage(
   message: MessageParam,
   calls: Set<string>,
   mode: ToolImageMode,
+  reasoningFor?: RequestFeatures['reasoningFor'],
 ): ResponsesInputItem[] {
   if (typeof message.content === 'string') {
     if (!message.content) return []
@@ -163,6 +219,10 @@ function translateMessage(
   }
   if (message.role === 'assistant') {
     const out: ResponsesInputItem[] = []
+    // The model's reasoning came before its text and calls in the response's output.
+    const ids = message.content.flatMap((block) => (block.type === 'tool_use' ? [block.id] : []))
+    const reasoning = ids.length ? reasoningFor?.(ids) : undefined
+    if (reasoning) out.push(...reasoning.map((item) => ({ ...item, summary: [...item.summary] })))
     const text = textOf(message.content.filter((block) => block.type === 'text'))
     if (text)
       out.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] })
@@ -247,17 +307,26 @@ export function hasOutputImages(body: ResponsesRequest): boolean {
 export function toResponsesRequest(
   params: MessageCreateParamsNonStreaming,
   mode: ToolImageMode = 'output',
+  features: RequestFeatures = {},
 ): ResponsesRequest {
   const system = typeof params.system === 'string' ? params.system : textOf(params.system ?? [])
   const input: ResponsesInputItem[] = []
   let calls = new Set<string>()
-  for (const message of params.messages) {
-    input.push(...translateMessage(message, calls, mode))
+  // Reasoning goes back only for the calls since the last message the user typed: earlier
+  // turns' reasoning is ignored by the model anyway (reasoning guide).
+  const turnStart = params.messages.findLastIndex(
+    (m) =>
+      m.role === 'user' &&
+      (typeof m.content === 'string' || m.content.some((block) => block.type !== 'tool_result')),
+  )
+  params.messages.forEach((message, index) => {
+    const reasoningFor = index > turnStart ? features.reasoningFor : undefined
+    input.push(...translateMessage(message, calls, mode, reasoningFor))
     calls =
       message.role === 'assistant' && typeof message.content !== 'string'
         ? new Set(message.content.flatMap((b) => (b.type === 'tool_use' ? [b.id] : [])))
         : new Set()
-  }
+  })
   // Hosted (server) tools have no input_schema and are never offered on this route.
   const functions: ResponsesFunctionTool[] = (params.tools ?? []).flatMap((tool) =>
     'input_schema' in tool
@@ -288,6 +357,8 @@ export function toResponsesRequest(
           ],
         }
       : {}),
+    ...(features.parallelToolCalls && functions.length ? { parallel_tool_calls: true } : {}),
+    ...(features.include ? { include: [INCLUDE_REASONING] } : {}),
     store: false,
     stream: true,
   }
@@ -303,6 +374,10 @@ export function assertAllowedBody(body: object): void {
         'The ChatGPT request had an unsupported field.',
       )
 }
+
+/** True when a request sends reasoning items back. */
+export const hasReasoningInput = (body: ResponsesRequest): boolean =>
+  body.input.some((item) => item.type === 'reasoning')
 
 /** The function names a request offers; the model may call only these. */
 export function offeredToolNames(body: ResponsesRequest): ReadonlySet<string> {

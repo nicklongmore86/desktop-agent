@@ -15,7 +15,7 @@ export { MANAGE_USAGE_URL }
 export class ResponsesError extends OpenAICompatError {
   /** The documented error code, when the provider sent one this client knows. */
   readonly providerCode?: string
-  /** `error.param` for an unsupported capability, when it is a plain field path. */
+  /** `error.param`, when it is a plain field path (PARAM) and not the credential. */
   readonly param?: string
   readonly requestId?: string
   /** False when sending the same body again cannot succeed. */
@@ -292,6 +292,7 @@ export function responsesError(
   const base = {
     ...(status !== undefined ? { status } : {}),
     ...(requestId ? { requestId } : {}),
+    ...(param ? { param } : {}),
   }
   /** `message` plus as much of the diagnostics as fits in MAX_MESSAGE. */
   const make = (
@@ -319,7 +320,6 @@ export function responsesError(
     return make(known.code, known.message, {
       providerCode,
       retryable: known.retryable,
-      ...(param && providerCode === 'subscription_sharing_unsupported_capability' ? { param } : {}),
     })
   }
   const kind = [e.code, e.type].filter((v) => typeof v === 'string').join(' ')

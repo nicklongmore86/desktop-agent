@@ -11,12 +11,17 @@ import {
   type FetchLike,
 } from '../openai-compat/http'
 import { MAX_EVENT_BYTES, mediaType, sseData } from '../openai-compat/stream'
-import { diagnostics, LABEL, responsesError, responsesStatusError } from './errors'
-import { ResponsesAccumulator } from './stream'
+import { diagnostics, LABEL, ResponsesError, responsesError, responsesStatusError } from './errors'
+import { reasoningItemBytes, ResponsesAccumulator } from './stream'
 import {
   hasOutputImages,
   offeredToolNames,
+  PLAN_FEATURES_ENV,
+  planFeaturesFrom,
   toResponsesRequest,
+  type PlanFeatures,
+  type RequestFeatures,
+  type ResponsesReasoningItem,
   type ResponsesRequest,
   type ToolImageMode,
 } from './translate'
@@ -42,6 +47,125 @@ export interface ChatGPTConnectionOptions {
 export interface ChatGPTResponsesClientOptions extends ChatGPTConnectionOptions {
   /** The model's `slug` from listChatGPTModels. It replaces the `model` createAgent sends. */
   model: string
+  /** For tests. Defaults to PLAN_FEATURES_ENV, which leaves every feature off. */
+  features?: Partial<PlanFeatures>
+}
+
+/**
+ * A request part OpenAI refused (a 400/422 or in-stream failure whose `error.param` names
+ * it). It is not sent again for the rest of the app session.
+ */
+type Refusable = 'parallel_tool_calls' | 'include' | 'reasoning_items'
+const refused = new Set<Refusable>()
+/** For tests: forget the parts refused so far. */
+export function resetRefusedFeatures(): void {
+  refused.clear()
+}
+
+/** The part of `body` that `error` refuses, if it is one this client can leave out. */
+function refusedPart(error: unknown, body: ResponsesRequest): Refusable | undefined {
+  if (!(error instanceof ResponsesError) || !error.param || error.toolFormat) return undefined
+  if (error.status !== undefined && error.status !== 400 && error.status !== 422) return undefined
+  const param = error.param
+  if (body.parallel_tool_calls && param === 'parallel_tool_calls') return 'parallel_tool_calls'
+  if (body.include && /^include($|\[)/.test(param)) return 'include'
+  const index = /^input\[(\d+)\]/.exec(param)?.[1]
+  if (index !== undefined && body.input[Number(index)]?.type === 'reasoning')
+    return 'reasoning_items'
+  return undefined
+}
+
+/** Reasoning kept for one client (one run), by the tool calls it led to. */
+export const MAX_KEPT_REASONING = 32 * 1024 * 1024
+/** Exported for tests. Sizes are UTF-8 bytes as sent (reasoningItemBytes). */
+export class ReasoningMemory {
+  private readonly kept = new Map<
+    string,
+    { items: readonly ResponsesReasoningItem[]; size: number }
+  >()
+  private size = 0
+  /** UTF-8 bytes currently kept. */
+  get bytes(): number {
+    return this.size
+  }
+  get(ids: readonly string[]): readonly ResponsesReasoningItem[] | undefined {
+    return this.kept.get(ids.join('\n'))?.items
+  }
+  set(ids: readonly string[], items: readonly ResponsesReasoningItem[]): void {
+    const key = ids.join('\n')
+    const size = items.reduce((total, item) => total + reasoningItemBytes(item), 0)
+    // A replaced entry gives back its bytes, and its key becomes the newest.
+    const replaced = this.kept.get(key)
+    if (replaced) {
+      this.kept.delete(key)
+      this.size -= replaced.size
+    }
+    this.kept.set(key, { items, size })
+    this.size += size
+    // The oldest go first: the model needs the latest calls' reasoning most.
+    for (const [key, entry] of this.kept) {
+      if (this.size <= MAX_KEPT_REASONING) break
+      this.kept.delete(key)
+      this.size -= entry.size
+    }
+  }
+}
+
+/** What this client asks for, less anything refused this session. */
+class PlanRequests {
+  private readonly memory = new ReasoningMemory()
+  constructor(private readonly features: PlanFeatures) {}
+
+  private get reasoning(): boolean {
+    return this.features.reasoning && !refused.has('reasoning_items')
+  }
+
+  current(): RequestFeatures {
+    return {
+      parallelToolCalls: this.features.parallelToolCalls && !refused.has('parallel_tool_calls'),
+      include: this.features.reasoning && !refused.has('include'),
+      ...(this.reasoning ? { reasoningFor: (ids) => this.memory.get(ids) } : {}),
+    }
+  }
+
+  /** Keeps a tool-call response's reasoning for the requests that answer its calls. */
+  remember(message: Message, reasoning: readonly ResponsesReasoningItem[]): void {
+    if (!this.reasoning || !reasoning.length || message.stop_reason !== 'tool_use') return
+    const ids = message.content.flatMap((block) => (block.type === 'tool_use' ? [block.id] : []))
+    if (ids.length) this.memory.set(ids, reasoning)
+  }
+
+  /** The parts this client would send but leaves out because OpenAI refused them. */
+  private dropped(): string[] {
+    const parts: string[] = []
+    if (this.features.parallelToolCalls && refused.has('parallel_tool_calls'))
+      parts.push('parallel_tool_calls')
+    if (this.features.reasoning && refused.has('include')) parts.push('include')
+    if (this.features.reasoning && refused.has('reasoning_items')) parts.push('reasoning items')
+    return parts
+  }
+
+  /** Adds "without <part>" to an error's app-written details, when it fits. */
+  noted(error: unknown): unknown {
+    const parts = this.dropped()
+    if (!parts.length || !(error instanceof ResponsesError)) return error
+    const { details } = error
+    if (details && !error.message.endsWith(details)) return error
+    const note = `without ${parts.join(', ')}`
+    const newDetails = details ? `${details.slice(0, -1)}, ${note}.` : ` Details: ${note}.`
+    const message = `${error.message.slice(0, error.message.length - details.length)}${newDetails}`
+    if (message.length > MAX_MESSAGE) return error
+    return new ResponsesError(error.code, message, {
+      ...(error.status !== undefined ? { status: error.status } : {}),
+      ...(error.resetsAt ? { resetsAt: error.resetsAt } : {}),
+      ...(error.providerCode ? { providerCode: error.providerCode } : {}),
+      ...(error.param ? { param: error.param } : {}),
+      ...(error.requestId ? { requestId: error.requestId } : {}),
+      retryable: error.retryable,
+      toolFormat: error.toolFormat,
+      details: newDetails,
+    })
+  }
 }
 
 export function connectChatGPT(options: ChatGPTConnectionOptions): Connection {
@@ -70,10 +194,14 @@ export function createChatGPTResponsesClient(options: ChatGPTResponsesClientOpti
   // Tool images go inside function_call_output until the route refuses one request that
   // has them there; from then on (for this client) they go in a user message instead.
   const images: { mode: ToolImageMode } = { mode: 'output' }
+  const plan = new PlanRequests({
+    ...planFeaturesFrom(process.env[PLAN_FEATURES_ENV]),
+    ...options.features,
+  })
   return {
     messages: {
       stream: (params, { signal }) =>
-        new ResponsesStream(connection, model, params, signal, images),
+        new ResponsesStream(connection, model, params, signal, images, plan),
     },
   }
 }
@@ -90,6 +218,7 @@ class ResponsesStream implements AgentStream {
     params: MessageCreateParamsNonStreaming,
     signal: AbortSignal,
     images: { mode: ToolImageMode } = { mode: 'output' },
+    plan: PlanRequests = new PlanRequests(planFeaturesFrom(undefined)),
   ) {
     this.result = this.run(
       connection,
@@ -97,6 +226,7 @@ class ResponsesStream implements AgentStream {
       params,
       AbortSignal.any([signal, this.controller.signal]),
       images,
+      plan,
     )
     // Callers that never ask for the result must not cause an unhandled rejection.
     this.result.catch(() => {})
@@ -121,28 +251,38 @@ class ResponsesStream implements AgentStream {
     params: MessageCreateParamsNonStreaming,
     signal: AbortSignal,
     images: { mode: ToolImageMode },
+    plan: PlanRequests,
   ): Promise<Message> {
-    const body = toResponsesRequest({ ...params, model }, images.mode)
-    try {
-      return await this.send(connection, model, body, signal)
-    } catch (error) {
-      // Refused with images in a tool output, before anything streamed: send them once
-      // more as a user message instead, and keep doing so.
-      if (
-        !hasOutputImages(body) ||
-        this.emitted ||
-        signal.aborted ||
-        !(error instanceof OpenAICompatError) ||
-        error.code !== 'invalid_request'
-      )
-        throw error
-      images.mode = 'message'
-      return this.send(
-        connection,
-        model,
-        toResponsesRequest({ ...params, model }, 'message'),
-        signal,
-      )
+    // Each fallback removes what it retries without, so this sends at most once per
+    // refusable part plus once for tool images, and never after any text has streamed.
+    for (;;) {
+      const mode = images.mode
+      const body = toResponsesRequest({ ...params, model }, mode, plan.current())
+      try {
+        const { message, reasoning } = await this.send(connection, model, body, signal)
+        plan.remember(message, reasoning)
+        return message
+      } catch (error) {
+        if (this.emitted || signal.aborted) throw plan.noted(error)
+        // A refused optional field: leave it out from now on and send once more.
+        const part = refusedPart(error, body)
+        if (part) {
+          refused.add(part)
+          continue
+        }
+        // Refused with images in a tool output: send them as a user message instead, and
+        // keep doing so.
+        if (
+          mode === 'output' &&
+          hasOutputImages(body) &&
+          error instanceof OpenAICompatError &&
+          error.code === 'invalid_request'
+        ) {
+          images.mode = 'message'
+          continue
+        }
+        throw plan.noted(error)
+      }
     }
   }
 
@@ -151,7 +291,7 @@ class ResponsesStream implements AgentStream {
     model: string,
     body: ResponsesRequest,
     signal: AbortSignal,
-  ): Promise<Message> {
+  ): Promise<{ message: Message; reasoning: readonly ResponsesReasoningItem[] }> {
     const { response, touch, done, mapError, isSecret } = await connection.request('responses', {
       method: 'POST',
       body,
@@ -176,7 +316,7 @@ class ResponsesStream implements AgentStream {
           stream = null
           if (signal.aborted) throw new Error('aborted')
           for (const block of message.content) if (block.type === 'text') this.emit(block.text)
-          return message
+          return { message, reasoning: acc.reasoningItems() }
         }
       }
       for await (const data of sseData(stream, touch)) {
@@ -192,7 +332,7 @@ class ResponsesStream implements AgentStream {
         if (acc.done) break
       }
       if (signal.aborted) throw new Error('aborted')
-      return acc.finalMessage()
+      return { message: acc.finalMessage(), reasoning: acc.reasoningItems() }
     } catch (error) {
       await stream?.cancel().catch(() => {})
       throw mapError(error)
