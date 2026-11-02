@@ -143,27 +143,71 @@ describe('turn limit', () => {
   }
 
   it('starts at the default with no file, and in a file saved before the setting existed', async () => {
-    expect((await openSettingsStore(await fileWith())).turnLimit).toBe(35)
+    expect((await openSettingsStore(await fileWith())).turnLimit).toBe(100)
     for (const content of [
       { version: 1, model: 'claude-haiku-5-5' },
       { version: 2, model: 'claude-haiku-5-5', provider: 'codex-subscription' },
       { version: 3, model: 'claude-haiku-5-5', connection: 'anthropic-api', theme: 'dark' },
     ]) {
       const store = await openSettingsStore(await fileWith(content))
-      expect(store.turnLimit).toBe(35)
+      expect(store.turnLimit).toBe(100)
       expect(store.model).toBe('claude-haiku-5-5')
     }
   })
 
-  it.each([4, 101, 12.5, '20', null, -1, { steps: 20 }])(
+  it('moves the old default of 35, saved by every older write, to the new default', async () => {
+    const file = await fileWith({ version: 3, model: 'claude-opus-5-5', turnLimit: 35 })
+    const store = await openSettingsStore(file)
+    expect(store.turnLimit).toBe(100)
+    await store.setTheme('dark')
+    const saved = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
+    expect(saved).toMatchObject({ stepsPerMessage: 100, theme: 'dark' })
+    // The old name is never written again, so 35 chosen from now on stays 35.
+    expect(saved).not.toHaveProperty('turnLimit')
+    await store.setTurnLimit(35)
+    expect((await openSettingsStore(file)).turnLimit).toBe(35)
+  })
+
+  it.each([
+    [5, 5],
+    [60, 60],
+    [100, 100],
+    [4, 5],
+    [-1, 5],
+    [101, 101],
+    [500, 300],
+    [12.5, 13],
+  ])('keeps an old saved %j as %j, clamped to 5 to 300', async (turnLimit, expected) => {
+    const store = await openSettingsStore(
+      await fileWith({ version: 3, model: 'claude-opus-5-5', theme: 'dark', turnLimit }),
+    )
+    expect(store.turnLimit).toBe(expected)
+    expect(store.theme).toBe('dark')
+  })
+
+  it.each([
+    [35, 35],
+    [300, 300],
+    [301, 300],
+    [0, 5],
+  ])('keeps a saved %j as %j under the new name', async (stepsPerMessage, expected) => {
+    const store = await openSettingsStore(
+      await fileWith({ version: 3, model: 'claude-opus-5-5', stepsPerMessage, turnLimit: 60 }),
+    )
+    expect(store.turnLimit).toBe(expected)
+  })
+
+  it.each(['20', null, { steps: 20 }, Number.NaN, true])(
     'reads a saved %j as the default, keeping the other settings',
-    async (turnLimit) => {
-      const store = await openSettingsStore(
-        await fileWith({ version: 3, model: 'claude-opus-5-5', theme: 'dark', turnLimit }),
-      )
-      expect(store.turnLimit).toBe(35)
-      expect(store.theme).toBe('dark')
-      expect(store.model).toBe('claude-opus-5-5')
+    async (value) => {
+      for (const key of ['turnLimit', 'stepsPerMessage']) {
+        const store = await openSettingsStore(
+          await fileWith({ version: 3, model: 'claude-opus-5-5', theme: 'dark', [key]: value }),
+        )
+        expect(store.turnLimit).toBe(100)
+        expect(store.theme).toBe('dark')
+        expect(store.model).toBe('claude-opus-5-5')
+      }
     },
   )
 
@@ -176,18 +220,21 @@ describe('turn limit', () => {
     expect(reopened.turnLimit).toBe(60)
     expect(reopened.theme).toBe('light')
     expect(reopened.model).toBe('claude-opus-5-5')
-    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ version: 3, turnLimit: 60 })
-    for (const edge of [5, 100]) {
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+      version: 3,
+      stepsPerMessage: 60,
+    })
+    for (const edge of [5, 300]) {
       await store.setTurnLimit(edge)
       expect((await openSettingsStore(file)).turnLimit).toBe(edge)
     }
   })
 
-  it('refuses a limit outside 5 to 100 or not a whole number, and keeps the saved one', async () => {
+  it('refuses a limit outside 5 to 300 or not a whole number, and keeps the saved one', async () => {
     const file = await fileWith()
     const store = await openSettingsStore(file)
     await store.setTurnLimit(20)
-    for (const bad of [4, 101, 0, 12.5, Number.NaN, Infinity]) {
+    for (const bad of [4, 301, 0, 12.5, Number.NaN, Infinity]) {
       await expect(store.setTurnLimit(bad)).rejects.toThrow()
     }
     expect(store.turnLimit).toBe(20)
@@ -233,7 +280,7 @@ describe('settings v3 migration', () => {
     expect(store.layout).toEqual(layout)
     expect(store.connections).toEqual(BUILTIN)
     expect(store.showPersonalUseConnections).toBe(true)
-    expect(store.turnLimit).toBe(35)
+    expect(store.turnLimit).toBe(100)
     // Reading never rewrites the file.
     expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(v2)
     await store.setTheme('light')
@@ -245,7 +292,7 @@ describe('settings v3 migration', () => {
       connections: BUILTIN,
       showPersonalUseConnections: true,
       theme: 'light',
-      turnLimit: 35,
+      stepsPerMessage: 100,
       layout,
     })
   })

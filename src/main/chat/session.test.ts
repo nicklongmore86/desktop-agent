@@ -392,6 +392,57 @@ describe('ChatSession', () => {
     expect(store.saved().at(-1)).toMatchObject({ role: 'assistant' })
   })
 
+  it('pauses a stuck run early, saying why, and Continue carries on like any send', async () => {
+    let calls = 0
+    // The same call, with the same result, until the last prompt is "Continue".
+    const client: AgentClient = {
+      messages: {
+        stream: (params) => {
+          const done = JSON.stringify(params.messages.at(-1)).includes('"Continue"')
+          const message = {
+            id: `m${String(++calls)}`,
+            type: 'message',
+            role: 'assistant',
+            model: 'test',
+            content: done
+              ? [{ type: 'text', text: 'All done.', citations: null }]
+              : [{ type: 'tool_use', id: `toolu_${String(calls)}`, name: 'noop', input: {} }],
+            stop_reason: done ? 'end_turn' : 'tool_use',
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          } as unknown as Message
+          return { abort: () => {}, on: () => {}, finalMessage: () => Promise.resolve(message) }
+        },
+      },
+    }
+    const noop: AgentTool = {
+      name: 'noop',
+      description: 'Does nothing',
+      inputSchema: { type: 'object', properties: {} },
+      execute: () => Promise.resolve({ content: 'Done.' }),
+    }
+    const { session, events, store } = setup(createAgent({ client, tools: [noop] }))
+    await session.send('Tidy my folder')
+    await session.idle()
+    expect(calls).toBe(3)
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'error',
+        code: 'max_turns',
+        message:
+          'Paused because the agent appears stuck: noop returned the same result for the same request 3 times. Your progress is saved.',
+      }),
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', stopReason: 'max_turns' })
+    expect(isWellFormed(store.saved())).toBe(true)
+    expect(store.saved().at(-1)).toMatchObject({ role: 'user' })
+
+    await session.send('Continue')
+    await session.idle()
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', stopReason: 'end_turn' })
+    expect(isWellFormed(store.saved())).toBe(true)
+  })
+
   it('works end to end with the real agent loop and a tool needing approval', async () => {
     const responses: Message[] = [
       {

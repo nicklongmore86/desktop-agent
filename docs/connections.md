@@ -199,12 +199,16 @@ changes `connection`: nobody is switched. v1 and v2 files are read and migrated 
 write saves version 3. Theme, model and layout are unchanged. A saved connection the
 build does not offer falls back to `anthropic-api` when the app starts.
 
-`turnLimit` (added without a version bump) is how many steps one message may take in the
-app's own agent loop before it pauses: Settings › Agent › Steps per message, a whole number
-from 5 to 100 (`TURN_LIMIT` in `src/shared/ipc.ts`), checked in main before it is saved. A
-missing or invalid value, as in every file saved before it existed, means the
-default of 35. The API connections and ChatGPT · Plan read it each time a runner is built; Claude
-subscription keeps its runtime's 40 turns and Codex its own limit.
+`stepsPerMessage` (added without a version bump) is how many steps one message may take in
+the app's own agent loop before it pauses: Settings › Agent › Steps per message, a whole
+number from 5 to 300 (`TURN_LIMIT` in `src/shared/ipc.ts`), checked in main before it is
+saved. A missing or invalid value means the default of 100; a number outside the range is
+clamped to it. Older files hold it as `turnLimit` (range 5 to 100, default 35), written by
+every save: 35 there means it was never changed and becomes 100, any other value is kept and
+clamped, and the first write saves `stepsPerMessage` and drops `turnLimit`. The API
+connections and ChatGPT · Plan read it each time a runner is built; Claude subscription
+keeps its runtime's 40 turns and Codex its own limit. The loop's other limits, a 20-minute
+time budget and the stuck check (`AGENT_BUDGET`), are not settings.
 
 Keys are per connection in `userData/secrets/<id>.enc`, encrypted with `safeStorage`
 (the `basic_text` backend is refused). The old `anthropic-api-key.enc` is moved there,

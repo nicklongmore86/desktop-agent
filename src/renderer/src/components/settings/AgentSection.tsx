@@ -1,8 +1,8 @@
 import { useEffect, useId, useState, type SubmitEvent } from 'react'
-import { TURN_LIMIT } from '../../../../shared/ipc'
+import { AGENT_BUDGET, TURN_LIMIT } from '../../../../shared/ipc'
 import { useApi } from '../../api'
 
-/** How many steps a reply may take before it pauses (main validates and saves it). */
+/** How many steps a reply may take before it pauses (main validates and saves it), and the rest of the budget. */
 export function AgentSection(): React.JSX.Element {
   const api = useApi()
   const inputId = useId()
@@ -82,10 +82,13 @@ export function AgentSection(): React.JSX.Element {
       </form>
       <p id={hintId} className="settings-hint">
         How many steps (model replies and tool calls) one message may take before the agent pauses
-        and asks to continue. Your progress is kept when it pauses. From {TURN_LIMIT.min} to{' '}
-        {TURN_LIMIT.max}; the default is {TURN_LIMIT.default}. Applies to Claude API, ChatGPT plan,
-        Gemini and OpenAI-compatible connections. Claude and Codex subscriptions use their own
-        limits.
+        and asks to continue. From {TURN_LIMIT.min} to {TURN_LIMIT.max}; the default is{' '}
+        {TURN_LIMIT.default}. It also pauses after {AGENT_BUDGET.minutes} minutes of work on one
+        message, and early when it appears stuck: the same result from the same request{' '}
+        {AGENT_BUDGET.repeats} times, or every tool call failing {AGENT_BUDGET.repeats} steps in a
+        row. Your progress is kept when it pauses, and the notice says why. Applies to Claude API,
+        ChatGPT plan, Gemini and OpenAI-compatible connections. The Claude subscription stops at its
+        own 40 steps and Codex uses its own limits.
       </p>
       {status && (
         <p className="settings-hint" role="status">

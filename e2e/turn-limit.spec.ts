@@ -4,7 +4,8 @@ import { join } from 'node:path'
 /**
  * A reply paused at its turn limit, in real Electron: the neutral notice with Continue
  * (disabled while the run is still going, then one normal send of "Continue"), gone after
- * New chat, at a phone-narrow and a desktop width; and the limit in Settings.
+ * New chat, at a phone-narrow and a desktop width; a stuck pause naming its reason; and
+ * the limit in Settings.
  */
 
 interface E2e {
@@ -12,7 +13,9 @@ interface E2e {
   sendCalls: () => { text: string; ids: string[] }[]
 }
 
-const PAUSED = 'Paused after 35 steps. Your progress is saved.'
+const PAUSED = 'Paused after 100 steps. Your progress is saved.'
+const STUCK =
+  'Paused because the agent appears stuck: read_file returned the same result for the same request 3 times. Your progress is saved.'
 
 const launch = (width: number) =>
   electron.launch({
@@ -73,6 +76,33 @@ for (const width of [360, 1280]) {
   })
 }
 
+test('a stuck pause says why, fits a narrow window, and offers Continue', async () => {
+  const app = await launch(360)
+  try {
+    const page = await app.firstWindow()
+    await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible()
+    await push(page, [
+      { type: 'run_started', runId: 'r1', text: 'Find my tax letters' },
+      { type: 'error', runId: 'r1', code: 'max_turns', message: STUCK },
+      { type: 'run_finished', runId: 'r1', stopReason: 'max_turns' },
+    ])
+    const notice = page.getByRole('status').filter({ hasText: STUCK })
+    await expect(notice).toBeVisible()
+    await expect(notice).toHaveClass(/banner-info/)
+    const button = notice.getByRole('button', { name: 'Continue' })
+    await expect(button).toBeInViewport()
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true)
+    await button.click()
+    await expect.poll(() => sendCalls(page)).toEqual([{ text: 'Continue', ids: [] }])
+  } finally {
+    await app.close()
+  }
+})
+
 test('the steps-per-message limit is in Settings › Agent', async () => {
   const app = await launch(1280)
   try {
@@ -80,14 +110,14 @@ test('the steps-per-message limit is in Settings › Agent', async () => {
     await page.getByRole('button', { name: 'Settings' }).first().click()
     await page.getByRole('button', { name: 'Agent', exact: true }).click()
     const input = page.getByRole('spinbutton', { name: 'Steps per message' })
-    await expect(input).toHaveValue('35')
+    await expect(input).toHaveValue('100')
     await input.fill('60')
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.getByText('Saved. It applies from your next message.')).toBeVisible()
-    await input.fill('500')
+    await input.fill('301')
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.getByRole('alert')).toHaveText(
-      'Choose a whole number of steps from 5 to 100.',
+      'Choose a whole number of steps from 5 to 300.',
     )
   } finally {
     await app.close()

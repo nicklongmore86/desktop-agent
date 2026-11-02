@@ -164,7 +164,7 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
     settings: {
       theme: 'system' as const,
       setTheme: vi.fn((theme: ThemePreference) => Promise.resolve(theme)),
-      turnLimit: 35,
+      turnLimit: 100,
       setTurnLimit: vi.fn((limit: number) => Promise.resolve(limit)),
       view: () => ({ model: 'm', defaultModel: 'm', options: [{ id: 'm', label: 'M' }] }),
       setModel: vi.fn(() =>
@@ -824,15 +824,15 @@ describe('registerIpcHandlers', () => {
 
   it('validates the turn limit before saving it', async () => {
     const { invoke, services } = setup()
-    expect(await invoke(IpcChannels.turnLimitGet, appFrame)).toBe(35)
-    for (const bad of [4, 101, 12.5, '20', null, Number.NaN, Infinity, { limit: 20 }]) {
+    expect(await invoke(IpcChannels.turnLimitGet, appFrame)).toBe(100)
+    for (const bad of [4, 301, 12.5, '20', null, Number.NaN, Infinity, { limit: 20 }]) {
       await expect(invoke(IpcChannels.turnLimitSet, appFrame, bad)).rejects.toThrow(
-        'Choose a whole number of steps from 5 to 100.',
+        'Choose a whole number of steps from 5 to 300.',
       )
     }
     expect(services.settings.setTurnLimit).not.toHaveBeenCalled()
     expect(await invoke(IpcChannels.turnLimitSet, appFrame, 5)).toBe(5)
-    expect(await invoke(IpcChannels.turnLimitSet, appFrame, 100)).toBe(100)
+    expect(await invoke(IpcChannels.turnLimitSet, appFrame, 300)).toBe(300)
     expect(services.settings.setTurnLimit).toHaveBeenCalledTimes(2)
   })
 

@@ -337,8 +337,11 @@ describe('ChatGPT plan connection', () => {
   it('pauses at the turn limit saved in Settings, with the progress kept', async () => {
     const service = await signedIn()
     await settings.setTurnLimit(5)
-    // Every response asks for a tool, so only the limit ends the run.
-    responses = [sse(...call('list_dir', { path: sb.root }))]
+    // Every response asks for a tool, each time for a different folder (the same answer
+    // three times would pause it as stuck), so only the limit ends the run.
+    const folders = ['a', 'b', 'c', 'd', 'e'].map((name) => path.join(sb.root, name))
+    for (const folder of folders) await put(path.join(folder, 'note.txt'), folder)
+    responses = folders.map((folder) => sse(...call('list_dir', { path: folder })))
     const { result, error } = await send(service)
     expect(result?.stopReason).toBe('max_turns')
     expect(responsesRequests()).toHaveLength(5)

@@ -616,14 +616,20 @@ describe('the OpenAI-compatible API connections', () => {
 })
 
 describe('the turn limit from Settings', () => {
-  const noop: AgentTool = {
+  // Returns something new each time, so only the step limit ends the run.
+  let step = 0
+  const progressing: AgentTool = {
     name: 'noop',
     description: 'Does nothing',
     inputSchema: { type: 'object', properties: {} },
-    execute: () => Promise.resolve({ content: 'Done.' }),
+    execute: () => Promise.resolve({ content: `Done ${String(++step)}.` }),
   }
-  // A model that asks for a tool on every turn, so only the limit ends the run.
-  const endless = async (): Promise<{
+  // Returns the same thing every time: the run is stuck.
+  const same: AgentTool = { ...progressing, execute: () => Promise.resolve({ content: 'Done.' }) }
+  // A model that asks for a tool on every turn, so only the budget ends the run.
+  const endless = async (
+    tool: AgentTool = progressing,
+  ): Promise<{
     stopReason: string
     events: AgentEvent[]
     turns: number
@@ -635,15 +641,15 @@ describe('the turn limit from Settings', () => {
       'POST /v1/chat/completions',
       sse(callDelta('call_1', 'noop', {}), delta({}, 'tool_calls')),
     )
-    const result = await run(service, 'openai-api', [noop])
+    const result = await run(service, 'openai-api', [tool])
     return { ...result, turns: seen.filter((r) => r.path === '/v1/chat/completions').length }
   }
 
-  it('pauses after the default 35 steps when none was chosen', async () => {
+  it('pauses after the default 100 steps when none was chosen', async () => {
     const { stopReason, events, turns } = await endless()
     expect(stopReason).toBe('max_turns')
-    expect(turns).toBe(35)
-    expect(errorOf(events)?.message).toBe('Paused after 35 steps. Your progress is saved.')
+    expect(turns).toBe(100)
+    expect(errorOf(events)?.message).toBe('Paused after 100 steps. Your progress is saved.')
   })
 
   it('pauses after the number of steps saved in Settings, read at each send', async () => {
@@ -652,6 +658,15 @@ describe('the turn limit from Settings', () => {
     expect(stopReason).toBe('max_turns')
     expect(turns).toBe(7)
     expect(errorOf(events)?.message).toBe('Paused after 7 steps. Your progress is saved.')
+  })
+
+  it('pauses early, saying why, when the same call keeps giving the same result', async () => {
+    const { stopReason, events, turns } = await endless(same)
+    expect(stopReason).toBe('max_turns')
+    expect(turns).toBe(3)
+    expect(errorOf(events)?.message).toBe(
+      'Paused because the agent appears stuck: noop returned the same result for the same request 3 times. Your progress is saved.',
+    )
   })
 })
 

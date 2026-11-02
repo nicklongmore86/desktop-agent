@@ -34,22 +34,35 @@ describe('Agent settings: steps per message', () => {
     expect(input).toHaveProperty('value', '80')
   })
 
-  it('starts at the default of 35 and says what it covers', async () => {
+  it('starts at the default of 100 and says what it covers', async () => {
     const { input } = await renderSection()
-    expect(input).toHaveProperty('value', '35')
+    expect(input).toHaveProperty('value', '100')
+    expect(input.getAttribute('max')).toBe('300')
     const hint = document.getElementById(input.getAttribute('aria-describedby') ?? '')
-    expect(hint?.textContent).toContain('From 5 to 100; the default is 35.')
-    expect(hint?.textContent).toContain('Claude and Codex subscriptions use their own limits.')
+    expect(hint?.textContent).toContain('From 5 to 300; the default is 100.')
+    expect(hint?.textContent).toContain('pauses after 20 minutes of work on one message')
+    expect(hint?.textContent).toContain('early when it appears stuck')
+    expect(hint?.textContent).toContain('the notice says why')
+    expect(hint?.textContent).toContain('The Claude subscription stops at its own 40 steps')
+    expect(hint?.textContent).toContain('Codex uses its own limits.')
   })
 
-  it.each(['4', '101', '12.5', ''])('refuses %j without asking main', async (value) => {
+  it('accepts the top of the range', async () => {
+    const { api, user, input } = await renderSection()
+    await user.clear(input)
+    await user.type(input, '300')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(api.turnLimit.set).toHaveBeenCalledExactlyOnceWith(300)
+  })
+
+  it.each(['4', '301', '12.5', ''])('refuses %j without asking main', async (value) => {
     const { api, user, input } = await renderSection()
     await user.clear(input)
     if (value) await user.type(input, value)
     await user.click(screen.getByRole('button', { name: 'Save' }))
     expect(api.turnLimit.set).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toBe(
-      'Choose a whole number of steps from 5 to 100.',
+      'Choose a whole number of steps from 5 to 300.',
     )
   })
 
