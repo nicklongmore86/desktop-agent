@@ -501,3 +501,28 @@ it('keeps the ChatGPT host id and registrations, and refuses anything that does 
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+it('keeps the open chat across connections, reading a bad or missing one as not recorded', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'active-chat-'))
+  try {
+    const file = join(dir, 'settings.json')
+    const chat = { provider: 'claude-subscription', id: '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d' }
+    const store = await openSettingsStore(file)
+    expect(store.activeChat).toBeUndefined()
+    await store.setActiveChat(chat)
+    // Other writes keep it, and it survives a restart.
+    await store.setTheme('dark')
+    expect((await openSettingsStore(file)).activeChat).toEqual(chat)
+    // A new chat is recorded as null, which is not the same as never recorded.
+    await store.setActiveChat(null)
+    expect((await openSettingsStore(file)).activeChat).toBeNull()
+    await expect(store.setActiveChat({ provider: '../x', id: chat.id })).rejects.toThrow()
+    await expect(store.setActiveChat({ provider: 'ollama', id: 'not-an-id' })).rejects.toThrow()
+    for (const bad of [{ ...chat, path: '/etc' }, { provider: 'x', id: '../y' }, 'chat', 7]) {
+      await writeFile(file, JSON.stringify({ version: 3, activeChat: bad }))
+      expect((await openSettingsStore(file)).activeChat).toBeUndefined()
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

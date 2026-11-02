@@ -99,6 +99,7 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
     connections: {
       list: vi.fn(() => []),
       available: vi.fn((id: string) => BUILTIN_CONNECTIONS.includes(id)),
+      registered: vi.fn((id: string) => BUILTIN_CONNECTIONS.includes(id)),
       state: vi.fn(() => ({
         configured: ['anthropic-api'],
         current: 'anthropic-api',
@@ -581,6 +582,17 @@ describe('registerIpcHandlers', () => {
       expect(await invoke(c.chatOpen, appFrame, chat)).toMatchObject({
         provider: 'codex-subscription',
       })
+    })
+
+    it('opens a chat whose home is hidden or removed, but never one of an unregistered id', async () => {
+      const { invoke, services } = setup()
+      vi.mocked(services.connections.available).mockReturnValue(false)
+      const hidden = { provider: 'claude-subscription', id: OTHER_CHAT }
+      await invoke(c.chatOpen, appFrame, hidden)
+      expect(services.projects.open).toHaveBeenCalledWith(hidden)
+      vi.mocked(services.connections.registered).mockReturnValue(false)
+      await expect(invoke(c.chatOpen, appFrame, hidden)).rejects.toThrow('Unknown chat.')
+      expect(services.projects.open).toHaveBeenCalledOnce()
     })
 
     it('refuses bad ids, providers, names, icons and flags before reaching a store', async () => {

@@ -434,4 +434,10 @@ describe('system prompt', () => {
     // Provider-neutral, and no parameter names that other changes may not have added yet.
     expect(DEFAULT_SYSTEM_PROMPT).not.toMatch(/\bClaude\b|\bGPT\b|\bpaths\b|\bcontext:/)
   })
+
+  it('says earlier replies may have come from another model or provider (a chat can move)', () => {
+    expect(DEFAULT_SYSTEM_PROMPT).toContain(
+      'Earlier assistant replies in this conversation may have come from a different model or provider',
+    )
+  })
 })

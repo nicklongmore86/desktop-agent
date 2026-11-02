@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -59,16 +59,32 @@ it('preserves legacy API history and starts both subscriptions without reading t
   // A saved API key is never decrypted for a subscription: no fallback to API billing.
   await services.apiKey.set('sk-ant-saved')
   decrypt.mockClear()
+  const home = services.chat.openRef
+  expect(home?.provider).toBe('anthropic-api')
   for (const provider of ['claude-subscription', 'codex-subscription'] as const) {
+    // The open chat continues on the new connection.
     await services.provider.set(provider)
-    expect(services.chat.state().items).toEqual([])
+    expect(services.chat.state().items[0]).toMatchObject({ text: 'legacy API history' })
     expect(await services.chat.send(provider)).toEqual({ ok: true })
     await services.chat.idle()
   }
   expect(decrypt).not.toHaveBeenCalled()
   expect(subscriptions).toHaveBeenCalledTimes(3)
+  // One chat, still in its home's folder, each reply marked with the connection that wrote it.
+  expect(services.chat.openRef).toEqual(home)
+  expect(
+    services.chat
+      .state()
+      .items.flatMap((item) => (item.kind === 'assistant' ? [[item.text, item.connection]] : [])),
+  ).toEqual([
+    ['subscription reply', 'claude-subscription'],
+    ['subscription reply', 'codex-subscription'],
+  ])
+  expect(services.chat.historyState().chats).toEqual([
+    expect.objectContaining({ provider: 'anthropic-api', lastConnection: 'codex-subscription' }),
+  ])
   await services.provider.set('claude-subscription')
-  expect(services.chat.state().items[0]).toMatchObject({ text: 'claude-subscription' })
+  expect(services.chat.state().items[0]).toMatchObject({ text: 'legacy API history' })
   await services.provider.set('anthropic-api')
   expect(services.chat.state().items[0]).toMatchObject({ text: 'legacy API history' })
   // Each switch, and saving the key (its metadata is cached per key).
@@ -225,9 +241,17 @@ it('keeps several chats per provider: migrates, opens, renames and deletes them'
   await chat.open(legacy?.id ?? '')
   expect(chat.state().items[0]).toMatchObject({ text: 'legacy subscription' })
   await chat.rename(legacy?.id ?? '', 'Renamed')
-  // Other providers have their own list.
+  // Another connection continues the open chat; its own list is empty, the shared one is not.
   await services.provider.set('codex-subscription')
-  expect(chat.historyState()).toEqual({ conversations: [], activeId: null })
+  expect(chat.historyState()).toMatchObject({
+    conversations: [],
+    activeId: legacy?.id,
+    active: { provider: 'claude-subscription', id: legacy?.id },
+  })
+  expect(chat.historyState().chats?.map((c) => [c.provider, c.title])).toEqual([
+    ['claude-subscription', 'A brand new question'],
+    ['claude-subscription', 'Renamed'],
+  ])
   await services.provider.set('claude-subscription')
   expect(chat.historyState().activeId).toBe(legacy?.id)
   expect(chat.historyState().conversations.map((c) => c.title)).toContain('Renamed')
@@ -366,4 +390,138 @@ it('saves a new connection’s key only after the pinned host accepts it, and ne
     vi.stubGlobal('fetch', realFetch)
     vi.unstubAllGlobals()
   }
+})
+
+it('lists every registered connection’s chats as one list and continues any of them on the current connection', async () => {
+  const userData = await mkdtemp(join(tmpdir(), 'unified-history-'))
+  dirs.push(userData)
+  const HIDDEN = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  const REMOVED = '1b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e'
+  const FUTURE = '2c3d4e5f-6a7b-4c8d-ae9f-1a2b3c4d5e6f'
+  const SECRET = 'sk-ant-api03-unified-history-secret'
+  // Chats as earlier builds left them (format-2 index, no provenance): one on the hidden
+  // personal-use connection, one on a connection the user removed, one in a folder of a
+  // connection this build does not register.
+  const seed = async (home: string, id: string, text: string) => {
+    await mkdir(join(userData, 'history', home), { recursive: true })
+    await writeFile(
+      join(userData, 'history', home, `${id}.json`),
+      JSON.stringify({ version: 1, messages: [{ role: 'user', content: text }] }),
+    )
+    await writeFile(
+      join(userData, 'history', home, 'index.json'),
+      JSON.stringify({
+        version: 1,
+        format: 2,
+        activeId: id,
+        conversations: [{ id, title: text, createdAt: 1, updatedAt: 2 }],
+      }),
+    )
+  }
+  await seed('claude-subscription', HIDDEN, 'hidden chat')
+  await seed('codex-subscription', REMOVED, 'removed chat')
+  await seed('future-connection', FUTURE, 'future chat')
+  await writeFile(
+    join(userData, 'settings.json'),
+    JSON.stringify({
+      version: 3,
+      model: 'claude-opus-5-5',
+      connection: 'anthropic-api',
+      connectionModels: {},
+      connections: [{ id: 'anthropic-api' }],
+      showPersonalUseConnections: false,
+    }),
+  )
+  vi.spyOn(ConnectionService.prototype, 'status').mockImplementation((provider) =>
+    Promise.resolve({ provider, state: 'ready', message: 'ready' }),
+  )
+  vi.spyOn(ConnectionService.prototype, 'validateKey').mockResolvedValue(null)
+  const runner = vi.spyOn(ConnectionService.prototype, 'runner').mockImplementation((provider) =>
+    Promise.resolve({
+      model: 'claude-opus-5-5',
+      run: (conversation) =>
+        Promise.resolve({
+          conversation: [...conversation, { role: 'assistant', content: `reply via ${provider}` }],
+          stopReason: 'end_turn',
+        }),
+    }),
+  )
+  const open = () =>
+    createAppServices({
+      userData,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (text) => Buffer.from(text),
+        decryptString: (value) => value.toString(),
+      },
+      trash: () => Promise.resolve(),
+      emit: vi.fn(),
+      promptApproval: vi.fn(),
+      onAuditStatus: vi.fn(),
+    })
+  const services = await open()
+  await services.apiKey.set(SECRET)
+  const { chat } = services
+  expect(
+    chat
+      .historyState()
+      .chats?.map((c) => [c.provider, c.id])
+      .sort(),
+  ).toEqual(
+    [
+      ['claude-subscription', HIDDEN],
+      ['codex-subscription', REMOVED],
+    ].sort(),
+  )
+
+  // Opening the hidden connection's chat continues it on Anthropic API: no switch.
+  const status = await services.projects.open({ provider: 'claude-subscription', id: HIDDEN })
+  expect(status.provider).toBe('anthropic-api')
+  expect(services.settings.connection).toBe('anthropic-api')
+  expect(chat.state().items[0]).toMatchObject({ text: 'hidden chat' })
+  expect(await chat.send('continue here')).toEqual({ ok: true })
+  await chat.idle()
+  expect(runner).toHaveBeenLastCalledWith('anthropic-api', expect.anything(), expect.anything())
+  const home = join(userData, 'history', 'claude-subscription')
+  const saved = JSON.parse(await readFile(join(home, `${HIDDEN}.json`), 'utf8')) as unknown
+  expect(saved).toEqual({
+    version: 1,
+    messages: [
+      { role: 'user', content: 'hidden chat' },
+      { role: 'user', content: 'continue here' },
+      { role: 'assistant', content: 'reply via anthropic-api' },
+    ],
+    origin: [{ fromIndex: 2, connection: 'anthropic-api', model: 'claude-opus-5-5' }],
+  })
+  const index = JSON.parse(await readFile(join(home, 'index.json'), 'utf8')) as {
+    format: number
+    activeId: string
+    conversations: { id: string; lastConnection?: string }[]
+  }
+  expect(index).toMatchObject({
+    format: 3,
+    activeId: HIDDEN,
+    conversations: [{ id: HIDDEN, lastConnection: 'anthropic-api' }],
+  })
+  expect(services.settings.activeChat).toEqual({ provider: 'claude-subscription', id: HIDDEN })
+
+  // A restart reopens it, across connections.
+  const restarted = await open()
+  expect(restarted.chat.openRef).toEqual({ provider: 'claude-subscription', id: HIDDEN })
+  expect(restarted.chat.state().items.at(-1)).toMatchObject({
+    kind: 'assistant',
+    connection: 'anthropic-api',
+    model: 'claude-opus-5-5',
+  })
+
+  // No secret ever reaches the history folders.
+  const files = await readdir(join(userData, 'history'), { recursive: true, withFileTypes: true })
+  const texts = await Promise.all(
+    files
+      .filter((entry) => entry.isFile())
+      .map((entry) => readFile(join(entry.parentPath, entry.name), 'utf8')),
+  )
+  expect(texts.length).toBeGreaterThan(0)
+  for (const text of texts) expect(text).not.toContain(SECRET)
+  expect(await readFile(join(userData, 'settings.json'), 'utf8')).not.toContain(SECRET)
 })

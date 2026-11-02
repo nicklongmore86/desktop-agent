@@ -2,10 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ProviderStatus } from '../../shared/ipc'
+import type { ChatRef, ProviderStatus } from '../../shared/ipc'
 import type { ConnectionId } from '../../shared/ipc-connections'
 import { openHistory, type ConversationHistory } from '../storage/history-store'
 import { openProjectsStore } from '../storage/projects-store'
+import { createChatLibrary } from './library'
 import { createOrganizer } from './organizer'
 
 const directories: string[] = []
@@ -51,30 +52,39 @@ async function setup() {
   const projects = await openProjectsStore(join(root, 'projects.json'), { newId: () => PROJECT })
   let provider: ConnectionId = 'anthropic-api'
   const status = (): ProviderStatus => ({ provider, state: 'ready', message: 'ok' })
-  const chat = {
-    rename: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
-    remove: vi.fn(() => Promise.resolve({ conversations: [], activeId: null })),
-    open: vi.fn(() => Promise.resolve()),
-    historyChanged: vi.fn(),
-  }
-  const switchProvider = vi.fn((next: ConnectionId) => {
-    provider = next
-    return Promise.resolve(status())
-  })
-  const organizer = createOrganizer({
-    projects,
-    historyFor: (p) => {
-      const history = histories.get(p)
+  const library = createChatLibrary({
+    connection: () => provider,
+    registered: () => [...ids.keys()],
+    open: (home) => {
+      const history = histories.get(home)
       return history ? Promise.resolve(history) : Promise.reject(new Error('no history'))
     },
-    connections: () => [...ids.keys()],
-    provider: () => provider,
+  })
+  await library.loadAll()
+  const empty = { conversations: [], activeId: null }
+  const chat = {
+    renameChat: vi.fn(async (ref: ChatRef, title: string) => {
+      await histories.get(ref.provider)?.rename(ref.id, title)
+      return empty
+    }),
+    removeChat: vi.fn(async (ref: ChatRef) => {
+      await histories.get(ref.provider)?.remove(ref.id)
+      return empty
+    }),
+    openChat: vi.fn(() => Promise.resolve()),
+    historyChanged: vi.fn(),
+  }
+  const organizer = createOrganizer({
+    projects,
+    library,
     chat,
-    switchProvider,
     status: () => Promise.resolve(status()),
   })
   const codex = histories.get('codex-subscription') as ConversationHistory
-  return { organizer, chat, switchProvider, codex, projects }
+  const switchTo = (next: ConnectionId): void => {
+    provider = next
+  }
+  return { organizer, chat, codex, projects, switchTo }
 }
 
 describe('organizer', () => {
@@ -94,12 +104,11 @@ describe('organizer', () => {
     )
   })
 
-  it("tells the session only about the open provider's list", async () => {
+  it('tells the session about every change, whatever the home (the list is shared)', async () => {
     const { organizer, chat } = await setup()
     await organizer.archive({ provider: 'codex-subscription', id: CODEX_CHAT }, true)
-    expect(chat.historyChanged).not.toHaveBeenCalled()
     await organizer.archive({ provider: 'anthropic-api', id: API_CHAT }, true)
-    expect(chat.historyChanged).toHaveBeenCalledOnce()
+    expect(chat.historyChanged).toHaveBeenCalledTimes(2)
   })
 
   it('refuses a project that does not exist and a chat that does not', async () => {
@@ -122,31 +131,43 @@ describe('organizer', () => {
     expect(codex.state().conversations.every((c) => c.projectId === undefined)).toBe(true)
   })
 
-  it('forks into the same provider and routes the open provider through the session', async () => {
+  it('forks into the same home and routes renames and deletes through the session', async () => {
     const { organizer, chat, codex } = await setup()
     const forked = await organizer.fork({ provider: 'codex-subscription', id: CODEX_CHAT }, null)
     expect(forked.chat).toEqual({ provider: 'codex-subscription', id: FORK })
     expect(codex.has(FORK)).toBe(true)
-    await organizer.renameChat({ provider: 'anthropic-api', id: API_CHAT }, 'New name')
-    expect(chat.rename).toHaveBeenCalledWith(API_CHAT, 'New name')
     await organizer.renameChat({ provider: 'codex-subscription', id: CODEX_CHAT }, 'Codex name')
+    expect(chat.renameChat).toHaveBeenCalledWith(
+      { provider: 'codex-subscription', id: CODEX_CHAT },
+      'Codex name',
+    )
     expect(codex.state().conversations.find((c) => c.id === CODEX_CHAT)?.title).toBe('Codex name')
     await organizer.removeChat({ provider: 'codex-subscription', id: FORK })
+    expect(chat.removeChat).toHaveBeenCalledWith({ provider: 'codex-subscription', id: FORK })
     expect(codex.has(FORK)).toBe(false)
-    await organizer.removeChat({ provider: 'anthropic-api', id: API_CHAT })
-    expect(chat.remove).toHaveBeenCalledWith(API_CHAT)
+    await expect(
+      organizer.renameChat({ provider: 'anthropic-api', id: FORK }, 'x'),
+    ).rejects.toThrow('That chat no longer exists.')
   })
 
-  it("opens another provider's chat through the provider switch, with that chat", async () => {
-    const { organizer, chat, switchProvider } = await setup()
+  it("opens any home's chat on the current connection, never switching connection", async () => {
+    const { organizer, chat } = await setup()
     const status = await organizer.open({ provider: 'codex-subscription', id: CODEX_CHAT })
-    expect(switchProvider).toHaveBeenCalledWith('codex-subscription', CODEX_CHAT)
-    expect(status.provider).toBe('codex-subscription')
-    await organizer.open({ provider: 'codex-subscription', id: CODEX_LOOSE })
-    expect(chat.open).toHaveBeenCalledWith(CODEX_LOOSE)
-    expect(switchProvider).toHaveBeenCalledOnce()
+    expect(chat.openChat).toHaveBeenCalledWith({ provider: 'codex-subscription', id: CODEX_CHAT })
+    expect(status.provider).toBe('anthropic-api')
     await expect(organizer.open({ provider: 'anthropic-api', id: FORK })).rejects.toThrow(
       'That chat no longer exists.',
     )
+    expect(chat.openChat).toHaveBeenCalledOnce()
+  })
+
+  it("lists the current connection's pinned chats of other homes after a switch", async () => {
+    const { organizer, switchTo } = await setup()
+    await organizer.pin({ provider: 'anthropic-api', id: API_CHAT }, true)
+    expect((await organizer.state()).others).toEqual([])
+    switchTo('codex-subscription')
+    const state = await organizer.state()
+    expect(state.provider).toBe('codex-subscription')
+    expect(state.others.map((c) => [c.provider, c.id])).toEqual([['anthropic-api', API_CHAT]])
   })
 })

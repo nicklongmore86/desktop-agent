@@ -14,7 +14,7 @@ import {
   type StoredMessage,
 } from '../storage/conversation-store'
 import { ChatSession, type AgentRunner, type RunnerResult } from './session'
-import { memoryHistory, memoryStore } from './test-support'
+import { memoryHistory, memoryLibrary, memoryStore } from './test-support'
 
 /** A fake agent that runs `script` with the session's run options. */
 function scriptedRunner(
@@ -826,57 +826,222 @@ describe('ChatSession', () => {
   })
 })
 
-describe('provider switching', () => {
-  it('cancels approvals, saves old history to the old store, and restores the selected history', async () => {
-    const runner = scriptedRunner(async (history, options) => {
-      await options.requestApproval({ tool: 'write_file', kind: 'write', summary: 'write' })
-      options.onEvent({ type: 'text_delta', turn: 1, text: 'stale' })
-      return [...history, reply('stopped')]
+describe('connection switching', () => {
+  const CHAT_A = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  /** Two connections, x (the open chat's home and current) and y; runs record who wrote them. */
+  function twoConnections(
+    script: (history: MessageParam[], options: RunOptions, by: string) => Promise<MessageParam[]>,
+  ) {
+    const a = memoryStore([{ role: 'user', content: 'hello' }])
+    const x = memoryHistory()
+    x.add(CHAT_A, a)
+    const y = memoryHistory()
+    const library = memoryLibrary({ x, y }, 'x')
+    const events: ChatEvent[] = []
+    const prompts: ApprovalPrompt[] = []
+    const createRunner = vi.fn(() => {
+      const by = library.current
+      return Promise.resolve<RunnerResult>({
+        ok: true,
+        runner: scriptedRunner((history, options) => script(history, options, by)),
+        origin: { connection: by, model: `${by}-model` },
+      })
     })
-    const { session, store, events } = setup(runner)
+    let n = 0
+    const session = new ChatSession({
+      history: x,
+      home: 'x',
+      openId: CHAT_A,
+      library,
+      createRunner,
+      emit: (event) => events.push(event),
+      promptApproval: (prompt) => prompts.push(prompt),
+      newId: () => `id-${String(++n)}`,
+    })
+    const commit = vi.fn(() => {
+      library.current = 'y'
+      return Promise.resolve()
+    })
+    return { session, a, x, y, library, events, prompts, createRunner, commit }
+  }
+
+  it('continues the open chat on the next connection, stopping the run and denying its approvals at once', async () => {
+    const { session, a, events, prompts, createRunner, commit } = twoConnections(
+      async (history, options, by) => {
+        if (by === 'x') {
+          await options.requestApproval({ tool: 'write_file', kind: 'write', summary: 'write' })
+          options.onEvent({ type: 'text_delta', turn: 1, text: 'stale' })
+        }
+        return [...history, reply(`from ${by}`)]
+      },
+    )
     await session.init()
-    await session.send('old provider')
-    await until(() => session.pendingApprovals.length === 1)
-    const next = memoryStore([{ role: 'user', content: 'other provider' }])
-    const commit = vi.fn(() => Promise.resolve())
-    const switching = session.switchHistory(memoryHistory(next), commit)
+    await session.send('first')
+    await until(() => prompts.length === 1)
+    const switching = session.switchConnection('y', commit)
+    // Synchronously: the approval is denied and sends are refused until the switch ends.
+    expect(session.pendingApprovals).toEqual([])
+    expect(events).toContainEqual({
+      type: 'approval_closed',
+      approvalId: prompts[0]?.id,
+      approved: false,
+    })
     expect(await session.send('racing send')).toMatchObject({ ok: false, code: 'busy' })
     await switching
-    expect(session.pendingApprovals).toEqual([])
-    expect(session.state().items[0]).toMatchObject({ text: 'other provider' })
-    expect(store.saved()[0]?.content).toBe('old provider')
-    expect(next.saved()).toEqual([{ role: 'user', content: 'other provider' }])
-    expect(events.some((event) => event.type === 'text_delta' && event.text === 'stale')).toBe(
-      false,
-    )
     expect(commit).toHaveBeenCalledOnce()
+    // The same chat is open, and the stopped run saved into it.
+    expect(session.openRef).toEqual({ provider: 'x', id: CHAT_A })
+    expect(session.state().history?.active).toEqual({ provider: 'x', id: CHAT_A })
+    expect(a.saved().map((m) => m.content)).toEqual(['hello', 'first', 'from x'])
+    expect(events.some((e) => e.type === 'text_delta' && e.text === 'stale')).toBe(false)
+
+    // The next reply comes from y, a runner built for this run, saved to the same chat.
+    expect(await session.send('second')).toEqual({ ok: true })
+    await session.idle()
+    expect(createRunner).toHaveBeenCalledTimes(2)
+    expect(a.saved().map((m) => m.content)).toEqual([
+      'hello',
+      'first',
+      'from x',
+      'second',
+      'from y',
+    ])
+    const origin = vi.mocked(a.save).mock.calls.at(-1)?.[1]
+    expect(origin).toEqual([
+      { fromIndex: 2, connection: 'x', model: 'x-model' },
+      { fromIndex: 4, connection: 'y', model: 'y-model' },
+    ])
+    expect(session.state().items.filter((item) => item.kind === 'assistant')).toEqual([
+      expect.objectContaining({ text: 'from x', connection: 'x', model: 'x-model' }),
+      expect.objectContaining({ text: 'from y', connection: 'y', model: 'y-model' }),
+    ])
   })
-  it("opens a chosen chat of the other provider, denying the old run's approvals first", async () => {
-    const runner = scriptedRunner(async (history, options) => {
-      await options.requestApproval({ tool: 'write_file', kind: 'write', summary: 'write' })
-      return [...history, reply('stopped')]
+
+  it('keeps the chat well-formed when a switch stops a tool call mid-approval', async () => {
+    let calls = 0
+    const client: AgentClient = {
+      messages: {
+        stream: () => {
+          calls += 1
+          const message = {
+            id: `m${String(calls)}`,
+            type: 'message',
+            role: 'assistant',
+            model: 'test',
+            content: [{ type: 'tool_use', id: `toolu_${String(calls)}`, name: 'write', input: {} }],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          } as unknown as Message
+          return { abort: () => {}, on: () => {}, finalMessage: () => Promise.resolve(message) }
+        },
+      },
+    }
+    const write: AgentTool = {
+      name: 'write',
+      description: 'Writes',
+      inputSchema: { type: 'object', properties: {} },
+      async execute(_input, ctx) {
+        const approved = await ctx.requestApproval({ tool: 'write', kind: 'write', summary: 'w' })
+        return approved
+          ? { content: 'written' }
+          : { content: 'Declined.', isError: true, declined: true }
+      },
+    }
+    const a = memoryStore([])
+    const x = memoryHistory()
+    x.add(CHAT_A, a)
+    const library = memoryLibrary({ x, y: memoryHistory() }, 'x')
+    const received: MessageParam[][] = []
+    const prompts: ApprovalPrompt[] = []
+    const session = new ChatSession({
+      history: x,
+      home: 'x',
+      openId: CHAT_A,
+      library,
+      createRunner: () =>
+        Promise.resolve<RunnerResult>(
+          library.current === 'x'
+            ? {
+                ok: true,
+                runner: createAgent({ client, tools: [write] }),
+                origin: { connection: 'x', model: 'test' },
+              }
+            : {
+                ok: true,
+                runner: scriptedRunner((history) => {
+                  received.push(history)
+                  return Promise.resolve([...history, reply('from y')])
+                }),
+                origin: { connection: 'y', model: null },
+              },
+        ),
+      emit: () => {},
+      promptApproval: (prompt) => prompts.push(prompt),
     })
-    const { session, store } = setup(runner)
     await session.init()
-    await session.send('old provider')
-    await until(() => session.pendingApprovals.length === 1)
-    const chosen = memoryStore([{ role: 'user', content: 'the chosen chat' }])
-    const other = memoryHistory(memoryStore([{ role: 'user', content: 'its last chat' }]))
-    other.add(OTHER_CHAT, chosen)
-    const commit = vi.fn(() => Promise.resolve())
-    const switching = session.switchHistory(other, commit, OTHER_CHAT)
-    expect(session.pendingApprovals).toEqual([])
-    await switching
-    expect(session.state().items[0]).toMatchObject({ text: 'the chosen chat' })
-    expect(commit).toHaveBeenCalledOnce()
-    expect(other.setActive).toHaveBeenCalledWith(OTHER_CHAT)
-    expect(store.saved()[0]?.content).toBe('old provider')
-    // An unknown chat leaves the current one open.
-    await expect(session.switchHistory(memoryHistory(), commit, OTHER_CHAT)).rejects.toThrow(
+    await session.send('Write it')
+    await until(() => prompts.length === 1)
+    await session.switchConnection('y', () => {
+      library.current = 'y'
+      return Promise.resolve()
+    })
+    expect(isWellFormed(a.saved())).toBe(true)
+    expect(a.saved().length).toBeGreaterThan(1)
+    await session.send('Again')
+    await session.idle()
+    expect(received).toHaveLength(1)
+    expect(isWellFormed(received[0] as StoredMessage[])).toBe(true)
+    expect(isWellFormed(a.saved())).toBe(true)
+    expect(a.saved().at(-1)).toEqual(reply('from y'))
+  })
+
+  it('makes a new chat a new chat of the next connection', async () => {
+    const { session, x, y, library, commit } = twoConnections((h) => Promise.resolve(h))
+    await session.newChat()
+    expect(x.setActive).toHaveBeenLastCalledWith(null)
+    await session.switchConnection('y', commit)
+    expect(session.openRef).toBeNull()
+    expect(y.setActive).toHaveBeenLastCalledWith(null)
+    expect(y.drafts).toHaveLength(1)
+    expect(library.remembered.at(-1)).toBeNull()
+  })
+
+  it('opens a chat of another home and continues it on the current connection', async () => {
+    const { session, a, y, library, commit } = twoConnections((history, _options, by) =>
+      Promise.resolve([...history, reply(`from ${by}`)]),
+    )
+    await session.newChat()
+    await session.switchConnection('y', commit)
+    expect(y.drafts).toHaveLength(1)
+    await session.openChat({ provider: 'x', id: CHAT_A })
+    expect(library.current).toBe('y')
+    expect(library.remembered.at(-1)).toEqual({ provider: 'x', id: CHAT_A })
+    // The current connection's own list stays what older renderers show; the open chat is x's.
+    const history = session.historyState()
+    expect(history.activeId).toBe(CHAT_A)
+    expect(history.chats?.map((chat) => [chat.provider, chat.id])).toEqual([['x', CHAT_A]])
+    await session.send('more')
+    await session.idle()
+    expect(a.saved().at(-1)).toEqual(reply('from y'))
+    // An unknown chat (or home) leaves the current one open.
+    await expect(session.openChat({ provider: 'x', id: OTHER_CHAT })).rejects.toThrow(
       'That chat no longer exists.',
     )
-    expect(session.state().items[0]).toMatchObject({ text: 'the chosen chat' })
+    await expect(session.openChat({ provider: 'z', id: CHAT_A })).rejects.toThrow('Unknown chat.')
+    expect(session.openRef).toEqual({ provider: 'x', id: CHAT_A })
   })
+
+  it('deletes the open chat of another home by starting a new chat first', async () => {
+    const { session, x, library, commit } = twoConnections((h) => Promise.resolve(h))
+    await session.init()
+    await session.switchConnection('y', commit)
+    await session.removeChat({ provider: 'x', id: CHAT_A })
+    expect(x.remove).toHaveBeenCalledWith(CHAT_A)
+    expect(session.openRef).toBeNull()
+    expect(library.remembered.at(-1)).toBeNull()
+  })
+
   it('never lets a slow initial load overwrite a switch, and refuses sends until loaded', async () => {
     const old = memoryStore()
     let finishLoad: () => void = () => {}
@@ -884,53 +1049,47 @@ describe('provider switching', () => {
       () =>
         new Promise<Awaited<ReturnType<ConversationStore['load']>>>((resolve) => {
           finishLoad = () => {
-            resolve({ messages: [{ role: 'user', content: 'old provider' }], error: null })
+            resolve({ messages: [{ role: 'user', content: 'old chat' }], error: null })
           }
         }),
     )
-    const { session } = setup(
-      scriptedRunner((history) => Promise.resolve(history)),
+    const { session, history } = setup(
+      scriptedRunner((h) => Promise.resolve(h)),
       [],
       old,
     )
+    history.add(OTHER_CHAT, memoryStore([{ role: 'user', content: 'other chat' }]))
     const loading = session.init()
     expect(await session.send('too early')).toMatchObject({ ok: false, code: 'busy' })
-    const switching = session.switchHistory(
-      memoryHistory(memoryStore([{ role: 'user', content: 'other provider' }])),
-      () => Promise.resolve(),
-    )
+    const switching = session.open(OTHER_CHAT)
     await until(() => vi.mocked(old.load).mock.calls.length === 1)
     finishLoad()
     await Promise.all([loading, switching])
     expect(session.state().items).toEqual([
-      expect.objectContaining({ text: 'other provider' }) as unknown,
+      expect.objectContaining({ text: 'other chat' }) as unknown,
     ])
   })
-  it('serializes rapid switches and keeps the previous provider on persistence failure', async () => {
-    const { session } = setup(scriptedRunner((history) => Promise.resolve(history)))
+
+  it('serializes rapid switches and keeps the open chat when a commit fails', async () => {
+    const { session, commit } = twoConnections((h) => Promise.resolve(h))
     await session.init()
     const order: string[] = []
-    const first = session.switchHistory(
-      memoryHistory(memoryStore([{ role: 'user', content: 'one' }])),
-      () => {
-        order.push('one')
-        return Promise.resolve()
-      },
-    )
-    const second = session.switchHistory(
-      memoryHistory(memoryStore([{ role: 'user', content: 'two' }])),
-      () => {
-        order.push('two')
-        return Promise.resolve()
-      },
-    )
+    const first = session.switchConnection('y', () => {
+      order.push('one')
+      return commit()
+    })
+    const second = session.switchConnection('x', () => {
+      order.push('two')
+      return Promise.resolve()
+    })
     await Promise.all([first, second])
     expect(order).toEqual(['one', 'two'])
-    expect(session.state().items[0]).toMatchObject({ text: 'two' })
+    expect(session.state().items[0]).toMatchObject({ text: 'hello' })
     await expect(
-      session.switchHistory(memoryHistory(), () => Promise.reject(new Error('disk full'))),
+      session.switchConnection('y', () => Promise.reject(new Error('disk full'))),
     ).rejects.toThrow('disk full')
-    expect(session.state().items[0]).toMatchObject({ text: 'two' })
+    expect(session.openRef).toEqual({ provider: 'x', id: CHAT_A })
+    expect(session.state().items[0]).toMatchObject({ text: 'hello' })
   })
 })
 

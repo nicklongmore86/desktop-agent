@@ -256,7 +256,18 @@ export type ChatItem =
       /** The prompt's attachments, in order. Unset: none. */
       attachments?: ChatAttachment[]
     }
-  | { kind: 'assistant'; id: string; text: string }
+  | {
+      kind: 'assistant'
+      id: string
+      text: string
+      /**
+       * Provenance, from the chat file's `origin`: the connection that wrote this reply,
+       * and its model when known. Unset for replies saved before it was recorded (or by
+       * an older build, which drops it).
+       */
+      connection?: ConnectionId
+      model?: string
+    }
   | {
       kind: 'tool'
       id: string
@@ -282,13 +293,49 @@ export interface ConversationSummary {
   projectId?: string
   /** Set on a fork: the chat it was copied from, and how many messages it kept (null: all). */
   forkedFrom?: { id: string; atMessageIndex: number | null }
+  /**
+   * The connection the chat's latest recorded reply came from. Unset: none recorded
+   * yet (a chat saved before this was kept, or only by an older build).
+   */
+  lastConnection?: ConnectionId
 }
 
-/** The current provider's saved conversations, newest first, and the one that is open. */
+/**
+ * A saved chat, by identity: `provider` is its *home* connection (the history
+ * folder it is saved in), never the connection it continues on. A chat keeps its
+ * home for life; any connection can continue it.
+ */
+export interface ChatRef {
+  provider: ConnectionId
+  id: string
+}
+
+/** A saved chat as the merged list holds it: its summary plus its home connection. */
+export interface ProviderChat extends ConversationSummary {
+  /** The home connection (see ChatRef). */
+  provider: ConnectionId
+}
+
+/**
+ * The chat list. `conversations` and `activeId` are the shape older renderers
+ * read; `chats` and `active` are the one shared list across every connection.
+ */
 export interface HistoryState {
+  /** The current connection's own saved chats (its home folder), newest first. */
   conversations: ConversationSummary[]
-  /** Null for a new chat that has not been saved yet. */
+  /**
+   * The open chat's id, whatever its home (see `active`). Null for a new chat that
+   * has not been saved yet.
+   */
   activeId: string | null
+  /** The open chat by home and id; null for a new chat not saved yet. Always sent by main. */
+  active?: ChatRef | null
+  /**
+   * Every saved chat of every registered connection (hidden personal-use and
+   * removed connections included), newest first, archived ones included. Each
+   * opens and continues on the current connection. Always sent by main.
+   */
+  chats?: ProviderChat[]
 }
 
 export interface ChatState {

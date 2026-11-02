@@ -3,12 +3,15 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import type { ConversationSummary, HistoryState } from '../../shared/ipc'
+import { CONNECTION_ID } from '../../shared/ipc-connections'
 import {
   attachmentIdsIn,
   attachmentsOf,
   createConversationStore,
   isWellFormed,
+  trimOrigin,
   type ConversationStore,
+  type MessageOrigin,
   type StoredMessage,
 } from './conversation-store'
 import { readJsonFile, removeFile, writeJsonFile } from './json-file'
@@ -83,15 +86,16 @@ export interface Organize {
 const idSchema = z.string().regex(CONVERSATION_ID)
 const timeSchema = z.number().nonnegative()
 /**
- * Index format 2 adds pin, archive, project and fork fields to each chat. It
- * keeps `version: 1` on disk because the previous build accepts only that and
- * would otherwise rebuild its list from the chat files, losing renamed titles;
- * that build's parser drops the new fields and reads the rest unchanged. A
- * format-1 index (no `format`) reads as format 2 with every new field unset,
- * and is written as format 2 on the next change. A new field that is not
- * valid reads as unset; it never makes the whole index unreadable.
+ * Index format 2 adds pin, archive, project and fork fields to each chat;
+ * format 3 adds `lastConnection` (the connection of the chat's latest recorded
+ * reply). Both keep `version: 1` on disk because earlier builds accept only that
+ * and would otherwise rebuild their list from the chat files, losing renamed
+ * titles; their parsers drop the fields they do not know and read the rest
+ * unchanged. An older index reads as format 3 with every newer field unset, and
+ * is written as format 3 on the next change. A newer field that is not valid
+ * reads as unset; it never makes the whole index unreadable.
  */
-export const INDEX_FORMAT = 2
+export const INDEX_FORMAT = 3
 const lenient = <T extends z.ZodType>(schema: T) => schema.nullable().optional().catch(null)
 const entrySchema = z.object({
   id: idSchema,
@@ -104,6 +108,8 @@ const entrySchema = z.object({
   forkedFrom: lenient(
     z.object({ id: idSchema, atMessageIndex: z.number().int().positive().nullable() }),
   ),
+  // Display only: never part of a path, so an id this build does not register is kept.
+  lastConnection: lenient(z.string().regex(CONNECTION_ID)),
 })
 const indexSchema = z.object({
   version: z.literal(1),
@@ -130,13 +136,14 @@ export interface HistoryOptions {
 
 /** A summary without its unset optional fields, as the renderer and the index hold it. */
 function withoutUnset(entry: z.infer<typeof entrySchema>): ConversationSummary {
-  const { pinnedAt, archivedAt, projectId, forkedFrom, ...summary } = entry
+  const { pinnedAt, archivedAt, projectId, forkedFrom, lastConnection, ...summary } = entry
   return {
     ...summary,
     ...(pinnedAt != null ? { pinnedAt } : {}),
     ...(archivedAt != null ? { archivedAt } : {}),
     ...(projectId != null ? { projectId } : {}),
     ...(forkedFrom != null ? { forkedFrom } : {}),
+    ...(lastConnection != null ? { lastConnection } : {}),
   }
 }
 
@@ -156,6 +163,11 @@ function isPrompt(message: StoredMessage): boolean {
   if (message.role !== 'user') return false
   if (typeof message.content === 'string') return true
   return message.content.every((block) => block.type !== 'tool_result')
+}
+
+/** The connection of the latest recorded reply among the first `length` messages. */
+function lastConnectionOf(origin: readonly MessageOrigin[], length: number) {
+  return trimOrigin(origin, length).at(-1)?.connection
 }
 
 const byRecent = (a: ConversationSummary, b: ConversationSummary): number =>
@@ -231,6 +243,7 @@ class FileHistory implements ConversationHistory {
   private storeFor(initialId: string | null): ConversationStore {
     let id = initialId
     return {
+      id: () => id,
       load: async () => {
         const warning = this.takeWarning()
         if (id === null) return { messages: [], error: warning }
@@ -238,20 +251,23 @@ class FileHistory implements ConversationHistory {
         // A listed conversation always has messages: an empty one means its file is gone.
         const own = loaded.error ?? (loaded.messages.length === 0 ? MESSAGES.missing : null)
         const error = [warning, own].filter(Boolean).join(' ') || null
-        return { messages: loaded.messages, error }
+        return {
+          messages: loaded.messages,
+          error,
+          ...(loaded.origin ? { origin: loaded.origin } : {}),
+        }
       },
-      save: async (messages) => {
+      save: async (messages, origin = []) => {
         if (id === null) id = this.newId()
         const saving = id
-        await createConversationStore(this.file(saving)).save(messages)
+        await createConversationStore(this.file(saving)).save(messages, origin)
         const now = this.now()
         const existing = this.entries.get(saving)
-        this.entries.set(
-          saving,
-          existing
-            ? { ...existing, updatedAt: now }
-            : { id: saving, title: titleFrom(messages), createdAt: now, updatedAt: now },
-        )
+        const last = lastConnectionOf(origin, messages.length)
+        const entry: ConversationSummary = existing
+          ? { ...existing, updatedAt: now }
+          : { id: saving, title: titleFrom(messages), createdAt: now, updatedAt: now }
+        this.entries.set(saving, last ? { ...entry, lastConnection: last } : entry)
         // A draft's first save makes it the open conversation.
         if (initialId === null && this.active === null) this.active = saving
         await this.writeIndex()
@@ -368,14 +384,18 @@ class FileHistory implements ConversationHistory {
     const forkId = this.newId()
     const file = this.file(forkId)
     if (this.entries.has(forkId)) throw new Error('Could not fork the chat.')
-    await createConversationStore(file).save(structuredClone(messages))
+    // The copied replies keep their provenance; entries past the cut go with it.
+    const origin = trimOrigin(loaded.origin ?? [], messages.length)
+    await createConversationStore(file).save(structuredClone(messages), origin)
     const now = this.now()
+    const last = lastConnectionOf(origin, messages.length)
     this.entries.set(forkId, {
       id: forkId,
       title: sanitizeTitle(`Fork of ${source.title}`),
       createdAt: now,
       updatedAt: now,
       ...(source.projectId ? { projectId: source.projectId } : {}),
+      ...(last ? { lastConnection: last } : {}),
       forkedFrom: {
         id,
         atMessageIndex: messages.length < loaded.messages.length ? messages.length : null,

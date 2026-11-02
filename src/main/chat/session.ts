@@ -5,11 +5,13 @@ import type {
   ApprovalOrigin,
   ApprovalPrompt,
   ChatErrorCode,
+  ChatRef,
   ChatEvent,
   ChatState,
   HistoryState,
   SendResult,
 } from '../../shared/ipc'
+import type { ConnectionId } from '../../shared/ipc-connections'
 import type {
   AgentEvent,
   AgentTool,
@@ -20,8 +22,10 @@ import type {
 } from '../agent'
 import {
   attachmentsOf,
+  withOrigin,
   type AttachmentBlock,
   type ConversationStore,
+  type MessageOrigin,
   type StoredMessage,
 } from '../storage/conversation-store'
 import type { DocumentReader } from '../documents/types'
@@ -36,15 +40,19 @@ import {
   type AttachmentStoreLike,
   type PdfReading,
 } from './attachments'
+import { singleLibrary, type ChatLibrary } from './library'
 import { toTranscript } from './transcript'
 import { userCommandMessage } from './user-command'
 
 /** What a switch opens: a conversation, and what to record once it has loaded. */
 interface SwitchTarget {
+  /** The chat's home connection and its history (where it is saved). */
+  home: ConnectionId
+  history: ConversationHistory
   store: ConversationStore
+  /** The saved chat's id; null for a new chat. */
+  id: string | null
   commit: () => Promise<void>
-  /** Set by a provider switch: the new provider's history. */
-  history?: ConversationHistory
 }
 
 /** One agent run. `createAgent(...)` satisfies this. */
@@ -56,16 +64,34 @@ export interface AgentRunner {
    * turns out not to see images (Codex reads that from its catalog during the run).
    */
   readonly vision?: boolean
+  /** The model it asks, when known before the run (recorded as its replies' provenance). */
+  readonly model?: string
+}
+
+/** Who writes a run's replies, recorded in the chat file's `origin` (display only). */
+export interface RunOrigin {
+  connection: ConnectionId
+  model: string | null
 }
 
 export type RunnerResult =
-  | { ok: true; runner: AgentRunner }
+  | { ok: true; runner: AgentRunner; origin?: RunOrigin }
   | { ok: false; code: ChatErrorCode; message: string; resetsAt?: string }
 
 export interface ChatSessionDeps {
-  /** The current provider's saved conversations; the open one is loaded by `init`. */
+  /** The open chat's home history; the open one is loaded by `init`. */
   history: ConversationHistory
-  /** Builds an agent with the current API key, model and tools. */
+  /** `history`'s connection. Default: the library's current connection. */
+  home?: ConnectionId
+  /** The chat to open: a saved id of `history`, or null for a new chat. Default: its current one. */
+  openId?: string | null
+  /** Every connection's chats. Default: `history` alone (one connection). */
+  library?: ChatLibrary
+  /**
+   * Builds an agent for the *current* connection, with its key, model and tools: a new
+   * one for every run, so nothing provider-specific (Gemini thought signatures, ChatGPT
+   * reasoning items) outlives the run or reaches the saved chat.
+   */
   createRunner: (signal: AbortSignal) => Promise<RunnerResult>
   /** Streams an event to the renderer. */
   emit: (event: ChatEvent) => void
@@ -108,17 +134,27 @@ const toChatCode = (code: AgentErrorEvent['code']): ChatErrorCode => code
  * random id while the run is still going; stop, new chat, window close or
  * reload and quit all deny whatever is pending.
  *
- * Opening another conversation, New chat and provider switches all go
- * through `switchTo`: the send slot is reserved and the run stopped (its
- * approvals denied) synchronously, then the switch waits for the run to end
- * (it saves to the conversation it belongs to) before loading the next one.
+ * The open chat is separate from the current connection: it is saved to its
+ * home connection's history, while each run goes to whatever connection is
+ * current (`createRunner`). Opening another conversation, New chat and
+ * connection switches all go through `switchTo`: the send slot is reserved and
+ * the run stopped (its approvals denied) synchronously, then the switch waits
+ * for the run to end (it saves to the conversation it belongs to) before loading
+ * the next one. A connection switch with a saved chat open reopens that chat.
  */
 export class ChatSession {
   private conversation: StoredMessage[] = []
+  /** The open conversation's reply provenance (the chat file's `origin`). */
+  private origin: MessageOrigin[] = []
   /** Attachment ids in the open conversation whose stored file is gone. */
   private unavailable: ReadonlySet<string> = new Set()
+  private readonly library: ChatLibrary
+  /** The open chat's home connection, and its history. */
+  private home: ConnectionId
   private history: ConversationHistory
   private store: ConversationStore
+  /** The open chat's id, null while it is a new chat that was never saved. */
+  private openId: string | null
   private loadError: string | null = null
   private active: ActiveRun | null = null
   private readonly pending = new Map<string, PendingApproval>()
@@ -135,8 +171,16 @@ export class ChatSession {
     this.newId = deps.newId ?? randomUUID
     this.pins = deps.pins ?? new AttachmentPins()
     this.readPdf = deps.documents ? cachedPdfReading(deps.documents) : null
+    this.library = deps.library ?? singleLibrary(deps.history, deps.home)
+    this.home = deps.home ?? this.library.connection()
     this.history = deps.history
-    this.store = deps.history.current()
+    if (deps.openId === undefined) {
+      this.store = deps.history.current()
+      this.openId = deps.history.activeId
+    } else {
+      this.store = deps.openId === null ? deps.history.draft() : deps.history.open(deps.openId)
+      this.openId = deps.openId
+    }
   }
 
   /**
@@ -148,9 +192,10 @@ export class ChatSession {
     this.resets += 1
     const loaded = this.resetQueue.then(async () => {
       try {
-        const { messages, error } = await this.store.load()
+        const { messages, error, origin } = await this.store.load()
         const unavailable = await unavailableAttachments(messages, this.deps.attachments)
         this.conversation = messages
+        this.origin = origin ?? []
         this.unavailable = unavailable
         this.loadError = error
       } finally {
@@ -172,16 +217,32 @@ export class ChatSession {
 
   state(): ChatState {
     return {
-      items: toTranscript(this.conversation, this.unavailable),
+      items: toTranscript(this.conversation, this.unavailable, this.origin),
       running: this.running,
       loadError: this.loadError,
-      history: this.history.state(),
+      history: this.historyState(),
     }
   }
 
-  /** The current provider's saved conversations. */
+  /** The open chat by home and id; null for a new chat never saved. */
+  get openRef(): ChatRef | null {
+    const id = this.store.id?.() ?? this.openId
+    return id === null ? null : { provider: this.home, id }
+  }
+
+  /**
+   * The chat list: every connection's chats (`chats`), the open one (`active`), and the
+   * current connection's own chats as older renderers read them (`conversations`).
+   */
   historyState(): HistoryState {
-    return this.history.state()
+    const active = this.openRef
+    const own = this.library.loaded(this.library.connection())
+    return {
+      conversations: own?.state().conversations ?? [],
+      activeId: active?.id ?? null,
+      active,
+      chats: this.library.list(),
+    }
   }
 
   /** Every attachment id the open conversation references (still in use, even unsaved). */
@@ -237,6 +298,7 @@ export class ChatSession {
       checked = check
 
       try {
+        // Always the current connection's runner, whatever the chat's home.
         built = await this.deps.createRunner(controller.signal)
       } catch {
         built = { ok: false, code: 'internal', message: 'Could not start the agent.' }
@@ -283,7 +345,8 @@ export class ChatSession {
       text,
       ...(checked.attachments.length > 0 ? { attachments: checked.attachments } : {}),
     })
-    void this.execute(built.runner, id, controller, generation, stored, sent).finally(() => {
+    const run = { runId: id, controller, generation, origin: built.origin ?? null }
+    void this.execute(built.runner, run, stored, sent).finally(() => {
       this.denyPending(id)
       this.active = null
       release()
@@ -293,12 +356,16 @@ export class ChatSession {
 
   private async execute(
     runner: AgentRunner,
-    runId: string,
-    controller: AbortController,
-    generation: number,
+    run: {
+      runId: string
+      controller: AbortController
+      generation: number
+      origin: RunOrigin | null
+    },
     stored: StoredMessage[],
     sent: MessageParam[],
   ): Promise<void> {
+    const { runId, controller, generation } = run
     // The agent emits approval_requested synchronously right before calling
     // requestApproval, which lets the prompt name its tool call.
     let approvalToolUseId: string | null = null
@@ -330,7 +397,16 @@ export class ChatSession {
     // A New chat started meanwhile: this run's history belongs to the old conversation.
     if (generation === this.generation) {
       // A run only ever appends to the history it was given.
-      this.conversation = [...stored, ...result.conversation.slice(sent.length)]
+      const added = result.conversation.slice(sent.length)
+      this.conversation = [...stored, ...added]
+      // Its replies were written by the connection the run was built for.
+      if (added.length > 0 && run.origin)
+        this.origin = withOrigin(
+          this.origin,
+          stored.length,
+          run.origin.connection,
+          run.origin.model,
+        )
       await this.persist()
     }
     this.notify({ type: 'run_finished', runId, stopReason: result.stopReason })
@@ -587,70 +663,117 @@ export class ChatSession {
     if (active) await active.done
   }
 
-  /** Starts a new chat; the open one stays in the history. Nothing is saved until the first send. */
+  /**
+   * Starts a new chat on the current connection (its home once saved); the open one
+   * stays in the history. Nothing is saved until the first send.
+   */
   newChat(): Promise<ChatState> {
-    return this.switchTo(() => {
-      const history = this.history
-      return { store: history.draft(), commit: () => history.setActive(null) }
-    })
-  }
-
-  /**
-   * Opens a saved conversation of the current provider. A reply still running
-   * is stopped first, as for a provider switch: it is saved to the
-   * conversation it belongs to, and its approvals are denied.
-   */
-  open(id: unknown): Promise<ChatState> {
-    return this.switchTo(() => {
-      const history = this.history
-      if (typeof id !== 'string' || !history.has(id)) throw new Error('That chat no longer exists.')
-      return { store: history.open(id), commit: () => history.setActive(id) }
-    })
-  }
-
-  /**
-   * Switches to another provider's history and opens its last conversation, or
-   * the saved conversation `id` of that history.
-   */
-  switchHistory(
-    history: ConversationHistory,
-    commit: () => Promise<void>,
-    id?: string,
-  ): Promise<ChatState> {
-    return this.switchTo(() => {
-      if (id === undefined) return { store: history.current(), commit, history }
-      if (!history.has(id)) throw new Error('That chat no longer exists.')
+    return this.switchTo(async () => {
+      const home = this.library.connection()
+      const history = await this.library.historyFor(home)
       return {
-        store: history.open(id),
-        commit: async () => {
-          await commit()
-          await history.setActive(id)
-        },
+        home,
         history,
+        store: history.draft(),
+        id: null,
+        commit: () => this.commitDraft(history),
       }
     })
   }
 
-  /** The open provider's chat list changed outside the session (a pin, archive or move). */
+  private async commitDraft(history: ConversationHistory): Promise<void> {
+    await history.setActive(null)
+    await this.library.remember(null)
+  }
+
+  /**
+   * Opens a saved chat of any home connection and continues it on the current one.
+   * A reply still running is stopped first: it is saved to the conversation it
+   * belongs to, and its approvals are denied.
+   */
+  openChat(chat: ChatRef): Promise<ChatState> {
+    return this.switchTo(async () => {
+      const history = await this.library.historyFor(chat.provider)
+      if (!history.has(chat.id)) throw new Error('That chat no longer exists.')
+      return {
+        home: chat.provider,
+        history,
+        store: history.open(chat.id),
+        id: chat.id,
+        commit: async () => {
+          // The home's own activeId too, for older builds that read only that.
+          await history.setActive(chat.id)
+          await this.library.remember({ provider: chat.provider, id: chat.id })
+        },
+      }
+    })
+  }
+
+  /** Opens a saved chat of the current connection's own history (older renderers). */
+  open(id: unknown): Promise<ChatState> {
+    if (typeof id !== 'string') return Promise.reject(new Error('That chat no longer exists.'))
+    return this.openChat({ provider: this.library.connection(), id })
+  }
+
+  /**
+   * Changes the connection replies go to, through `switchTo`: the run is stopped
+   * and its approvals denied at once, the switch waits for it to end, then
+   * `commit` makes `next` current. A saved chat that is open is reopened and
+   * continues on `next`; a new chat becomes a new chat of `next`.
+   */
+  switchConnection(next: ConnectionId, commit: () => Promise<void>): Promise<ChatState> {
+    return this.switchTo(async () => {
+      // Opened before the commit, so the list never lacks the current connection's chats.
+      const nextHistory = await this.library.historyFor(next)
+      // Read after the run ended: a first send may have just saved a new chat.
+      const id = this.store.id?.() ?? this.openId
+      if (id !== null && this.history.has(id)) {
+        return { home: this.home, history: this.history, store: this.history.open(id), id, commit }
+      }
+      return {
+        home: next,
+        history: nextHistory,
+        store: nextHistory.draft(),
+        id: null,
+        commit: async () => {
+          await commit()
+          await this.commitDraft(nextHistory)
+        },
+      }
+    })
+  }
+
+  /** The chat list changed outside the session (a pin, archive, move or fork). */
   historyChanged(): void {
     this.notifyHistory()
   }
 
-  async rename(id: string, title: string): Promise<HistoryState> {
-    await this.history.rename(id, title)
+  async renameChat(chat: ChatRef, title: string): Promise<HistoryState> {
+    const history = await this.library.historyFor(chat.provider)
+    await history.rename(chat.id, title)
     this.notifyHistory()
-    return this.history.state()
+    return this.historyState()
   }
 
-  /** Deletes a saved conversation. Deleting the open one first starts a new chat. */
-  async remove(id: string): Promise<HistoryState> {
-    const history = this.history
-    if (!history.has(id)) return this.history.state()
-    if (history.activeId === id) await this.newChat()
-    // Reopened (or the provider changed) while the new chat started: leave it be.
-    if (this.history !== history || history.activeId === id) return this.history.state()
+  /** Renames a chat of the current connection's own history (older renderers). */
+  rename(id: string, title: string): Promise<HistoryState> {
+    return this.renameChat({ provider: this.library.connection(), id }, title)
+  }
+
+  private isOpen(chat: ChatRef): boolean {
+    const active = this.openRef
+    return active !== null && active.provider === chat.provider && active.id === chat.id
+  }
+
+  /** Deletes a saved chat of any home. Deleting the open one first starts a new chat. */
+  async removeChat(chat: ChatRef): Promise<HistoryState> {
+    const history = await this.library.historyFor(chat.provider)
+    if (!history.has(chat.id)) return this.historyState()
+    if (this.isOpen(chat)) await this.newChat()
+    // Reopened while the new chat started: leave it be.
+    if (this.isOpen(chat)) return this.historyState()
     try {
-      await history.remove(id)
+      await history.remove(chat.id)
     } catch (error) {
       this.deps.onSaveError?.(error)
       this.notify({
@@ -659,14 +782,20 @@ export class ChatSession {
       })
     }
     this.notifyHistory()
-    return this.history.state()
+    return this.historyState()
+  }
+
+  /** Deletes a chat of the current connection's own history (older renderers). */
+  remove(id: string): Promise<HistoryState> {
+    return this.removeChat({ provider: this.library.connection(), id })
   }
 
   /**
    * Reserves the send slot, stops the run and denies its approvals
    * synchronously, then, in turn with other switches, waits for the run to
-   * end and opens `prepare()`'s conversation. A load or commit failure leaves
-   * the current conversation open.
+   * end and opens `prepare()`'s conversation. The generation bump means a
+   * runner or save of the run before can never touch the next one. A load or
+   * commit failure leaves the current conversation open.
    */
   private switchTo(prepare: () => SwitchTarget | Promise<SwitchTarget>): Promise<ChatState> {
     this.resets += 1
@@ -680,9 +809,12 @@ export class ChatSession {
         const unavailable = await unavailableAttachments(loaded.messages, this.deps.attachments)
         await next.commit()
         this.generation += 1
-        if (next.history) this.history = next.history
+        this.home = next.home
+        this.history = next.history
         this.store = next.store
+        this.openId = next.id
         this.conversation = loaded.messages
+        this.origin = loaded.origin ?? []
         this.unavailable = unavailable
         this.loadError = loaded.error
         this.notify({ type: 'conversation_reset', state: this.state() })
@@ -701,12 +833,18 @@ export class ChatSession {
   }
 
   private notifyHistory(): void {
-    this.notify({ type: 'history_changed', history: this.history.state() })
+    this.notify({ type: 'history_changed', history: this.historyState() })
   }
 
   private async persist(): Promise<void> {
     try {
-      await this.store.save(this.conversation)
+      await this.store.save(this.conversation, this.origin)
+      // A new chat's first save gives it an id: it is the open chat from now on.
+      const id = this.store.id?.() ?? this.openId
+      if (id !== this.openId) {
+        this.openId = id
+        if (id !== null) await this.library.remember({ provider: this.home, id })
+      }
     } catch (error) {
       this.deps.onSaveError?.(error)
       this.notify({

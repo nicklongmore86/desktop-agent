@@ -7,12 +7,14 @@
  * in src/main/ipc-projects.ts.
  *
  * Projects are global: one list (userData/projects.json) for every provider. A
- * chat stays in its provider's history and names its project by id, so a project
- * can hold chats of several providers. Opening another provider's chat switches
- * to that provider first, as Settings does.
+ * chat stays in its home connection's history and names its project by id, so a
+ * project can hold chats of several connections. Opening any chat continues it
+ * on the current connection: it never switches connection.
  */
-import type { ConversationSummary, ProviderStatus } from './ipc'
+import type { ChatRef, ProviderChat, ProviderStatus } from './ipc'
 import type { ConnectionId } from './ipc-connections'
+
+export type { ChatRef, ProviderChat } from './ipc'
 
 export const projectsChannels = {
   projectsState: 'projects:state',
@@ -45,22 +47,15 @@ export interface Project {
   icon: ProjectIcon | null
 }
 
-/** A saved chat of any provider. */
-export interface ChatRef {
-  provider: ConnectionId
-  id: string
-}
-
-export interface ProviderChat extends ConversationSummary {
-  provider: ConnectionId
-}
-
 export interface ProjectsState {
   /** The provider that is open; its own chats come with the chat history (HistoryState). */
   provider: ConnectionId
   /** In the order the user gave them. */
   projects: Project[]
-  /** Other providers' chats that are pinned or filed in a project (archived ones included). */
+  /**
+   * Other home connections' chats that are pinned or filed in a project (archived
+   * ones included). The full shared list is HistoryState.chats.
+   */
   others: ProviderChat[]
 }
 
@@ -85,9 +80,10 @@ export interface ProjectsApi {
     /** Files the chat in a project, or takes it out of its project (null). */
     move: (chat: ChatRef, projectId: string | null) => Promise<ProjectsState>
     /**
-     * Copies the chat's messages and tool results into a new chat of the same
-     * provider ("Fork of …"); approvals are never copied. `prompts`: keep the first
-     * that many prompts and their replies (null: the whole chat).
+     * Copies the chat's messages and tool results into a new chat with the same
+     * home ("Fork of …"); approvals are never copied, and the reply provenance is
+     * kept for the copied part. `prompts`: keep the first that many prompts and
+     * their replies (null: the whole chat).
      */
     fork: (
       chat: ChatRef,
@@ -97,8 +93,9 @@ export interface ProjectsApi {
     /** Deletes the chat for good. */
     remove: (chat: ChatRef) => Promise<ProjectsState>
     /**
-     * Opens a chat of any provider: another provider's chat switches provider
-     * (stopping a running reply, as a switch in Settings does).
+     * Opens a chat of any home connection and continues it on the current one; it
+     * never switches connection. A running reply is stopped first (its approvals
+     * denied). Answers with the current connection's status.
      */
     open: (chat: ChatRef) => Promise<ProviderStatus>
   }

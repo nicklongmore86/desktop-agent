@@ -16,6 +16,11 @@ export interface ConnectionsService {
   list: () => ConnectionInfo[]
   /** True for a registered connection the user can choose now. */
   available: (id: ConnectionId) => boolean
+  /**
+   * True for any registered connection, hidden personal-use ones included: a chat's
+   * home may be one, and its chats stay listed and open on the current connection.
+   */
+  registered: (id: ConnectionId) => boolean
   /** The set-up connections, the current one, and whether personal-use ones are shown. */
   state: () => ConnectionsState
   /** A registered connection's status, whether or not chats go to it. Never throws. */

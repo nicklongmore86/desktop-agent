@@ -6,6 +6,7 @@ import {
   type AttachmentKind,
   type AttachmentRef,
 } from '../../shared/attachments'
+import { CONNECTION_ID, type ConnectionId } from '../../shared/ipc-connections'
 import { readJsonFile, removeFile, writeJsonFile } from './json-file'
 import { sanitizeTitle } from './plain-text'
 
@@ -26,16 +27,112 @@ export interface StoredMessage {
   content: string | StoredBlock[]
 }
 
+/**
+ * Which connection (and model, when known) wrote the messages from `fromIndex`
+ * up to the next entry's `fromIndex`, or the end. Display only: never a path,
+ * never sent to a model.
+ */
+export interface MessageOrigin {
+  fromIndex: number
+  connection: ConnectionId
+  model: string | null
+}
+
+/**
+ * A chat file. `origin` was added later at the top level, never on messages: older
+ * builds pass messages to the model APIs as they are, so an extra key there would be
+ * sent and refused. Older builds ignore it (and drop it when they save).
+ */
 interface ConversationFile {
   version: 1
   messages: StoredMessage[]
+  origin?: MessageOrigin[]
+}
+
+export interface LoadedConversation {
+  messages: StoredMessage[]
+  error: string | null
+  /** Reply provenance; absent or [] when none was recorded. */
+  origin?: MessageOrigin[]
 }
 
 export interface ConversationStore {
   /** The saved history, or an empty one plus `error` when the file cannot be read. */
-  load: () => Promise<{ messages: StoredMessage[]; error: string | null }>
-  save: (messages: StoredMessage[]) => Promise<void>
+  load: () => Promise<LoadedConversation>
+  /** `origin`: the reply provenance to keep with it (left out: none). */
+  save: (messages: StoredMessage[], origin?: readonly MessageOrigin[]) => Promise<void>
   clear: () => Promise<void>
+  /** The saved chat's id, once it has one (null for a draft never saved). Optional for tests. */
+  id?: () => string | null
+}
+
+/** A model id as provenance keeps it: printable, no spaces, bounded. */
+const ORIGIN_MODEL = /^[\x21-\x7e]{1,256}$/
+/** At most one entry per message: anything longer is not something this app wrote. */
+const MAX_ORIGIN = 10_000
+
+/**
+ * A saved `origin`, read leniently: anything malformed (a bad entry, indexes out of
+ * order or past the messages) reads as no provenance at all, never as an unreadable chat.
+ */
+export function parseOrigin(value: unknown, messages: number): MessageOrigin[] {
+  if (!Array.isArray(value) || value.length > MAX_ORIGIN) return []
+  const origin: MessageOrigin[] = []
+  for (const entry of value) {
+    if (!isObject(entry)) return []
+    const { fromIndex, connection, model } = entry
+    const previous = origin.at(-1)?.fromIndex ?? -1
+    if (
+      typeof fromIndex !== 'number' ||
+      !Number.isSafeInteger(fromIndex) ||
+      fromIndex <= previous ||
+      fromIndex >= messages ||
+      typeof connection !== 'string' ||
+      !CONNECTION_ID.test(connection) ||
+      !(
+        model === null ||
+        model === undefined ||
+        (typeof model === 'string' && ORIGIN_MODEL.test(model))
+      )
+    )
+      return []
+    origin.push({ fromIndex, connection, model: model ?? null })
+  }
+  return origin
+}
+
+/** The provenance of the first `length` messages (a fork or a cut keeps only those). */
+export function trimOrigin(origin: readonly MessageOrigin[], length: number): MessageOrigin[] {
+  return origin.filter((entry) => entry.fromIndex < length).map((entry) => ({ ...entry }))
+}
+
+/**
+ * `origin` plus the messages from `fromIndex` on, written by `connection`/`model`.
+ * Entries at or past `fromIndex` are replaced; the same writer as the last entry adds none.
+ */
+export function withOrigin(
+  origin: readonly MessageOrigin[],
+  fromIndex: number,
+  connection: ConnectionId,
+  model: string | null,
+): MessageOrigin[] {
+  const kept = trimOrigin(origin, fromIndex)
+  const last = kept.at(-1)
+  if (last && last.connection === connection && last.model === model) return kept
+  return [...kept, { fromIndex, connection, model }]
+}
+
+/** The provenance entry that covers message `index`, if any. */
+export function originAt(
+  origin: readonly MessageOrigin[],
+  index: number,
+): MessageOrigin | undefined {
+  let found: MessageOrigin | undefined
+  for (const entry of origin) {
+    if (entry.fromIndex > index) break
+    found = entry
+  }
+  return found
 }
 
 type Obj = Record<string, unknown>
@@ -328,7 +425,14 @@ export function createConversationStore(file: string): ConversationStore {
       try {
         const parsed = await readJsonFile(file)
         if (parsed === undefined) return { messages: [], error: null }
-        if (isConversationFile(parsed)) return { messages: parsed.messages, error: null }
+        if (isConversationFile(parsed)) {
+          const origin = parseOrigin(parsed.origin, parsed.messages.length)
+          return {
+            messages: parsed.messages,
+            error: null,
+            ...(origin.length > 0 ? { origin } : {}),
+          }
+        }
       } catch {
         // Fall through: an unreadable file means a fresh conversation, not a crash.
       }
@@ -337,7 +441,14 @@ export function createConversationStore(file: string): ConversationStore {
         error: 'The saved conversation could not be read, so a new one was started.',
       }
     },
-    save: (messages) => writeJsonFile(file, { version: 1, messages } satisfies ConversationFile),
+    save: (messages, origin = []) => {
+      const kept = trimOrigin(origin, messages.length)
+      return writeJsonFile(file, {
+        version: 1,
+        messages,
+        ...(kept.length > 0 ? { origin: kept } : {}),
+      } satisfies ConversationFile)
+    },
     clear: () => removeFile(file),
   }
 }

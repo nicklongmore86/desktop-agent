@@ -1,16 +1,26 @@
 // Helpers for the chat session tests. Not imported by app code.
 import { vi } from 'vitest'
-import type { ConversationStore, StoredMessage } from '../storage/conversation-store'
+import type { ConversationStore, MessageOrigin, StoredMessage } from '../storage/conversation-store'
+import type { ChatRef } from '../../shared/ipc'
 import type { ConversationHistory } from '../storage/history-store'
+import type { ChatLibrary } from './library'
 
 export type MemoryStore = ConversationStore & { saved: () => StoredMessage[] }
 
 export function memoryStore(initial: StoredMessage[] = []): MemoryStore {
   let saved = structuredClone(initial)
+  let origin: MessageOrigin[] = []
   return {
-    load: vi.fn(() => Promise.resolve({ messages: structuredClone(saved), error: null })),
-    save: vi.fn((messages: StoredMessage[]) => {
+    load: vi.fn(() =>
+      Promise.resolve({
+        messages: structuredClone(saved),
+        error: null,
+        ...(origin.length > 0 ? { origin: structuredClone(origin) } : {}),
+      }),
+    ),
+    save: vi.fn((messages: StoredMessage[], next: readonly MessageOrigin[] = []) => {
       saved = structuredClone(messages)
+      origin = structuredClone([...next])
       return Promise.resolve()
     }),
     clear: vi.fn(() => {
@@ -77,4 +87,34 @@ export function memoryHistory(current: ConversationStore = memoryStore()): Memor
     unfile: vi.fn(() => Promise.resolve()),
     fork: vi.fn(() => Promise.reject(new Error('Forking is not supported here.'))),
   }
+}
+
+/**
+ * A chat library over in-memory histories, one per connection id. `current` is the
+ * connection replies go to; `remembered` records every remember() call.
+ */
+export function memoryLibrary(
+  histories: Record<string, ConversationHistory>,
+  current: string,
+): ChatLibrary & { current: string; remembered: (ChatRef | null)[] } {
+  const remembered: (ChatRef | null)[] = []
+  const library = {
+    current,
+    remembered,
+    connection: () => library.current,
+    historyFor: (home: string) => {
+      const history = histories[home]
+      return history ? Promise.resolve(history) : Promise.reject(new Error('Unknown chat.'))
+    },
+    loaded: (home: string) => histories[home] ?? null,
+    list: () =>
+      Object.entries(histories).flatMap(([home, history]) =>
+        history.state().conversations.map((chat) => ({ ...chat, provider: home })),
+      ),
+    remember: (chat: ChatRef | null) => {
+      remembered.push(chat)
+      return Promise.resolve()
+    },
+  }
+  return library
 }
