@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AttachmentRef } from '../../shared/attachments'
 import type { ChatEvent, SendResult } from '../../shared/ipc'
 import { GEMINI_FREE_TIER_NOTICE } from '../llm/gemini'
 import type { MessageOrigin, StoredMessage } from '../storage/conversation-store'
 import { openHistory, type ConversationHistory } from '../storage/history-store'
+import type { AttachmentStoreLike } from './attachments'
 import { ChatSession, type AgentRunner } from './session'
 import { sharingNeed, withSharing, type SharingConnection } from './sharing'
 import { memoryLibrary } from './test-support'
@@ -55,7 +57,7 @@ describe('sharingNeed: when a chat needs confirmation before it goes elsewhere',
       destination: 'OpenAI · API',
       reasons: ['local-to-cloud'],
       sources: ['Ollama · Local'],
-      includes: { messages: 4, toolOutput: true, attachments: 0 },
+      includes: { messages: 4, toolOutput: true, attachments: 0, attachmentsInMessage: 0 },
     })
     expect(need('anthropic-api', by('lmstudio'))?.reasons).toEqual(['local-to-cloud'])
     expect(need('chatgpt-plan', by('ollama'))?.destination).toBe('ChatGPT · Plan')
@@ -123,7 +125,7 @@ describe('sharingNeed: when a chat needs confirmation before it goes elsewhere',
     const check = { origin: by('ollama'), home: 'ollama', target: 'openai-api', sharing: [] }
     expect(
       sharingNeed({ ...check, conversation: attached, describe: describeConnection })?.includes,
-    ).toEqual({ messages: 2, toolOutput: false, attachments: 1 })
+    ).toEqual({ messages: 2, toolOutput: false, attachments: 1, attachmentsInMessage: 0 })
     expect(sharingNeed({ ...check, conversation: [], describe: describeConnection })).toBeNull()
   })
 
@@ -225,6 +227,7 @@ async function session(w: World, home: string, current: string) {
     promptApproval: () => {},
     newId: () => `id-${String(++n)}`,
     describeConnection,
+    attachments: STORE,
   })
   await chatSession.init()
   return { chat: chatSession, library, events, runs, createRunner }
@@ -239,7 +242,96 @@ const refused = (result: SendResult) => {
   return result.sharing
 }
 
+/** Files the user attached this session (the store issued their ids). */
+const file = (letter: string, name: string): AttachmentRef => ({
+  id: letter.repeat(64),
+  name,
+  kind: 'text',
+  mime: 'text/plain',
+  size: 5,
+})
+const FILES = [file('a', 'a.txt'), file('b', 'b.txt'), file('c', 'c.txt')]
+const [FILE_A, FILE_B, FILE_C] = FILES as [AttachmentRef, AttachmentRef, AttachmentRef]
+const STORE: AttachmentStoreLike = {
+  has: (id) => Promise.resolve(FILES.some((f) => f.id === id)),
+  describe: (id) => Promise.resolve(FILES.find((f) => f.id === id) ?? null),
+  isIssued: (id) => FILES.some((f) => f.id === id),
+  read: () => Promise.resolve(new TextEncoder().encode('hello')),
+}
+/** `chat` with FILE_C attached to its first prompt. */
+const chatWithFile: StoredMessage[] = [
+  {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'Summarise notes.txt' },
+      { type: 'attachment', ...FILE_C },
+    ],
+  },
+  ...chat.slice(1),
+]
+
 describe('ChatSession: sending a chat to another vendor', () => {
+  it('names files attached to this message as well as earlier ones', async () => {
+    const w = await world('ollama', chatWithFile, by('ollama'))
+    const { chat: s, createRunner } = await session(w, 'ollama', 'openai-api')
+    const prompt = refused(await s.send('Continue', [FILE_A.id]))
+    expect(prompt.includes).toEqual({
+      messages: 4,
+      toolOutput: true,
+      attachments: 2,
+      attachmentsInMessage: 1,
+    })
+    expect(createRunner).not.toHaveBeenCalled()
+  })
+
+  it('asks for an attachments-only send, counting its files', async () => {
+    const w = await world('ollama', chat, by('ollama'))
+    const { chat: s, createRunner, runs } = await session(w, 'ollama', 'openai-api')
+    const prompt = refused(await s.send('', [FILE_A.id, FILE_B.id]))
+    expect(prompt.includes).toMatchObject({ attachments: 2, attachmentsInMessage: 2 })
+    expect(createRunner).not.toHaveBeenCalled()
+    expect(await s.confirmSharing(prompt.id)).toEqual({ ok: true })
+    expect(await s.send('', [FILE_A.id, FILE_B.id])).toEqual({ ok: true })
+    await s.idle()
+    expect(runs).toHaveLength(1)
+  })
+
+  it('checks the attachments before asking: a refused file is refused, not prompted for', async () => {
+    const w = await world('ollama', chat, by('ollama'))
+    const { chat: s } = await session(w, 'ollama', 'openai-api')
+    expect(await s.send('Continue', ['f'.repeat(64)])).toMatchObject({
+      ok: false,
+      code: 'invalid_request',
+    })
+  })
+
+  it('a confirmation covers only the send it was shown for', async () => {
+    const w = await world('ollama', chat, by('ollama'))
+    const before = await readFile(chatFile(w, 'ollama'), 'utf8')
+    const { chat: s, createRunner, runs } = await session(w, 'ollama', 'openai-api')
+    const prompt = refused(await s.send('Continue', [FILE_A.id]))
+    expect(await s.confirmSharing(prompt.id)).toEqual({ ok: true })
+    // Confirming alone records nothing: the chat file is unchanged until that send goes.
+    expect(await readFile(chatFile(w, 'ollama'), 'utf8')).toBe(before)
+    // Another attachment set, more files, none, or other text: asked again.
+    const other = refused(await s.send('Continue', [FILE_B.id]))
+    expect(other.includes).toMatchObject({ attachments: 1, attachmentsInMessage: 1 })
+    expect(await s.confirmSharing(other.id)).toEqual({ ok: true })
+    refused(await s.send('Continue', [FILE_B.id, FILE_A.id]))
+    refused(await s.send('Continue'))
+    refused(await s.send('Something else', [FILE_A.id]))
+    expect(createRunner).not.toHaveBeenCalled()
+    // The send that was confirmed last goes, once confirmed again.
+    const last = refused(await s.send('Continue', [FILE_A.id]))
+    expect(await s.confirmSharing(last.id)).toEqual({ ok: true })
+    expect(await s.send('Continue', [FILE_A.id])).toEqual({ ok: true })
+    await s.idle()
+    expect(runs).toHaveLength(1)
+    expect((await readChat(w, 'ollama'))['sharing']).toEqual([
+      { connection: 'openai-api', through: 5 },
+    ])
+  })
+
   it('refuses local → cloud in main: no runner is built, nothing is sent or saved', async () => {
     const w = await world('ollama', chat, by('ollama'))
     const before = await readFile(chatFile(w, 'ollama'), 'utf8')
@@ -251,7 +343,7 @@ describe('ChatSession: sending a chat to another vendor', () => {
       connection: 'openai-api',
       destination: 'OpenAI · API',
       reasons: ['local-to-cloud'],
-      includes: { messages: 4, toolOutput: true, attachments: 0 },
+      includes: { messages: 4, toolOutput: true, attachments: 0, attachmentsInMessage: 0 },
     })
     expect(result.ok ? '' : result.message).toBe(
       'Confirm before this chat is sent to OpenAI · API.',

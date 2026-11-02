@@ -5,15 +5,27 @@ import { plainText } from '../plain-text'
 const count = (n: number, one: string, many: string): string =>
   `${String(n)} ${n === 1 ? one : many}`
 
+/** The attached files that go: earlier prompts' and this message's. */
+export function attachedItem(attachments: number, inMessage: number): string | null {
+  if (attachments <= 0) return null
+  const files = count(attachments, 'attached file', 'attached files')
+  if (inMessage <= 0) return `${files} from earlier prompts`
+  if (inMessage >= attachments) return `${files} in this message`
+  return `${files}, including ${String(inMessage)} in this message`
+}
+
 /** What will be sent, as a list: earlier messages, tool output, attachments. */
 function includedItems(prompt: SharingPrompt): string[] {
   const { messages, toolOutput, attachments } = prompt.includes
+  // Older mains did not send it: their count was earlier prompts' files only.
+  const inMessage = Number.isFinite(prompt.includes.attachmentsInMessage)
+    ? prompt.includes.attachmentsInMessage
+    : 0
+  const attached = attachedItem(attachments, inMessage)
   return [
     `${count(messages, 'earlier message', 'earlier messages')} (your prompts and the replies)`,
     ...(toolOutput ? ['File contents and command output the agent read in this chat'] : []),
-    ...(attachments > 0
-      ? [`${count(attachments, 'attached file', 'attached files')} from earlier prompts`]
-      : []),
+    ...(attached ? [attached] : []),
   ]
 }
 

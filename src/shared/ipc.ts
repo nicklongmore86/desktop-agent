@@ -386,14 +386,16 @@ export interface SharingPrompt {
   reasons: SharingReason[]
   /** Labels of the connections that wrote the earlier content ("Ollama · Local"). */
   sources: string[]
-  /** What would be sent along with the new prompt. */
+  /** What would be sent: the earlier content, and this message's attachments. */
   includes: {
     /** Earlier messages (prompts and replies). */
     messages: number
     /** Earlier tool calls and their output (file contents, command output). */
     toolOutput: boolean
-    /** Files attached to earlier prompts. */
+    /** Every attached file that would be sent: earlier prompts' and this message's. */
     attachments: number
+    /** How many of `attachments` are attached to the message being sent. */
+    attachmentsInMessage: number
   }
   /** Shown for 'gemini-free-tier': the same notice Settings shows for the connection. */
   notice?: { title: string; text: string }

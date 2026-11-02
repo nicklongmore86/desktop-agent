@@ -72,6 +72,10 @@ function delaySeconds(value: unknown): number | undefined {
   return Number.isFinite(seconds) && seconds >= 0 && seconds < 7 * 86_400 ? seconds : undefined
 }
 
+/** Gemini's input-token-limit refusal: the request is longer than the model's context. */
+const INPUT_TOO_LONG =
+  /\binput token count\b[^.]*\bexceeds the maximum\b|\bexceeds the (?:model's )?input token limit\b/i
+
 /** Maps an HTTP error response (status and parsed body) to a GeminiError. */
 export function httpError(
   httpStatus: number,
@@ -101,11 +105,10 @@ export function httpError(
       'authentication',
       'Gemini rejected the API key. Check or replace it in settings.',
     )
-  // "The input token count (N) exceeds the maximum number of tokens allowed (M)." Matched only.
-  if (
-    (httpStatus === 400 || httpStatus === 413) &&
-    /token count|exceeds the maximum number of tokens|too long|context window/i.test(raw)
-  )
+  // "The input token count (N) exceeds the maximum number of tokens allowed (M)." Only the
+  // input-token limit: other 400s that mention token counts (max_output_tokens, a
+  // thinking budget) stay generic validation errors.
+  if ((httpStatus === 400 || httpStatus === 413) && INPUT_TOO_LONG.test(raw))
     return new GeminiError(
       'context_too_long',
       'This chat is too long for this Gemini model. Start a new chat or fork from a later prompt.',

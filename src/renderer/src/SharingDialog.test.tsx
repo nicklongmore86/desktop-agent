@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { SendResult, SharingPrompt } from '../../shared/ipc'
 import { ApiContext } from './api'
 import { App } from './App'
+import { attachedItem } from './components/SharingDialog'
 import { fakeApi } from './test/fake-api'
 
 const PROMPT: SharingPrompt = {
@@ -13,7 +14,7 @@ const PROMPT: SharingPrompt = {
   destination: 'OpenAI · API',
   reasons: ['local-to-cloud'],
   sources: ['Ollama · Local'],
-  includes: { messages: 6, toolOutput: true, attachments: 2 },
+  includes: { messages: 6, toolOutput: true, attachments: 2, attachmentsInMessage: 1 },
 }
 const REFUSED: SendResult = {
   ok: false,
@@ -52,7 +53,7 @@ describe('SharingDialog: main refused a send to another vendor', () => {
     expect(dialog.textContent).toContain('OpenAI · API')
     expect(dialog.textContent).toContain('6 earlier messages')
     expect(dialog.textContent).toContain('File contents and command output')
-    expect(dialog.textContent).toContain('2 attached files')
+    expect(dialog.textContent).toContain('2 attached files, including 1 in this message')
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
     // No error banner while it asks.
     expect(screen.queryByRole('alert')).toBeNull()
@@ -130,5 +131,14 @@ describe('SharingDialog: main refused a send to another vendor', () => {
     const backdrop = dialog.parentElement as HTMLElement
     expect(backdrop.hidden).toBe(true)
     expect(backdrop.hasAttribute('inert')).toBe(true)
+  })
+})
+
+describe('SharingDialog: attached files', () => {
+  it('says which files are in this message and which are earlier', () => {
+    expect(attachedItem(0, 0)).toBeNull()
+    expect(attachedItem(2, 0)).toBe('2 attached files from earlier prompts')
+    expect(attachedItem(1, 1)).toBe('1 attached file in this message')
+    expect(attachedItem(2, 1)).toBe('2 attached files, including 1 in this message')
   })
 })

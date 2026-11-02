@@ -610,7 +610,7 @@ it('refuses to send a local chat to a cloud connection until the user confirms, 
       destination: 'Claude · API',
       reasons: ['local-to-cloud'],
       sources: [expect.stringContaining('Ollama')],
-      includes: { messages: 4, toolOutput: true, attachments: 0 },
+      includes: { messages: 4, toolOutput: true, attachments: 0, attachmentsInMessage: 0 },
     },
   })
   expect(runner).not.toHaveBeenCalled()

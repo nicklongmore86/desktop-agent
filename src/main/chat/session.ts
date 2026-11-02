@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages'
 import type { AttachmentRef } from '../../shared/attachments'
 import type {
@@ -121,12 +121,26 @@ export interface ChatSessionDeps {
   describeConnection?: DescribeConnection
 }
 
-/** The sharing prompt a refused send issued: only it can be confirmed, and only unchanged. */
+/**
+ * The sharing prompt a refused send issued: only it can be confirmed, only unchanged, and
+ * only for the send it described (`send`: its text and attachments, see sendKey).
+ */
 interface PendingSharing {
   id: string
   connection: ConnectionId
   generation: number
   length: number
+  send: string
+}
+
+/**
+ * What identifies one send's content: its text and the ids of its attachments, in order.
+ * A confirmation covers only the send it was shown for.
+ */
+function sendKey(text: string, attachments: readonly AttachmentRef[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify([text, attachments.map(({ id }) => id)]))
+    .digest('hex')
 }
 
 interface PendingApproval {
@@ -140,6 +154,23 @@ interface ActiveRun {
   origin: ApprovalOrigin
   controller: AbortController
   done: Promise<void>
+}
+
+/** Whether `confirmed` is for this send: the same connection, chat, messages and content. */
+function isSameSend(
+  confirmed: PendingSharing | null,
+  connection: ConnectionId,
+  generation: number,
+  length: number,
+  send: string,
+): boolean {
+  return (
+    confirmed !== null &&
+    confirmed.connection === connection &&
+    confirmed.generation === generation &&
+    confirmed.length === length &&
+    confirmed.send === send
+  )
 }
 
 // Compile-time check that every agent error code is one the UI knows.
@@ -168,6 +199,11 @@ export class ChatSession {
   /** The open chat's confirmations to send it to other connections (the chat file's `sharing`). */
   private sharing: SharingConfirmation[] = []
   private pendingSharing: PendingSharing | null = null
+  /**
+   * A confirmed prompt not yet used: the one send it described may go. Recorded in
+   * `sharing` (and saved) once that send's prompt is in the conversation.
+   */
+  private confirmedSharing: PendingSharing | null = null
   /** Attachment ids in the open conversation whose stored file is gone. */
   private unavailable: ReadonlySet<string> = new Set()
   private readonly library: ChatLibrary
@@ -288,16 +324,7 @@ export class ChatSession {
       return { ok: false, code: 'busy', message: 'Chat is busy. Try again in a moment.' }
     if (this.active)
       return { ok: false, code: 'busy', message: 'Wait for the current reply, or stop it.' }
-    // Before anything else: the chat goes nowhere new until the user has confirmed it.
     const target = this.library.connection()
-    const sharing = this.sharingPrompt(target)
-    if (sharing)
-      return {
-        ok: false,
-        code: 'confirmation_required',
-        message: sharingMessage(sharing),
-        sharing,
-      }
     const generation = this.generation
     // Claim the slot before awaiting, so two quick sends cannot both start.
     const id = this.newId()
@@ -330,6 +357,22 @@ export class ChatSession {
       }
       checked = check
 
+      // Before a runner is built: the chat goes nowhere new until the user has confirmed
+      // it, with this send's own attachments named too.
+      const key = sendKey(text, checked.attachments)
+      const sharing = this.sharingPrompt(target, key, checked.attachments.length)
+      if (sharing) {
+        this.active = null
+        release()
+        return {
+          ok: false,
+          code: 'confirmation_required',
+          message: sharingMessage(sharing),
+          sharing,
+        }
+      }
+      const confirmed = this.confirmedSharing
+
       try {
         // Always the current connection's runner, whatever the chat's home.
         built = await this.deps.createRunner(controller.signal)
@@ -356,7 +399,9 @@ export class ChatSession {
 
       this.conversation = [...this.conversation, promptMessage(text, checked.attachments)]
       // The new prompt is the user's own, typed for `target`: a confirmation covers it.
-      if (this.sharing.some((entry) => entry.connection === target))
+      const granted = isSameSend(confirmed, target, generation, this.conversation.length - 1, key)
+      if (granted) this.confirmedSharing = null
+      if (granted || this.sharing.some((entry) => entry.connection === target))
         this.sharing = withSharing(this.sharing, target, this.conversation.length)
     } finally {
       // Referenced by the open conversation now (or never will be).
@@ -666,7 +711,11 @@ export class ChatSession {
    * The sharing prompt a send to `target` needs now, or null. Issuing one replaces the
    * one before: only the newest can be confirmed.
    */
-  private sharingPrompt(target: ConnectionId): SharingPrompt | null {
+  private sharingPrompt(
+    target: ConnectionId,
+    send: string,
+    attaching: number,
+  ): SharingPrompt | null {
     const describe = this.deps.describeConnection
     if (!describe) return null
     const need = sharingNeed({
@@ -676,25 +725,31 @@ export class ChatSession {
       target,
       sharing: this.sharing,
       describe,
+      attaching,
     })
     if (!need) return null
+    // Confirmed for exactly this send (same chat, messages, connection and content).
+    const length = this.conversation.length
+    if (isSameSend(this.confirmedSharing, target, this.generation, length, send)) return null
     const id = this.newId()
-    this.pendingSharing = {
-      id,
-      connection: target,
-      generation: this.generation,
-      length: this.conversation.length,
-    }
+    this.confirmedSharing = null
+    this.pendingSharing = { id, connection: target, generation: this.generation, length, send }
     return { id, chat: this.openRef, ...need }
   }
 
   /**
-   * Records the user's confirmation of the newest sharing prompt: the open chat's
-   * messages so far may go to the connection it named. Refused unless `id` is that
-   * prompt's and the same chat, messages and connection are still open, and while a
-   * reply, command or switch is in flight. Saved in the chat file's `sharing`.
+   * Records the user's confirmation of the newest sharing prompt: the send it was shown
+   * for (the same text and attachments) may take the open chat to the connection it
+   * named. Refused unless `id` is that prompt's and the same chat, messages and
+   * connection are still open, and while a reply, command or switch is in flight. Saved
+   * in the chat file's `sharing` once that send's prompt is in the chat; a send with
+   * other content asks again.
    */
-  async confirmSharing(id: unknown): Promise<ConfirmSharingResult> {
+  confirmSharing(id: unknown): Promise<ConfirmSharingResult> {
+    return Promise.resolve(this.recordSharing(id))
+  }
+
+  private recordSharing(id: unknown): ConfirmSharingResult {
     const pending = this.pendingSharing
     if (typeof id !== 'string' || !pending || pending.id !== id)
       return { ok: false, message: 'That confirmation is no longer current. Send again.' }
@@ -707,8 +762,7 @@ export class ChatSession {
       pending.connection !== this.library.connection()
     )
       return { ok: false, message: 'The chat changed. Send again to see what will be shared.' }
-    this.sharing = withSharing(this.sharing, pending.connection, this.conversation.length)
-    await this.persist()
+    this.confirmedSharing = pending
     return { ok: true }
   }
 
@@ -917,6 +971,7 @@ export class ChatSession {
         this.origin = loaded.origin ?? []
         this.sharing = loaded.sharing ?? []
         this.pendingSharing = null
+        this.confirmedSharing = null
         this.unavailable = unavailable
         this.loadError = loaded.error
         this.notify({ type: 'conversation_reset', state: this.state() })

@@ -33,6 +33,8 @@ export interface SharingCheck {
   target: ConnectionId
   sharing: readonly SharingConfirmation[]
   describe: DescribeConnection
+  /** Files attached to the message being sent (checked already): they go too. Default 0. */
+  attaching?: number
 }
 
 /** Why a send needs confirmation, before main gives it an id and a chat. */
@@ -87,7 +89,7 @@ function reasonsFor(
  * confirmation for `target` counts. See docs/connections.md.
  */
 export function sharingNeed(check: SharingCheck): SharingNeed | null {
-  const { conversation, origin, home, target, sharing, describe } = check
+  const { conversation, origin, home, target, sharing, describe, attaching = 0 } = check
   if (conversation.length === 0) return null
   const to = describe(target)
   if (!to) return null
@@ -115,7 +117,9 @@ export function sharingNeed(check: SharingCheck): SharingNeed | null {
     includes: {
       messages: conversation.length,
       toolOutput: blocks.some((block) => block.type === 'tool_result'),
-      attachments: conversation.reduce((n, message) => n + attachmentsOf(message).length, 0),
+      attachments:
+        conversation.reduce((n, message) => n + attachmentsOf(message).length, 0) + attaching,
+      attachmentsInMessage: attaching,
     },
     ...(to.geminiKey && to.notice ? { notice: to.notice } : {}),
   }

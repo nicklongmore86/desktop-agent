@@ -27,7 +27,7 @@ const PROMPT: SharingPrompt = {
   destination: 'Gemini · API',
   reasons: ['local-to-cloud', 'gemini-free-tier'],
   sources: ['Ollama · Local'],
-  includes: { messages: 12, toolOutput: true, attachments: 1 },
+  includes: { messages: 12, toolOutput: true, attachments: 3, attachmentsInMessage: 1 },
   notice: {
     title: 'Free Gemini API keys share your data with Google',
     text: 'On the Gemini API free tier, Google may use your prompts, files the agent reads and the responses to improve its products, and people may review them.',
@@ -73,7 +73,7 @@ for (const width of [360, 1280]) {
       await expect(dialog).toContainText('Ollama · Local')
       await expect(dialog).toContainText('12 earlier messages')
       await expect(dialog).toContainText('File contents and command output')
-      await expect(dialog).toContainText('1 attached file')
+      await expect(dialog).toContainText('3 attached files, including 1 in this message')
       await expect(dialog).toContainText('Free Gemini API keys share your data with Google')
       await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
       for (const name of ['Cancel', 'Confirm'])

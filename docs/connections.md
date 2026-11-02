@@ -289,16 +289,21 @@ connection's. A connection id the registry does not know counts as another vendo
 local. The app cannot tell a free Gemini key from a paid one, so any Gemini key asks, with the
 same free-tier wording Settings shows (`GEMINI_FREE_TIER_NOTICE`).
 
-**Main enforces it** (`chat/sharing.ts`, `ChatSession.send`), before a runner is built: the send
-is refused with `{ ok: false, code: 'confirmation_required', sharing: SharingPrompt }`, nothing is
-added to the chat or saved. `SharingPrompt` names the destination, the source connections'
-labels, what is included (`messages`, `toolOutput`, `attachments`) and, for Gemini, the notice;
+**Main enforces it** (`chat/sharing.ts`, `ChatSession.send`), after the send's attachments are
+checked and before a runner is built: the send is refused with `{ ok: false, code:
+'confirmation_required', sharing: SharingPrompt }`, nothing is added to the chat or saved.
+`SharingPrompt` names the destination, the source connections' labels, what is included
+(`messages`, `toolOutput`, `attachments` — every attached file that would go, earlier prompts' and
+this message's — and `attachmentsInMessage`, those attached to this message; an attachments-only
+send counts too) and, for Gemini, the notice;
 every string is written in main. The renderer (`components/SharingDialog.tsx`) shows it; Confirm
 calls `chat.confirmSharing(id)` and sends the same message again, Cancel or Escape confirms
 nothing and keeps the draft, so the user can switch back. An approval prompt takes priority (the
 dialog is hidden and inert under it). Main accepts only the id of the newest prompt it issued,
-once, and only while the same chat, message count and connection are open; a runner built for
-another connection than the one checked is never run.
+once, and only while the same chat, message count and connection are open. A confirmation covers
+only the send it was shown for (the same text and attachment ids, in order): a send with other
+content asks again, and the confirmation is saved only once that send's prompt is in the chat. A
+runner built for another connection than the one checked is never run.
 
 **Stored** in the chat file, top level, never on messages: `sharing: [{ connection, through }]`,
 meaning the first `through` messages may go to `connection`. A send on a confirmed connection
