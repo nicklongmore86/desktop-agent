@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { HistoryState } from '../../../../shared/ipc'
 import type { ProjectsState } from '../../../../shared/ipc-projects'
-import { arrangeChats } from './arrange'
+import { activeRef, arrangeChats } from './arrange'
 import { resolveDrop, type DragSource } from './drop'
 
 const P1 = '11111111-1111-4111-8111-111111111111'
@@ -110,5 +110,76 @@ describe('arrangeChats', () => {
     const arranged = arrangeChats(history, null, null)
     expect(arranged.projects).toEqual([])
     expect(arranged.loose.map((c) => c.id)).toEqual(['a', 'd', 'e'])
+  })
+})
+
+describe('arrangeChats over the shared list', () => {
+  const chat = (provider: string, id: string, extra: object = {}) => ({
+    provider,
+    id,
+    title: id,
+    createdAt: 1,
+    updatedAt: 1,
+    ...extra,
+  })
+  const projects: ProjectsState = {
+    provider: 'claude-subscription',
+    projects: [{ id: P1, name: 'Taxes', icon: null }],
+    others: [chat('stale-other', 'ignored')],
+  }
+  const history = (chats: ReturnType<typeof chat>[]): HistoryState => ({
+    conversations: [],
+    activeId: null,
+    active: null,
+    chats,
+  })
+
+  it('sorts every connection’s chats into Pinned, Projects, Chats and Archived', () => {
+    const arranged = arrangeChats(
+      history([
+        chat('claude-subscription', 'a', { updatedAt: 5 }),
+        chat('codex-subscription', 'b', { updatedAt: 9 }),
+        chat('codex-subscription', 'c', { pinnedAt: 3 }),
+        chat('ollama', 'd', { projectId: P1 }),
+        chat('ollama', 'e', { archivedAt: 1 }),
+        chat('claude-subscription', 'f', { projectId: 'deleted-project', updatedAt: 2 }),
+      ]),
+      projects,
+      'claude-subscription',
+    )
+    expect(arranged.pinned.map((c) => c.id)).toEqual(['c'])
+    expect(arranged.projects[0]?.chats.map((c) => c.id)).toEqual(['d'])
+    expect(arranged.loose.map((c) => `${c.provider}:${c.id}`)).toEqual([
+      'codex-subscription:b',
+      'claude-subscription:a',
+      'claude-subscription:f',
+    ])
+    expect(arranged.archived.map((c) => c.id)).toEqual(['e'])
+    expect(arranged.count).toBe(5)
+  })
+
+  it('keeps chats with the same id in different homes apart', () => {
+    const arranged = arrangeChats(
+      history([chat('claude-subscription', 'same'), chat('codex-subscription', 'same')]),
+      projects,
+      'claude-subscription',
+    )
+    expect(arranged.loose.map((c) => c.provider).sort()).toEqual([
+      'claude-subscription',
+      'codex-subscription',
+    ])
+  })
+
+  it('names the open chat by home and id', () => {
+    expect(activeRef({ ...history([]), active: { provider: 'ollama', id: 'x' } }, null)).toEqual({
+      provider: 'ollama',
+      id: 'x',
+    })
+    expect(activeRef(history([]), 'ollama')).toBeNull()
+    // An older main sends only activeId: it is the current connection's chat.
+    expect(activeRef({ conversations: [], activeId: 'x' }, 'ollama')).toEqual({
+      provider: 'ollama',
+      id: 'x',
+    })
   })
 })

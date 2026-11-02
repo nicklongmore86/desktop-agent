@@ -12,7 +12,10 @@ import { useConnectionVision } from '../attachments/use-vision'
 import { useAttachments } from '../attachments/use-attachments'
 import type { ChatViewState } from '../chat-state'
 import type { OpenSettings } from '../open-settings'
+import { connectionOf, useConnections } from '../connections'
+import { plainText } from '../plain-text'
 import { useProviderModels } from '../provider-models'
+import { badgedReplies, type ReplyOrigin } from '../provenance'
 import { splitTurns } from '../turns'
 import { useProviderUsage } from '../usage'
 import { ActivityGroup } from './ActivityGroup'
@@ -86,6 +89,7 @@ export function ChatView({
 
   const usage = useProviderUsage(provider?.provider)
   const models = useProviderModels(provider?.provider)
+  const allConnections = useConnections()
   const vision = useConnectionVision(provider?.provider, models.choice?.selected)?.enabled === true
   const heic = useHeicSupport()
   const refreshUsage = usage.refresh
@@ -93,7 +97,7 @@ export function ChatView({
 
   useEffect(() => {
     listEnd.current?.scrollIntoView({ block: 'end' })
-  }, [state.items])
+  }, [state.items, state.switching])
 
   // After each completed turn the allowance and the resolved model have changed.
   const wasRunning = useRef(state.running)
@@ -177,6 +181,39 @@ export function ChatView({
   // Retry sits on the last message of the conversation (a reply, or the question without one).
   const lastMessage = state.items.findLast((item) => item.kind !== 'tool')
   const turns = useMemo(() => splitTurns(state.items), [state.items])
+  // A reply streamed in this window is stamped with the connection and model it started on,
+  // so a later change of model does not rewrite it; saved replies carry their own (see ChatItem).
+  const [stamps, setStamps] = useState<ReadonlyMap<string, ReplyOrigin>>(new Map())
+  const currentConnection = provider?.provider
+  const currentModel = models.choice?.selected ?? undefined
+  const unstamped = state.items.filter(
+    (item) => item.kind === 'assistant' && !item.connection && item.runId && !stamps.has(item.id),
+  )
+  if (currentConnection && unstamped.length > 0) {
+    setStamps(
+      new Map([
+        ...stamps,
+        ...unstamped.map((item): [string, ReplyOrigin] => [
+          item.id,
+          { connection: currentConnection, model: currentModel },
+        ]),
+      ]),
+    )
+  }
+  const badges = useMemo(
+    () =>
+      badgedReplies(
+        state.items.filter((item) => item.kind === 'assistant'),
+        (item) =>
+          item.connection
+            ? { connection: item.connection, model: item.model }
+            : stamps.get(item.id),
+      ),
+    [state.items, stamps],
+  )
+  const connectionName = (id: string): string =>
+    plainText(connectionOf(allConnections, id)?.label ?? id)
+  const switchingTo = state.switchKind === 'connection'
   const prompts = useMemo(
     () => state.items.filter((item) => item.kind === 'user').map(({ id, text }) => ({ id, text })),
     [state.items],
@@ -228,10 +265,16 @@ export function ChatView({
         </div>
       )}
 
-      <ol className="messages" aria-label="Messages" ref={messagesRef}>
-        {state.switching && (
+      <ol
+        className="messages"
+        aria-label="Messages"
+        aria-busy={switchingTo || undefined}
+        data-switching={state.switching || undefined}
+        ref={messagesRef}
+      >
+        {state.switching && !switchingTo && (
           <li className="messages-empty" role="status">
-            Switching provider…
+            Loading chat…
           </li>
         )}
         {state.items.length === 0 && !state.switching && (
@@ -326,9 +369,27 @@ export function ChatView({
                   )
                 }
                 const { item } = entry
+                const badge = badges.get(item.id)
                 return (
                   <li key={item.id} className="message message-assistant">
-                    <span className="message-author">{providerName}</span>
+                    {badge ? (
+                      <span
+                        className="message-author message-badge"
+                        data-connection={badge.connection}
+                        title={`${connectionName(badge.connection)}${badge.model ? ` · ${plainText(badge.model)}` : ''}`}
+                      >
+                        <span className="message-badge-connection">
+                          {connectionName(badge.connection)}
+                        </span>
+                        {badge.model && (
+                          <span className="message-badge-model">{plainText(badge.model)}</span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="message-author">
+                        {item.connection ? connectionName(item.connection) : providerName}
+                      </span>
+                    )}
                     <Markdown text={item.text} />
                     {item.stopped && (
                       <p className="message-note">Stopped. This reply was not saved.</p>
@@ -353,6 +414,18 @@ export function ChatView({
               <span />
             </span>
             <span>{providerName} is working…</span>
+          </li>
+        )}
+        {switchingTo && (
+          <li className="message-progress message-switching" role="status" aria-live="polite">
+            <span className="typing-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span>
+              Switching to {state.switchTo ? connectionName(state.switchTo) : 'another connection'}…
+            </span>
           </li>
         )}
         <li ref={listEnd} aria-hidden="true" />

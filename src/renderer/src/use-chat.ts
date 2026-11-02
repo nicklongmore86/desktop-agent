@@ -14,20 +14,20 @@ export interface ChatControls {
   /** Starts a new chat; the open one stays in the history. */
   newChat: () => Promise<void>
   /**
-   * Opens a saved chat. Like a provider switch, the open conversation is hidden
+   * Opens a saved chat of any home connection and continues it on the current
+   * connection (it never switches connection). The open conversation is hidden
    * and sends are refused until main has loaded the other one; a running reply
    * is stopped (main saves it to its own chat and denies its approvals).
    */
-  openConversation: (id: string) => Promise<void>
-  /** Resolves false (with a banner) when the rename failed. */
-  renameConversation: (id: string, title: string) => Promise<boolean>
-  /** Deleting the open chat starts a new one, through the same switch as New chat. */
-  deleteConversation: (id: string) => Promise<void>
+  openConversation: (chat: ChatRef) => Promise<void>
+  /** Deletes the open chat; a new one starts, through the same switch as New chat. */
+  deleteConversation: (chat: ChatRef) => Promise<void>
   respond: (id: string, approved: boolean) => Promise<void>
-  /** Switches provider, hiding the old conversation until the new one arrives. */
+  /**
+   * Switches connection and continues the open chat on it: the chat and the list stay on
+   * screen (input disabled) until main sends the same chat back.
+   */
   switchProvider: (provider: ConnectionId) => Promise<ProviderStatus>
-  /** Opens another provider's chat: a provider switch that opens that chat. Null if it failed. */
-  openOther: (chat: ChatRef) => Promise<ProviderStatus | null>
   dismissBanner: () => void
   dismissStorageWarning: () => void
 }
@@ -115,8 +115,8 @@ export function useChat(): ChatControls {
    * conversation_reset has already done so).
    */
   const switchTo = useCallback(
-    async <T>(kind: SwitchKind, change: () => Promise<T>): Promise<T> => {
-      dispatch({ type: 'switch_started', kind })
+    async <T>(kind: SwitchKind, change: () => Promise<T>, to?: ConnectionId): Promise<T> => {
+      dispatch({ type: 'switch_started', kind, ...(to ? { to } : {}) })
       try {
         return await change()
       } finally {
@@ -143,9 +143,9 @@ export function useChat(): ChatControls {
     }
   }, [api, switchTo])
   const openConversation = useCallback(
-    async (id: string) => {
+    async (chat: ChatRef) => {
       try {
-        await switchTo('chat', () => api.chat.open(id))
+        await switchTo('chat', () => api.chats.open(chat))
       } catch {
         dispatch({
           type: 'banner',
@@ -155,28 +155,10 @@ export function useChat(): ChatControls {
     },
     [api, switchTo],
   )
-  const renameConversation = useCallback(
-    async (id: string, title: string) => {
-      try {
-        dispatch({ type: 'history', history: await api.chat.rename(id, title) })
-        return true
-      } catch {
-        dispatch({
-          type: 'banner',
-          banner: { code: 'internal', message: 'Could not rename the chat.' },
-        })
-        return false
-      }
-    },
-    [api],
-  )
   const deleteConversation = useCallback(
-    async (id: string) => {
+    async (chat: ChatRef) => {
       try {
-        const remove = () => api.chat.remove(id)
-        const history =
-          id === state.history.activeId ? await switchTo('chat', remove) : await remove()
-        dispatch({ type: 'history', history })
+        await switchTo('chat', () => api.chats.remove(chat))
       } catch {
         dispatch({
           type: 'banner',
@@ -184,28 +166,14 @@ export function useChat(): ChatControls {
         })
       }
     },
-    [api, switchTo, state.history.activeId],
+    [api, switchTo],
   )
   const respond = useCallback(
     (id: string, approved: boolean) => api.approvals.respond(id, approved),
     [api],
   )
   const switchProvider = useCallback(
-    (provider: ConnectionId) => switchTo('provider', () => api.provider.set(provider)),
-    [api, switchTo],
-  )
-  const openOther = useCallback(
-    async (chat: ChatRef) => {
-      try {
-        return await switchTo('provider', () => api.chats.open(chat))
-      } catch {
-        dispatch({
-          type: 'banner',
-          banner: { code: 'internal', message: 'Could not open that chat.' },
-        })
-        return null
-      }
-    },
+    (provider: ConnectionId) => switchTo('connection', () => api.provider.set(provider), provider),
     [api, switchTo],
   )
   const dismissBanner = useCallback(() => {
@@ -223,11 +191,9 @@ export function useChat(): ChatControls {
     stop,
     newChat,
     openConversation,
-    renameConversation,
     deleteConversation,
     respond,
     switchProvider,
-    openOther,
     dismissBanner,
     dismissStorageWarning,
   }

@@ -463,7 +463,7 @@ describe('drawers (narrow windows)', () => {
     await user.click(leftToggle())
     const drawer = screen.getByRole('dialog', { name: 'Chats' })
     await user.click(await within(drawer).findByRole('button', { name: 'Old notes' }))
-    expect(api.chat.open).toHaveBeenCalledWith(B)
+    expect(api.chats.open).toHaveBeenCalledWith({ provider: 'anthropic-api', id: B })
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 

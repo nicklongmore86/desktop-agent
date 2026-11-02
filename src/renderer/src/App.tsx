@@ -270,6 +270,9 @@ function AppWindow(): React.JSX.Element {
         .map((row) => row.info)
     : (connections ?? []).filter((info) => info.id === provider?.provider)
   const providerName = connectionOf(connections, provider?.provider)?.label ?? 'Loading provider…'
+  const switchName = plainText(
+    connectionOf(connections, chat.state.switchTo)?.label ?? chat.state.switchTo ?? 'provider',
+  )
   const switchProvider = async (next: ConnectionId): Promise<void> => {
     try {
       setProvider(await userSwitch(() => chat.switchProvider(next)))
@@ -319,17 +322,11 @@ function AppWindow(): React.JSX.Element {
               )}
               suspended={Boolean(approval)}
               onNewChat={startNewChat}
-              onOpen={(id) => {
-                void chat.openConversation(id)
+              onOpen={(ref) => {
+                void chat.openConversation(ref)
               }}
-              onOpenOther={(ref) => {
-                void userSwitch(() => chat.openOther(ref)).then((status) => {
-                  if (status) setProvider(status)
-                })
-              }}
-              onRename={chat.renameConversation}
-              onDelete={(id) => {
-                void chat.deleteConversation(id)
+              onDelete={(ref) => {
+                void chat.deleteConversation(ref)
               }}
               onBlocking={onListDialog}
             />
@@ -348,8 +345,8 @@ function AppWindow(): React.JSX.Element {
       >
         <AppHeader
           subtitle={
-            chat.state.switchKind === 'provider'
-              ? 'Switching provider…'
+            chat.state.switchKind === 'connection'
+              ? `Switching to ${switchName}…`
               : chat.state.switchKind === 'chat'
                 ? 'Opening chat…'
                 : providerName

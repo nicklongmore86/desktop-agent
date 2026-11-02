@@ -179,6 +179,9 @@ export interface FakeApiOptions {
   }
 }
 
+/** A listed chat without its home. */
+const summaryOf = ({ provider: _home, ...summary }: ProviderChat): ConversationSummary => summary
+
 const FORK_ID = 'f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0'
 const NEW_PROJECT_ID = 'abababab-abab-4bab-8bab-abababababab'
 
@@ -222,10 +225,29 @@ export function fakeApi(options: FakeApiOptions = {}) {
   let theme: ThemePreference = options.theme ?? 'system'
   let turnLimit = options.turnLimit ?? TURN_LIMIT.default
   let layout: LayoutPrefs = options.layout ?? DEFAULT_LAYOUT
-  let history: HistoryState = options.history ?? { conversations: [], activeId: null }
+  // Like main: one list of every connection's chats (each with its home), and the open one.
+  const startProvider = options.provider?.provider ?? 'anthropic-api'
+  const startHistory: HistoryState = options.history ?? { conversations: [], activeId: null }
+  let all: ProviderChat[] = [
+    ...(startHistory.chats ??
+      startHistory.conversations.map((c) => ({ ...c, provider: startProvider }))),
+    ...(options.others ?? []),
+  ]
+  let active: ChatRef | null =
+    startHistory.active !== undefined
+      ? startHistory.active
+      : startHistory.activeId === null
+        ? null
+        : { provider: startProvider, id: startHistory.activeId }
+  const historyOf = (): HistoryState => ({
+    conversations: all.filter((c) => c.provider === provider.provider).map(summaryOf),
+    activeId: active?.id ?? null,
+    active,
+    chats: all,
+  })
   // What main has open; New chat and opening a chat replace it.
   let current: ChatState = { items: [], running: false, loadError: null, ...options.chat }
-  const chatState = (): ChatState => ({ ...current, history })
+  const chatState = (): ChatState => ({ ...current, history: historyOf() })
   const subscribe =
     <T>(set: Set<(value: T) => void>) =>
     (listener: (value: T) => void) => {
@@ -246,28 +268,23 @@ export function fakeApi(options: FakeApiOptions = {}) {
     showPersonalUse,
   })
   let projects: Project[] = options.projects ?? []
-  let others: ProviderChat[] = options.others ?? []
   const projectsState = (): ProjectsState => ({
     provider: provider.provider,
     projects,
-    others,
+    others: all.filter((c) => c.provider !== provider.provider),
   })
   const pushHistory = (): void => {
-    for (const listener of chatListeners) listener({ type: 'history_changed', history })
+    for (const listener of chatListeners)
+      listener({ type: 'history_changed', history: historyOf() })
   }
-  /** Changes a chat like main: the open provider's in `history` (and pushes it), others in `others`. */
+  const same = (c: ProviderChat, chat: ChatRef): boolean =>
+    c.provider === chat.provider && c.id === chat.id
+  /** Changes a chat like main: in the one list, pushing the new list to every window. */
   const organize = (chat: ChatRef, change: (c: ConversationSummary) => ConversationSummary) => {
-    if (chat.provider === provider.provider) {
-      if (!history.conversations.some((c) => c.id === chat.id))
-        return Promise.reject(new Error('That chat no longer exists.'))
-      history = {
-        ...history,
-        conversations: history.conversations.map((c) => (c.id === chat.id ? change(c) : c)),
-      }
-      pushHistory()
-    } else {
-      others = others.map((c) => (c.id === chat.id ? { ...change(c), provider: c.provider } : c))
-    }
+    if (!all.some((c) => same(c, chat)))
+      return Promise.reject(new Error('That chat no longer exists.'))
+    all = all.map((c) => (same(c, chat) ? { ...change(c), provider: c.provider } : c))
+    pushHistory()
     return Promise.resolve(projectsState())
   }
   const set =
@@ -421,8 +438,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
         projects = projects.filter((p) => p.id !== id)
         const unfile = (c: ConversationSummary) =>
           c.projectId === id ? set('projectId', undefined)(c) : c
-        history = { ...history, conversations: history.conversations.map(unfile) }
-        others = others.map((c) => ({ ...unfile(c), provider: c.provider }))
+        all = all.map((c) => ({ ...unfile(c), provider: c.provider }))
         pushHistory()
         return Promise.resolve(projectsState())
       }),
@@ -442,9 +458,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
         organize(chat, set('projectId', projectId ?? undefined)),
       ),
       fork: vi.fn((chat: ChatRef, _prompts: number | null) => {
-        const source =
-          history.conversations.find((c) => c.id === chat.id) ??
-          others.find((c) => c.id === chat.id)
+        const source = all.find((c) => same(c, chat))
         if (!source) return Promise.reject(new Error('That chat no longer exists.'))
         const copy: ConversationSummary = {
           id: FORK_ID,
@@ -453,10 +467,8 @@ export function fakeApi(options: FakeApiOptions = {}) {
           updatedAt: Date.now(),
           forkedFrom: { id: chat.id, atMessageIndex: null },
         }
-        if (chat.provider === provider.provider) {
-          history = { ...history, conversations: [copy, ...history.conversations] }
-          pushHistory()
-        }
+        all = [{ ...copy, provider: chat.provider }, ...all]
+        pushHistory()
         return Promise.resolve({
           chat: { provider: chat.provider, id: FORK_ID },
           state: projectsState(),
@@ -464,19 +476,24 @@ export function fakeApi(options: FakeApiOptions = {}) {
       }),
       rename: vi.fn((chat: ChatRef, title: string) => organize(chat, (c) => ({ ...c, title }))),
       remove: vi.fn((chat: ChatRef) => {
-        others = others.filter((c) => c.id !== chat.id)
+        // Like main: deleting the open chat leaves a new, empty one open.
+        const wasOpen = active?.provider === chat.provider && active.id === chat.id
+        if (wasOpen) {
+          active = null
+          current = { items: [], running: false, loadError: null }
+          for (const listener of chatListeners)
+            listener({ type: 'conversation_reset', state: chatState() })
+        }
+        all = all.filter((c) => !same(c, chat))
+        pushHistory()
         return Promise.resolve(projectsState())
       }),
       open: vi.fn((chat: ChatRef) => {
-        // Like main: switch provider, then that chat is open with the provider's list.
-        provider = { provider: chat.provider, state: 'ready', message: 'Ready.' }
-        const opened = others.find((c) => c.id === chat.id)
-        others = []
-        history = {
-          activeId: chat.id,
-          conversations: opened ? [{ ...opened }] : history.conversations,
-        }
+        // Like main: the chat opens on the CURRENT connection; the provider is not switched.
+        active = chat
         current = { items: [], running: false, loadError: null }
+        for (const listener of chatListeners)
+          listener({ type: 'conversation_reset', state: chatState() })
         return Promise.resolve(provider)
       }),
     },
@@ -607,31 +624,31 @@ export function fakeApi(options: FakeApiOptions = {}) {
       ),
       stop: vi.fn(() => Promise.resolve()),
       newChat: vi.fn((): Promise<ChatState> => {
-        history = { ...history, activeId: null }
+        active = null
         current = { items: [], running: false, loadError: null }
         return Promise.resolve(chatState())
       }),
-      history: vi.fn(() => Promise.resolve(history)),
+      history: vi.fn(() => Promise.resolve(historyOf())),
       open: vi.fn((id: string): Promise<ChatState> => {
-        history = { ...history, activeId: id }
+        active = { provider: provider.provider, id }
         current = { items: [], running: false, loadError: null }
         return Promise.resolve(chatState())
       }),
       rename: vi.fn((id: string, title: string) => {
-        history = {
-          ...history,
-          conversations: history.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
-        }
-        return Promise.resolve(history)
+        all = all.map((c) =>
+          c.provider === provider.provider && c.id === id ? { ...c, title } : c,
+        )
+        pushHistory()
+        return Promise.resolve(historyOf())
       }),
       remove: vi.fn((id: string) => {
         // Like main: deleting the open chat leaves a new, empty one open.
-        if (history.activeId === id) current = { items: [], running: false, loadError: null }
-        history = {
-          activeId: history.activeId === id ? null : history.activeId,
-          conversations: history.conversations.filter((c) => c.id !== id),
+        if (active?.id === id) {
+          active = null
+          current = { items: [], running: false, loadError: null }
         }
-        return Promise.resolve(history)
+        all = all.filter((c) => !(c.provider === provider.provider && c.id === id))
+        return Promise.resolve(historyOf())
       }),
     },
     approvals: {
@@ -709,6 +726,8 @@ export function fakeApi(options: FakeApiOptions = {}) {
 
   return {
     api,
+    /** What main would send now: the open chat and the one shared list. */
+    chatState,
     pushChat: (event: ChatEvent) => {
       for (const listener of chatListeners) listener(event)
     },

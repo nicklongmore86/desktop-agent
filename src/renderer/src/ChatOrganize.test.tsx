@@ -93,19 +93,24 @@ describe('chat list sections', () => {
     const taxes = folder('Taxes')
     expect(within(taxes).getByText('Reconcile receipts')).toBeTruthy()
     expect(within(taxes).getByText('Estimate the tax bill')).toBeTruthy()
-    // Another provider's chat says so, and says opening it switches provider.
+    // Every row says which connection last answered in it.
     expect(within(taxes).getByText('Codex')).toBeTruthy()
-    expect(row('Estimate the tax bill').title).toContain('switches provider')
+    expect(row('Estimate the tax bill').title).toBe('Estimate the tax bill (Codex)')
     expect(within(region('Chats')).getByText('Plan the release')).toBeTruthy()
     expect(within(nav()).queryByText('Old notes')).toBeNull()
   })
 
-  it("opens another provider's chat through a provider switch", async () => {
+  it("opens another connection's chat on the current connection, without switching", async () => {
     const { api, user } = await renderApp()
     await user.click(row('Estimate the tax bill'))
     expect(api.chats.open).toHaveBeenCalledWith({ provider: 'codex-subscription', id: X })
     expect(api.chat.open).not.toHaveBeenCalled()
-    expect(await screen.findByText('Codex · ChatGPT', { selector: '.app-header *' })).toBeTruthy()
+    expect(api.provider.set).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(row('Estimate the tax bill').getAttribute('aria-current')).toBe('page')
+    })
+    // The header still names the connection in use.
+    expect(screen.queryByText('Codex · ChatGPT', { selector: '.app-header *' })).toBeNull()
   })
 
   it('collapses sections and projects, and remembers it', async () => {
@@ -244,7 +249,7 @@ describe('chat menu', () => {
     await user.keyboard('{Delete}')
     const confirm = screen.getByRole('alertdialog', { name: 'Delete chat?' })
     await user.click(within(confirm).getByRole('button', { name: 'Delete' }))
-    expect(api.chat.remove).toHaveBeenCalledWith(A)
+    expect(api.chats.remove).toHaveBeenCalledWith(own(A))
     row('Estimate the tax bill').focus()
     await user.keyboard('{Delete}')
     await user.click(
@@ -285,7 +290,7 @@ describe('fork', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Fork' }))
     expect(api.chats.fork).toHaveBeenCalledWith(own(A), 1)
     await waitFor(() => {
-      expect(api.chat.open).toHaveBeenCalledWith(FORK_ID)
+      expect(api.chats.open).toHaveBeenCalledWith(own(FORK_ID))
     })
   })
 
