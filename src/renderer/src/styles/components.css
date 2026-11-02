@@ -1130,6 +1130,38 @@
   font-weight: 600;
 }
 
+.message-badge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  min-width: 0;
+}
+
+.message-badge-connection,
+.message-badge-model {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  overflow-wrap: anywhere;
+}
+
+.message-badge-model {
+  font-weight: 400;
+}
+
+/* A connection switch keeps the chat on screen, quieter, until the same chat comes back. */
+.messages[data-switching] .message {
+  opacity: 0.7;
+}
+
+.message-switching {
+  align-self: flex-start;
+  color: var(--color-text-muted);
+}
+
 .messages-empty {
   align-self: center;
   color: var(--color-text-muted);

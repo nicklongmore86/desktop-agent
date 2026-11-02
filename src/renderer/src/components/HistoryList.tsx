@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ConversationSummary } from '../../../shared/ipc'
-import type { ConnectionId } from '../../../shared/ipc-connections'
 import { connectionOf, useConnections } from '../connections'
-import type { Project, ProjectMove, ProviderChat } from '../../../shared/ipc-projects'
+import { plainText } from '../plain-text'
+import type { ChatRef, Project, ProjectMove, ProviderChat } from '../../../shared/ipc-projects'
 import type { Arranged } from './sidebar/arrange'
 import { resolveDrop, type DropAction, type DropTarget } from './sidebar/drop'
 import { Menu, type MenuItem, type MenuPosition } from './sidebar/Menu'
@@ -60,9 +60,8 @@ export interface ChatListActions {
 export interface HistoryListProps {
   arranged: Arranged
   view: 'chats' | 'archived'
-  /** The open provider and its open chat. */
-  provider: ConnectionId | null
-  activeId: string | null
+  /** The open chat, by home connection and id (null: a new chat). */
+  active: ChatRef | null
   /** A switch is under way: opening another chat waits until it is done. */
   busy: boolean
   /** A reply is running: forking waits for it (opening the fork would stop it). */
@@ -132,8 +131,8 @@ function RenameField({
 type OpenMenu = { key: string; position: MenuPosition }
 
 /**
- * The chat list: Pinned, Projects (folders) and Chats (the open provider's
- * other chats, by date), or the archived chats. Each chat opens with Enter or
+ * The chat list: Pinned, Projects (folders) and Chats (every connection's
+ * other chats, by date, each with the connection that last answered in it), or the archived chats. Each chat opens with Enter or
  * a click; arrow keys (and Home/End) move between chats and project folders;
  * F2 renames, Delete asks to delete, Shift+F10 or the ⋯ button or a right-click
  * opens the chat's menu, which holds every action (dragging is a shortcut for
@@ -143,8 +142,7 @@ type OpenMenu = { key: string; position: MenuPosition }
 export function HistoryList({
   arranged,
   view,
-  provider,
-  activeId,
+  active: activeRef,
   busy,
   running,
   collapsed,
@@ -406,10 +404,11 @@ export function HistoryList({
 
   const row = (chat: ProviderChat): React.JSX.Element => {
     const key = keyOf(chat)
-    const active = chat.provider === provider && chat.id === activeId
-    const other = chat.provider !== provider
-    // Short connection names, for chats of a connection that is not the open one.
-    const otherName = connectionOf(connections, chat.provider)?.shortLabel ?? ''
+    const active = activeRef?.provider === chat.provider && activeRef.id === chat.id
+    // The connection that last answered in the chat (its home until it has a reply), by its
+    // short name; a connection main no longer lists shows its id. Plain text either way.
+    const badgeId = chat.lastConnection ?? chat.provider
+    const badge = plainText(connectionOf(connections, badgeId)?.shortLabel ?? badgeId)
     return (
       <li
         key={key}
@@ -449,9 +448,7 @@ export function HistoryList({
             className="history-open"
             data-key={key}
             aria-current={active ? 'page' : undefined}
-            title={
-              other ? `${chat.title} (${otherName}: opening it switches provider)` : chat.title
-            }
+            title={badge ? `${chat.title} (${badge})` : chat.title}
             onClick={() => {
               if (!busy && !active) actions.open(chat)
             }}
@@ -471,9 +468,9 @@ export function HistoryList({
             }}
           >
             <bdi className="history-title">{chat.title}</bdi>
-            {other && (
+            {badge && (
               <span className="chat-provider" aria-hidden="true">
-                {otherName}
+                {badge}
               </span>
             )}
           </button>

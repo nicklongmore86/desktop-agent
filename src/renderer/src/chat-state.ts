@@ -6,6 +6,8 @@ import type {
   ChatState,
   HistoryState,
 } from '../../shared/ipc'
+import type { ConnectionId } from '../../shared/ipc-connections'
+import type { ChatRef } from '../../shared/ipc-projects'
 
 /** A chat item as shown: saved items, plus live ones tagged with their run and turn. */
 export type ViewItem =
@@ -23,6 +25,9 @@ export type ViewItem =
       turn?: number
       /** The run was stopped while this reply streamed; it was not saved. */
       stopped?: boolean
+      /** Provenance of a saved reply (see ChatItem); live replies get the current connection's. */
+      connection?: ConnectionId
+      model?: string
     }
 
 export interface Banner {
@@ -41,18 +46,26 @@ export interface ChatViewState {
   /** Saving or deleting the conversation on disk failed. */
   storageWarning: string | null
   /**
-   * A switch is in progress (provider, saved chat, or New chat): the old
-   * conversation is cleared and everything from it is ignored until main
-   * sends the conversation it switched to.
+   * A switch is in progress (connection, saved chat, or New chat). A chat or New chat switch
+   * clears the old conversation; a connection switch keeps it on screen. Either way,
+   * everything from the old conversation is ignored until main sends the one switched to.
    */
   switching: boolean
   /** What the switch in progress is for, to say so in the header. */
   switchKind: SwitchKind | null
-  /** The current provider's saved chats, newest first, and the open one. */
+  /** A connection switch: the connection being switched to (to say so), if known. */
+  switchTo: ConnectionId | null
+  /** A connection switch: the chat it continues; only a reset for this chat ends it. */
+  switchChat: ChatRef | null
+  /** The shared chat list (every connection's chats) and the open chat. */
   history: HistoryState
 }
 
-export type SwitchKind = 'provider' | 'chat'
+/**
+ * 'chat': another saved chat or a new one (the screen clears). 'connection': the open chat
+ * continues on another connection (the chat and the list stay).
+ */
+export type SwitchKind = 'chat' | 'connection'
 
 export const emptyHistory: HistoryState = { conversations: [], activeId: null }
 
@@ -66,6 +79,8 @@ export const initialChatState: ChatViewState = {
   storageWarning: null,
   switching: false,
   switchKind: null,
+  switchTo: null,
+  switchChat: null,
   history: emptyHistory,
 }
 
@@ -75,12 +90,23 @@ export type ChatAction =
   | { type: 'approval'; prompt: ApprovalPrompt }
   | { type: 'banner'; banner: Banner | null }
   | { type: 'dismiss_storage_warning' }
-  /** The user picked another provider or chat, or New chat; main has not switched yet. */
-  | { type: 'switch_started'; kind?: SwitchKind }
+  /**
+   * The user picked another connection or chat, or New chat; main has not switched yet.
+   * `to` names the connection of a 'connection' switch.
+   */
+  | { type: 'switch_started'; kind?: SwitchKind; to?: ConnectionId }
   /** The switch settled. `state` is main's conversation, if it could be read. */
   | { type: 'switch_finished'; state: ChatState | null }
   /** A rename or delete answered with the new list. */
   | { type: 'history'; history: HistoryState }
+
+const sameChat = (a: ChatRef | null | undefined, b: ChatRef | null): boolean =>
+  a ? b !== null && a.provider === b.provider && a.id === b.id : b === null
+
+/** The open chat by home and id; null for a new chat that is not saved yet. */
+export function activeChat(history: HistoryState): ChatRef | null {
+  return history.active ?? null
+}
 
 /** A ChatState's fields other than `history`, which the view keeps separately. */
 function withoutHistory(state: ChatState | undefined): Partial<ChatViewState> {
@@ -91,7 +117,9 @@ function withoutHistory(state: ChatState | undefined): Partial<ChatViewState> {
 function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
   // While a switch is in progress, everything from the old conversation is ignored:
   // only its reset, storage warnings and approval closings still apply.
+  // A connection switch keeps the shared chat list live too: it is not the old chat's.
   const switchSafe = ['conversation_reset', 'storage_warning', 'approval_closed']
+  if (state.switchKind === 'connection') switchSafe.push('history_changed')
   if (state.switching && !switchSafe.includes(event.type)) return state
   switch (event.type) {
     case 'run_started':
@@ -138,6 +166,14 @@ function applyEvent(state: ChatViewState, event: ChatEvent): ChatViewState {
       // Only a switch's reset carries the conversation switched to; a reset without one
       // is not the end of this switch.
       if (state.switching && !event.state) return state
+      // A connection switch ends with the reset of the chat it continues; a reset for any
+      // other chat is not ours (switch_finished shows whatever main has if ours is lost).
+      if (
+        state.switchKind === 'connection' &&
+        event.state &&
+        !sameChat(event.state.history?.active, state.switchChat)
+      )
+        return state
       // Keep a storage warning: a failed save is reported just before the reset.
       return {
         ...initialChatState,
@@ -272,19 +308,34 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
     case 'dismiss_storage_warning':
       return { ...state, storageWarning: null }
     case 'switch_started': {
-      const kind = action.kind ?? 'provider'
+      const kind = action.kind ?? 'chat'
+      if (kind === 'connection') {
+        // The chat stays on screen, still, and the list stays. Main stops a running reply and
+        // denies its approvals as the switch starts, so none is shown meanwhile.
+        return {
+          ...state,
+          running: false,
+          runId: null,
+          approvals: [],
+          banner: null,
+          switching: true,
+          switchKind: 'connection',
+          switchTo: action.to ?? null,
+          switchChat: activeChat(state.history),
+        }
+      }
       return {
         ...initialChatState,
         storageWarning: state.storageWarning,
         switching: true,
         switchKind: kind,
-        // Another chat of the same provider: the list stays. Another provider: it has its own.
-        history: kind === 'chat' ? state.history : emptyHistory,
+        // The list is shared by every connection: it stays.
+        history: state.history,
       }
     }
     case 'history':
-      // A list answered from before a switch may be another provider's; the switch brings its own.
-      if (state.switching) return state
+      // An answer from before a chat switch may predate it; that switch brings its own list.
+      if (state.switching && state.switchKind !== 'connection') return state
       return { ...state, history: action.history }
     case 'switch_finished':
       // Normally the switch's conversation_reset has already ended it. If not (the switch
@@ -295,6 +346,8 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
           ...state,
           switching: false,
           switchKind: null,
+          switchTo: null,
+          switchChat: null,
           banner: { code: 'internal', message: 'Could not load the conversation.' },
         }
       }
@@ -302,6 +355,8 @@ export function chatReducer(state: ChatViewState, action: ChatAction): ChatViewS
         ...state,
         switching: false,
         switchKind: null,
+        switchTo: null,
+        switchChat: null,
         ...withoutHistory(action.state),
         history: action.state.history ?? state.history,
       }

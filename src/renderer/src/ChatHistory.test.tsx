@@ -124,16 +124,11 @@ describe('chat history in the sidebar', () => {
   it('opens a chat like a switch: hides the old one and refuses sends until it loads', async () => {
     const { api, user } = await renderApp()
     let finish: () => void = () => {}
-    api.chat.open.mockImplementationOnce(
+    api.chats.open.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finish = () => {
-            resolve({
-              items: [{ kind: 'user', id: 'h0.0', text: 'Flaky test details' }],
-              running: false,
-              loadError: null,
-              history: { ...history, activeId: B },
-            })
+            resolve({ provider: 'anthropic-api', state: 'ready', message: 'Ready.' })
           }
         }),
     )
@@ -144,14 +139,14 @@ describe('chat history in the sidebar', () => {
       history: { ...history, activeId: B },
     })
     await user.click(item('Fix the flaky test'))
-    expect(api.chat.open).toHaveBeenCalledWith(B)
+    expect(api.chats.open).toHaveBeenCalledWith({ provider: 'anthropic-api', id: B })
     expect(screen.queryByText('Saved message')).toBeNull()
     expect(screen.getByText('Opening chat…')).toBeTruthy()
     // Sends wait, and so do other chats and New chat.
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'too soon{Enter}')
     expect(api.chat.send).not.toHaveBeenCalled()
     await user.click(item('Old notes'))
-    expect(api.chat.open).toHaveBeenCalledOnce()
+    expect(api.chats.open).toHaveBeenCalledOnce()
     expect(within(sidebar()).getByRole('button', { name: 'New chat' })).toHaveProperty(
       'disabled',
       true,
@@ -168,7 +163,7 @@ describe('chat history in the sidebar', () => {
   it('does nothing when the open chat is clicked', async () => {
     const { api, user } = await renderApp()
     await user.click(item('Plan the release'))
-    expect(api.chat.open).not.toHaveBeenCalled()
+    expect(api.chats.open).not.toHaveBeenCalled()
     expect(screen.getByText('Saved message')).toBeTruthy()
   })
 
@@ -180,7 +175,7 @@ describe('chat history in the sidebar', () => {
     await user.keyboard('{End}')
     expect(document.activeElement).toBe(item('Old notes'))
     await user.keyboard('{ArrowUp}{Enter}')
-    expect(api.chat.open).toHaveBeenCalledWith(B)
+    expect(api.chats.open).toHaveBeenCalledWith({ provider: 'anthropic-api', id: B })
   })
 
   it('updates the list when main says it changed, but not mid-switch', async () => {
@@ -205,7 +200,7 @@ describe('chat history in the sidebar', () => {
     const field = within(sidebar()).getByRole('textbox', { name: 'Chat name' })
     expect(document.activeElement).toBe(field)
     await user.keyboard('Nope{Escape}')
-    expect(api.chat.rename).not.toHaveBeenCalled()
+    expect(api.chats.rename).not.toHaveBeenCalled()
     expect(api.chat.stop).not.toHaveBeenCalled()
     await waitFor(() => {
       expect(document.activeElement).toBe(item('Fix the flaky test'))
@@ -220,7 +215,7 @@ describe('chat history in the sidebar', () => {
     const rename = within(sidebar()).getByRole('textbox', { name: 'Chat name' })
     await user.clear(rename)
     await user.type(rename, 'Archive{Enter}')
-    expect(api.chat.rename).toHaveBeenCalledWith(C, 'Archive')
+    expect(api.chats.rename).toHaveBeenCalledWith({ provider: 'anthropic-api', id: C }, 'Archive')
     expect(await within(sidebar()).findByRole('button', { name: 'Archive' })).toBeTruthy()
   })
 
@@ -251,7 +246,7 @@ describe('chat history in the sidebar', () => {
     expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }))
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(api.chat.remove).not.toHaveBeenCalled()
+    expect(api.chats.remove).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(more)
   })
 
@@ -260,7 +255,7 @@ describe('chat history in the sidebar', () => {
     await user.click(within(sidebar()).getByRole('button', { name: 'Options for Old notes' }))
     await user.click(screen.getByRole('menuitem', { name: 'Delete…' }))
     await user.click(screen.getByRole('button', { name: 'Delete' }))
-    expect(api.chat.remove).toHaveBeenCalledWith(C)
+    expect(api.chats.remove).toHaveBeenCalledWith({ provider: 'anthropic-api', id: C })
     await waitFor(() => {
       expect(within(sidebar()).queryByText('Old notes')).toBeNull()
     })
@@ -275,7 +270,7 @@ describe('chat history in the sidebar', () => {
     )
     await user.click(screen.getByRole('menuitem', { name: 'Delete…' }))
     await user.click(screen.getByRole('button', { name: 'Delete' }))
-    expect(api.chat.remove).toHaveBeenCalledWith(A)
+    expect(api.chats.remove).toHaveBeenCalledWith({ provider: 'anthropic-api', id: A })
     await waitFor(() => {
       expect(within(sidebar()).queryByText('Plan the release')).toBeNull()
     })
@@ -326,7 +321,7 @@ describe('chat history in the sidebar', () => {
         name: 'Old notes',
       }),
     )
-    expect(api.chat.open).toHaveBeenCalledWith(C)
+    expect(api.chats.open).toHaveBeenCalledWith({ provider: 'anthropic-api', id: C })
     expect(screen.queryByRole('dialog', { name: 'Chats' })).toBeNull()
     expect(drawer.isConnected).toBe(false)
   })
@@ -338,16 +333,15 @@ describe('chat switches in the reducer', () => {
     state: { items: [], running: true, loadError: null, history },
   })
 
-  it('keeps the list when opening another chat, and clears it for another provider', () => {
+  it('keeps the shared list when opening another chat or switching connection', () => {
     expect(chatReducer(loaded, { type: 'switch_started', kind: 'chat' }).history).toBe(history)
-    expect(chatReducer(loaded, { type: 'switch_started', kind: 'provider' }).history).toEqual({
-      conversations: [],
-      activeId: null,
-    })
+    expect(chatReducer(loaded, { type: 'switch_started', kind: 'connection' }).history).toBe(
+      history,
+    )
   })
 
-  it('ignores list updates from before the switch, and takes the reset’s list', () => {
-    const switching = chatReducer(loaded, { type: 'switch_started', kind: 'provider' })
+  it('ignores list updates from before a chat switch, and takes the reset’s list', () => {
+    const switching = chatReducer(loaded, { type: 'switch_started', kind: 'chat' })
     const stale = { conversations: [chat(B, 'old provider', 0)], activeId: B }
     expect(
       chatReducer(switching, { type: 'event', event: { type: 'history_changed', history: stale } }),

@@ -7,7 +7,7 @@ import type { ChatRef, Project, ProviderChat } from '../../../../shared/ipc-proj
 import { useApi } from '../../api'
 import { ConfirmDeleteDialog } from '../ConfirmDeleteDialog'
 import { HistoryList, type ChatListActions, type SectionId } from '../HistoryList'
-import { arrangeChats } from '../sidebar/arrange'
+import { activeRef, arrangeChats } from '../sidebar/arrange'
 import { ConfirmDialog, ForkDialog, ProjectDialog } from '../sidebar/dialogs'
 import { useProjects } from '../sidebar/use-projects'
 import type { PaneVariant } from './shell-context'
@@ -74,8 +74,6 @@ export function ChatsPane({
   suspended,
   onNewChat,
   onOpen,
-  onOpenOther,
-  onRename,
   onDelete,
   onBlocking,
 }: {
@@ -91,13 +89,10 @@ export function ChatsPane({
   /** An approval is open: dialogs here hide until it is answered. */
   suspended: boolean
   onNewChat: () => void
-  /** Opens one of the open provider's chats. */
-  onOpen: (id: string) => void
-  /** Opens another provider's chat, switching provider. */
-  onOpenOther: (chat: ChatRef) => void
-  onRename: (id: string, title: string) => Promise<boolean>
-  /** Deletes one of the open provider's chats (deleting the open one starts a new chat). */
-  onDelete: (id: string) => void
+  /** Opens a chat of any home connection and continues it on the current one. */
+  onOpen: (chat: ChatRef) => void
+  /** Deletes the open chat (a new chat starts in its place). */
+  onDelete: (chat: ChatRef) => void
   /** A dialog of this pane is open: the app's shortcuts wait. */
   onBlocking: (blocking: boolean) => void
 }): React.JSX.Element {
@@ -112,8 +107,9 @@ export function ChatsPane({
   const counter = useRef(0)
   const paused = useRef(false)
   const arranged = arrangeChats(history, projects.state, provider)
-  const own = provider ?? projects.state?.provider ?? null
-  const isOwn = (chat: ProviderChat): boolean => chat.provider === own
+  const active = activeRef(history, provider ?? projects.state?.provider ?? null)
+  const isActive = (chat: ChatRef): boolean =>
+    active?.provider === chat.provider && active.id === chat.id
 
   const hasDialog = dialog !== null
   useEffect(() => {
@@ -167,16 +163,13 @@ export function ChatsPane({
   }
   const open = (chat: ProviderChat): void => {
     closeDrawer()
-    if (isOwn(chat)) onOpen(chat.id)
-    else onOpenOther(ref(chat))
+    onOpen(ref(chat))
   }
 
   const actions: ChatListActions = {
     open,
-    rename: async (chat, name) => {
-      if (isOwn(chat)) return onRename(chat.id, name)
-      return (await projects.run(() => api.chats.rename(ref(chat), name))) !== null
-    },
+    rename: async (chat, name) =>
+      (await projects.run(() => api.chats.rename(ref(chat), name))) !== null,
     remove: (chat) => {
       setDialog({ kind: 'delete-chat', chat })
     },
@@ -278,14 +271,14 @@ export function ChatsPane({
             onCancel={close}
             onConfirm={() => {
               close()
-              if (isOwn(dialog.chat)) onDelete(dialog.chat.id)
+              if (isActive(dialog.chat)) onDelete(ref(dialog.chat))
               else void projects.run(() => api.chats.remove(ref(dialog.chat)))
             }}
           />
         )
       case 'fork': {
         const source = dialog.chat
-        const isOpen = isOwn(source) && source.id === history.activeId
+        const isOpen = isActive(source)
         return (
           <ForkDialog
             title={source.title}
@@ -298,8 +291,7 @@ export function ChatsPane({
                 const forked = await projects.run(() => api.chats.fork(ref(source), upTo))
                 if (!forked) return
                 closeDrawer()
-                if (isOwn(source)) onOpen(forked.chat.id)
-                else onOpenOther(forked.chat)
+                onOpen(forked.chat)
               })()
             }}
           />
@@ -340,8 +332,7 @@ export function ChatsPane({
       <HistoryList
         arranged={arranged}
         view={view}
-        provider={own}
-        activeId={history.activeId}
+        active={active}
         busy={switching}
         running={running}
         collapsed={sections}

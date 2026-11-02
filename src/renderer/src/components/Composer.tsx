@@ -95,6 +95,9 @@ export function Composer({
         aria-label="Message"
         placeholder="Ask about your files…"
         rows={2}
+        // A switch keeps the draft but takes no typing until the chat is back.
+        readOnly={switching}
+        aria-busy={switching || undefined}
         value={draft}
         onChange={(event) => {
           onDraft(event.target.value)

@@ -361,7 +361,7 @@ describe('provider switch', () => {
     loadError: null,
   }
 
-  it('never shows the old conversation while the switch is in progress', async () => {
+  it('keeps the chat on screen while the switch is in progress, and ignores the old run', async () => {
     const { api, user, pushChat, pushApproval } = await renderApp({ chat: oldChat })
     expect(await screen.findByText('Old provider history')).toBeTruthy()
     let finish: () => void = () => {}
@@ -377,8 +377,10 @@ describe('provider switch', () => {
     await user.click(await screen.findByRole('button', { name: /Use Codex · ChatGPT/ }))
     await user.click(screen.getByRole('button', { name: 'Close settings' }))
 
-    expect(screen.queryByText('Old provider history')).toBeNull()
-    expect(screen.getByRole('status').textContent).toBe('Switching provider…')
+    // The chat stays visible (quietly); the status says where it is going.
+    expect(screen.getByText('Old provider history')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe('Switching to Codex · ChatGPT…')
+    expect(screen.getByText('Switching to Codex · ChatGPT…', { selector: '.app-header *' }))
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello')
     expect(screen.getByRole('button', { name: 'Send' })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: 'New chat' })).toHaveProperty('disabled', true)
@@ -405,7 +407,8 @@ describe('provider switch', () => {
       pushChat({ type: 'conversation_reset', state: newChat })
     })
     expect(screen.getByText('New provider history')).toBeTruthy()
-    expect(screen.queryByText('Switching provider…')).toBeNull()
+    expect(screen.queryByText('Old provider history')).toBeNull()
+    expect(screen.queryByText(/Switching to/)).toBeNull()
     // provider.set settles afterwards; its follow-up load (the fake's old chat) is not applied.
     await act(async () => {
       finish()

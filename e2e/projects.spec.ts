@@ -296,7 +296,7 @@ for (const width of [1280, 400]) {
           .poll(() => page.evaluate(() => (window as unknown as E2eWindow).e2e.historyCalls().open))
           .toContain('f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0')
 
-        // Another provider's chat opens through a provider switch.
+        // Another connection's chat opens on the current connection: no provider switch.
         list = await openList()
         await nav().getByRole('button', { name: 'Estimate the 2026 tax bill', exact: true }).click()
         await expect
