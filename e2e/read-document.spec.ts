@@ -353,7 +353,13 @@ test.describe('read_document over the sandboxed worker', () => {
     expect(first.content).not.toContain('4321')
 
     const second = await search()
-    expect(second.content.split('\n').slice(0, 7)).toEqual(lines.slice(0, 7))
+    // The same matches; only the markers' token is new each call.
+    const untokened = (content: string) =>
+      content
+        .split('\n')
+        .slice(0, 8)
+        .map((l) => l.replace(/End of matches [0-9a-f]{12}/, 'End'))
+    expect(untokened(second.content)).toEqual(untokened(first.content))
     expect(second.content).toContain('Searched 4 of 6 documents (4 from cache).')
     const audit = (await reader(app).audit()).slice(-2)
     expect(audit.map((entry) => [entry.tool, entry.outcome, entry.args['extra']])).toEqual([

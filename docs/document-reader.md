@@ -293,8 +293,11 @@ text of documents, on by default (`documents: false` turns it off for a call).
 - Locations: `file.pdf (page 3): …`, `deck.pptx (slide 4): …`, `costs.xlsx (Sheet1!B12): …`,
   `spec.docx (character 1200): …` (`read_document` with `start: 1200` reads from there).
   Every line read from a file, plain text or document, match or context, sits between a
-  line saying it is untrusted file content and an end line, and has control, format and
-  bidi characters replaced and is cut to 200 characters. Both marker lines count toward
+  line saying it is untrusted file content and an end line, both carrying a random token
+  new to each call (`[End of matches <12 hex>]`), and has control, format and bidi
+  characters replaced and is cut to 200 characters. A file line cannot fake either marker:
+  the token is replaced by `#`s wherever it appears, in any case, and a `[` before "End
+  of" or "The matches below" becomes `(`. Both marker lines count toward
   the 40,000-character limit, so a cut result never leaves file text outside them.
 - Context: `context` (0-5 lines, default 1) shows the lines around each match, marked
   `-` instead of `:` (`notes.txt-11- ...`, `RFI.pdf (page 2)- ...`), with `--` between
