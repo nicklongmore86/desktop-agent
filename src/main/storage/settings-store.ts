@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   THEMES,
   TURN_LIMIT,
+  type ChatRef,
   type ModelOption,
   type ModelSettings,
   type ThemePreference,
@@ -17,6 +18,7 @@ import {
 import { DEFAULT_LAYOUT, type LayoutPrefs } from '../../shared/ipc-layout'
 import { DEFAULT_MODEL } from '../agent'
 import { readJsonFile, writeJsonFile } from './json-file'
+import { CONVERSATION_ID } from './history-store'
 import { parseLayout } from './layout-schema'
 
 /** Models offered in Settings. The default comes from the agent module. */
@@ -91,6 +93,12 @@ interface SettingsFile {
    * file keeps the user's limit; this build ignores it whenever `stepsPerMessage` is there.
    */
   turnLimit?: number
+  /**
+   * Added later without a version bump: the open chat, by home connection and id, across
+   * every connection (null: a new chat). Missing or invalid means not recorded: the
+   * current connection's own `activeId` (which older builds still keep) decides.
+   */
+  activeChat?: ChatRef | null
 }
 
 export interface SettingsStore {
@@ -129,6 +137,10 @@ export interface SettingsStore {
   readonly chatgptAuth: ChatgptAuthSettings | null
   /** Throws for a value that does not validate. */
   setChatgptAuth: (value: ChatgptAuthSettings) => Promise<void>
+  /** The open chat as last recorded; undefined when never recorded (or unreadable). */
+  readonly activeChat: ChatRef | null | undefined
+  /** Throws for a ref that does not validate. The caller checks the home is registered. */
+  setActiveChat: (chat: ChatRef | null) => Promise<void>
 }
 
 const isOffered = (model: unknown): model is string =>
@@ -179,6 +191,9 @@ const connectionsSchema = z
     }),
   )
   .max(64)
+const activeChatSchema = z
+  .strictObject({ provider: connectionIdSchema, id: z.string().regex(CONVERSATION_ID) })
+  .nullable()
 export const chatgptAuthSchema = z.object({
   hostId: z
     .string()
@@ -220,6 +235,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let layout: LayoutPrefs = { ...DEFAULT_LAYOUT }
   let connectionModels: Partial<Record<ConnectionId, string>> = {}
   let chatgptAuth: ChatgptAuthSettings | undefined
+  let activeChat: ChatRef | null | undefined
   try {
     const parsed = (await readJsonFile(file)) as Record<string, unknown> | undefined
     if (parsed?.['version'] === 3) {
@@ -251,6 +267,8 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     layout = parseLayout(parsed?.['layout'])
     const auth = chatgptAuthSchema.safeParse(parsed?.['chatgptAuth'])
     if (auth.success) chatgptAuth = withoutUndefined(auth.data)
+    const chat = activeChatSchema.safeParse(parsed?.['activeChat'])
+    if (chat.success) activeChat = chat.data
   } catch {
     // Keep the default.
   }
@@ -272,6 +290,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     ...savedTurnLimitFields(turnLimit),
     layout,
     ...(chatgptAuth ? { chatgptAuth } : {}),
+    ...(activeChat !== undefined ? { activeChat } : {}),
     ...changes,
   })
   const view = (): ModelSettings => ({
@@ -420,6 +439,16 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
       await serial(async () => {
         await writeJsonFile(file, snapshot({ chatgptAuth: validated }))
         chatgptAuth = validated
+      })
+    },
+    get activeChat() {
+      return activeChat === undefined || activeChat === null ? activeChat : { ...activeChat }
+    },
+    async setActiveChat(next) {
+      const validated = activeChatSchema.parse(next)
+      await serial(async () => {
+        await writeJsonFile(file, snapshot({ activeChat: validated }))
+        activeChat = validated
       })
     },
   }

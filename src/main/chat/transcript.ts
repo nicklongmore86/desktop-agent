@@ -1,5 +1,5 @@
 import type { ChatItem } from '../../shared/ipc'
-import type { StoredMessage } from '../storage/conversation-store'
+import { originAt, type MessageOrigin, type StoredMessage } from '../storage/conversation-store'
 import { userCommandItem } from './user-command'
 
 function resultText(content: unknown): string {
@@ -23,11 +23,13 @@ function resultText(content: unknown): string {
  * messages are folded into the cards, not shown as user text. A command the user
  * ran from the command bar is a card of its own (see user-command.ts). A prompt's
  * attachments go on its bubble; those in `unavailable` (their stored file is gone)
- * are marked so, and never make the chat fail to show.
+ * are marked so, and never make the chat fail to show. A reply covered by `origin`
+ * carries the connection (and model) that wrote it.
  */
 export function toTranscript(
   messages: readonly StoredMessage[],
   unavailable: ReadonlySet<string> = new Set(),
+  origin: readonly MessageOrigin[] = [],
 ): ChatItem[] {
   const items: ChatItem[] = []
   const tools = new Map<string, Extract<ChatItem, { kind: 'tool' }>>()
@@ -51,6 +53,15 @@ export function toTranscript(
         // Adjacent text blocks of one message read as one bubble.
         if (last && last.kind === role && last.id.startsWith(`h${String(m)}.`)) {
           last.text = last.text ? `${last.text}\n\n${block.text}` : block.text
+        } else if (role === 'assistant') {
+          const from = originAt(origin, m)
+          items.push({
+            kind: role,
+            id,
+            text: block.text,
+            ...(from ? { connection: from.connection } : {}),
+            ...(from?.model ? { model: from.model } : {}),
+          })
         } else {
           items.push({ kind: role, id, text: block.text })
         }

@@ -18,6 +18,7 @@ import type { DocumentReader } from './documents/types'
 import type { HeicSupport } from '../shared/attachments'
 import type { ImageScaler } from './attachments/image'
 import { AttachmentStore } from './attachments/store'
+import { createChatLibrary } from './chat/library'
 import { createOrganizer } from './chat/organizer'
 import { ChatSession } from './chat/session'
 import { createFilesService } from './files/service'
@@ -25,11 +26,7 @@ import { createGitService } from './git/service'
 import { AuditLog, GrantStore, PathGuard } from './permissions'
 import { createKeyStore, type SafeStorage } from './secrets'
 import { AttachmentPins, type AttachmentStoreLike } from './chat/attachments'
-import {
-  openHistory,
-  referencedAttachmentIds,
-  type ConversationHistory,
-} from './storage/history-store'
+import { openHistory, referencedAttachmentIds } from './storage/history-store'
 import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
@@ -161,9 +158,9 @@ export async function createAppServices(deps: AppServiceDeps) {
     return keys.forConnection(id)
   }
   // Each connection's conversations: userData/history/<id>/index.json plus one file
-  // per conversation. Opened (and migrated from the old single file) on first use.
-  // Only a registered id ever becomes part of a path.
-  const histories = new Map<ConnectionId, Promise<ConversationHistory>>()
+  // per conversation, listed together as one shared list (the chat library). Only a
+  // registered id ever becomes part of a path: a folder this build does not register
+  // stays unlisted.
   const historyRoot = join(userData, 'history')
   // Snapshots of attached files: userData/attachments/<sha256>. userData is a protected
   // path, so the agent's tools can never reach the blobs directly.
@@ -194,11 +191,13 @@ export async function createAppServices(deps: AppServiceDeps) {
       (free) => store.release?.(free) ?? Promise.resolve(),
     )
   }
-  const historyFor = (provider: ConnectionId): Promise<ConversationHistory> => {
-    if (!connections.registry.has(provider)) return Promise.reject(new Error('Unknown chat.'))
-    let history = histories.get(provider)
-    if (!history) {
-      history = openHistory(join(historyRoot, provider), {
+  const library = createChatLibrary({
+    connection: () => settings.connection,
+    // Hidden personal-use connections and removed ones included: their chats stay
+    // listed and continue on the current connection.
+    registered: () => connections.registry.ids(),
+    open: (provider) =>
+      openHistory(join(historyRoot, provider), {
         releaseAttachments,
         legacyFile: join(
           userData,
@@ -207,19 +206,36 @@ export async function createAppServices(deps: AppServiceDeps) {
         onError: (error) => {
           console.error('could not update the chat history', error)
         },
-      })
-      histories.set(provider, history)
-      history.catch(() => histories.delete(provider))
+      }),
+    remember: (chat) => settings.setActiveChat(chat),
+    onError: (error) => {
+      console.error('could not open or update the chat history', error)
+    },
+  })
+  await library.loadAll()
+  // The open chat, across connections. Never recorded (an older settings file): the
+  // current connection's own last chat, as before.
+  const startingChat = async () => {
+    const saved = settings.activeChat
+    if (saved && connections.registry.has(saved.provider)) {
+      const history = await library.historyFor(saved.provider).catch(() => null)
+      if (history?.has(saved.id)) return { home: saved.provider, history, openId: saved.id }
     }
-    return history
+    const history = await library.historyFor(settings.connection)
+    return { home: settings.connection, history, ...(saved === null ? { openId: null } : {}) }
   }
+  const start = await startingChat()
   const userShell = tools.find((tool) => tool.name === 'run_shell')
   const chat = new ChatSession({
-    history: await historyFor(settings.connection),
+    ...start,
+    library,
     async createRunner(signal) {
       const connection = settings.connection
       try {
-        return { ok: true, runner: await connections.runner(connection, tools, signal) }
+        const runner = await connections.runner(connection, tools, signal)
+        // Provenance only: the runner's own model, else the connection's saved choice.
+        const model = runner.model ?? settings.selection(connection)
+        return { ok: true, runner, origin: { connection, model } }
       } catch (error) {
         const failure = connections.failure(connection, error)
         return {
@@ -298,12 +314,15 @@ export async function createAppServices(deps: AppServiceDeps) {
       metadataResult(() => connections.setModel(settings.connection, model)),
     allowance: () => metadataResult(() => connections.allowance(settings.connection)),
     get: () => connections.status(settings.connection),
-    /** `openId`: a saved chat of `next` to open instead of its last one. */
-    async set(next: ConnectionId, openId?: string) {
+    /**
+     * Makes `next` the connection replies go to. The open chat continues on it (a reply
+     * in flight is stopped and its approvals denied first); a new chat becomes `next`'s.
+     */
+    async set(next: ConnectionId) {
       if (!available(next)) throw new Error('Unknown provider.')
       connections.cancelLogin()
       connections.invalidateMetadata()
-      await chat.switchHistory(await historyFor(next), () => settings.setConnection(next), openId)
+      await chat.switchConnection(next, () => settings.setConnection(next))
       return connections.status(settings.connection)
     },
     login: () => connections.login(settings.connection),
@@ -324,6 +343,7 @@ export async function createAppServices(deps: AppServiceDeps) {
   const connectionList: ConnectionsService = {
     list: () => connections.registry.list({ personalUse: settings.showPersonalUseConnections }),
     available,
+    registered: (id: ConnectionId) => connections.registry.has(id),
     state: (): ConnectionsState => ({
       configured: settings.connections.map(({ id }) => id).filter(available),
       current: settings.connection,
@@ -385,11 +405,8 @@ export async function createAppServices(deps: AppServiceDeps) {
   // Global across connections: a chat names its project by id in its own connection's index.
   const projects = createOrganizer({
     projects: await openProjectsStore(join(userData, 'projects.json')),
-    historyFor,
-    connections: () => connections.registry.ids().filter(available),
-    provider: () => settings.connection,
+    library,
     chat,
-    switchProvider: (next, id) => provider.set(next, id),
     status: () => connections.status(settings.connection),
   })
   return {

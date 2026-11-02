@@ -34,7 +34,8 @@ export interface ProjectsService {
 
 // Ids are main's own random UUIDs; anything else, a path fragment included, is
 // refused here, before it reaches a store. Objects are strict: no extra keys. The
-// connection must also be one the registry offers (checked in the handlers).
+// home connection must also be registered (checked in the handlers); it need not be
+// one the user can choose now, as hidden and removed connections' chats stay listed.
 const chatSchema = z.strictObject({
   provider: connectionIdSchema,
   id: z.string().regex(CONVERSATION_ID),
@@ -58,11 +59,11 @@ const icon = (value: unknown): ProjectIcon | null => parse(iconSchema, value, 'U
 export function registerProjectsHandlers(
   handle: IpcHandle,
   projects: ProjectsService,
-  connections: Pick<ConnectionsService, 'available'>,
+  connections: Pick<ConnectionsService, 'registered'>,
 ): void {
   const chat = (value: unknown): ChatRef => {
     const ref = parse(chatSchema, value, 'Unknown chat.')
-    if (!connections.available(ref.provider)) throw new Error('Unknown chat.')
+    if (!connections.registered(ref.provider)) throw new Error('Unknown chat.')
     return ref
   }
   const c = projectsChannels
