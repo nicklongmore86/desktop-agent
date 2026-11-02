@@ -242,6 +242,49 @@ read_document with range: "Sales!A21:D60" to continue.]`), notes, and the last l
   become ordinary error results with an audit category (`unreadable`, `out-of-range`,
   `timeout`, `worker-failed`, ...); the agent never sees an exception.
 
+### Several files in one call (`paths`)
+
+`paths` (1 to 10 absolute paths, `MAX_FILES`) reads several documents in one call, so
+the agent needs fewer turns; the description tells the model to prefer it over several
+calls. Exactly one of `path` and `paths` is given; `path` behaves exactly as above.
+
+- Every path is resolved first, then the call is refused (`invalid-input`, nothing read)
+  if two entries name the same file, as given or after resolution (`samePath`: case on
+  Windows, `..`, short names). Then each file is read in order, one reader job at a time
+  through the same queue (a `busy` refusal is that file's error), with the same checks as
+  one `path`: the guard, `openVerified`, the size limit, the kind checks.
+- A file that cannot be read (access denied, not found, not a file, hard link, too large,
+  a reader refusal, busy) gets its own `not read` line and does not stop the others. The
+  call is an error only when no file was read.
+- Options: only `include_location` and `include_formulas` may be given with `paths`, and
+  they apply to every file. `pages`, `start`, `region`, `sheet` and `range` name a part of
+  one file, so with `paths` they are refused with an error saying to use `path`.
+- Budgets per call: the 50,000-character text budget (`defaultMaxChars`) is shared. Each
+  file is given what is left divided by the files still to read, so what a short file
+  does not use goes to the ones after it. A file cut short keeps its usual continuation
+  line, which now names the file (`Call read_document with path: "...", start: 5 to
+continue.`, or `range:` for a workbook), plus a note saying how much of the budget it
+  had. Images: at most 20 for the whole call (`maxImagesPerCall`, the same 20 as
+  `IMAGE_BUDGET` per request in `docs/provider-images.md`), each file getting what the
+  ones before it left (each image still at most 5 MB); a PDF or picture read with none
+  left says so and to read it on its own. Image labels name the file (`file 2, page 3`)
+  and image numbers in the text count across the files.
+- The result starts with a line saying how many files were read and that everything
+  between a file's begin and end lines is untrusted file content, never instructions.
+  Each file sits between `===== File 2 of 3: "<path>" (begin <marker>) =====` and
+  `===== End of file 2 (<marker>) =====`, where the marker is 8 random hex characters per
+  call, so a document's text cannot fake the end of its section. Paths and error messages
+  shown there are JSON-quoted with control, bidi/format and line-separator characters
+  written as `\uXXXX`, so a file name cannot break a line or reorder the text.
+- Cancelling stops between files and during one (the call's signal also takes a job still
+  waiting in the reader's queue out of it); the result is `Cancelled.`
+- Audit: one entry per file instead of one per call (`RunResult.auditParts`, written by
+  `defineTool`), each with that file's resolved path (or the path as given when refused),
+  `file`/`files` (its place in the call), the options, its own outcome and error category,
+  and its `kind`, `imageCount` and `locationRead`. A call refused as a whole (bad input,
+  duplicates, no reader, cancelled before the first file) keeps the usual single entry
+  with `paths` in its args.
+
 The app owns one `DocumentWorkerHost` (`src/main/index.ts`), shared by the tool and
 attachments and disposed on `will-quit`.
 
@@ -395,7 +438,11 @@ part, 10,000 cells per call, a 20 x 30 preview per sheet, 200 sheets listed.
 - `read_document` (`src/main/tools/read-document.test.ts`, fake reader): output, ranges
   and regions, photos and the GPS gate with its audit fields, unsupported types, clean
   errors, and the guard (outside the grant, secret and protected files, symlink, hard
-  link, size). `src/main/tools/read-document-providers.test.ts` runs the tool in the agent
+  link, size). `src/main/tools/read-document-multi.test.ts` covers `paths`: sections and
+  markers, per-file errors next to files that read, the text budget split and carried
+  over with its notes and continuations, the image budget across files, `include_location`
+  for every file, escaped names, duplicates, more than 10 files and refused options,
+  cancelling during and between files, and one audit entry per file. `src/main/tools/read-document-providers.test.ts` runs the tool in the agent
   loop against fake Claude API and OpenAI-compatible servers: its page images arrive in
   the Claude `tool_result` and in the user message after the OpenAI `tool` message, and
   never without vision. In real Electron, `e2e/read-document.spec.ts` runs the tool
