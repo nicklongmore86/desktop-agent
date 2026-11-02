@@ -9,7 +9,13 @@ import {
   type Sandbox,
 } from '../permissions/test-support'
 import { DEFAULT_LIMITS } from './deps'
-import { MAX_SKIPPED_LISTED, queryTerms, safeRel } from './search-files'
+import {
+  FILE_TEXT_END,
+  FILE_TEXT_START,
+  MAX_SKIPPED_LISTED,
+  queryTerms,
+  safeRel,
+} from './search-files'
 import { toolHarness, type ToolHarness } from './test-support'
 
 let sb: Sandbox
@@ -372,7 +378,9 @@ describe('search_files', () => {
     })
     expect(r.content.split('\n')).toEqual([
       `1 result in ${sb.root}`,
+      FILE_TEXT_START,
       'docs/guide.md:2: See the TODO list.',
+      FILE_TEXT_END,
       '1 protected entries hidden.',
     ])
   })

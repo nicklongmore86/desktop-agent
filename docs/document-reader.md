@@ -292,8 +292,10 @@ text of documents, on by default (`documents: false` turns it off for a call).
   only ever handles the checked reply, never the document.
 - Locations: `file.pdf (page 3): …`, `deck.pptx (slide 4): …`, `costs.xlsx (Sheet1!B12): …`,
   `spec.docx (character 1200): …` (`read_document` with `start: 1200` reads from there).
-  Document matches come after a line saying they are untrusted file content, and each
-  line has control, format and bidi characters replaced and is cut to 200 characters.
+  Every line read from a file, plain text or document, match or context, sits between a
+  line saying it is untrusted file content and an end line, and has control, format and
+  bidi characters replaced and is cut to 200 characters. Both marker lines count toward
+  the 40,000-character limit, so a cut result never leaves file text outside them.
 - Context: `context` (0-5 lines, default 1) shows the lines around each match, marked
   `-` instead of `:` (`notes.txt-11- ...`, `RFI.pdf (page 2)- ...`), with `--` between
   groups; a document's context stays on the match's page, slide or sheet. Context lines
