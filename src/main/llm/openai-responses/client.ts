@@ -11,6 +11,7 @@ import {
   type FetchLike,
 } from '../openai-compat/http'
 import { MAX_EVENT_BYTES, mediaType, sseData } from '../openai-compat/stream'
+import { savedToolIds } from '../openai-compat/tool-ids'
 import { diagnostics, LABEL, ResponsesError, responsesError, responsesStatusError } from './errors'
 import { reasoningItemBytes, ResponsesAccumulator } from './stream'
 import {
@@ -259,7 +260,13 @@ class ResponsesStream implements AgentStream {
       const mode = images.mode
       const body = toResponsesRequest({ ...params, model }, mode, plan.current())
       try {
-        const { message, reasoning } = await this.send(connection, model, body, signal)
+        const { message, reasoning } = await this.send(
+          connection,
+          model,
+          body,
+          signal,
+          savedToolIds(params.messages),
+        )
         plan.remember(message, reasoning)
         return message
       } catch (error) {
@@ -291,6 +298,7 @@ class ResponsesStream implements AgentStream {
     model: string,
     body: ResponsesRequest,
     signal: AbortSignal,
+    reserved: ReadonlySet<string>,
   ): Promise<{ message: Message; reasoning: readonly ResponsesReasoningItem[] }> {
     const { response, touch, done, mapError, isSecret } = await connection.request('responses', {
       method: 'POST',
@@ -301,11 +309,12 @@ class ResponsesStream implements AgentStream {
     let stream = response.body
     try {
       if (!stream) throw new OpenAICompatError('protocol', `${LABEL} sent an empty response.`)
-      const acc = new ResponsesAccumulator(model, offeredToolNames(body), {
-        status: response.status,
-        headers: response.headers,
-        isSecret,
-      })
+      const acc = new ResponsesAccumulator(
+        model,
+        offeredToolNames(body),
+        { status: response.status, headers: response.headers, isSecret },
+        reserved,
+      )
       const type = mediaType(response.headers.get('content-type'))
       if (type !== 'text/event-stream') {
         // No Content-Type at all: still a stream if the body starts like one.

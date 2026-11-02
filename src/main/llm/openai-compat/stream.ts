@@ -95,9 +95,15 @@ export class ChunkAccumulator {
   private finish: string | null = null
   private usage: Record<string, unknown> | null = null
   private id = ''
+  /**
+   * `reserved`: the tool ids the request's history already uses. A new call never gets one,
+   * so a provider that reuses ids (or returns one of this request's aliases) cannot make
+   * two calls share a saved id.
+   */
   constructor(
     private readonly model: string,
     private readonly label: string,
+    private readonly reserved: ReadonlySet<string> = new Set(),
   ) {}
 
   /** Returns the text delta in this chunk, if any. */
@@ -161,7 +167,7 @@ export class ChunkAccumulator {
       throw new OpenAICompatError('protocol', `${this.label} returned an unsupported stop reason.`)
     const content: ContentBlock[] = []
     if (this.text) content.push({ type: 'text', text: this.text, citations: null })
-    const seen = new Set<string>()
+    const seen = new Set<string>(this.reserved)
     calls.forEach((call, i) => {
       if (!call.name) {
         if (stop === 'tool_use')

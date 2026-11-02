@@ -3,6 +3,7 @@ import type { AgentClient, AgentStream } from '../../agent/types'
 import { OpenAICompatError, statusError } from './errors'
 import { connect, type Connection, type ConnectionOptions } from './http'
 import { ChunkAccumulator, isEventStream, sseData } from './stream'
+import { savedToolIds } from './tool-ids'
 import { toChatRequest } from './translate'
 
 export interface OpenAICompatClientOptions extends ConnectionOptions {
@@ -86,7 +87,7 @@ class CompatStream implements AgentStream {
           `${connection.label} did not stream its response. Check the base URL.`,
         )
       }
-      const acc = new ChunkAccumulator(model, connection.label)
+      const acc = new ChunkAccumulator(model, connection.label, savedToolIds(params.messages))
       for await (const data of sseData(response.body, touch)) {
         let chunk: unknown
         try {

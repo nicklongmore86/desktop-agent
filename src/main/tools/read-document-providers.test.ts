@@ -176,7 +176,7 @@ describe('read_document images reach the providers', () => {
       'tool',
       'user',
     ])
-    expect(body.messages[3]).toMatchObject({ role: 'tool', tool_call_id: 'call_1' })
+    expect(body.messages[3]).toMatchObject({ role: 'tool', tool_call_id: 'call00000' })
     expect(body.messages[4]?.content).toEqual(
       expect.arrayContaining([
         { type: 'image_url', image_url: { url: `data:image/png;base64,${PAGE_B64}` } },

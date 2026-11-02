@@ -6,6 +6,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages'
 import { IMAGE_LABEL_PREFIX } from '../../agent/images'
 import { OpenAICompatError } from '../openai-compat/errors'
+import { ToolCallPairing } from '../openai-compat/tool-ids'
 import {
   DOCUMENT_PLACEHOLDER,
   IMAGE_PLACEHOLDER,
@@ -193,15 +194,16 @@ const hasImage = (blocks: readonly (ContentBlockParam | ToolResultPart)[]): bool
   blocks.some((block) => block.type === 'image')
 
 /**
- * `calls` holds the ids of the tool calls in the assistant message just before `message`
- * that are still unanswered. A tool result must answer one of them, once: the API rejects
- * an output with no matching call, and the app's stored transcripts keep the same
- * pairing (conversation-store.ts). An orphaned result means the history is damaged, so the
- * request is refused rather than sent with the result silently dropped.
+ * `pairing` aliases tool ids for this request (call_id is capped at 64 characters; saved ids
+ * come from many providers) and checks each tool result answers, once, a call of the
+ * assistant message just before it: the API rejects an output with no matching call, and
+ * the app's stored transcripts keep the same pairing (conversation-store.ts). An orphaned
+ * result means the history is damaged, so the request is refused rather than sent with the
+ * result silently dropped.
  */
 function translateMessage(
   message: MessageParam,
-  calls: Set<string>,
+  pairing: ToolCallPairing,
   mode: ToolImageMode,
   reasoningFor?: RequestFeatures['reasoningFor'],
 ): ResponsesInputItem[] {
@@ -230,7 +232,7 @@ function translateMessage(
       if (block.type === 'tool_use')
         out.push({
           type: 'function_call',
-          call_id: block.id,
+          call_id: pairing.call(block.id),
           name: block.name,
           arguments: JSON.stringify(block.input ?? {}),
           namespace: TOOL_NAMESPACE,
@@ -242,18 +244,14 @@ function translateMessage(
   const out: ResponsesInputItem[] = message.content
     .filter((block) => block.type === 'tool_result')
     .map((block): ResponsesInputItem => {
-      if (!calls.delete(block.tool_use_id))
-        throw new OpenAICompatError(
-          'protocol',
-          'The conversation has a tool result without its tool call, so it was not sent.',
-        )
+      const callId = pairing.result(block.tool_use_id)
       const blocks = blocksOf(block.content)
       const prefix = block.is_error ? TOOL_ERROR_PREFIX : ''
       if (hasImage(blocks) && mode === 'output') {
         const parts = inputContent(blocks)
         const first = parts[0]
         if (prefix && first?.type === 'input_text') first.text = `${prefix}${first.text}`
-        return { type: 'function_call_output', call_id: block.tool_use_id, output: parts }
+        return { type: 'function_call_output', call_id: callId, output: parts }
       }
       if (hasImage(blocks))
         toolImages.push(
@@ -268,7 +266,7 @@ function translateMessage(
       const output = textOf(blocks.filter((part) => part.type !== 'image'))
       return {
         type: 'function_call_output',
-        call_id: block.tool_use_id,
+        call_id: callId,
         output: `${prefix}${output}`,
       }
     })
@@ -311,7 +309,7 @@ export function toResponsesRequest(
 ): ResponsesRequest {
   const system = typeof params.system === 'string' ? params.system : textOf(params.system ?? [])
   const input: ResponsesInputItem[] = []
-  let calls = new Set<string>()
+  const pairing = new ToolCallPairing()
   // Reasoning goes back only for the calls since the last message the user typed: earlier
   // turns' reasoning is ignored by the model anyway (reasoning guide).
   const turnStart = params.messages.findLastIndex(
@@ -321,11 +319,8 @@ export function toResponsesRequest(
   )
   params.messages.forEach((message, index) => {
     const reasoningFor = index > turnStart ? features.reasoningFor : undefined
-    input.push(...translateMessage(message, calls, mode, reasoningFor))
-    calls =
-      message.role === 'assistant' && typeof message.content !== 'string'
-        ? new Set(message.content.flatMap((b) => (b.type === 'tool_use' ? [b.id] : [])))
-        : new Set()
+    input.push(...translateMessage(message, pairing, mode, reasoningFor))
+    pairing.next(message)
   })
   // Hosted (server) tools have no input_schema and are never offered on this route.
   const functions: ResponsesFunctionTool[] = (params.tools ?? []).flatMap((tool) =>

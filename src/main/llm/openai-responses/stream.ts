@@ -64,6 +64,8 @@ export class ResponsesAccumulator {
       headers?: Headers
       isSecret?: SecretCheck
     } = {},
+    /** The tool ids the request's history already uses: a new call never gets one. */
+    private readonly reserved: ReadonlySet<string> = new Set(),
   ) {}
 
   /** A failure event's error. Its details always name the event, so they are never empty. */
@@ -213,7 +215,7 @@ export class ResponsesAccumulator {
     const content: ContentBlock[] = []
     const text = this.text || this.deltaText
     if (text) content.push({ type: 'text', text, citations: null })
-    const seen = new Set<string>()
+    const seen = new Set<string>(this.reserved)
     this.calls.forEach((call, i) => {
       let input: unknown = {}
       const parsed = parseArgs(call.args)
