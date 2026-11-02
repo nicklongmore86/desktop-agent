@@ -12,6 +12,13 @@ export const MAX_REASONING_BYTES = 4 * 1024 * 1024
 const MAX_SUMMARY = 64
 const ITEM_ID = /^[A-Za-z0-9_-]{1,128}$/
 
+/**
+ * A kept reasoning item's size as it is sent: the UTF-8 bytes of its JSON, so multibyte
+ * summary text and escaping count in full (string `.length` would undercount them).
+ */
+export const reasoningItemBytes = (item: ResponsesReasoningItem): number =>
+  Buffer.byteLength(JSON.stringify(item), 'utf8')
+
 interface Call {
   callId: string
   name: string
@@ -169,15 +176,17 @@ export class ResponsesAccumulator {
           : [],
       )
       .slice(0, MAX_SUMMARY)
-    const bytes = encrypted.length + summary.reduce((total, part) => total + part.text.length, 0)
-    if (this.reasoningBytes + bytes > MAX_REASONING_BYTES) return
-    this.reasoningBytes += bytes
-    this.reasoning.push({
+    const kept: ResponsesReasoningItem = {
       type: 'reasoning',
       ...(typeof item.id === 'string' && ITEM_ID.test(item.id) ? { id: item.id } : {}),
       summary,
       encrypted_content: encrypted,
-    })
+    }
+    // An item that would pass the limit is dropped whole, never cut.
+    const bytes = reasoningItemBytes(kept)
+    if (this.reasoningBytes + bytes > MAX_REASONING_BYTES) return
+    this.reasoningBytes += bytes
+    this.reasoning.push(kept)
   }
 
   /** The reasoning items with encrypted content, in output order (see addReasoning). */

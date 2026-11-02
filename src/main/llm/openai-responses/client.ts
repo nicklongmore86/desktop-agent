@@ -12,7 +12,7 @@ import {
 } from '../openai-compat/http'
 import { MAX_EVENT_BYTES, mediaType, sseData } from '../openai-compat/stream'
 import { diagnostics, LABEL, ResponsesError, responsesError, responsesStatusError } from './errors'
-import { ResponsesAccumulator } from './stream'
+import { reasoningItemBytes, ResponsesAccumulator } from './stream'
 import {
   hasOutputImages,
   offeredToolNames,
@@ -76,22 +76,23 @@ function refusedPart(error: unknown, body: ResponsesRequest): Refusable | undefi
 }
 
 /** Reasoning kept for one client (one run), by the tool calls it led to. */
-const MAX_KEPT_REASONING = 32 * 1024 * 1024
-class ReasoningMemory {
+export const MAX_KEPT_REASONING = 32 * 1024 * 1024
+/** Exported for tests. Sizes are UTF-8 bytes as sent (reasoningItemBytes). */
+export class ReasoningMemory {
   private readonly kept = new Map<
     string,
     { items: readonly ResponsesReasoningItem[]; size: number }
   >()
   private size = 0
+  /** UTF-8 bytes currently kept. */
+  get bytes(): number {
+    return this.size
+  }
   get(ids: readonly string[]): readonly ResponsesReasoningItem[] | undefined {
     return this.kept.get(ids.join('\n'))?.items
   }
   set(ids: readonly string[], items: readonly ResponsesReasoningItem[]): void {
-    const size = items.reduce(
-      (total, item) =>
-        total + item.encrypted_content.length + item.summary.reduce((n, p) => n + p.text.length, 0),
-      0,
-    )
+    const size = items.reduce((total, item) => total + reasoningItemBytes(item), 0)
     this.kept.set(ids.join('\n'), { items, size })
     this.size += size
     // The oldest go first: the model needs the latest calls' reasoning most.

@@ -60,7 +60,7 @@ Reasoning continuity:
   Only the calls since the last message the user typed get their reasoning back.
 - The client is built for each run (each message), so the memory ends with the run and on any
   provider switch. Nothing of it enters the transcript: it is never saved with the chat, shown,
-  logged or put in an error message. At most 4 MiB per response and 32 MiB per run are kept.
+  logged or put in an error message. At most 4 MiB per response and 32 MiB per run are kept, counted as the UTF-8 bytes of each item as sent; an item that would pass a limit is dropped whole, never cut (the run drops its oldest first).
 
 Refusals: a 400/422 (or in-stream failure) whose `error.param` names `parallel_tool_calls`,
 `include…`, or an `input[n]…` that is a reasoning item, is sent once more without that part,

@@ -18,15 +18,19 @@ import {
 } from '../openai-compat/test-support'
 import {
   createChatGPTResponsesClient,
+  MAX_KEPT_REASONING,
+  ReasoningMemory,
   resetRefusedFeatures,
   type ChatGPTResponsesClientOptions,
 } from './client'
+import { MAX_REASONING_BYTES, ResponsesAccumulator } from './stream'
 import {
   ALLOWED_BODY_KEYS,
   OMITTED_BODY_KEYS,
   PLAN_FEATURES_ENV,
   TOOL_NAMESPACE,
   type PlanFeatures,
+  type ResponsesReasoningItem,
 } from './translate'
 
 let server: FakeServer
@@ -349,5 +353,68 @@ describe('optional ChatGPT plan request features', () => {
       await failure(finalOf(client()))
       expect(server.requests).toHaveLength(1)
     })
+  })
+})
+
+describe('reasoning size limits count UTF-8 bytes as sent', () => {
+  const MiB = 1024 * 1024
+  /** '€' is one UTF-16 unit but three UTF-8 bytes. */
+  const item = (id: string, ascii: number, euros: number): ResponsesReasoningItem => ({
+    type: 'reasoning',
+    id,
+    summary: [{ type: 'summary_text', text: '€'.repeat(euros) }],
+    encrypted_content: 'e'.repeat(ascii),
+  })
+  const bytes = (items: readonly ResponsesReasoningItem[]) =>
+    items.reduce((n, i) => n + Buffer.byteLength(JSON.stringify(i), 'utf8'), 0)
+  const chars = (i: ResponsesReasoningItem) =>
+    i.encrypted_content.length + i.summary.reduce((n, p) => n + p.text.length, 0)
+  const accumulate = (items: ResponsesReasoningItem[]) => {
+    const acc = new ResponsesAccumulator('m', new Set())
+    items.forEach((i, n) =>
+      acc.add({ type: 'response.output_item.done', output_index: n, item: i }),
+    )
+    return acc.reasoningItems()
+  }
+
+  it('drops a response item whose bytes pass 4 MiB though its characters do not', () => {
+    const big = item('rs_big', 3 * MiB, 400_000)
+    expect(chars(big)).toBeLessThan(MAX_REASONING_BYTES)
+    expect(bytes([big])).toBeGreaterThan(MAX_REASONING_BYTES)
+    const small = item('rs_small', 1000, 1000)
+    const kept = accumulate([big, small])
+    // Dropped whole, never cut; a later item that fits is still kept, unchanged.
+    expect(kept).toEqual([small])
+    expect(bytes(kept)).toBeLessThanOrEqual(MAX_REASONING_BYTES)
+  })
+
+  it('stops keeping response items once their bytes would pass 4 MiB', () => {
+    // Each fits alone; the characters of all three fit too, but their bytes do not.
+    const parts = ['rs_1', 'rs_2', 'rs_3'].map((id) => item(id, MiB, 120_000))
+    expect(parts.reduce((n, i) => n + chars(i), 0)).toBeLessThan(MAX_REASONING_BYTES)
+    expect(bytes(parts)).toBeGreaterThan(MAX_REASONING_BYTES)
+    const kept = accumulate(parts)
+    expect(kept.map((i) => i.id)).toEqual(['rs_1', 'rs_2'])
+    expect(kept[1]).toEqual(parts[1])
+    expect(bytes(kept)).toBeLessThanOrEqual(MAX_REASONING_BYTES)
+  })
+
+  it('keeps a run within 32 MiB of bytes, dropping the oldest', () => {
+    const memory = new ReasoningMemory()
+    const entries = Array.from({ length: 9 }, (_, n) => [
+      item(`rs_${String(n)}`, 2.5 * MiB, 450_000),
+    ])
+    // Each passes the per-response limit; their characters fit the run, their bytes do not.
+    for (const entry of entries) expect(bytes(entry)).toBeLessThanOrEqual(MAX_REASONING_BYTES)
+    expect(entries.flat().reduce((n, i) => n + chars(i), 0)).toBeLessThan(MAX_KEPT_REASONING)
+    expect(entries.reduce((n, e) => n + bytes(e), 0)).toBeGreaterThan(MAX_KEPT_REASONING)
+    entries.forEach((entry, n) => {
+      memory.set([`call_${String(n)}`], entry)
+    })
+    expect(memory.get(['call_0'])).toBeUndefined()
+    expect(memory.get(['call_8'])).toEqual(entries[8])
+    const kept = entries.flatMap((entry, n) => (memory.get([`call_${String(n)}`]) ? entry : []))
+    expect(memory.bytes).toBe(bytes(kept))
+    expect(memory.bytes).toBeLessThanOrEqual(MAX_KEPT_REASONING)
   })
 })
