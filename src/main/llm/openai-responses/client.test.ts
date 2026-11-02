@@ -197,14 +197,14 @@ describe('openai-responses client', () => {
       { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Reading.' }] },
       {
         type: 'function_call',
-        call_id: 'call_abc',
+        call_id: 'call00000',
         name: 'read_file',
         arguments: args,
         namespace: TOOL_NAMESPACE,
       },
       {
         type: 'function_call_output',
-        call_id: 'call_abc',
+        call_id: 'call00000',
         output: expect.stringContaining('alpha') as unknown,
       },
     ])
@@ -295,12 +295,12 @@ describe('openai-responses client', () => {
       },
       {
         type: 'function_call',
-        call_id: 'toolu_1',
+        call_id: 'call00000',
         name: 'f',
         arguments: '{"a":1}',
         namespace: TOOL_NAMESPACE,
       },
-      { type: 'function_call_output', call_id: 'toolu_1', output: `${TOOL_ERROR_PREFIX}boom` },
+      { type: 'function_call_output', call_id: 'call00000', output: `${TOOL_ERROR_PREFIX}boom` },
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'And?' }] },
     ])
     expect(JSON.stringify(body)).not.toContain('secret plan')
@@ -328,7 +328,7 @@ describe('openai-responses client', () => {
     ]
     const inOutput = {
       type: 'function_call_output',
-      call_id: 'toolu_1',
+      call_id: 'call00000',
       output: [
         { type: 'input_text', text: 'One page.' },
         { type: 'input_text', text: '[Image: page 1]' },
@@ -336,7 +336,11 @@ describe('openai-responses client', () => {
       ],
     }
     const inMessage = [
-      { type: 'function_call_output', call_id: 'toolu_1', output: 'One page.\n\n[Image: page 1]' },
+      {
+        type: 'function_call_output',
+        call_id: 'call00000',
+        output: 'One page.\n\n[Image: page 1]',
+      },
       {
         type: 'message',
         role: 'user',

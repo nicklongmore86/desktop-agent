@@ -157,12 +157,12 @@ describe('openai-compat client', () => {
         role: 'assistant',
         content: 'Reading.',
         tool_calls: [
-          { id: 'call_abc', type: 'function', function: { name: 'read_file', arguments: args } },
+          { id: 'call00000', type: 'function', function: { name: 'read_file', arguments: args } },
         ],
       },
       {
         role: 'tool',
-        tool_call_id: 'call_abc',
+        tool_call_id: 'call00000',
         content: expect.stringContaining('alpha') as unknown,
       },
     ])
@@ -198,8 +198,8 @@ describe('openai-compat client', () => {
     ])
     const second = server.requests[1]?.body as { messages: unknown[] }
     expect(second.messages.slice(-2)).toMatchObject([
-      { role: 'tool', tool_call_id: 'call_1', content: expect.stringContaining('A') as unknown },
-      { role: 'tool', tool_call_id: 'call_2' },
+      { role: 'tool', tool_call_id: 'call00000', content: expect.stringContaining('A') as unknown },
+      { role: 'tool', tool_call_id: 'call00001' },
     ])
   })
 
@@ -371,12 +371,12 @@ describe('openai-compat client', () => {
         role: 'assistant',
         content: null,
         tool_calls: [
-          { id: 'toolu_1', type: 'function', function: { name: 'f', arguments: '{"a":1}' } },
-          { id: 'toolu_2', type: 'function', function: { name: 'g', arguments: '{}' } },
+          { id: 'call00000', type: 'function', function: { name: 'f', arguments: '{"a":1}' } },
+          { id: 'call00001', type: 'function', function: { name: 'g', arguments: '{}' } },
         ],
       },
-      { role: 'tool', tool_call_id: 'toolu_1', content: `${TOOL_ERROR_PREFIX}boom` },
-      { role: 'tool', tool_call_id: 'toolu_2', content: 'One page.\n\n[Image: page 1]' },
+      { role: 'tool', tool_call_id: 'call00000', content: `${TOOL_ERROR_PREFIX}boom` },
+      { role: 'tool', tool_call_id: 'call00001', content: 'One page.\n\n[Image: page 1]' },
       // Tool messages carry text only: the images follow, marked as tool output.
       {
         role: 'user',

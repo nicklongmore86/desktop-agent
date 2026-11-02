@@ -81,12 +81,12 @@ describe('toResponsesRequest tool pairing', () => {
     const { input } = request([ask, calls('a', 'b'), results('b', 'a'), calls('c'), results('c')])
     expect(input.map((item) => [item.type, 'call_id' in item ? item.call_id : ''])).toEqual([
       ['message', ''],
-      ['function_call', 'a'],
-      ['function_call', 'b'],
-      ['function_call_output', 'b'],
-      ['function_call_output', 'a'],
-      ['function_call', 'c'],
-      ['function_call_output', 'c'],
+      ['function_call', 'call00000'],
+      ['function_call', 'call00001'],
+      ['function_call_output', 'call00001'],
+      ['function_call_output', 'call00000'],
+      ['function_call', 'call00002'],
+      ['function_call_output', 'call00002'],
     ])
   })
 
@@ -157,7 +157,7 @@ describe('toResponsesRequest features', () => {
     expect(input.filter((i) => i.type === 'reasoning')).toEqual([item('rs_c')])
     // It comes right before the calls it led to.
     const at = input.findIndex((i) => i.type === 'reasoning')
-    expect(input[at + 1]).toMatchObject({ type: 'function_call', call_id: 'c' })
+    expect(input[at + 1]).toMatchObject({ type: 'function_call', call_id: 'call00001' })
   })
 
   it('never sends reasoning without reasoningFor', () => {
