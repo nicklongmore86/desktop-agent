@@ -176,7 +176,7 @@ The turn limit is a setting: **Settings › Agent › Steps per message** (a who
 The same loop has the rest of its budget built in (`AGENT_BUDGET` in `src/shared/ipc.ts`), so a run is not paused while it makes progress but a runaway one still stops:
 
 - **Time:** 20 minutes of work per message, checked between steps (a single long step finishes first). Time spent waiting for the user to answer an approval does not count.
-- **Stuck:** the run pauses early when the same tool, with the same input (compared with object keys sorted), returns the same result 3 times in one message, or when every tool call failed in 3 steps in a row. A call that keeps making progress, such as `search_files` continuing a search, returns something different each time and never matches. Calls the user declined count for neither rule. Only digests of the calls are kept, and a tool name the model invented is never shown.
+- **Stuck:** the run pauses early when the same tool, with the same input (compared with object keys sorted), returns the same result in 3 separate steps of one message (identical calls made together in one step count once), or when every tool call failed in 3 steps in a row. A call that keeps making progress, such as `search_files` continuing a search, returns something different each time and never matches. Calls the user declined count for neither rule. Only digests of the calls are kept, and a tool name the model invented is never shown.
 
 Each of these pauses like the step limit (same `max_turns` code, same notice and **Continue**), and the notice says which one it was. Nothing continues automatically.
 

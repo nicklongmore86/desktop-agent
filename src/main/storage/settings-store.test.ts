@@ -161,12 +161,48 @@ describe('turn limit', () => {
     expect(store.turnLimit).toBe(100)
     await store.setTheme('dark')
     const saved = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
-    expect(saved).toMatchObject({ stepsPerMessage: 100, theme: 'dark' })
-    // The old name is never written again, so 35 chosen from now on stays 35.
-    expect(saved).not.toHaveProperty('turnLimit')
+    expect(saved).toMatchObject({ stepsPerMessage: 100, turnLimit: 100, theme: 'dark' })
+  })
+
+  it('keeps 35 chosen from now on as 35, though the old name holds 35 too', async () => {
+    const file = await fileWith({ version: 3, model: 'claude-opus-5-5', turnLimit: 35 })
+    const store = await openSettingsStore(file)
     await store.setTurnLimit(35)
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+      stepsPerMessage: 35,
+      turnLimit: 35,
+    })
     expect((await openSettingsStore(file)).turnLimit).toBe(35)
   })
+
+  it.each([
+    [5, 5],
+    [35, 35],
+    [60, 60],
+    [100, 100],
+    [101, 100],
+    [300, 100],
+  ])(
+    'saves %j under the new name and, for older builds, %j under the old one',
+    async (value, legacy) => {
+      const file = await fileWith({ version: 3, model: 'claude-opus-5-5' })
+      const store = await openSettingsStore(file)
+      await store.setTurnLimit(value)
+      expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+        stepsPerMessage: value,
+        turnLimit: legacy,
+      })
+      // Any other write keeps both.
+      await store.setTheme('light')
+      expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+        stepsPerMessage: value,
+        turnLimit: legacy,
+        theme: 'light',
+      })
+      // This build reads the new name back exactly.
+      expect((await openSettingsStore(file)).turnLimit).toBe(value)
+    },
+  )
 
   it.each([
     [5, 5],
@@ -293,6 +329,7 @@ describe('settings v3 migration', () => {
       showPersonalUseConnections: true,
       theme: 'light',
       stepsPerMessage: 100,
+      turnLimit: 100,
       layout,
     })
   })

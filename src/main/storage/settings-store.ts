@@ -85,8 +85,10 @@ interface SettingsFile {
   stepsPerMessage?: number
   /**
    * The same setting under its first name, when the range was 5 to 100 and the default 35.
-   * Read only when `stepsPerMessage` is absent, and never written again. Every write saved
-   * it, so 35 means "never changed": it moves to the new default. Other values are kept.
+   * Read only when `stepsPerMessage` is absent. Older writes always saved it, so 35 there
+   * means "never changed": it moves to the new default; other values are kept. Still
+   * written, clamped to that old range (LEGACY_TURN_LIMIT), so an older build opening the
+   * file keeps the user's limit; this build ignores it whenever `stepsPerMessage` is there.
    */
   turnLimit?: number
 }
@@ -143,6 +145,17 @@ const connectionIdSchema = z.string().regex(CONNECTION_ID)
 const selectionSchema = z.partialRecord(connectionIdSchema, z.string().regex(MODEL_ID))
 const baseUrlSchema = z.string().min(1).max(2048)
 export const turnLimitSchema = z.number().int().min(TURN_LIMIT.min).max(TURN_LIMIT.max)
+
+/** The range older builds accept for `turnLimit`: anything outside it they drop. */
+export const LEGACY_TURN_LIMIT = { min: 5, max: 100 } as const
+
+/** Both saved fields for a steps-per-message value (see SettingsFile). */
+const savedTurnLimitFields = (
+  value: number,
+): Pick<SettingsFile, 'stepsPerMessage' | 'turnLimit'> => ({
+  stepsPerMessage: value,
+  turnLimit: Math.min(LEGACY_TURN_LIMIT.max, Math.max(LEGACY_TURN_LIMIT.min, value)),
+})
 
 /**
  * A saved steps-per-message value (see SettingsFile): a finite number, rounded and clamped
@@ -256,7 +269,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     connections,
     showPersonalUseConnections,
     theme,
-    stepsPerMessage: turnLimit,
+    ...savedTurnLimitFields(turnLimit),
     layout,
     ...(chatgptAuth ? { chatgptAuth } : {}),
     ...changes,
@@ -375,7 +388,7 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     async setTurnLimit(next) {
       const validated = turnLimitSchema.parse(next)
       return serial(async () => {
-        await writeJsonFile(file, snapshot({ stepsPerMessage: validated }))
+        await writeJsonFile(file, snapshot(savedTurnLimitFields(validated)))
         turnLimit = validated
         return turnLimit
       })

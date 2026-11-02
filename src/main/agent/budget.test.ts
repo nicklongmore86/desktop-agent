@@ -159,6 +159,46 @@ describe('time budget', () => {
     expect(requests()).toBe(4)
   })
 
+  it('counts overlapping approval waits once, not once per approval', async () => {
+    let clock = 0
+    const { client, requests } = scripted([
+      [
+        ['write', { name: 'a' }],
+        ['write', { name: 'b' }],
+      ],
+      ...Array.from({ length: 10 }, (_, i): Step => [['work', { part: i }]]),
+    ])
+    const write = named('write', async (input: { name: string }, ctx) => {
+      const approved = await ctx.requestApproval({
+        tool: 'write',
+        kind: 'write',
+        summary: `Write ${input.name}`,
+      })
+      return { content: `wrote ${input.name}`, isError: !approved }
+    })
+    const work = named('work', (input: { part: number }) => {
+      clock += 6 * MINUTE
+      return Promise.resolve({ content: `part ${String(input.part)} done` })
+    })
+    // Both approvals are open together: 15 minutes pass after each is asked, 30 in all, and
+    // all 30 are waiting. Counting each approval from when it was asked would leave out 45.
+    const { result, errors } = await runWith(
+      { client, tools: [write, work], maxTurns: 20, now: () => clock },
+      () => {
+        clock += 15 * MINUTE
+        return new Promise((resolve) =>
+          setTimeout(() => {
+            resolve(true)
+          }, 0),
+        )
+      },
+    )
+    expect(result.stopReason).toBe('max_turns')
+    expect(errors[0]?.message).toBe(timePausedMessage(AGENT_BUDGET.minutes))
+    // The approvals step, then four six-minute steps reach 24 minutes of work.
+    expect(requests()).toBe(5)
+  })
+
   it('refuses a budget that is not a positive whole number of milliseconds', () => {
     const { client } = scripted([])
     for (const timeBudgetMs of [0, -1, 1.5, Number.NaN])
@@ -201,6 +241,65 @@ describe('stuck detection', () => {
     expect(requests()).toBe(5)
     expect(result.stopReason).toBe('max_turns')
     expect(errors[0]?.message).toBe(stuckPausedMessage({ kind: 'repeat', tool: 'read' }))
+  })
+
+  it('counts identical calls made together in one step once', async () => {
+    // Three identical parallel calls in one step, then the same call once more: no pause.
+    const { client } = scripted([
+      repeat(3, ['read', { path: 'a' }] as [string, unknown]),
+      [['read', { path: 'a' }]],
+    ])
+    const read = named('read', () => Promise.resolve({ content: 'same text' }))
+    const { result, errors } = await runWith({ client, tools: [read] })
+    expect(errors).toEqual([])
+    expect(result.stopReason).toBe('end_turn')
+  })
+
+  it('still pauses when the parallel repeat comes back in 3 separate steps', async () => {
+    const { client, requests } = scripted(
+      repeat(10, repeat(2, ['read', { path: 'a' }] as [string, unknown])),
+    )
+    const read = named('read', () => Promise.resolve({ content: 'same text' }))
+    const { result, errors } = await runWith({ client, tools: [read] })
+    expect(requests()).toBe(3)
+    expect(result.stopReason).toBe('max_turns')
+    expect(errors[0]?.message).toBe(stuckPausedMessage({ kind: 'repeat', tool: 'read' }))
+    expect(paired(result.conversation)).toBe(true)
+  })
+
+  it('does not pause re-listing a folder whose contents changed after a write', async () => {
+    const files = ['a.txt']
+    const steps: Step[] = []
+    for (let i = 0; i < 4; i++)
+      steps.push([['list', { path: 'C:/docs' }]], [['write', { name: `new${String(i)}.txt` }]])
+    const { client } = scripted(steps)
+    const list = named('list', () => Promise.resolve({ content: files.join('\n') }))
+    const write = named('write', (input: { name: string }) => {
+      files.push(input.name)
+      return Promise.resolve({ content: `wrote ${input.name}` })
+    })
+    const { result, errors } = await runWith({ client, tools: [list, write] })
+    expect(errors).toEqual([])
+    expect(result.stopReason).toBe('end_turn')
+  })
+
+  it('pauses, by design, re-listing an unchanged folder in 3 steps in a row', async () => {
+    // Writes that do not change the listing (they go elsewhere): the same request gets the
+    // same result in three steps. That is the loop the rule is for.
+    const { client, requests } = scripted(
+      Array.from({ length: 10 }, (_, i): Step => [
+        ['write', { name: `D:/other/new${String(i)}.txt` }],
+        ['list', { path: 'C:/docs' }],
+      ]),
+    )
+    const list = named('list', () => Promise.resolve({ content: 'a.txt' }))
+    const write = named('write', (input: { name: string }) =>
+      Promise.resolve({ content: `wrote ${input.name}` }),
+    )
+    const { result, errors } = await runWith({ client, tools: [write, list] })
+    expect(requests()).toBe(3)
+    expect(result.stopReason).toBe('max_turns')
+    expect(errors[0]?.message).toBe(stuckPausedMessage({ kind: 'repeat', tool: 'list' }))
   })
 
   it('never pauses a continuation that reports new progress each time', async () => {

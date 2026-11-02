@@ -100,7 +100,8 @@ function canonical(value: unknown): unknown {
 
 /**
  * Catches a run going round in circles (AGENT_BUDGET.repeats): the same tool, with the
- * same input, giving the same result that many times in one message; or that many steps in
+ * same input, giving the same result in that many separate steps of one message (identical
+ * calls within one step count once); or that many steps in
  * a row where every tool call failed. A call the user declined counts for neither: the
  * user is answering, and a decline breaks a run of failures. A call that keeps making
  * progress (search_files continuing, say) returns something different each time, so it
@@ -117,6 +118,9 @@ export function createStuckDetector(repeats: number = AGENT_BUDGET.repeats) {
       known: (name: string) => boolean,
     ): string | null {
       let repeated: string | undefined
+      // Identical calls made together in one step (in parallel) count once: a repeat means
+      // the same call coming back in separate steps.
+      const counted = new Set<string>()
       for (const [index, call] of calls.entries()) {
         const result = results[index]
         if (!result || result.declined) continue
@@ -126,6 +130,8 @@ export function createStuckDetector(repeats: number = AGENT_BUDGET.repeats) {
         )
         for (const image of result.images ?? []) digest.update(image.data)
         const key = digest.digest('base64')
+        if (counted.has(key)) continue
+        counted.add(key)
         const count = (seen.get(key) ?? 0) + 1
         seen.set(key, count)
         // The tool name comes from the model: only a real tool's name is shown.
