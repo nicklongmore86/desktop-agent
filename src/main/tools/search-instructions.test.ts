@@ -79,6 +79,9 @@ describe('search guidance', () => {
     ])
       expect(DEFAULT_SYSTEM_PROMPT).toContain(wording)
     expect(h.tool('search_files').description).toContain('"Every file was checked"')
+    expect(h.tool('search_files').description).toContain(
+      'Every match in the files checked is counted',
+    )
   })
 
   it('tells the truth about flexible matching: spaces, hyphens and line breaks', async () => {
