@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConversationSummary, HistoryState } from '../../shared/ipc'
 import type { Project, ProviderChat } from '../../shared/ipc-projects'
 import { ApiContext } from './api'
@@ -425,5 +425,54 @@ describe('drag and drop', () => {
     fireEvent.dragEnd(item('Reconcile receipts'))
     expect(api.chats.move).not.toHaveBeenCalled()
     expect(api.chats.pin).not.toHaveBeenCalled()
+  })
+})
+
+describe('chat menu during a running reply', () => {
+  it('stays open, focused and on the same chat while tool steps arrive and the transcript scrolls', async () => {
+    const { api, pushChat } = await renderApp()
+    // Like the real browser: following the newest step scrolls the transcript's own box.
+    const follow = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (
+      this: Element,
+    ) {
+      this.parentElement?.dispatchEvent(new Event('scroll'))
+    })
+    try {
+      fireEvent.contextMenu(item('Fix the flaky test'))
+      const menu = await screen.findByRole('menu', { name: 'Options for Fix the flaky test' })
+      expect(menu.closest('li')).toBe(item('Fix the flaky test'))
+      expect(within(menu).getByRole('menuitem', { name: /^Delete/ })).toBeTruthy()
+
+      act(() => {
+        pushChat({ type: 'run_started', runId: 'r1', text: 'Go' })
+        pushChat({
+          type: 'tool_use',
+          runId: 'r1',
+          turn: 0,
+          id: 't1',
+          name: 'list_files',
+          input: {},
+        })
+      })
+      act(() => {
+        pushChat({
+          type: 'tool_result',
+          runId: 'r1',
+          id: 't1',
+          content: 'ok',
+          isError: false,
+          declined: false,
+        })
+      })
+      await act(async () => {
+        await new Promise((done) => setTimeout(done, 50))
+      })
+      const still = screen.getByRole('menu', { name: 'Options for Fix the flaky test' })
+      expect(still.closest('li')).toBe(item('Fix the flaky test'))
+      expect(still.contains(document.activeElement)).toBe(true)
+      expect(api.chats.remove).not.toHaveBeenCalled()
+    } finally {
+      follow.mockRestore()
+    }
   })
 })

@@ -46,15 +46,25 @@ export function Menu({
 
   useEffect(() => {
     // Placed once: scrolling or resizing closes it rather than leaving it adrift.
-    const close = (event: Event): void => {
-      if (event.target instanceof Node && menu.current?.contains(event.target)) return
+    const close = (): void => {
       closeRef.current(false)
     }
+    // Only a scroll that can move the menu's anchor counts: the page, or a box the menu sits
+    // in. Other boxes scroll on their own (the transcript follows each tool step), and must
+    // not close a menu the user opened.
+    const onScroll = (event: Event): void => {
+      const target = event.target
+      if (target instanceof Node && target !== document) {
+        const own = menu.current
+        if (!own || own === target || own.contains(target) || !target.contains(own)) return
+      }
+      close()
+    }
     window.addEventListener('resize', close)
-    document.addEventListener('scroll', close, true)
+    document.addEventListener('scroll', onScroll, true)
     return () => {
       window.removeEventListener('resize', close)
-      document.removeEventListener('scroll', close, true)
+      document.removeEventListener('scroll', onScroll, true)
     }
   }, [])
   const focusAt = (index: number): void => {
