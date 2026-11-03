@@ -343,9 +343,18 @@ text of documents, on by default (`documents: false` turns it off for a call).
   of" or "The matches below" becomes `(`. Both marker lines count toward
   the 40,000-character limit, so a cut result never leaves file text outside them.
 - Matching (`src/main/tools/phrase.ts`) is flexible by default: text and terms are folded
-  alike (NFKC, case, soft hyphens and zero-width characters, runs of white space), and a
-  term's words may be separated by nothing or by up to 8 spaces, dashes (`\p{Pd}`), `_`
-  or `/`, so "walk in" finds "Walk-In", "WALK IN" and "walkin". A match may run on into
+  alike (NFKC; case; soft hyphens and zero-width characters; runs of white space).
+  Case folding is locale-independent: upper case then lower case (on the whole string,
+  equivalent to per code point here), then `ß` → `ss` and final `ς` → `σ`. So `ſ`/`s`,
+  `K` (U+212A)/`k`, `Å` (U+212B)/`å`, `ẞ`/`ß`/`ss`, `σ`/`ς`/`Σ`, `µ`/`μ` and `ϑ`/`θ` match
+  together, and `ﬁ` (NFKC) matches `fi`. There are no Turkish or other locale rules:
+  dotless `ı` folds to `i` (its upper case is `I`), and `İ` folds to `i` plus a combining
+  dot above, so it does not match a plain `i`. With `caseSensitive: true` only case
+  folding is skipped. A snippet is placed by folding a cluster (a character and its
+  marks) at a time and keeping where each folded character came from, so folds that
+  change length (`ß` → `ss`, `ﬁ` → `fi`, characters outside the BMP) still cut the line
+  around the match. A term's words may be separated by nothing or by up to 8 spaces,
+  dashes (`\p{Pd}`), `_` or `/`, so "walk in" finds "Walk-In", "WALK IN" and "walkin". A match may run on into
   the next 3 lines of the same page, slide or text file (never across sheet cells), a word
   hyphenated across a line break is rejoined, and a hit is reported on the line it starts
   in. Terms of at most 4 letters/digits and codes mixing letters and digits (WIC, A501)

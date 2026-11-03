@@ -55,10 +55,21 @@ export interface PhraseHit {
 type Compiled =
   { kind: 'pattern'; re: RegExp; wholeWord: boolean } | { kind: 'literal'; needle: string }
 
-/** Case folding beyond toLowerCase for what search text commonly holds. */
+/**
+ * Case folding, locale-independent: upper case then lower case, which maps together what
+ * Unicode's full case folding does for search text (long s and S, the Kelvin and Angstrom
+ * signs, sharp s and capital sharp s with "ss", Greek final and medial sigma, and the
+ * like). Done on the whole string, which is the same as a code point at a time: the only
+ * context-dependent mapping (a word-final capital sigma) is undone by sigma folding. No
+ * Turkish or other locale rules (dotted and dotless i stay apart).
+ */
 function foldCase(text: string): string {
-  const lower = text.toLowerCase()
-  return ASCII.test(lower) ? lower : lower.replace(/\u00DF/gu, 'ss').replace(/\u03C2/gu, '\u03C3')
+  if (ASCII.test(text)) return text.toLowerCase()
+  return text
+    .toUpperCase()
+    .toLowerCase()
+    .replace(/\u00DF/gu, 'ss')
+    .replace(/\u03C2/gu, '\u03C3')
 }
 
 interface FoldedLine {

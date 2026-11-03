@@ -1294,6 +1294,26 @@ describe('search_files flexible matching', () => {
     expect(any.content).not.toContain('notes.txt:1:')
   })
 
+  it('folds case beyond ASCII in documents, and cuts the line around the match', async () => {
+    const ch = (code: number): string => String.fromCodePoint(code)
+    const filler = ch(0x1e9e).repeat(150)
+    await put(
+      path.join(sb.root, 'units.docx'),
+      Buffer.from(
+        makeDocx(
+          wp(`Hold at 255 ${ch(0x212a)} in the ${ch(0x17f)}tore`) +
+            wp(`${filler} ${ch(0xfb01)}nal ${ch(0x3a3)}ECTION ${'z'.repeat(150)}`),
+        ),
+      ),
+    )
+    const r = await search({ anyOf: ['255 k', 'store', `final ${ch(0x3c3)}ection`], context: 0 })
+    const out = lines(r.content).filter((l) => l.startsWith('units.docx'))
+    expect(out).toHaveLength(2)
+    expect(out[0]).toMatch(/\(matched "255 k", "store"\) Hold at 255 /)
+    expect(out[1]).toContain(`${ch(0xfb01)}nal ${ch(0x3a3)}ECTION`)
+    expect(out[1]?.length).toBeLessThanOrEqual(240)
+  })
+
   it('refuses bad anyOf input', async () => {
     expect(await search({ anyOf: [] })).toMatchObject({ isError: true })
     expect(

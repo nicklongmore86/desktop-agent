@@ -278,8 +278,11 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
     name: 'search_files',
     description:
       'Search a folder inside the granted folders by file name (glob, e.g. "*.ts" or "src/**/*.md") ' +
-      'and/or by file content. Content matching is flexible by default: case, Unicode forms ' +
-      'and separators are ignored, so "walk in" also finds "Walk-In", "WALK  IN" and ' +
+      'and/or by file content. Content matching is flexible by default: Unicode compatibility ' +
+      'forms (NFKC: ligatures, fullwidth letters), case (locale-independent: upper then lower ' +
+      'case, so long s, sharp s and "ss", Greek sigmas, the Kelvin and Angstrom signs match; ' +
+      'no Turkish dotted/dotless i rules), soft hyphens and zero-width characters, and ' +
+      'separators are ignored, so "walk in" also finds "Walk-In", "WALK  IN" and ' +
       '"walkin", even wrapped or hyphenated across lines; terms of up to 4 letters/digits and ' +
       'codes like A501 match whole words only. exact: true matches the text literally per ' +
       'line; regex: true takes a JavaScript regex. anyOf finds lines with any of several ' +

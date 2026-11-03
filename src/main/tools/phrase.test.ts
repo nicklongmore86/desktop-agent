@@ -195,6 +195,79 @@ describe('flexible phrase matching', () => {
   })
 })
 
+describe('case folding', () => {
+  const LONG_S = ch(0x17f)
+  const KELVIN = ch(0x212a)
+  const ANGSTROM = ch(0x212b)
+  const A_RING = ch(0xe5)
+  const SHARP_S = ch(0xdf)
+  const CAPITAL_SHARP_S = ch(0x1e9e)
+  const FI = ch(0xfb01)
+  const SIGMA = ch(0x3c3)
+  const FINAL_SIGMA = ch(0x3c2)
+  const CAPITAL_SIGMA = ch(0x3a3)
+
+  it.each([
+    [`${LONG_S}ection`, 'section'],
+    [`MAS${LONG_S}`, 'mass'],
+    [`300 ${KELVIN}`, '300 k'],
+    [`5 ${ANGSTROM}`, `5 ${A_RING}`],
+    [`STRA${CAPITAL_SHARP_S}E`, 'strasse'],
+    [`STRA${CAPITAL_SHARP_S}E`, `stra${SHARP_S}e`],
+    [`Stra${SHARP_S}e`, `STRA${CAPITAL_SHARP_S}E`],
+    [`${FI}nish`, 'finish'],
+    [`${FI}nish`, 'FINISH'],
+    [
+      `ODY${CAPITAL_SIGMA}${CAPITAL_SIGMA}EY${CAPITAL_SIGMA}`,
+      `ody${SIGMA}${SIGMA}ey${FINAL_SIGMA}`,
+    ],
+    [
+      `ody${SIGMA}${SIGMA}ey${FINAL_SIGMA}`,
+      `ODY${CAPITAL_SIGMA}${CAPITAL_SIGMA}EY${CAPITAL_SIGMA}`,
+    ],
+    [`${CAPITAL_SIGMA}${FINAL_SIGMA}`, `${SIGMA}${SIGMA}`],
+  ])('folds %j together with %j', async (text, term) => {
+    expect(fold(text, false)).toBe(fold(term, false))
+    expect(await matchedLines(['intro', text], term)).toEqual([1])
+  })
+
+  it('has no locale rules for i', () => {
+    expect(fold(ch(0x131), false)).toBe('i')
+    expect(fold(ch(0x130), false)).toBe(`i${ch(0x307)}`)
+  })
+
+  it('keeps case with caseSensitive, folding only NFKC', () => {
+    expect(fold(`${FI}nish ${KELVIN}`, true)).toBe('finish K')
+    expect(fold(`STRA${CAPITAL_SHARP_S}E`, true)).toBe(`STRA${CAPITAL_SHARP_S}E`)
+  })
+
+  it('maps lines correctly after folds that change length', async () => {
+    // Each line grows when folded (ss, fi, an astral character); the hit must stay on its line.
+    const astral = ch(0x1d400) // MATHEMATICAL BOLD CAPITAL A, NFKC "A"
+    const lines = [
+      `${CAPITAL_SHARP_S.repeat(50)} ${FI.repeat(50)}`,
+      `${astral.repeat(30)} walk`,
+      `in freezer ${SHARP_S.repeat(40)}`,
+      `${FI.repeat(10)} Walk-In Freezer`,
+    ]
+    expect(await matchedLines(lines, 'walk in freezer')).toEqual([1, 3])
+    expect(await matchedLines(lines, 'aaa walk')).toEqual([1])
+  })
+
+  it('cuts snippets around the match after folds that change length', () => {
+    const matcher = new PhraseMatcher({ terms: ['walk in'], exact: false, caseSensitive: false })
+    for (const filler of [CAPITAL_SHARP_S, SHARP_S, FI, ch(0x1d400), LONG_S]) {
+      const text = `${filler.repeat(150)} Walk-In ${'z'.repeat(150)}`
+      const shown = matcher.snippet(text, 40, [0])
+      expect(shown).toContain('Walk-In')
+      expect(shown.length).toBeLessThanOrEqual(40)
+    }
+    const after = new PhraseMatcher({ terms: ['strasse'], exact: false, caseSensitive: false })
+    const text = `${FI.repeat(150)} STRA${CAPITAL_SHARP_S}E ${'z'.repeat(150)}`
+    expect(after.snippet(text, 40, [0])).toContain(`STRA${CAPITAL_SHARP_S}E`)
+  })
+})
+
 describe('fold and snippets', () => {
   it('folds NFKC, case, invisible characters and white space', () => {
     expect(fold(`  ${FULLWIDTH_WALK}${SHY}IN\t\t Freezer `, false)).toBe('walkin freezer')
