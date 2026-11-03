@@ -142,11 +142,21 @@ jobs:
         run: |
           $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
           pnpm exec vitest run src/main/documents/ocr-text.test.ts -t 'packaged ocr-text.exe'
+      # upload-artifact roots a wildcard path at its first wildcard (release/),
+      # so stage the installer on its own to put it at the top of the ZIP.
+      - name: Stage installer for upload
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path 'release/*/Desktop-Agent-Setup-*-x64.exe' -File)
+          if ($installers.Count -ne 1) {
+            Write-Host "::error::Expected exactly one installer matching release/*/Desktop-Agent-Setup-*-x64.exe, found $($installers.Count): $($installers.FullName -join ', ')"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force artifact-upload | Out-Null
+          Copy-Item -LiteralPath $installers[0].FullName -Destination artifact-upload/
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-windows-x64
-          path: |
-            release/*/*.exe
-            release/*/win-unpacked/resources/runtimes/integrity.json
+          path: artifact-upload/*.exe
           if-no-files-found: error
           retention-days: ${{ github.ref == 'refs/heads/main' && 5 || 3 }}
