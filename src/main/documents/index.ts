@@ -2,5 +2,6 @@ export { DocumentWorkerHost, documentWorkerPaths, type DocumentWorkerOptions } f
 export { DEFAULT_LIMITS, type DocumentLimits } from './limits'
 export { sniff, type Sniffed } from './sniff'
 export { createSystemHeifDecoder, HEIF_DECODE_PATH } from './system-heif'
+export { createSystemOcr, OCR_TEXT_PATH } from './system-ocr'
 export { verifyPinnedHelper } from '../tools/job-launcher'
 export * from './types'

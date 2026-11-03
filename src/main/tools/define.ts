@@ -57,6 +57,11 @@ export interface AuditExtras {
   /** search_files: documents whose text was searched (read now or from the cache). */
   documentsSearched?: number
   documentsFromCache?: number
+  /** search_files' OCR: pages finished, helper runs, and pages left or failed. Never their text. */
+  ocrPagesRead?: number
+  ocrHelperRuns?: number
+  ocrPagesNotRead?: number
+  ocrPagesFailed?: number
   /** search_files: documents found but not searched (limits, scanned, unreadable, secret). */
   documentsNotSearched?: number
 }
@@ -71,6 +76,10 @@ const AUDIT_EXTRAS: Record<keyof AuditExtras, (value: unknown) => boolean> = {
   locationRead: (value) => typeof value === 'boolean',
   documentsSearched: count,
   documentsFromCache: count,
+  ocrPagesRead: count,
+  ocrHelperRuns: count,
+  ocrPagesNotRead: count,
+  ocrPagesFailed: count,
   documentsNotSearched: count,
 }
 

@@ -5,7 +5,14 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { OcrImage } from './system-ocr'
+
+/** Raw pixels, as system-ocr.ts's OcrImage; declared here for the e2e project, which has no main. */
+export interface OcrImage {
+  width: number
+  height: number
+  format: 'bgra8' | 'gray8'
+  pixels: Uint8Array
+}
 
 const RENDER = `
 param([int]$Width, [int]$Height, [double]$FontPx, [double]$Angle, [int]$Ink, [string]$Out)

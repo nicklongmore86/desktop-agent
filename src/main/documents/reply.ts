@@ -78,6 +78,8 @@ const shortText = (max: number) => z.string().max(max)
 /** An A1 reference without a sheet: B2, or A1:H200 (Excel's largest sheet is XFD1048576). */
 const a1 = z.string().regex(/^[A-Z]{1,3}[1-9]\d{0,6}(?::[A-Z]{1,3}[1-9]\d{0,6})?$/)
 const SHEET_NAME_CHARS = 200
+/** Far past PDF's 14400-point page, for a page scaled up by UserUnit. */
+const MAX_PAGE_POINTS = 10_000_000
 /** Excel's largest sheet: 1,048,576 rows by 16,384 columns (XFD). */
 const MAX_ROWS = 1_048_576
 const MAX_COLUMNS = 16_384
@@ -107,6 +109,12 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
     }),
   })
   const size = z.strictObject({ width: count.min(1), height: count.min(1) })
+  const raster = z.strictObject({
+    page: count.min(1),
+    width: z.number().int().min(1).max(budget.longEdge),
+    height: z.number().int().min(1).max(budget.longEdge),
+    pixels: z.instanceof(Uint8Array),
+  })
   const view = z.strictObject({
     meta: z.strictObject({
       kind: z.enum(KINDS),
@@ -142,10 +150,19 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
               next: a1.optional(),
             })
             .optional(),
+          layout: z
+            .strictObject({
+              imageCoverage: fraction,
+              textCoverage: fraction,
+              ink: z.boolean(),
+              longEdgePoints: z.number().positive().max(MAX_PAGE_POINTS),
+            })
+            .optional(),
         }),
       )
       .max(maxSections),
     images: z.array(image).max(maxImages),
+    rasters: z.array(raster).max(1).optional(),
     position: z.strictObject({
       unit: z.enum(['page', 'slide', 'char', 'sheet', 'image']),
       total: count,
@@ -187,6 +204,7 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
   // zod's optional fields allow an explicit undefined; copyView drops those.
   const checked = data.view as DocumentView
   checkView(checked, budget, limits)
+  checkPageAnalysis(checked, options, limits)
   return { type: 'result', id: data.id, view: copyView(checked) }
 }
 
@@ -278,6 +296,42 @@ function checkView(
   }
 }
 
+/** Page layouts only when asked for; the one raster only for its page, exactly its size. */
+function checkPageAnalysis(
+  view: DocumentView,
+  options: ExtractOptions,
+  limits: DocumentLimits,
+): void {
+  if (!options.pageLayout && view.sections.some((section) => section.layout)) {
+    throw invalid('it described pages it was not asked about')
+  }
+  const rasters = view.rasters ?? []
+  if (options.view !== 'raster') {
+    if (rasters.length > 0) throw invalid('it returned pixels it was not asked for')
+    return
+  }
+  const [raster] = rasters
+  if (
+    !raster ||
+    view.meta.kind !== 'pdf' ||
+    view.position.unit !== 'page' ||
+    raster.page !== (options.select?.from ?? 1) ||
+    raster.page !== view.position.shown.from ||
+    view.position.shown.to !== raster.page
+  ) {
+    throw invalid('it did not return the page asked for')
+  }
+  if (view.images.length > 0 || view.sections.length > 0) {
+    throw invalid('it returned more than the pixels asked for')
+  }
+  if (raster.width * raster.height > limits.maxDecodedPixels) {
+    throw invalid('an image is too large')
+  }
+  if (raster.pixels.byteLength !== raster.width * raster.height) {
+    throw invalid('its pixels are not the size it claims')
+  }
+}
+
 interface CellRange {
   r0: number
   c0: number
@@ -315,6 +369,7 @@ function copyView(view: DocumentView): DocumentView {
     sections: view.sections.map((section) => ({
       ...defined(section),
       ...(section.sheet ? { sheet: defined(section.sheet) } : {}),
+      ...(section.layout ? { layout: { ...section.layout } } : {}),
     })),
     images: view.images.map((image) => ({
       bytes: new Uint8Array(image.bytes),
@@ -326,6 +381,16 @@ function copyView(view: DocumentView): DocumentView {
         ...(image.source.region ? { region: { ...image.source.region } } : {}),
       },
     })),
+    ...(view.rasters
+      ? {
+          rasters: view.rasters.map((raster) => ({
+            page: raster.page,
+            width: raster.width,
+            height: raster.height,
+            pixels: new Uint8Array(raster.pixels),
+          })),
+        }
+      : {}),
     position: {
       unit: view.position.unit,
       total: view.position.total,

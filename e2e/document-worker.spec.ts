@@ -117,6 +117,36 @@ test.describe('document worker (real Electron)', () => {
     await app.close()
   })
 
+  test('PDF: says what is on each page, and hands over a page as raw grey pixels', async () => {
+    const gray = new Uint8Array(4800).fill(255).fill(0, 0, 1200)
+    const scan = { image: { width: 60, height: 80, gray } }
+    const pdf = makePdf([{ text: ['A page of text'] }, scan, { ...scan, rotate: 90 as const }])
+    const text = ok(await docs(app).extract(pdf, { view: 'text', pageLayout: true }))
+    expect(text.sections[0]?.layout).toMatchObject({ imageCoverage: 0, ink: false })
+    expect(text.sections[1]?.layout?.imageCoverage).toBeCloseTo(1, 2)
+    expect(text.images).toEqual([])
+
+    const raster = (from: number) =>
+      docs(app).extract(pdf, {
+        view: 'raster',
+        select: { from, to: from },
+        budget: { longEdge: 2200, maxImages: 0, maxChars: 1 },
+      })
+    const upright = ok(await raster(2))
+    expect(upright.rasters?.[0]).toMatchObject({
+      page: 2,
+      width: 1700,
+      height: 2200,
+      bytes: 1700 * 2200,
+    })
+    // A quarter of the picture's rows are black, as they should be, on white.
+    const dark = (upright.rasters?.[0] as unknown as { dark: number }).dark
+    expect(dark / (1700 * 2200)).toBeCloseTo(0.25, 1)
+    expect(upright.images).toEqual([])
+    // The page's own rotation comes through.
+    expect(ok(await raster(3)).rasters?.[0]).toMatchObject({ page: 3, width: 2200, height: 1700 })
+  })
+
   test('PDF: text per page, a rendered drawing page, and a zoomed region', async () => {
     const pdf = makePdf([
       { text: ['Site survey', 'Ground floor plan follows on the next page.'] },

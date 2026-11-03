@@ -2,7 +2,7 @@
 
 `resources\helpers\ocr-text.exe` (source: `native/ocr-text/ocr-text.cpp`) recognises the text in one image with Windows' built-in OCR, `Windows.Media.Ocr`. The app bundles no OCR engine and no language data. The recognizer and its languages are part of Windows: each language's "Optical character recognition" feature, under Settings › Time & language › Language & region.
 
-The main-process side is `src/main/documents/system-ocr.ts`. Nothing calls `recognize()` yet. Wiring it into `search_files` (text in scanned PDFs and photos) is a separate change, and `probe()` exists for a later Settings or diagnostics page. Until then the app only creates the launcher and, on quit, cancels anything it has running.
+The main-process side is `src/main/documents/system-ocr.ts`. `search_files` calls `recognize()` for scanned PDF pages (see [document-reader.md](document-reader.md#ocr-of-scanned-pages)), and `probe()` once per search that finds such pages. Photos are not read by OCR. The app creates the launcher at start without running anything and, on quit, cancels anything it has running.
 
 The design was measured in the spike, draft PR #72. Windows OCR works under heif-decode.exe's full lockdown with nothing relaxed. It reads about 2 to 4 pages a second, has a character error rate under 0.5% on clean and scanned-looking text pages, needs roughly 20 MiB + 12 bytes per pixel, and cannot read pages rotated by 90°.
 
@@ -61,7 +61,7 @@ Exit 3 covers `E_OUTOFMEMORY` and, at the `recognize` step, `E_UNEXPECTED`. When
 
 ## Security model
 
-The image comes from a file the agent was allowed to read, so it is untrusted. The app's main process decodes nothing. Whoever calls `recognize()` (later, the document worker) supplies decoded pixels.
+The image comes from a file the agent was allowed to read, so it is untrusted. The app's main process decodes nothing. The document worker renders PDF pages to raw pixels for `recognize()`.
 
 - **Lockdown before input.** Before RoInitialize and before reading a byte of input, the helper applies the same lockdown as heif-decode.exe (`lock_down`, kept in step with `heif-decode.c`):
   - its own Job Object: one process, a memory limit, 60 s of CPU, killed on an unhandled exception, and no desktop, clipboard, global atoms or other processes' USER handles;
@@ -133,6 +133,10 @@ The image comes from a file the agent was allowed to read, so it is untrusted. T
   - a tampered copy that is refused.
 
   Each test logs the helper's recognition time and peak commit.
+
+## Speed
+
+Recognition alone, from PR #75's runs on GitHub's Windows runner: 120 to 160 ms for a 1568 x 2200 page, 230 to 370 ms at 4096 px, and about 450 ms for the first, cold run.
 
 ## Licences
 

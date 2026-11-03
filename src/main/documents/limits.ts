@@ -56,6 +56,9 @@ export interface ZipLimits {
 
 const MiB = 1024 * 1024
 
+/** At this image coverage a PDF page may be a scan, so how much of it is text gets measured. */
+export const SCAN_IMAGE_COVERAGE = 0.5
+
 export const DEFAULT_LIMITS: DocumentLimits = {
   maxDocumentBytes: 100 * MiB,
   maxDecodedPixels: 100_000_000,

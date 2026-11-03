@@ -68,8 +68,8 @@ void app.whenReady().then(async () => {
   // HEIC photos are decoded by Windows' codec in heif-decode.exe, never from a granted folder.
   let grantedRoots: () => readonly string[] = () => []
   const heic = defaultSystemHeifDecoder(process.platform, () => grantedRoots())
-  // Text in images, by Windows' OCR in ocr-text.exe (verified before every run). Nothing
-  // recognises yet; search_files will, and Settings will show its probe().
+  // Text in scanned PDF pages for search_files, by Windows' OCR in ocr-text.exe, verified
+  // before every run and first started by a search that finds such pages.
   const ocr = defaultSystemOcr(process.platform, () => grantedRoots())
   const documents = new DocumentWorkerHost({
     ...documentWorkerPaths(__dirname),
@@ -81,6 +81,7 @@ void app.whenReady().then(async () => {
   })
   const services = await createAppServices({
     documents,
+    ocr,
     heicSupport: () => heic.support(),
     userData: app.getPath('userData'),
     openUrl: (url) => shell.openExternal(url),

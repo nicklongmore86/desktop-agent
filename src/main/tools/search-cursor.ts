@@ -18,10 +18,15 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/u
 /** Made once per process: cursors do not outlive the app. */
 const KEY = randomBytes(32)
 
-/** Where the next call starts: after `key`, or at it when `inclusive`. */
+/**
+ * Where the next call starts: after `key`, or at it when `inclusive`. `ocrOnly` says that
+ * every other file was reported by earlier calls, so the next call reports only PDFs with
+ * scanned pages, from there on.
+ */
 export interface CursorPosition {
   key: string
   inclusive: boolean
+  ocrOnly?: boolean
 }
 
 /**
@@ -49,7 +54,14 @@ export function encodeCursor(position: CursorPosition, binding: Buffer): string 
   const cipher = createCipheriv('aes-256-gcm', KEY, iv)
   cipher.setAAD(binding)
   const body = Buffer.concat([
-    cipher.update(JSON.stringify({ k: position.key, i: position.inclusive }), 'utf8'),
+    cipher.update(
+      JSON.stringify({
+        k: position.key,
+        i: position.inclusive,
+        ...(position.ocrOnly ? { o: true } : {}),
+      }),
+      'utf8',
+    ),
     cipher.final(),
   ])
   return PREFIX + Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64url')
@@ -82,9 +94,10 @@ export function decodeCursor(token: string, binding: Buffer): CursorPosition | n
     return null
   }
   if (typeof value !== 'object' || value === null) return null
-  const { k, i } = value as Record<string, unknown>
+  const { k, i, o } = value as Record<string, unknown>
   if (typeof k !== 'string' || typeof i !== 'boolean') return null
-  return { key: k, inclusive: i }
+  if (o !== undefined && o !== true) return null
+  return { key: k, inclusive: i, ...(o ? { ocrOnly: true } : {}) }
 }
 
 /**

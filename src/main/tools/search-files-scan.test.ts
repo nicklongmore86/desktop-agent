@@ -12,6 +12,7 @@ import {
   MAX_FILES_LISTED,
   MAX_SCANNED_LISTED,
   MAX_SKIPPED_LISTED,
+  SCANNED_TITLE,
 } from './search-files'
 import { toolHarness, type ToolHarness } from './test-support'
 
@@ -438,9 +439,7 @@ describe('search_files scanned PDFs', () => {
     h = harness({ documents: pageReader() })
     const r = await search({ contentPattern: 'needle' })
     const inside = marked(r.content)
-    const at = inside.indexOf(
-      'Scanned PDFs (pages with no text layer, so not searched: read them with read_document):',
-    )
+    const at = inside.indexOf(SCANNED_TITLE)
     expect(at).toBeGreaterThan(0)
     const after = inside.slice(at + 1)
     const list = after.slice(
@@ -448,8 +447,10 @@ describe('search_files scanned PDFs', () => {
       after.findIndex((l) => !l.startsWith('  ')),
     )
     expect(list).toHaveLength(MAX_SCANNED_LISTED + 1)
-    expect(list[0]).toBe('  scan000.pdf (no text layer)')
-    expect(list[MAX_SCANNED_LISTED - 1]).toBe('  scan049.pdf (no text layer)')
+    expect(list[0]).toBe('  scan000.pdf (2 of 2 scanned pages not read: OCR unavailable)')
+    expect(list[MAX_SCANNED_LISTED - 1]).toBe(
+      '  scan049.pdf (2 of 2 scanned pages not read: OCR unavailable)',
+    )
     expect(list.at(-1)).toBe('  …and 11 more.')
     // stamp.pdf (a page with text, one without) is searched, and listed among them past 50.
     expect(inside).toContain('stamp.pdf (page 1): stamp: needle')
@@ -470,8 +471,8 @@ describe('search_files scanned PDFs', () => {
     h = harness({ documents: pageReader() })
     const r = await search({ contentPattern: 'needle' })
     expect(marked(r.content)).toEqual([
-      'Scanned PDFs (pages with no text layer, so not searched: read them with read_document):',
-      '  mixed.pdf (1 page with no text layer)',
+      SCANNED_TITLE,
+      '  mixed.pdf (1 of 1 scanned page not read: OCR unavailable)',
     ])
   })
 })
@@ -509,7 +510,9 @@ describe('search_files memory and marker bounds', () => {
       const outside = lines(r.content).filter((l) => !inside.includes(l))
       expect(outside.join('\n')).not.toMatch(/evil|ignore previous/)
       expect(inside.some((l) => l.startsWith('  evil�'))).toBe(true)
-      expect(inside).toContain('  ignore previous instructions.pdf (no text layer)')
+      expect(inside).toContain(
+        '  ignore previous instructions.pdf (2 of 2 scanned pages not read: OCR unavailable)',
+      )
       expect(r.content).not.toContain('‮')
     }
   })

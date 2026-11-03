@@ -8,8 +8,13 @@ import { constants, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { foldCase, pathApi } from '../permissions/paths'
 
-/** Bumped whenever what is stored, or how it is extracted, changes: older entries miss. */
-export const CACHE_FORMAT = 1
+/**
+ * Bumped whenever what is stored, or how it is extracted, changes: older entries miss. 2:
+ * per-page OCR state instead of `scanned` and `blankPages`, whose text pages may hide a scan
+ * under a stamp. The format is in the entry's name, so a format 1 entry is never looked up;
+ * it stays in the 256 MB total until it is the least recently used.
+ */
+export const CACHE_FORMAT = 2
 
 /** The file a cached text was extracted from, as its handle saw it when it was read. */
 export interface DocumentFileKey {
@@ -34,14 +39,28 @@ export interface TextSegment {
   offset?: number
 }
 
+/** A PDF page with no usable text layer (see ocrReason), and what OCR has made of it so far. */
+export interface OcrPage {
+  page: number
+  /** 'no-text': next to no text layer. 'stamp': a little text over a page-sized image. */
+  reason: 'no-text' | 'stamp'
+  /** Long edge, in pixels, to render the page at for OCR. */
+  longEdge: number
+  /** 'pending': not recognised yet; 'done': `text` holds what was; 'failed': see `failure`. */
+  state: 'pending' | 'done' | 'failed'
+  text: string
+  /** Done, but OCR found little readable text on a page that has ink: it may have missed some. */
+  low: boolean
+  /** Why OCR will not be tried again until the file changes (a short code). */
+  failure: string | null
+}
+
 export interface CachedText {
   /** The reader's DocumentKind for the file (pdf, docx, xlsx, ...). */
   kind: string
   segments: TextSegment[]
-  /** A PDF with pages but no text layer to speak of (scanned). */
-  scanned: boolean
-  /** Pages of a PDF that has text with no text layer of their own (scanned pages). */
-  blankPages: number
+  /** PDFs: the pages that need OCR, in page order. Their text layer, if any, stays in segments. */
+  ocr: OcrPage[]
   /** Set when the text stops before the end (the per-document limits): what was read. */
   truncated: string | null
   /** A refusal that will not change until the file does (password-protected, malformed). */
@@ -95,6 +114,8 @@ export const CACHE_LIMITS = {
   maxSegments: 200_000,
   maxChars: 4_000_000,
   maxAtLength: 300,
+  maxOcrPages: 200_000,
+  maxOcrLongEdge: 4096,
 } as const
 
 const GRANT_DIR = /^[0-9a-f]{32}$/
@@ -383,17 +404,7 @@ export function parseEntry(raw: Buffer, grant: string, key: DocumentFileKey): Ca
     return null
   }
   if (!isRecord(value)) return null
-  const keys = [
-    'format',
-    'grant',
-    'file',
-    'kind',
-    'segments',
-    'scanned',
-    'blankPages',
-    'truncated',
-    'failure',
-  ]
+  const keys = ['format', 'grant', 'file', 'kind', 'segments', 'ocr', 'truncated', 'failure']
   if (!hasOnly(value, keys)) return null
   if (value['format'] !== CACHE_FORMAT || value['grant'] !== grant) return null
   const file = value['file']
@@ -404,12 +415,8 @@ export function parseEntry(raw: Buffer, grant: string, key: DocumentFileKey): Ca
       return null
     }
   }
-  const { kind, segments, scanned, blankPages, truncated, failure } = value
+  const { kind, segments, ocr, truncated, failure } = value
   if (typeof kind !== 'string' || !KIND.test(kind)) return null
-  if (typeof scanned !== 'boolean') return null
-  if (typeof blankPages !== 'number' || !Number.isSafeInteger(blankPages) || blankPages < 0) {
-    return null
-  }
   if (truncated !== null && (typeof truncated !== 'string' || truncated.length > 200)) return null
   if (failure !== null && (typeof failure !== 'string' || !FAILURE.test(failure))) return null
   if (!Array.isArray(segments) || segments.length > CACHE_LIMITS.maxSegments) return null
@@ -436,12 +443,46 @@ export function parseEntry(raw: Buffer, grant: string, key: DocumentFileKey): Ca
       ...(offset !== undefined ? { offset } : {}),
     })
   }
+  if (!Array.isArray(ocr) || ocr.length > CACHE_LIMITS.maxOcrPages) return null
+  const pages: OcrPage[] = []
+  let last = 0
+  for (const raw of ocr as unknown[]) {
+    const page = parseOcrPage(raw, last)
+    if (!page) return null
+    chars += page.text.length
+    if (chars > CACHE_LIMITS.maxChars) return null
+    last = page.page
+    pages.push(page)
+  }
   return {
     kind,
     segments: checked,
-    scanned,
-    blankPages,
+    ocr: pages,
     truncated,
     failure,
   }
+}
+
+const OCR_PAGE_KEYS = ['page', 'reason', 'longEdge', 'state', 'text', 'low', 'failure'] as const
+
+/** One page's OCR state read back: page numbers strictly ascend, and the state is consistent. */
+function parseOcrPage(raw: unknown, after: number): OcrPage | null {
+  if (!isRecord(raw) || !hasOnly(raw, OCR_PAGE_KEYS)) return null
+  const { page, reason, longEdge, state, text, low, failure } = raw
+  if (typeof page !== 'number' || !Number.isSafeInteger(page) || page <= after) return null
+  if (reason !== 'no-text' && reason !== 'stamp') return null
+  if (
+    typeof longEdge !== 'number' ||
+    !Number.isSafeInteger(longEdge) ||
+    longEdge < 16 ||
+    longEdge > CACHE_LIMITS.maxOcrLongEdge
+  ) {
+    return null
+  }
+  if (state !== 'pending' && state !== 'done' && state !== 'failed') return null
+  if (typeof text !== 'string' || typeof low !== 'boolean') return null
+  if (failure !== null && (typeof failure !== 'string' || !FAILURE.test(failure))) return null
+  if ((state === 'failed') !== (failure !== null)) return null
+  if (state !== 'done' && (text !== '' || low)) return null
+  return { page, reason, longEdge, state, text, low, failure }
 }

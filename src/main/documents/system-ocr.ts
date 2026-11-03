@@ -1,6 +1,6 @@
 // Text in images, recognised by Windows' built-in OCR (Windows.Media.Ocr) through
 // ocr-text.exe (native/ocr-text): no OCR engine or language data is bundled. See
-// docs/ocr-text.md. Nothing calls recognize() yet: search_files will, in a later change.
+// docs/ocr-text.md. search_files calls recognize() for scanned PDF pages (tools/search-ocr.ts).
 import { spawn } from 'node:child_process'
 import { installedResources, verifyPinnedHelper, type JobLauncher } from '../tools/job-launcher'
 

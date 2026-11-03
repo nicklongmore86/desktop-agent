@@ -38,6 +38,16 @@ setInterval(() => {
 function serialise(view) {
   return {
     ...view,
+    // Raw pixels are large: their size and how many are dark say enough here.
+    ...(view.rasters
+      ? {
+          rasters: view.rasters.map(({ pixels, ...raster }) => ({
+            ...raster,
+            bytes: pixels.byteLength,
+            dark: pixels.reduce((sum, value) => sum + (value < 64 ? 1 : 0), 0),
+          })),
+        }
+      : {}),
     images: view.images.map((image) => {
       const decoded = nativeImage.createFromBuffer(Buffer.from(image.bytes))
       const size = decoded.getSize()
