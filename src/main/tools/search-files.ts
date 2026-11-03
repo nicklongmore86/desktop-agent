@@ -11,6 +11,7 @@ import type { ResolvedDeps } from './deps'
 import type { CachedText, DocumentFileKey } from './document-text-cache'
 import { globToRegExp } from './glob'
 import { PatternMatcher, type MatchOutcome, type PatternSource } from './matcher'
+import { MAX_ANY_OF, MAX_TERM_LENGTH, PhraseError, PhraseMatcher } from './phrase'
 import { readableAsDocument } from './read-document'
 import { assertSingleLinkHandle, openVerified, readBounded } from './safe-fs'
 import {
@@ -27,7 +28,13 @@ import { walk, type WalkEntry } from './walk'
 interface Input {
   path: string
   namePattern: string | undefined
+  /** Set whenever content is searched: the pattern, or (anyOf alone) the terms joined. */
   contentPattern: string | undefined
+  /** Phrases matched flexibly (or literally, with exact): the pattern's, then anyOf's. */
+  terms: string[]
+  anyOf: number
+  /** Literal line-by-line matching, with no folding, separators or whole-word terms. */
+  exact: boolean
   regex: boolean
   caseSensitive: boolean
   maxResults: number
@@ -271,8 +278,13 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
     name: 'search_files',
     description:
       'Search a folder inside the granted folders by file name (glob, e.g. "*.ts" or "src/**/*.md") ' +
-      'and/or by file content (substring, or a JavaScript regex with regex: true). Case-insensitive ' +
-      'unless caseSensitive is true. Name-only searches list matching names of any file, binary ' +
+      'and/or by file content. Content matching is flexible by default: case, Unicode forms ' +
+      'and separators are ignored, so "walk in" also finds "Walk-In", "WALK  IN" and ' +
+      '"walkin", even wrapped or hyphenated across lines; terms of up to 4 letters/digits and ' +
+      'codes like A501 match whole words only. exact: true matches the text literally per ' +
+      'line; regex: true takes a JavaScript regex. anyOf finds lines with any of several ' +
+      'terms and says which matched. Case-insensitive unless caseSensitive is true. ' +
+      'Name-only searches list matching names of any file, binary ' +
       'included. One call searches the whole folder: plain text files ("path:12: text"), then ' +
       'the text of PDFs, Word (.docx, .doc, .odt), Excel (.xlsx, .xlsm, .xls, .ods, .csv) and ' +
       'PowerPoint (.pptx, .odp) files, read by the sandboxed document reader ("path (page 3): ' +
@@ -299,6 +311,19 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
             'Glob matched against the file name, or against the relative path if it contains "/".',
         },
         contentPattern: { type: 'string', description: 'Text (or regex) to find inside files.' },
+        anyOf: {
+          type: 'array',
+          items: { type: 'string', maxLength: MAX_TERM_LENGTH },
+          minItems: 1,
+          maxItems: MAX_ANY_OF,
+          description:
+            `Up to ${String(MAX_ANY_OF)} alternative terms (e.g. ["walk-in freezer", "WIF"]); a ` +
+            'line matching any of them, or contentPattern, is a match. Not with regex.',
+        },
+        exact: {
+          type: 'boolean',
+          description: 'Match terms literally, line by line (default false: flexible matching).',
+        },
         regex: { type: 'boolean', description: 'Treat contentPattern as a regex (default false).' },
         caseSensitive: { type: 'boolean', description: 'Default false.' },
         maxResults: { type: 'integer', minimum: 1, maximum: limits.maxSearchResults },
@@ -324,13 +349,15 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
     needsApproval: false,
     parse(input) {
       const namePattern = input.optionalString('namePattern')
-      const contentPattern = input.optionalString('contentPattern')
-      if (!namePattern && !contentPattern) {
-        throw new ToolInputError('give "namePattern", "contentPattern" or both.')
+      const pattern = input.optionalString('contentPattern')
+      const anyOf = input.optionalStringArray('anyOf', 1, MAX_ANY_OF) ?? []
+      if (!namePattern && !pattern && anyOf.length === 0) {
+        throw new ToolInputError('give "namePattern", "contentPattern" (or "anyOf") or both.')
       }
+      const contentPattern = pattern || (anyOf.length > 0 ? anyOf.join('\n') : pattern)
       for (const [key, value] of [
         ['namePattern', namePattern],
-        ['contentPattern', contentPattern],
+        ['contentPattern', pattern],
       ]) {
         if (value !== undefined && value.length > MAX_PATTERN_LENGTH) {
           throw new ToolInputError(
@@ -340,6 +367,20 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       }
       const regex = input.optionalBoolean('regex') ?? false
       const caseSensitive = input.optionalBoolean('caseSensitive') ?? false
+      const exact = input.optionalBoolean('exact') ?? false
+      if (regex && anyOf.length > 0) throw new ToolInputError('"anyOf" cannot be used with regex.')
+      if (anyOf.some((term) => term.length > MAX_TERM_LENGTH)) {
+        throw new ToolInputError(
+          `each "anyOf" term must be at most ${String(MAX_TERM_LENGTH)} characters.`,
+        )
+      }
+      const terms = regex ? [] : [...(pattern ? [pattern] : []), ...anyOf]
+      try {
+        if (terms.length > 0) new PhraseMatcher({ terms, exact, caseSensitive })
+      } catch (error) {
+        if (error instanceof PhraseError) throw new ToolInputError(error.message)
+        throw error
+      }
       if (contentPattern && regex) {
         try {
           // Compiling is linear-time and safe here; matching runs in the worker.
@@ -352,6 +393,9 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
         path: input.string('path'),
         namePattern,
         contentPattern,
+        terms,
+        anyOf: anyOf.length,
+        exact,
         regex,
         caseSensitive,
         maxResults:
@@ -372,11 +416,12 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       ...(input.contentPattern !== undefined
         ? {
             contentPattern: {
-              kind: input.regex ? 'regex' : 'substring',
+              kind: input.regex ? 'regex' : input.exact ? 'substring' : 'phrase',
               length: input.contentPattern.length,
             },
           }
         : {}),
+      ...(input.anyOf > 0 ? { anyOf: input.anyOf } : {}),
       caseSensitive: input.caseSensitive,
       maxResults: input.maxResults,
       maxDepth: input.maxDepth,
@@ -435,7 +480,26 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     },
   ]
   const matchFullPath = input.namePattern ? /[\\/]/.test(input.namePattern) : false
-  const substring = input.contentPattern && !input.regex ? input.contentPattern : null
+  // Flexible phrases (and exact anyOf terms) match here; an exact contentPattern alone
+  // matches as a plain substring, as it always has.
+  const phrase =
+    input.terms.length > 0 && !(input.exact && input.anyOf === 0)
+      ? new PhraseMatcher({
+          terms: input.terms,
+          exact: input.exact,
+          caseSensitive: input.caseSensitive,
+        })
+      : null
+  /** The terms matched in each hit line of the file being searched, for its snippets. */
+  let phraseTerms = new Map<number, number[]>()
+  const substring = !phrase && input.contentPattern && !input.regex ? input.contentPattern : null
+  /** A matched line cut to `max` characters, with the anyOf terms it matched. */
+  const matchText = (i: number, text: string, max: number): string => {
+    if (!phrase) return matchWindow(text, substring, input.caseSensitive, max)
+    const terms = phraseTerms.get(i) ?? []
+    const label = phrase.label(terms, safeLine)
+    return `${label}${phrase.snippet(text, Math.max(1, max - label.length), terms)}`
+  }
   const signal = call.ctx.signal
   const deadline = deps.now() + limits.searchTimeMs
   const timeLeft = (): number => Math.max(0, deadline - deps.now())
@@ -534,7 +598,20 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   }
 
   /** Indexes of the lines that match, at most `room`, or null when the search must stop. */
-  async function matchLines(lines: string[], room: number): Promise<number[] | null> {
+  async function matchLines(
+    lines: string[],
+    room: number,
+    joinable?: (index: number) => boolean,
+  ): Promise<number[] | null> {
+    if (phrase) {
+      const found = await phrase.match(lines, room, { joinable, timeLeft, signal })
+      if (found === 'time' || found === 'cancelled') {
+        state.stop = found
+        return null
+      }
+      phraseTerms = new Map(found.map((hit) => [hit.line, hit.terms]))
+      return found.map((hit) => hit.line)
+    }
     if (substring !== null) {
       const hits: number[] = []
       const needle = input.caseSensitive ? substring : substring.toLowerCase()
@@ -643,9 +720,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     emitHits(fileText, hits, lines.length, (i, match, max) => {
       const text = safeLine(lines[i] ?? '')
       const n = String(i + 1)
-      return match
-        ? `${name}:${n}: ${matchWindow(text, substring, input.caseSensitive, max)}`
-        : `${name}-${n}- ${cut(text, max)}`
+      return match ? `${name}:${n}: ${matchText(i, text, max)}` : `${name}-${n}- ${cut(text, max)}`
     })
     return state.stop === null
   }
@@ -798,6 +873,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         const hits = await matchLines(
           lines.map((line) => line.text),
           input.maxResults - matches,
+          (i) => !lines[i]?.cell && lines[i]?.segment === lines[i - 1]?.segment,
         )
         if (hits === null) continue
         if (hits.length === 0) continue
@@ -811,7 +887,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
             const at = line?.at ? ` (${safeLine(line.at)})` : ''
             const clean = safeLine(line?.text ?? '')
             return match
-              ? `${name}${at}: ${matchWindow(clean, substring, input.caseSensitive, max)}`
+              ? `${name}${at}: ${matchText(i, clean, max)}`
               : `${name}${at}- ${cut(clean, max)}`
           },
           (i) => lines[i]?.segment ?? -1,
