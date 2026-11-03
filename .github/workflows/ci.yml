@@ -140,8 +140,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-windows-x64
-          path: |
-            release/*/*.exe
-            release/*/win-unpacked/resources/runtimes/integrity.json
+          # A single matched file is uploaded with its parent as the root, so the
+          # ZIP holds just the installer with no release/<version>/ folders.
+          path: release/*/Desktop-Agent-Setup-*-x64.exe
           if-no-files-found: error
           retention-days: ${{ github.ref == 'refs/heads/main' && 5 || 3 }}

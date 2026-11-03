@@ -24,7 +24,7 @@ A Windows-first desktop chat agent with Anthropic API, Claude subscription, Code
 
 ## Windows: test subscriptions without an API key
 
-1. Download the **desktop-agent-windows-x64** artifact from this PR's successful **CI → Windows installer** job. Extract the ZIP and run the NSIS `.exe`. The installer is unsigned. Alternatively, use the development commands below on Windows.
+1. Download the **desktop-agent-windows-x64** artifact from this PR's successful **CI → Windows installer** job. The ZIP contains only the NSIS installer, `Desktop-Agent-Setup-<version>-x64.exe`; extract it and run it. The installer is unsigned. Alternatively, use the development commands below on Windows.
 2. Both pinned native runtimes are included: Claude Code **2.1.299** and Codex **0.162.1**. No Node.js, npm, API key, or separate CLI installation is required on the user's machine. The installed app runs only its own bundled executables, after checking every runtime file against SHA-256 digests compiled into the app; it never falls back to a CLI on PATH, so an older or modified copy cannot replace the bundled version. These are intentional protocol/security pins.
 
 3. Open **Settings → Access provider**, select **Claude subscription** or **Codex subscription (ChatGPT)**, then **Sign in with subscription**. Complete the provider's browser flow using a plan that includes runtime access. Do not choose Anthropic Console/API billing. Use **Check readiness** afterwards. Do not enter an API key or use `setup-token`.
