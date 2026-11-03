@@ -391,7 +391,9 @@ describe('search_files cursor', () => {
   })
 
   it('ties a cursor to the exact terms and match mode', async () => {
-    for (let i = 0; i < 250; i++) await put(path.join(sb.root, `f${pad(i)}.txt`), 'alpha beta\n')
+    // The entry limit gives a cursor after a few files, so each search here stays cheap.
+    for (let i = 0; i < 12; i++) await put(path.join(sb.root, `f${pad(i)}.txt`), 'alpha beta\n')
+    h = harness({ limits: { maxSearchEntries: 5 } })
     const refused = { content: expect.stringMatching(/"cursor" was not given/) as unknown }
     const cursorFor = async (input: Record<string, unknown>): Promise<string> => {
       const r = await search({ ...input, output: 'files' })
