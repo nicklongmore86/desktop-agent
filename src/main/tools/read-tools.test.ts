@@ -432,7 +432,7 @@ describe('search_files', () => {
       {
         path: sb.root,
         namePattern: { kind: 'glob', length: 8 },
-        contentPattern: { kind: 'substring', length: 7 },
+        contentPattern: { kind: 'phrase', length: 7 },
         caseSensitive: false,
         maxResults: 100,
         maxDepth: 20,

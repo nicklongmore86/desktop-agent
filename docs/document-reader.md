@@ -345,14 +345,43 @@ text of documents, on by default (`documents: false` turns it off for a call).
   the token is replaced by `#`s wherever it appears, in any case, and a `[` before "End
   of" or "The matches below" becomes `(`. Both marker lines count toward
   the 40,000-character limit, so a cut result never leaves file text outside them.
+- Matching (`src/main/tools/phrase.ts`) is flexible by default: text and terms are folded
+  alike (NFKC; case; soft hyphens and zero-width characters; runs of white space).
+  Case folding is locale-independent: upper case then lower case (on the whole string,
+  equivalent to per code point here), then `ß` → `ss` and final `ς` → `σ`. So `ſ`/`s`,
+  `K` (U+212A)/`k`, `Å` (U+212B)/`å`, `ẞ`/`ß`/`ss`, `σ`/`ς`/`Σ`, `µ`/`μ` and `ϑ`/`θ` match
+  together, and `ﬁ` (NFKC) matches `fi`. There are no Turkish or other locale rules:
+  dotless `ı` folds to `i` (its upper case is `I`), and `İ` folds to `i` plus a combining
+  dot above, so it does not match a plain `i`. With `caseSensitive: true` only case
+  folding is skipped. A snippet is placed by folding a cluster (a character and its
+  marks) at a time and keeping where each folded character came from, so folds that
+  change length (`ß` → `ss`, `ﬁ` → `fi`, characters outside the BMP) still cut the line
+  around the match. A term's words may be separated by nothing or by up to 8 spaces,
+  dashes (`\p{Pd}`), `_` or `/`, so "walk in" finds "Walk-In", "WALK IN" and "walkin". A match may run on into
+  the next 3 lines of the same page, slide or text file (never across sheet cells), a word
+  hyphenated across a line break is rejoined, and a hit is reported on the line it starts
+  in. Terms of at most 4 letters/digits and codes mixing letters and digits (WIC, A501)
+  match whole words only. `anyOf` (up to 10 terms of at most 200 characters, with or
+  without `contentPattern`, not with `regex`) matches any of them and labels each hit
+  `(matched "WIC")`, inside the markers and neutralised with the rest of its line, so a
+  crafted term cannot fake or end one. `exact: true` restores the literal, per-line substring match;
+  `regex: true` is unchanged (per line, in the pattern worker). The patterns are built from
+  escaped words joined by a bounded separator class no word contains, so they cannot
+  backtrack badly and run in main, yielding every 20 ms and stopping at the deadline or
+  a cancel.
 - Context: `context` (0-5 lines, default 1) shows the lines around each match, marked
   `-` instead of `:` (`notes.txt-11- ...`, `RFI.pdf (page 2)- ...`), with `--` between
   groups; a document's context stays on the match's page, slide or sheet. Context lines
-  are cut so one match's context is at most 1,000 characters, and for a substring search
+  are cut so one match's context is at most 1,000 characters, and for a phrase or substring search
   a long matched line is cut around the match. The whole result is cut at 40,000
   characters (`maxSearchOutputChars`), markers, matches and lists together.
 - Shown, counted and listed: showing stops nothing. Every file is checked and every
-  matched line counted; the result shows the first `maxResults` matches (default 100) in
+  matched line counted. A count is of lines where a match starts, everywhere (the first
+  line of the result, the files list, `Showing N of M`, `Every file was checked`): a match
+  running over several lines counts once, on the line it starts in, and a line with
+  several matches or several `anyOf` terms counts once (its label names them all). So
+  each match, and each limit such as `maxPerFile`, is one such line. A term's matches do
+  not overlap, wherever a run of lines happens to be split for scanning. The result shows the first `maxResults` matches (default 100) in
   path order, at most `maxPerFile` per file (default 5; a later match next to a shown one
   appears as its context), as many as fit in what the lists leave of the 40,000
   characters, and says `Showing 100 of 523 matches: ...`. After the matches, inside the
@@ -366,7 +395,8 @@ matches)`), the first 200 in path order (at most half the characters, all of the
   50,000 entries, documents another search holds) or whose files list is full ends with
   `To continue the search, call search_files again with exactly the same arguments and
 cursor: "sf1...."`. The cursor is a position in path order, AES-GCM encrypted with a
-  key made at app start, its root and every other argument bound in as associated data:
+  key made at app start, its root and every other argument (the terms of `contentPattern`
+  and `anyOf` in order, `exact` and `regex` among them) bound in as associated data:
   a cursor changed by one bit, from another search or from an earlier run of the app is
   refused as invalid input. A call that runs out of time reports only the files before
   the first one it did not check (files it found after that are left to the next call,

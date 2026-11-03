@@ -372,6 +372,8 @@ export interface DocumentLine {
   text: string
   /** Which segment (page, slide, sheet part or run of text) the line is in: context stays inside one. */
   segment: number
+  /** A sheet cell: never matched together with the line before it. */
+  cell?: true
 }
 
 /** Every line of a document's text with its location: page, slide, sheet!cell or character. */
@@ -392,6 +394,7 @@ export function documentLines(text: CachedText, maxLine: number): DocumentLine[]
           at: segment.at ? `${sheetRef(segment.at)}!${cell}` : cell,
           text: line.slice(tab + 1, tab + 1 + maxLine),
           segment: index,
+          cell: true,
         })
       } else if (segment.offset !== undefined) {
         lines.push({
