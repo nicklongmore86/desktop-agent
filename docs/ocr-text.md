@@ -55,6 +55,8 @@ Boxes are `[x, y, width, height]` in input pixels: the union of the line's word 
 | `ocr-text:1 error=no-language\|language-not-installed code=…`                  | 2    |
 | `ocr-text:1 error=<step> code=…` (possibly out of memory)                      | 3    |
 
+In the `ok` line, `lines` and `chars` describe the JSON as written: the number of lines emitted (after any truncation) and the total length of their `text` in UTF-16 code units (`hstring::size()`, the same as JavaScript's `string.length`, so an astral character counts 2). Lone surrogates are written as U+FFFD, still one unit. Main refuses output whose JSON does not match the report.
+
 Exit 3 covers `E_OUTOFMEMORY` and, at the `recognize` step, `E_UNEXPECTED`. When the Job Object's memory limit is hit during recognition, Windows OCR fails with `E_UNEXPECTED`, not an out-of-memory error (measured in PR #72).
 
 ## Security model

@@ -331,10 +331,16 @@ function suite(resources: string) {
       const direct = exe(recognizeArgs(input.length, ['--max-output', '1024']), input)
       expect(direct.status, direct.stderr).toBe(0)
       expect(Buffer.byteLength(direct.stdout)).toBeLessThanOrEqual(1024)
-      const json = JSON.parse(direct.stdout) as { truncated: boolean; lines: unknown[] }
+      const json = JSON.parse(direct.stdout) as {
+        truncated: boolean
+        lines: { text: string }[]
+      }
       expect(json.truncated).toBe(true)
       expect(json.lines.length).toBeGreaterThan(0)
       expect(json.lines.length).toBeLessThan(full.lines.length)
+      // The report counts only the lines emitted, in UTF-16 units.
+      const chars = json.lines.reduce((n, line) => n + line.text.length, 0)
+      expect(direct.report).toMatchObject({ kind: 'ok', lines: json.lines.length, chars })
 
       const capped = await ocrIn(resources).recognize(image, { maxOutputBytes: 1024 })
       expect(capped.truncated).toBe(true)

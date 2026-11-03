@@ -217,6 +217,62 @@ describe('the OCR output, checked in main', () => {
       expect.objectContaining({ code: 'output' }),
     )
   })
+
+  const withLines = (texts: string[], truncated = false) => ({
+    ...RESULT,
+    lines: texts.map((text) => ({ box: [0, 0, 8, 4], text })),
+    truncated,
+  })
+  const counted = (lines: number, chars: number) => ({ ...report, lines, chars })
+
+  it('is refused when the report’s character count does not match the text', () => {
+    for (const chars of [0, 12, 14, 26]) {
+      expect(() => parse(RESULT, counted(1, chars)), String(chars)).toThrow(
+        'invalid result (character count)',
+      )
+    }
+    expect(parse(RESULT, counted(1, 13)).lines).toHaveLength(1)
+    expect(parse(withLines(['ab', '', 'cde']), counted(3, 5)).lines).toHaveLength(3)
+    expect(parse(withLines([]), counted(0, 0)).lines).toEqual([])
+  })
+
+  it('counts characters only in the lines emitted when truncated', () => {
+    const value = withLines(['first line', 'second'], true)
+    expect(parse(value, counted(2, 16)).truncated).toBe(true)
+    // A count that includes a dropped line is refused.
+    expect(() => parse(value, counted(2, 16 + 'dropped third line'.length))).toThrow(
+      expect.objectContaining({ code: 'output' }),
+    )
+  })
+
+  it('counts characters in UTF-16 units, as the helper’s hstring::size() does', () => {
+    // 'é' precomposed is 1 unit, 'e' + U+0301 is 2, U+1D400 (astral) and an emoji are 2 each.
+    const texts = ['caf\u00e9', 'cafe\u0301', '\u{1D400}x', 'ok \u{1F600}']
+    const units = [4, 5, 3, 5]
+    expect(texts.map((t) => t.length)).toEqual(units)
+    const sum = units.reduce((a, b) => a + b, 0)
+    expect(parse(withLines(texts), counted(4, sum)).lines.map((l) => l.text)).toEqual(texts)
+    // Code points (or UTF-8 bytes) would be a different number, and are refused.
+    const codePoints = texts.reduce((n, t) => n + Array.from(t).length, 0)
+    const bytes = texts.reduce((n, t) => n + utf8(t).length, 0)
+    expect(new Set([sum, codePoints, bytes]).size).toBe(3)
+    for (const wrong of [codePoints, bytes]) {
+      expect(() => parse(withLines(texts), counted(4, wrong))).toThrow(
+        expect.objectContaining({ code: 'output' }),
+      )
+    }
+  })
+
+  it('reads the helper’s escaping back exactly', () => {
+    // As json_string writes them: quote, backslash and C0 controls and DEL escaped, the rest raw UTF-8.
+    const raw =
+      '{"v":1,"lang":"en-US","angle":null,"width":8,"height":4,"lines":[' +
+      '{"box":[0,0,8,4],"text":"a\\"b\\\\c\\u0009d\\u000a\\u001f\\u007f"},' +
+      '{"box":[0,0,8,4],"text":"\u00e9\u4e2d\u{1F600}"}],"truncated":false}\n'
+    const want = ['a"b\\c\td\n\u001f\u007f', '\u00e9\u4e2d\u{1F600}']
+    const chars = want.reduce((n, t) => n + t.length, 0)
+    expect(parse(raw, counted(2, chars)).lines.map((l) => l.text)).toEqual(want)
+  })
 })
 
 describe('the system OCR', () => {
@@ -386,7 +442,8 @@ process.stdin.on('end', () => {
     const width = input.readUInt32LE(8), height = input.readUInt32LE(12)
     process.stdout.write(JSON.stringify({ v: 1, lang: 'en-US', angle: null, width, height,
       lines: [{ box: [0, 0, width, height], text: 'bytes=' + input.length }], truncated: false }))
-    process.stderr.write('codec noise\\nocr-text:1 ok lines=1 chars=9 width=' + width +
+    process.stderr.write('codec noise\\nocr-text:1 ok lines=1 chars=' +
+      ('bytes=' + input.length).length + ' width=' + width +
       ' height=' + height + ' ms=5 peak=1000\\n')
   } else if (mode === 'flood') {
     process.stdout.write(Buffer.alloc(2 * 1024 * 1024, 0x20))

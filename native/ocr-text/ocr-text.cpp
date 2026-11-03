@@ -438,6 +438,7 @@ static __declspec(noreturn) void recognize(Options const &o) {
       break;
     }
     out += item;
+    // Counted only for lines emitted, in UTF-16 units; main checks it against the JSON.
     lines++;
     chars += text.size();
   }

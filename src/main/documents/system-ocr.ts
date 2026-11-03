@@ -209,7 +209,8 @@ function jsonObject(stdout: Uint8Array, maxBytes: number, keys: readonly string[
 
 /**
  * The helper's result, checked again in main: its shape, a language tag, every box inside
- * the image that was sent, and the report agreeing with it. Throws OcrError('output').
+ * the image that was sent, and the report agreeing with it (size, line count, and `chars`,
+ * the UTF-16 length of the emitted lines' text). Throws OcrError('output').
  */
 export function parseOcrOutput(
   stdout: Uint8Array,
@@ -259,6 +260,9 @@ export function parseOcrOutput(
     if (x + w > expected.width || y + h > expected.height) throw badOutput('box outside image')
     return { text, box: { x, y, width: w, height: h } }
   })
+  // The helper counts UTF-16 units (hstring::size()) of the lines it emitted, as JS does.
+  const chars = checked.reduce((sum, line) => sum + line.text.length, 0)
+  if (chars !== report.chars) throw badOutput('character count')
   return {
     language: lang,
     angle,
