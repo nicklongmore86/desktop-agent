@@ -14,7 +14,7 @@ $cmd = Join-Path $out 'build.cmd'
 call "$vcvars" >nul || exit /b 1
 cd /d "$out" || exit /b 1
 echo MSVC %VCToolsVersion% SDK %WindowsSDKVersion%
-cl /nologo /c /std:c++17 /permissive- /EHsc /bigobj /O1 /MT /GS /guard:cf /W4 /Brepro /Foocr-text.obj "$src" || exit /b 1
+cl /nologo /c /std:c++20 /permissive- /EHsc /bigobj /O1 /MT /GS /guard:cf /W4 /Brepro /Foocr-text.obj "$src" || exit /b 1
 link /nologo /Brepro /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /guard:cf /CETCOMPAT /DEPENDENTLOADFLAG:0x800 /SUBSYSTEM:CONSOLE /OUT:ocr-text.exe ocr-text.obj kernel32.lib advapi32.lib ole32.lib windowscodecs.lib windowsapp.lib || exit /b 1
 "@ | Set-Content -Encoding ascii $cmd
 cmd.exe /d /c $cmd
