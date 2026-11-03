@@ -1,0 +1,81 @@
+name: OCR spike
+
+# SPIKE (draft PR): builds native/ocr-text and measures Windows built-in OCR under the
+# heif-decode lockdown. Runs on PRs that touch the spike's files, drafts included, so it
+# does not wait for the main CI's Windows gate. Not part of the product build.
+on:
+  pull_request:
+    paths:
+      - 'native/ocr-text/**'
+      - 'scripts/ocr-spike/**'
+      - '.github/workflows/ocr-spike.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ocr:
+    name: Windows OCR spike
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pillow==11.3.0 rapidfuzz==3.13.0
+      - name: Runner
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List
+          whoami /groups | Select-String 'Mandatory Label'
+          Get-WinUserLanguageList | Format-Table LanguageTag
+          Get-ChildItem "$env:WINDIR\OCR" -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object FullName
+      - name: Build ocr-text.exe
+        shell: pwsh
+        run: ./native/ocr-text/build.ps1
+      - name: Check hardening
+        run: node -e "import('./scripts/job-helper.mjs').then(m=>m.checkHardening(require('fs').readFileSync('build/ocr-spike/ocr-text.exe'),'ocr-text.exe'))"
+      - name: Probe (full lockdown)
+        shell: pwsh
+        run: |
+          ./build/ocr-spike/ocr-text.exe --probe
+          "exit $LASTEXITCODE"
+          $global:LASTEXITCODE = 0
+      - name: OCR capabilities
+        shell: pwsh
+        run: Get-WindowsCapability -Online | Where-Object Name -like 'Language.OCR*' | Format-Table Name, State
+      - name: Render test pages
+        run: python scripts/ocr-spike/make_pages.py build/ocr-spike/pages
+      - name: Benchmark (runner as-is)
+        id: bench
+        continue-on-error: true
+        run: python scripts/ocr-spike/bench.py build/ocr-spike/ocr-text.exe build/ocr-spike/pages build/ocr-spike/as-is
+      # If the runner has no OCR language (or the as-is run failed), install en-US OCR and rerun.
+      - name: Install en-US OCR language if missing
+        id: install
+        shell: pwsh
+        run: |
+          $probe = ./build/ocr-spike/ocr-text.exe --probe --relax job,low,mitigations,dlldirs | ConvertFrom-Json
+          if ($probe.available -contains 'en-US' -and '${{ steps.bench.outcome }}' -eq 'success') { "en-US present"; exit 0 }
+          Add-WindowsCapability -Online -Name 'Language.OCR~~~en-US~0.0.1.0'
+          "installed=1" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+      - name: Benchmark (after installing en-US OCR)
+        if: steps.install.outputs.installed == '1'
+        run: python scripts/ocr-spike/bench.py build/ocr-spike/ocr-text.exe build/ocr-spike/pages build/ocr-spike/installed
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ocr-spike-results
+          path: |
+            build/ocr-spike/ocr-text.exe
+            build/ocr-spike/as-is/
+            build/ocr-spike/installed/
+            build/ocr-spike/pages/text-scan@2200.png
+            build/ocr-spike/pages/drawing-scan@3300.png
+          retention-days: 7
