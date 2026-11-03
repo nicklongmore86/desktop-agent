@@ -142,8 +142,13 @@ jobs:
       - name: Stage installer for upload
         shell: pwsh
         run: |
+          $installers = @(Get-ChildItem -Path 'release/*/Desktop-Agent-Setup-*-x64.exe' -File)
+          if ($installers.Count -ne 1) {
+            Write-Host "::error::Expected exactly one installer matching release/*/Desktop-Agent-Setup-*-x64.exe, found $($installers.Count): $($installers.FullName -join ', ')"
+            exit 1
+          }
           New-Item -ItemType Directory -Force artifact-upload | Out-Null
-          Copy-Item release/*/Desktop-Agent-Setup-*-x64.exe artifact-upload/
+          Copy-Item -LiteralPath $installers[0].FullName -Destination artifact-upload/
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-windows-x64
