@@ -21,7 +21,7 @@ import type { DocumentReader, ExtractOptions } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
 import { DocumentTextCache } from './document-text-cache'
 import { verifyPinnedHelper } from './job-launcher'
-import { turnGray } from './search-ocr'
+import { readingScore, turnGray } from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
 
 const BUILD = path.resolve('build')
@@ -213,6 +213,68 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
         expect(runs.length).toBeGreaterThanOrEqual(2)
         expect(runs.length).toBeLessThanOrEqual(4)
         await fs.rm(path.join(sb.root, name))
+      }
+    },
+    SLOW,
+  )
+
+  it(
+    'logs what each orientation of a page reads as, for the scoring',
+    async () => {
+      const sparse = toGray(
+        renderPage({
+          width: PAGE_WIDTH,
+          height: PAGE_HEIGHT,
+          lines: ['A-101', 'NORTH ELEVATION', 'KITCHEN', 'SCALE 1:50'],
+          fontPx: 40,
+        }),
+      )
+      for (const [label, image] of [
+        ['letter', picture()],
+        ['sparse', sparse],
+      ] as const) {
+        for (const degrees of [0, 90, 180, 270] as const) {
+          const turned = degrees === 0 ? image : turnGray(image, degrees)
+          const result = await real.recognize(turned)
+          const lines = result.lines.map((line) => line.text)
+          const score = readingScore(lines)
+          console.log(
+            `search-ocr reading ${label} ${String(degrees)}: words ${String(score.words)} of ` +
+              `${String(score.all)}, angle ${String(result.angle)}, lines ${String(lines.length)}, ` +
+              `${String(result.stats.ms)} ms: ${JSON.stringify(lines.join(' | ').slice(0, 300))}`,
+          )
+        }
+      }
+    },
+    SLOW,
+  )
+
+  it(
+    'logs what each orientation of a page reads as, for the scoring',
+    async () => {
+      const sparse = toGray(
+        renderPage({
+          width: PAGE_WIDTH,
+          height: PAGE_HEIGHT,
+          lines: ['A-101', 'NORTH ELEVATION', 'KITCHEN', 'SCALE 1:50'],
+          fontPx: 40,
+        }),
+      )
+      for (const [label, image] of [
+        ['letter', picture()],
+        ['sparse', sparse],
+      ] as const) {
+        for (const degrees of [0, 90, 180, 270] as const) {
+          const turned = degrees === 0 ? image : turnGray(image, degrees)
+          const result = await real.recognize(turned)
+          const lines = result.lines.map((line) => line.text)
+          const score = readingScore(lines)
+          console.log(
+            `search-ocr reading ${label} ${String(degrees)}: words ${String(score.words)} of ` +
+              `${String(score.all)}, angle ${String(result.angle)}, lines ${String(lines.length)}, ` +
+              `${String(result.stats.ms)} ms: ${JSON.stringify(lines.join(' | ').slice(0, 300))}`,
+          )
+        }
       }
     },
     SLOW,

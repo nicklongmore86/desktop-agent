@@ -708,14 +708,33 @@ describe('search_files OCR of sideways pages', () => {
       const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
       expect(r.content).toContain(`side.pdf (page 1, OCR): ${SENTENCE}`)
       expect(r.content).not.toContain('little text')
-      // As it is, then the turns in order, stopping at the one that reads.
-      const expected = { 90: 2, 270: 3, 180: 4 }[turned]
-      expect(ocr.runs).toHaveLength(expected)
-      expect(ocr.runs[0]).toMatchObject({ width: 4, height: 8 })
-      if (turned !== 180) expect(ocr.runs.at(-1)).toMatchObject({ width: 8, height: 4 })
+      // As it is, then both sideways turns, and the upside-down one only if neither reads.
+      expect(ocr.runs.map((run) => run.width)).toEqual(turned === 180 ? [4, 8, 8, 4] : [4, 8, 8])
       expect((await ocrOf('side.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: false })
     },
   )
+
+  it('keeps the better of the two sideways readings, not the first that passes', async () => {
+    // One sideways turn of a sideways page is upside down, which reads as plausible letters:
+    // enough to pass, and worse than the true one.
+    const garbage = 'pue oqt ploq uopl sdwnf xoj umoq moinb oql puosodo oldnoo soyotm'
+    const truth = `${SENTENCE} ${SENTENCE}`
+    await put(path.join(sb.root, 'side.pdf'), doc(scan(truth)))
+    const readings: Record<number, string[]> = { 0: ['l', '|'], 90: [garbage], 270: [truth] }
+    h = harness({
+      ocr: {
+        ...ocr,
+        recognize: (image) => {
+          ocr.runs.push({ name: '', page: 1, width: image.width, height: image.height, format: '' })
+          const turn = TURN_OF_FIRST_PIXEL[image.pixels[0] ?? -1] ?? -1
+          return Promise.resolve(answer(image, readings[turn] ?? []))
+        },
+      },
+    })
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    expect(r.content).toContain('side.pdf (page 1, OCR)')
+    expect(ocr.runs).toHaveLength(3)
+  })
 
   it('turns nothing when a page reads well as it is', async () => {
     await put(path.join(sb.root, 'up.pdf'), doc(scan()))

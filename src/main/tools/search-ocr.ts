@@ -236,10 +236,12 @@ async function readImage(job: OcrDocumentJob, image: OcrImage): Promise<PageOutc
   }
   if (!readsWell(best.score)) {
     for (const degrees of TURNS) {
+      // 90 and 270 are always both read: one of them is upside down, which reads as plausible
+      // letters, so the one that reads well first is not yet the right one.
+      if (degrees === 180 && readsWell(best.score)) break
       try {
         const turned = await recognize(turnGray(image, degrees))
         if (turned.score.words > best.score.words) best = turned
-        if (readsWell(turned.score)) break
       } catch (error) {
         const failure = ocrFailure(error, job)
         if (failure.kind !== 'failed') return failure
