@@ -1,5 +1,5 @@
-// The bundled native helpers, job-run.exe (native/job-run) and heif-decode.exe
-// (native/heif-decode): the build's pins file and the checks shared by build-job-helper.mjs,
+// The bundled native helpers, job-run.exe (native/job-run), heif-decode.exe
+// (native/heif-decode) and ocr-text.exe (native/ocr-text): the build's pins file and the checks shared by build-job-helper.mjs,
 // the Vite build (which compiles each digest into the app) and afterPack.
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 export const JOB_RUN_VERSION = '1.0.0.0'
 export const HEIF_DECODE_VERSION = '1.0.0.0'
+export const OCR_TEXT_VERSION = '1.0.0.0'
 export const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 /** Written next to (not inside) build/helpers, so it is not packaged. */
 export const pinsFile = join(repoRoot, 'build', 'job-helper-pins.json')
@@ -29,7 +30,13 @@ export const HEIF_DECODE = {
   pinned: 'helpers/heif-decode.exe',
   marker: 'heif-decode.exe-sha256:',
 }
-export const HELPERS = [JOB_RUN, HEIF_DECODE]
+export const OCR_TEXT = {
+  name: 'ocr-text.exe',
+  version: OCR_TEXT_VERSION,
+  pinned: 'helpers/ocr-text.exe',
+  marker: 'ocr-text.exe-sha256:',
+}
+export const HELPERS = [JOB_RUN, HEIF_DECODE, OCR_TEXT]
 
 /** A built helper; electron-builder copies build/helpers to resources/helpers. */
 export const builtHelper = (helper) => join(repoRoot, 'build', ...helper.pinned.split('/'))
@@ -73,7 +80,7 @@ const TEST_ENTRIES = ['tools.js', 'documents.js']
 export const BUILD_MANIFEST = '.build-manifest.json'
 /**
  * The string the main build compiles in for a helper's digest (job-launcher.ts's
- * JOB_RUN_SHA256, system-heif.ts's HEIF_DECODE_SHA256).
+ * JOB_RUN_SHA256, system-heif.ts's HEIF_DECODE_SHA256, system-ocr.ts's OCR_TEXT_SHA256).
  */
 export const pinMarker = (pin, helper = JOB_RUN) => (pin ? `${helper.marker}${pin}` : null)
 const DIGEST = /^[0-9a-f]{64}(?![0-9A-Za-z])/

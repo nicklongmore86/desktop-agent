@@ -2,7 +2,14 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BUILD_MANIFEST, bundledPin, HEIF_DECODE, pinMarker } from './job-helper.mjs'
+import {
+  BUILD_MANIFEST,
+  bundledPin,
+  HEIF_DECODE,
+  HELPERS,
+  OCR_TEXT,
+  pinMarker,
+} from './job-helper.mjs'
 
 const PIN = 'a'.repeat(64)
 const OTHER = 'b'.repeat(64)
@@ -169,6 +176,27 @@ describe('bundledPin', () => {
     await write('out/main/chunks/index-x.js', launcher(PIN) + heif)
     await expect(bundledPin(root)).resolves.toBe(PIN)
     await expect(bundledPin(root, HEIF_DECODE)).resolves.toBe(OTHER)
+  })
+
+  it('finds the ocr-text.exe pin beside the others, and fails without it', async () => {
+    const THIRD = 'c'.repeat(64)
+    expect(HELPERS.map((helper) => helper.pinned)).toEqual([
+      'helpers/job-run.exe',
+      'helpers/heif-decode.exe',
+      'helpers/ocr-text.exe',
+    ])
+    await entry()
+    await manifest({ 'index.js': [['chunks/index-x.js']], 'chunks/index-x.js': [] })
+    const heif = `const HEIF_DECODE_SHA256 = ${JSON.stringify(pinMarker(OTHER, HEIF_DECODE))};\n`
+    await write('out/main/chunks/index-x.js', launcher(PIN) + heif)
+    await expect(bundledPin(root, OCR_TEXT)).rejects.toThrow(
+      'The app was built without the ocr-text.exe pin',
+    )
+    const ocr = `const OCR_TEXT_SHA256 = ${JSON.stringify(pinMarker(THIRD, OCR_TEXT))};\n`
+    await write('out/main/chunks/index-x.js', launcher(PIN) + heif + ocr)
+    await expect(bundledPin(root, OCR_TEXT)).resolves.toBe(THIRD)
+    await expect(bundledPin(root, HEIF_DECODE)).resolves.toBe(OTHER)
+    await expect(bundledPin(root)).resolves.toBe(PIN)
   })
 
   it('fails when the heif-decode.exe pin is missing, even with the job-run.exe one', async () => {

@@ -69,7 +69,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
-      # job-run.exe and heif-decode.exe (MSVC, Windows only; a no-op on Linux), before the
+      # job-run.exe, heif-decode.exe and ocr-text.exe (MSVC, Windows only; a no-op on Linux), before the
       # tests that run them and before the build that compiles in their pins.
       - run: pnpm build:helpers
       - run: pnpm test
@@ -137,6 +137,11 @@ jobs:
         run: |
           $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
           pnpm exec vitest run src/main/documents/heif-decode.test.ts -t 'packaged heif-decode.exe'
+      - name: Test packaged ocr-text.exe
+        shell: pwsh
+        run: |
+          $env:DESKTOP_TEST_RESOURCES = (Resolve-Path 'release/0.1.0/win-unpacked/resources').Path
+          pnpm exec vitest run src/main/documents/ocr-text.test.ts -t 'packaged ocr-text.exe'
       # upload-artifact roots a wildcard path at its first wildcard (release/),
       # so stage the installer on its own to put it at the top of the ZIP.
       - name: Stage installer for upload

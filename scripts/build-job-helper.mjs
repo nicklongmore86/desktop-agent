@@ -1,8 +1,8 @@
-// Builds the native helpers, job-run.exe (native/job-run) and heif-decode.exe
-// (native/heif-decode), with MSVC into build/helpers and pins their SHA-256 in
+// Builds the native helpers, job-run.exe (native/job-run), heif-decode.exe
+// (native/heif-decode) and ocr-text.exe (native/ocr-text), with MSVC into build/helpers and pins their SHA-256 in
 // build/job-helper-pins.json, which the Vite build compiles into the app. Windows only;
-// elsewhere it does nothing: the app falls back to its plain tree kill, and HEIC photos
-// are not decoded.
+// elsewhere it does nothing: the app falls back to its plain tree kill, HEIC photos are not
+// decoded and there is no OCR.
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -12,6 +12,7 @@ import {
   checkHardening,
   HEIF_DECODE,
   JOB_RUN,
+  OCR_TEXT,
   pinsFile,
   repoRoot,
   sha256,
@@ -45,15 +46,23 @@ if (!vs || !existsSync(vcvars)) throw new Error('The MSVC x64 build tools were n
 await rm(objects, { recursive: true, force: true })
 await mkdir(objects, { recursive: true })
 
+/** C, as job-run.exe and heif-decode.exe are written. */
+const C_FLAGS = []
+/** C++20 with C++/WinRT (the Windows SDK's headers), for ocr-text.exe. */
+const CPP_FLAGS = ['/std:c++20', '/permissive-', '/EHsc', '/bigobj']
+
 /**
  * The helpers and what each links. heif-decode.exe decodes untrusted photos with Windows'
- * own codecs (WIC, Media Foundation), so it needs their libraries; job-run.exe needs only
- * kernel32. Both get the same hardening.
+ * own codecs (WIC, Media Foundation), so it needs their libraries; ocr-text.exe calls
+ * Windows.Media.Ocr through WinRT (windowsapp.lib, the umbrella library for WinRT
+ * activation); job-run.exe needs only kernel32. All get the same hardening.
  */
 const BUILDS = [
-  { helper: JOB_RUN, libs: ['kernel32.lib'] },
+  { helper: JOB_RUN, source: 'job-run.c', flags: C_FLAGS, libs: ['kernel32.lib'] },
   {
     helper: HEIF_DECODE,
+    source: 'heif-decode.c',
+    flags: C_FLAGS,
     libs: [
       'kernel32.lib',
       'advapi32.lib',
@@ -64,10 +73,16 @@ const BUILDS = [
       'uuid.lib',
     ],
   },
+  {
+    helper: OCR_TEXT,
+    source: 'ocr-text.cpp',
+    flags: CPP_FLAGS,
+    libs: ['kernel32.lib', 'advapi32.lib', 'windowsapp.lib'],
+  },
 ]
 
 const pins = {}
-for (const { helper, libs } of BUILDS) {
+for (const { helper, source: sourceFile, flags, libs } of BUILDS) {
   const base = helper.name.replace(/\.exe$/, '')
   const source = join(repoRoot, 'native', base)
   const script = join(objects, `build-${base}.cmd`)
@@ -78,9 +93,9 @@ for (const { helper, libs } of BUILDS) {
       '@echo off',
       `call "${vcvars}" >nul || exit /b 1`,
       `cd /d "${objects}" || exit /b 1`,
-      'echo MSVC %VCToolsVersion%',
+      'echo MSVC %VCToolsVersion% SDK %WindowsSDKVersion%',
       `rc /nologo /fo ${base}.res "${join(source, `${base}.rc`)}" || exit /b 1`,
-      `cl /nologo /c /O1 /MT /GS /guard:cf /W4 /WX /Brepro /Fo${base}.obj "${join(source, `${base}.c`)}" || exit /b 1`,
+      `cl /nologo /c ${[...flags, ''].join(' ')}/O1 /MT /GS /guard:cf /W4 /WX /Brepro /Fo${base}.obj "${join(source, sourceFile)}" || exit /b 1`,
       'link /nologo /Brepro /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /guard:cf /CETCOMPAT ' +
         `/DEPENDENTLOADFLAG:0x800 /SUBSYSTEM:CONSOLE /OUT:${helper.name} ${base}.obj ${base}.res ` +
         `${libs.join(' ')} || exit /b 1`,

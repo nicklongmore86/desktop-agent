@@ -46,8 +46,9 @@ The app reads only this pipe, accepts only one exact line, and ignores anything 
 
 The same build script, pins file, after-pack check and verification
 (`verifyPinnedHelper`) cover `heif-decode.exe`, the HEIC decoder (see
-[document-reader.md](document-reader.md#heic-photos)), under its own marker
-(`heif-decode.exe-sha256:`).
+[document-reader.md](document-reader.md#heic-photos)), and `ocr-text.exe`, Windows OCR
+(see [ocr-text.md](ocr-text.md)), each under its own marker (`heif-decode.exe-sha256:`,
+`ocr-text.exe-sha256:`).
 
 ## Processes that escape by design
 

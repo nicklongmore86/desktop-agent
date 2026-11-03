@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { build as viteBuild, type Plugin } from 'vite'
 // @ts-expect-error -- a plain .mjs build script without type declarations
-import { BUILD_MANIFEST, HEIF_DECODE, pinMarker, readPin } from './scripts/job-helper.mjs'
+import { BUILD_MANIFEST, HEIF_DECODE, OCR_TEXT, pinMarker, readPin } from './scripts/job-helper.mjs'
 import { buildCsp } from './src/shared/csp'
 
 // lowlight's package `exports` hides lib/, so resolve its entry point and step to lib/ beside it.
@@ -136,7 +136,7 @@ function buildManifestPlugin(): Plugin {
 export default defineConfig({
   main: {
     // The helpers' digests from `pnpm build:helpers` (Windows) as unique marker strings, or
-    // none: see job-launcher.ts and documents/system-heif.ts.
+    // none: see job-launcher.ts, documents/system-heif.ts and documents/system-ocr.ts.
     define: {
       __JOB_RUN_PIN__: JSON.stringify(
         (pinMarker as (pin: string | null) => string | null)((readPin as () => string | null)()),
@@ -145,6 +145,12 @@ export default defineConfig({
         (pinMarker as (pin: string | null, helper: unknown) => string | null)(
           (readPin as (helper: unknown) => string | null)(HEIF_DECODE),
           HEIF_DECODE,
+        ),
+      ),
+      __OCR_TEXT_PIN__: JSON.stringify(
+        (pinMarker as (pin: string | null, helper: unknown) => string | null)(
+          (readPin as (helper: unknown) => string | null)(OCR_TEXT),
+          OCR_TEXT,
         ),
       ),
     },

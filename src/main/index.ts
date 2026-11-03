@@ -15,6 +15,7 @@ import { gitPushChannels } from '../shared/ipc-git'
 import { nativeImageScaler } from './attachments/native-image'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { defaultSystemHeifDecoder } from './documents/system-heif'
+import { defaultSystemOcr } from './documents/system-ocr'
 import { DocumentWorkerHost, documentWorkerPaths } from './documents/worker-host'
 import { registerIpcHandlers } from './ipc-handlers'
 import { isTrustedIpcSender } from './security'
@@ -67,12 +68,16 @@ void app.whenReady().then(async () => {
   // HEIC photos are decoded by Windows' codec in heif-decode.exe, never from a granted folder.
   let grantedRoots: () => readonly string[] = () => []
   const heic = defaultSystemHeifDecoder(process.platform, () => grantedRoots())
+  // Text in images, by Windows' OCR in ocr-text.exe (verified before every run). Nothing
+  // recognises yet; search_files will, and Settings will show its probe().
+  const ocr = defaultSystemOcr(process.platform, () => grantedRoots())
   const documents = new DocumentWorkerHost({
     ...documentWorkerPaths(__dirname),
     systemDecoder: heic,
   })
   app.on('will-quit', () => {
     void documents.dispose()
+    ocr.cancelAll()
   })
   const services = await createAppServices({
     documents,
