@@ -139,17 +139,20 @@ def main():
             entry["angle"] = r["data"].get("angle")
             entry["lines"] = len(r["data"]["lines"])
             entry["lang"] = r["data"]["lang"]
+            entry["text"] = [line["text"] for line in r["data"]["lines"]]
         results["pages"].append(entry)
 
     # 3. The smallest job memory limit that still works, on the largest pages.
     for name in ("text-scan", "drawing-scan"):
         page = next(p for p in pages if p["name"] == name and p["long_edge"] == 3300)
+        if name == "drawing-scan":
+            page = next(p for p in pages if p["name"] == name and p["long_edge"] == 4961)
         with open(page["file"], "rb") as f:
             data = f.read()
         for mib in (96, 128, 192, 256, 384):
             r = run(exe, ["--recognize", "--relax", relax, "--decoder", decoder,
                           "--max-memory", str(mib * MiB)], data)
-            results["memory"].append({"name": name, "long_edge": 3300, "limit_mib": mib,
+            results["memory"].append({"name": name, "long_edge": page["long_edge"], "limit_mib": mib,
                                       "code": r["code"], "report": r["report"]})
 
     # 4. Output bound: a tiny --max-output must truncate, not fail.

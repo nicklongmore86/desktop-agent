@@ -238,7 +238,8 @@ def main():
     dwg, words, vertical, notes = drawing()
     dvariants = {"drawing-clean": dwg, "drawing-scan": scan(dwg, 3, 0.7, 40, 0.7, 0.85, 0.0005, 70)}
     for name, img in dvariants.items():
-        for le in LONG_EDGES:
+        # Plus full 300 dpi A3: drawings may need more pixels than the vision budget.
+        for le in LONG_EDGES + [4961]:
             manifest.append({"name": name, "file": save(img, out, name, le), "long_edge": le,
                              "kind": "drawing", "words": words, "vertical": vertical,
                              "notes": notes})
