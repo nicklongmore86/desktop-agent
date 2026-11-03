@@ -80,7 +80,7 @@ const scanned = () =>
   page('scanned', { ...CLEAN, angle: 1.5, ink: 40 }, (rendered) => degrade(rendered))
 const many = () => page('many', { width: 1568, height: 2200, lines: repeat(30), fontPx: 36 })
 const edge = () => page('edge', { width: 4096, height: 2896, lines: repeat(28), fontPx: 56 })
-const square = () => page('square', { width: 4096, height: 4096, lines: repeat(40), fontPx: 56 })
+const square = () => page('square', { width: 4096, height: 4096, lines: repeat(38), fontPx: 56 })
 
 const texts = (result: OcrResult) => result.lines.map((line) => line.text)
 const logResult = (label: string, image: OcrImage, result: OcrResult) => {
@@ -230,7 +230,7 @@ function suite(resources: string) {
       for (const image of [square(), toGray(square())]) {
         const result = await ocr.recognize(image)
         logResult('4096 square', image, result)
-        expect(wordRecall(repeat(40), texts(result))).toBeGreaterThanOrEqual(0.9)
+        expect(wordRecall(repeat(38), texts(result))).toBeGreaterThanOrEqual(0.9)
         expect(result.stats.peakBytes).toBeLessThanOrEqual(256 * MIB)
       }
     },

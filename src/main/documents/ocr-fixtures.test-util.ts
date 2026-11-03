@@ -11,7 +11,9 @@ const RENDER = `
 param([int]$Width, [int]$Height, [double]$FontPx, [double]$Angle, [int]$Ink, [string]$Out)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
-$lines = @($env:OCR_FIXTURE_LINES | ConvertFrom-Json)
+# Windows PowerShell 5.1 passes a JSON array down the pipeline as one object, so no @(...).
+$lines = [object[]](ConvertFrom-Json $env:OCR_FIXTURE_LINES)
+if ($lines.Count -lt 2) { throw "expected several lines, got $($lines.Count)" }
 $format = [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
 $bmp = New-Object System.Drawing.Bitmap $Width, $Height, $format
 $g = [System.Drawing.Graphics]::FromImage($bmp)
