@@ -210,6 +210,9 @@ export class PhraseMatcher {
   ): Promise<PhraseHit[] | 'time' | 'cancelled'> {
     const hits: PhraseHit[] = []
     const joinable = control.joinable ?? ((): boolean => true)
+    // Where a term's last match ended, when it ran on past its block: the next block goes
+    // on from there, so where a block happens to end does not change what is found.
+    const ranOn = new Map<number, { line: number; offset: number }>()
     let yielded = Date.now()
     for (let from = 0; from < lines.length && hits.length < room; from += BLOCK) {
       // A long scan gives main back now and then, and stops for a cancel or the deadline;
@@ -255,16 +258,23 @@ export class PhraseMatcher {
         if (blockEnd < 0) blockEnd = text.length
         for (const [t, c] of this.compiled.entries()) {
           if (c.kind !== 'pattern') continue
-          c.re.lastIndex = 0
+          const resume = ranOn.get(t)
+          ranOn.delete(t)
+          c.re.lastIndex = resume ? (starts[resume.line - from] ?? 0) + resume.offset : 0
           for (let m = c.re.exec(text); m !== null; m = c.re.exec(text)) {
             if (m.index >= blockEnd) break
             const line = lineAt(starts, m.index)
-            if (lineAt(starts, m.index + m[0].length - 1) - line > WINDOW_LINES) {
+            const ending = m.index + m[0].length
+            const endLine = lineAt(starts, ending - 1)
+            if (endLine - line > WINDOW_LINES) {
               // Runs on too far: look for a shorter match starting further on.
               c.re.lastIndex = m.index + 1
               continue
             }
             add(from + line, t)
+            if (from + endLine >= to) {
+              ranOn.set(t, { line: from + endLine, offset: ending - (starts[endLine] ?? 0) })
+            }
             // Only the first match per line matters: skip to the next line.
             const next = starts[line + 1]
             if (next === undefined || next >= blockEnd) break

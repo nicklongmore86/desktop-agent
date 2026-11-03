@@ -167,6 +167,25 @@ describe('flexible phrase matching', () => {
     expect(await matchedLines(edge, 'walk in freezer')).toEqual([255])
   })
 
+  it('finds the same number of matches wherever a block of lines happens to end', async () => {
+    // The last word of one match could start another: where it falls must not matter.
+    for (let at = 250; at <= 258; at++) {
+      const three = Array.from({ length: 600 }, () => 'x')
+      three[at] = three[at + 1] = three[at + 2] = 'repeat'
+      expect(await matchedLines(three, 'repeat repeat')).toEqual([at])
+      three[at + 3] = 'repeat'
+      expect(await matchedLines(three, 'repeat repeat')).toEqual([at, at + 2])
+    }
+    // Only the term that ran on goes on from there; another may start in the same words.
+    const both = Array.from({ length: 600 }, () => 'x')
+    both[255] = both[256] = both[257] = 'repeat'
+    expect(await hits(both, ['repeat repeat', 'repeat'])).toEqual([
+      { line: 255, terms: [0, 1] },
+      { line: 256, terms: [1] },
+      { line: 257, terms: [1] },
+    ])
+  })
+
   it('stays fast on adversarial input (no catastrophic backtracking)', async () => {
     // Every start position matches most of the term before failing at its end.
     const term = `${'a '.repeat(99)}b`
