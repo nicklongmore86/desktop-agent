@@ -321,7 +321,7 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       `Each match comes with context lines around it (default ${String(DEFAULT_CONTEXT)}, at most ` +
       `${String(MAX_CONTEXT)}; marked "-" instead of ":"): use context to see enough of each ` +
       'match instead of opening the files. Document text is cached, so a repeat search is ' +
-      'quick. Every file is checked and every match counted: a matched line counts once, and ' +
+      'quick. Every match in the files checked is counted: a matched line counts once, and ' +
       'a match running over several lines counts once, on the line it starts in. A content ' +
       'search shows the first ' +
       `maxResults matches (default ${String(limits.defaultSearchResults)}, at most maxPerFile ` +
@@ -331,7 +331,9 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       `A call stops after ${String(limits.maxSearchEntries)} entries or ` +
       `${formatDuration(limits.searchTimeMs)}, or when the files list is full; it then says ` +
       'how far it got and gives a cursor: call again with the same arguments and that cursor ' +
-      'to continue where it stopped. For very large folders, narrow the search with a ' +
+      'to continue where it stopped. Only a result saying "Every file was checked" (or "Every ' +
+      'file after the cursor was checked") covers the whole search, and not the files it ' +
+      'reports as skipped. For very large folders, narrow the search with a ' +
       'subfolder path or namePattern. Do not run several search_files calls in parallel. ' +
       'Scanned PDFs are listed for read_document. Never searched: ' +
       'images, scanned PDFs with no text layer, cloud-only files (not downloaded), files with ' +
