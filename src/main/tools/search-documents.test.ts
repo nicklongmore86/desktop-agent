@@ -1094,13 +1094,14 @@ describe('search_files marks all text read from files as untrusted', () => {
     expect(fromFiles.every((l) => inside.includes(l))).toBe(true)
   })
 
-  it('has no marker when nothing was read from files', async () => {
+  it('has no marker when nothing was read from files or named', async () => {
     await put(path.join(sb.root, 'a.txt'), 'nothing here\n')
     const none = await search({ contentPattern: 'freezer' })
     expect(none.content).not.toContain('[The matches below')
     expect(none.content).not.toContain('[End of matches')
+    // A name search reads no file, but the names it found come from the folder: marked.
     const names = await search({ namePattern: '*.txt' })
-    expect(lines(names.content)).toEqual([`1 result in ${sb.root}`, 'a.txt'])
+    expect(lines(names.content)).toEqual([`1 result in ${sb.root}`, START, 'a.txt', END])
   })
 })
 

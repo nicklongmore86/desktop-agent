@@ -87,9 +87,9 @@ export const MAX_FILES_LISTED = 200
 export const MAX_SCANNED_LISTED = 50
 
 /**
- * The lines around every match read from a file, plain text or document, and the names of
- * the files listed with their counts: all text taken from files sits between these two, and
- * nothing else does. Both carry a random token new to each call, which no file line can
+ * The lines around every match read from a file, plain text or document, and every file
+ * name the result gives (names found, files with matches, scanned, partly searched and
+ * skipped files): all text taken from files sits between these two, and nothing else does. Both carry a random token new to each call, which no file line can
  * show (see `neutralise`), so a file cannot fake them.
  */
 export const fileTextStart = (token: string): string =>
@@ -595,6 +595,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const token = markerToken()
   const start = fileTextStart(token)
   const end = fileTextEnd(token)
+  // Every line made from a file name or file content goes between the markers, within
+  // maxSearchOutputChars, markers included, so none of it is ever cut from them.
+  const budget = limits.maxSearchOutputChars - (start.length + end.length + 2)
   // An object so TypeScript does not narrow it across the helpers that set it.
   const shown = { context: false }
   let visited = 0
@@ -773,18 +776,18 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   function addName(entry: WalkEntry): void {
     namesFound++
     if (shownNames.full) return
-    let line = entry.kind === 'dir' ? `${entry.rel}/` : entry.rel
+    let line = neutralise(safeRel(entry.kind === 'dir' ? `${entry.rel}/` : entry.rel), token)
     if (results.length >= input.maxResults) {
       shownNames.full = true
       return
     }
-    if (resultChars + line.length + 1 > limits.maxSearchOutputChars) {
+    if (resultChars + line.length + 1 > budget) {
       // The first name is always shown, so a continuing call always gets further.
       if (results.length > 0) {
         shownNames.full = true
         return
       }
-      line = cut(line, limits.maxSearchOutputChars)
+      line = cut(line, budget)
     }
     resultChars += line.length + 1
     results.push(line)
@@ -1134,8 +1137,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       // What an earlier call of this search covered is passed over, not counted or read.
       if (!afterCursor(orderKey(entry.rel), from)) continue
       if (++visited > limits.maxSearchEntries) {
+        // The entries visited so far are still checked (below), so every call gets further.
         state.stop = 'entries'
-        notChecked(batch[0] ?? entry)
+        notChecked(entry)
         break
       }
       if (timeLeft() === 0) {
@@ -1150,7 +1154,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         if (state.stop !== null) break
       }
     }
-    if (state.stop === null && batch.length > 0) await processBatch(batch)
+    if ((state.stop === null || state.stop === 'entries') && batch.length > 0) {
+      await processBatch(batch)
+    }
     if (state.stop !== 'cancelled') await searchDocuments()
   } finally {
     await matcher?.close()
@@ -1168,14 +1174,52 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const cutAway = next ? files.cutAt(next) : 0
   let scannedCut = next ? scanned.cutAt(next) : 0
 
-  // The marked region: the matches, then the files with matches, then scanned PDFs, all
-  // within maxSearchOutputChars, markers included, so none of it is ever cut from them.
-  const budget = limits.maxSearchOutputChars - (start.length + end.length + 2)
+  // The marked region (see `budget`): the matches, then the files with matches, then scanned
+  // PDFs, documents only partly searched and the skipped files named.
   const size = (lines: readonly string[]): number =>
     lines.reduce((sum, line) => sum + line.length + 1, 0)
   const scannedRoom = Math.floor(budget / 8)
+  // Documents only partly searched, then skipped files, as many as fit in their room.
+  const skippedTotal = Object.values(skips).reduce((a, b) => a + b, 0)
+  const namedRoom = Math.floor(budget / 8)
+  const namedLines = (title: string, items: readonly string[], room: number): string[] => {
+    const out: string[] = []
+    let used = title.length + 1
+    for (const item of items) {
+      const line = neutralise(item, token)
+      if (used + line.length + 1 > room) break
+      used += line.length + 1
+      out.push(line)
+    }
+    return out.length > 0 ? [title, ...out] : []
+  }
+  const partialLines =
+    reader && docs.partial.count > 0
+      ? namedLines('Documents only partly searched (too long):', docs.partial.items, namedRoom / 2)
+      : []
+  const partialMore = docs.partial.count - Math.max(0, partialLines.length - 1)
+  if (partialLines.length > 0 && partialMore > 0) {
+    partialLines.push(`  …and ${String(partialMore)} more.`)
+  }
+  // Scanned PDFs have their own list, below.
+  const skippedLines =
+    skippedTotal - skips.scanned > 0
+      ? namedLines(
+          'Files skipped (not searched):',
+          tiers.flat().slice(0, MAX_SKIPPED_LISTED),
+          namedRoom - size(partialLines),
+        )
+      : []
+  const unlisted = skippedTotal - skips.scanned - Math.max(0, skippedLines.length - 1)
+  if (skippedLines.length > 0 && unlisted > 0) {
+    skippedLines.push(`  …and ${String(unlisted)} more not listed.`)
+  }
   // The files list: as many of the first MAX_FILES_LISTED as fit (a title line aside).
-  const listRoom = (showSnippets ? Math.floor(budget / 2) : budget - scannedRoom) - 40
+  const listRoom =
+    (showSnippets ? Math.floor(budget / 2) : budget - scannedRoom) -
+    40 -
+    size(partialLines) -
+    size(skippedLines)
   const listed: MatchedFile[] = []
   const listLines: string[] = []
   {
@@ -1243,7 +1287,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   let shownMatches = 0
   let snippetsCut = false
   if (showSnippets) {
-    let room = budget - size(scannedLines) - size(listLines)
+    let room =
+      budget - size(scannedLines) - size(listLines) - size(partialLines) - size(skippedLines)
     outer: for (const file of listed) {
       const snippets = file.snippets
       if (!snippets) continue
@@ -1276,7 +1321,14 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       }
     }
   }
-  const region = [...fileText, ...listLines, ...scannedLines]
+  const region = [
+    ...results,
+    ...fileText,
+    ...listLines,
+    ...scannedLines,
+    ...partialLines,
+    ...skippedLines,
+  ]
   const cursorText = next ? encodeCursor(next, binding) : null
 
   const notes: string[] = []
@@ -1308,7 +1360,6 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     default:
       break
   }
-  const skippedTotal = Object.values(skips).reduce((a, b) => a + b, 0)
   if (input.contentPattern !== undefined) {
     const after = from ? ' after the cursor' : ''
     const plural = (n: number, word: string): string =>
@@ -1362,24 +1413,21 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
           ? 'Continue with the cursor below: documents already searched come from the cache.'
           : `To search the rest, continue with the cursor below, or ${narrow}.`)
     }
-    notes.push(line)
     if (docs.partial.count > 0) {
-      notes.push('Documents only partly searched (too long):', ...docs.partial.items)
-      if (docs.partial.count > docs.partial.items.length) {
-        notes.push(`  …and ${String(docs.partial.count - docs.partial.items.length)} more.`)
-      }
+      line +=
+        ` ${String(docs.partial.count)} only partly searched (too long)` +
+        `${partialLines.length > 0 ? ', named above' : ''}.`
     }
+    notes.push(line)
   }
   if (skippedTotal > 0) {
     const counts = (Object.keys(SKIP_LABEL) as SkipReason[])
       .filter((reason) => skips[reason] > 0)
       .map((reason) => `${String(skips[reason])} ${SKIP_LABEL[reason]}`)
-    notes.push(`${String(skippedTotal)} files skipped: ${counts.join('; ')}.`)
-    const listedSkips = tiers.flat().slice(0, MAX_SKIPPED_LISTED)
-    notes.push(...listedSkips)
-    // Scanned PDFs have their own list, above.
-    const unlisted = skippedTotal - skips.scanned - listedSkips.length
-    if (unlisted > 0) notes.push(`  …and ${String(unlisted)} more not listed.`)
+    notes.push(
+      `${String(skippedTotal)} files skipped: ${counts.join('; ')}` +
+        `${skippedLines.length > 0 ? '. The first are named above' : ''}.`,
+    )
   }
   if (input.contentPattern !== undefined && !reader && skips.document > 0) {
     notes.push(
@@ -1409,7 +1457,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const header = `${String(count)} result${count === 1 ? '' : 's'} in ${dir}`
   const fromFiles = region.length ? [start, ...region, end] : []
   return {
-    content: [header, ...results, ...fromFiles, ...notes].join('\n'),
+    content: [header, ...fromFiles, ...notes].join('\n'),
     ...(reader && documents.length > 0
       ? {
           audit: {

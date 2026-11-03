@@ -259,8 +259,10 @@ describe('search_files', () => {
     const r = await run('search_files', { path: sb.root, namePattern: '*.ts' })
     expect(r.content.split('\n')).toEqual([
       `2 results in ${sb.root}`,
+      expect.stringContaining('file names included'),
       'src/index.ts',
       'src/util.ts',
+      expect.stringMatching(/^\[End of matches [0-9a-f]{12}\]$/),
       '1 protected entries hidden.',
     ])
   })
@@ -542,7 +544,13 @@ describe('search_files skip report', () => {
   it('reports nothing skipped for a name-only search', async () => {
     await put(path.join(sb.root, 'report.pdf'), PDF)
     const r = await run('search_files', { path: sb.root, namePattern: '*.pdf' })
-    expect(r.content.split('\n')).toEqual([`1 result in ${sb.root}`, 'report.pdf'])
+    expect(r.content.split('\n')).toEqual([
+      `1 result in ${sb.root}`,
+      expect.stringContaining('file names included'),
+      'report.pdf',
+      expect.stringMatching(/^\[End of matches [0-9a-f]{12}\]$/),
+    ])
+    expect(r.content).not.toContain('skipped')
   })
 
   it('removes control and bidi characters from listed names', async () => {
