@@ -321,8 +321,11 @@ text of documents, on by default (`documents: false` turns it off for a call).
 - Order and budgets: the walk searches plain text files first, as before; files whose magic
   bytes say PDF, OOXML, ODF or OLE (and, past the 1 MB text cap, files named `.pdf`,
   `.docx`, `.xlsx`, `.pptx`, `.odt`, ... `.csv`) are set aside. After the walk, documents
-  already in the cache are searched first, then those whose name has a query term, then the
-  rest. One call searches every document it found: there is no per-call document cap,
+  already in the cache are searched first, then the rest in path order (so a call that runs
+  out of time has checked a run of files from the start; see Continuing below). What is
+  read out of order is put back in order: the result is always in path order (the walk's
+  order: a folder's entries right after it, names sorted by code unit). One call searches
+  every document it found: there is no per-call document cap,
   only the call's 3 min time budget (`searchTimeMs`, the walk and text files included);
   per document, at most 40 reader calls and 2 million characters (the rest is reported as
   "only partly searched"). Stop/Esc cancels between documents and while waiting on a
@@ -347,17 +350,46 @@ text of documents, on by default (`documents: false` turns it off for a call).
   groups; a document's context stays on the match's page, slide or sheet. Context lines
   are cut so one match's context is at most 1,000 characters, and for a substring search
   a long matched line is cut around the match. The whole result is cut at 40,000
-  characters (`maxSearchOutputChars`), and maxResults counts matches; either one says
-  `Matches truncated: ...`.
+  characters (`maxSearchOutputChars`), markers, matches and lists together.
+- Shown, counted and listed: showing stops nothing. Every file is checked and every
+  matched line counted; the result shows the first `maxResults` matches (default 100) in
+  path order, at most `maxPerFile` per file (default 5; a later match next to a shown one
+  appears as its context), as many as fit in what the lists leave of the 40,000
+  characters, and says `Showing 100 of 523 matches: ...`. After the matches, inside the
+  markers, `Files with matches (N):` lists each file with its count (`  spec.docx (12
+matches)`), the first 200 in path order (at most half the characters, all of them with
+  `output: "files"`), then `…and N more.`. `output: "files"` gives that list alone, like
+  `rg -c`. Memory stays bounded: the first 200 files (a sorted list, later-found files
+  taking the place of ones after them) and at most `maxResults` matches' lines are held;
+  everything else is a count.
+- Continuing (`search-cursor.ts`): a call that stops before the end (the time budget,
+  50,000 entries, documents another search holds) or whose files list is full ends with
+  `To continue the search, call search_files again with exactly the same arguments and
+cursor: "sf1...."`. The cursor is a position in path order, AES-GCM encrypted with a
+  key made at app start, its root and every other argument bound in as associated data:
+  a cursor changed by one bit, from another search or from an earlier run of the app is
+  refused as invalid input. A call that runs out of time reports only the files before
+  the first one it did not check (files it found after that are left to the next call,
+  documents among them already cached), so each file is reported by exactly one call;
+  its counts then cover just those files, and it says `Not every file was checked`. A call
+  that checked everything says `Every file was checked: 523 matches in 37 files`. Entries
+  before the cursor are walked past without being read or counted toward the entry
+  limit. A slow or failing pattern gives no cursor: it would stop again.
 - Not searched, and counted by reason (at most 10 files named, protected files never):
   a PDF whose every page has fewer than 8 non-space characters is `no text layer
-(scanned)` (no OCR; some blank pages in a PDF with text are listed as scanned pages);
+(scanned)` (no OCR). Scanned PDFs, and PDFs with some such pages, are named in a list of
+  their own inside the markers (`Scanned PDFs (...: read them with read_document):`, up to
+  50, path order), not among the 10. Follow-up: a page with a little text over a page-sized
+  image (a stamp on a scan) has more than 8 characters, so it counts as text; telling it
+  apart needs the PDF worker to report image objects per page, which its text path does
+  not do today;
   documents the reader refuses (`password-protected`, `could not be read: ...`); names
   that look like secrets (`credentials.xlsx`, `secrets.docx`: `isSecretName`) are never
   sent to the reader or kept; hard-linked files. The summary is one line, `Searched 1000
 of 1000 documents (612 from cache).`; only when the time budget ran out does it add
-  `the 3 min time budget ran out. Call search_files again with the same arguments to
-continue`: cached documents cost no reader time, so the next call carries on.
+  `the 3 min time budget ran out. Continue with the cursor below`: cached documents cost
+  no reader time, so the next call carries on (calling again without the cursor also
+  makes progress, from the cache, but reports the first files again).
 - Search jobs are background jobs in the reader's queue (`ExtractControl`): they wait
   behind every `read_document` and attachment job, and the host refuses a background job
   with `busy` while another is waiting or running, so all searches together have at most
@@ -371,7 +403,8 @@ continue`: cached documents cost no reader time, so the next call carries on.
   never a queue of them.
 - One search reads documents at a time (per reader). A `search_files` call made while
   another is reading documents searches only what is cached and says `N not read because
-another search_files call is reading documents ... (do not run searches in parallel)`;
+another search_files call is reading documents ... continue with the cursor below (do not
+run searches in parallel)`;
   the tool description tells the model not to run searches in parallel.
 - The queue itself is bounded for every caller: at most 64 waiting jobs and 256 MB of
   waiting documents (`maxQueuedJobs`, `maxQueuedBytes`; a job alone is always taken, the
