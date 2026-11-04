@@ -68,6 +68,7 @@ function setup(extra: { files?: string[]; links?: Record<string, string> } = {})
   files[`${ROOT}\\sub\\deep.md`] = { size: 1 }
   files[`${ROOT}\\Other\\only-here.txt`] = { size: 1 }
   files[`${OTHER}\\twin.txt`] = { size: 1 }
+  files[`${OTHER}\\only-here.txt`] = { size: 1 }
   files[`${ROOT}\\twin.txt`] = { size: 1 }
   // The same relative paths in two granted folders (only ambiguous once OTHER is granted).
   for (const base of [ROOT, OTHER]) {
@@ -387,6 +388,60 @@ describe('a click on a file or folder named in a reply', () => {
     expect(await decideMention(env.guard, 'report.md', env.tree.listFs)).toMatchObject({
       ok: true,
       path: `${OTHER}\\report.md`,
+    })
+  })
+
+  it('stays plain when a direct reading and a folder-name reading are in different places', async () => {
+    const env = setup()
+    env.roots.push(OTHER)
+    // ROOT\Other\only-here.txt (direct) and OTHER\only-here.txt (granted folder named Other).
+    const text = 'Other\\only-here.txt'
+    expect(await decideMention(env.guard, text, env.tree.listFs)).toMatchObject({ ok: false })
+    expect(await click(env, text)).toMatchObject({ ok: false })
+    expect(env.shell.open).not.toHaveBeenCalled()
+    expect(env.shell.reveal).not.toHaveBeenCalled()
+  })
+
+  it('still opens when the direct and folder-name readings are the same file', async () => {
+    const outer = 'C:\\A\\X'
+    const inner = 'C:\\A\\X\\X'
+    const file = `${inner}\\f.txt`
+    const tree = fakeWindowsTree({
+      dirs: ['C:\\A', outer, inner],
+      files: { [file]: { size: 1 } },
+      links: {},
+      shortNames: {},
+    })
+    const guard = new PathGuard({
+      roots: () => [outer, inner],
+      platform: 'win32',
+      fs: tree.guardFs,
+      protectedPaths: [],
+    })
+    const shell = {
+      open: vi.fn((_path: string) => Promise.resolve('')),
+      reveal: vi.fn((_path: string) => {}),
+    }
+    const acts = { ...shell, audit: new MemoryAudit() }
+    expect(await decideMention(guard, 'X\\f.txt', tree.listFs)).toMatchObject({
+      ok: true,
+      path: file,
+    })
+    expect(await openMention(guard, 'X/f.txt', acts, tree.listFs)).toMatchObject({ ok: true })
+    expect(shell.open).toHaveBeenCalledWith(file)
+  })
+
+  it('does not pick from a subset when there are too many granted folders', async () => {
+    const env = setup()
+    for (let i = 0; i < 70; i++) env.roots.push(`C:\\Users\\Me\\Extra${String(i)}`)
+    expect(await decideMention(env.guard, 'Notes.txt', env.tree.listFs)).toMatchObject({
+      ok: false,
+    })
+    expect(await click(env, 'Notes.txt')).toMatchObject({ ok: false })
+    expect(env.shell.open).not.toHaveBeenCalled()
+    // An absolute path has one candidate and is unaffected.
+    expect(await decideMention(env.guard, `${ROOT}\\Notes.txt`, env.tree.listFs)).toMatchObject({
+      ok: true,
     })
   })
 

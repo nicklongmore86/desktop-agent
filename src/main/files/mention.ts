@@ -87,6 +87,9 @@ type Proposal =
   | { ok: true; absolute: false; segments: string[] }
   | Failure
 
+/** Most granted-folder candidates one relative text is checked against; more is not resolved. */
+const MAX_CANDIDATES = 64
+
 /** The shape of a proposed text, without touching the file system. */
 function parseProposal(text: string, platform: NodeJS.Platform): Proposal {
   const bad: Failure = { ok: false, reason: NOT_FOUND }
@@ -149,17 +152,18 @@ export async function decideMention(
         .map((root) => ({ root, rel: tail.join('/') }))
   }
 
+  // A relative text is tried in every granted folder, both as written and as `<folder name>/…`,
+  // and a name that exists in two different places is not guessed. Too many candidates to try
+  // them all is also not guessed: the text is plain.
+  const candidates = [...direct, ...fallback]
+  if (!proposal.absolute && candidates.length > MAX_CANDIDATES)
+    return { ok: false, reason: NOT_FOUND }
   let lastFailure: Failure = { ok: false, reason: NOT_FOUND }
   const found = new Map<string, Checked & { ok: true }>()
-  // A relative text is tried in every granted folder, and a name that exists in two of them is
-  // not guessed. The fallback is only tried when the name itself matched nowhere.
-  for (const attempts of [direct, fallback]) {
-    for (const { root, rel } of attempts.slice(0, 64)) {
-      const entry = await check(guard, { rootId: rootId(root), rel }, fs)
-      if (entry.ok) found.set(entry.path, entry)
-      else if (proposal.absolute) lastFailure = entry
-    }
-    if (found.size > 0) break
+  for (const { root, rel } of candidates) {
+    const entry = await check(guard, { rootId: rootId(root), rel }, fs)
+    if (entry.ok) found.set(entry.path, entry)
+    else if (proposal.absolute) lastFailure = entry
   }
   if (found.size === 0) return lastFailure
   if (found.size > 1)

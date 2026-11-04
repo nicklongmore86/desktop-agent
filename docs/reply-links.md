@@ -53,7 +53,7 @@ Conservative, on purpose (every proposal is a question to main):
 - quoted paths in prose (`"C:\My Docs\a.txt"`);
 - words in prose that are unmistakably paths: a drive letter, or a separator plus a file extension or a closing slash.
 
-Missed: a path with spaces written bare in prose (the agent is asked to put full paths in backticks), a bare file name in prose, a folder named only by its name, tree drawings (`├──`) and `dir` output, and a name that exists in more than one granted folder (it is not guessed).
+Missed: a path with spaces written bare in prose (the agent is asked to put full paths in backticks), a bare file name in prose, a folder named only by its name, tree drawings (`├──`) and `dir` output, and a name that exists in more than one granted folder (it is not guessed; this includes `Project/docs/a.md` matching both inside one granted folder and as the granted folder `Project` itself, and a relative text is left plain when there are more than 64 candidates to check).
 
 ### While an approval is open
 
