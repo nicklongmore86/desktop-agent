@@ -6,14 +6,18 @@ import { nodeListFs, type ListFs } from './listing'
 import { CONTROL_CHARS, resolveLocation } from './location'
 import { isSecretName } from './secret-names'
 
-type Checked =
-  | { ok: true; path: string; isFile: boolean; hardLink: boolean; secret: boolean }
+export type Checked =
+  | { ok: true; path: string; isFile: boolean; isDir: boolean; hardLink: boolean; secret: boolean }
   | {
       ok: false
       reason: string
     }
 
-async function check(guard: PathGuard, location: FileLocation, fs: ListFs): Promise<Checked> {
+export async function check(
+  guard: PathGuard,
+  location: FileLocation,
+  fs: ListFs,
+): Promise<Checked> {
   const where = await resolveLocation(guard, location)
   if (!where.ok) return where
   if (!where.exists) return { ok: false, reason: 'That file or folder no longer exists.' }
@@ -25,6 +29,7 @@ async function check(guard: PathGuard, location: FileLocation, fs: ListFs): Prom
       ok: true,
       path: where.path,
       isFile,
+      isDir: stats.isDirectory(),
       hardLink: stats.nlink > 1,
       // The panels' secret rule applies to files, as in the listing (listing.ts).
       secret: isFile && isSecretName(guard.path.basename(where.path)),

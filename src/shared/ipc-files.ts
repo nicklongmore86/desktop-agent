@@ -17,6 +17,8 @@ export const filesChannels = {
   filesReveal: 'files:reveal',
   filesCopyPath: 'files:copy-path',
   filesReference: 'files:reference',
+  filesResolveMentions: 'files:resolve-mentions',
+  filesOpenMention: 'files:open-mention',
 } as const
 
 /** Main -> renderer: an expanded folder changed on disk (or its watcher stopped). */
@@ -34,6 +36,28 @@ export const FILES_MAX_REL = 4096
 export const FILES_SEARCH_LIMIT = 20
 /** Longest `@` search query, in characters. */
 export const FILES_MAX_QUERY = 200
+
+/** Longest piece of reply text the renderer may propose as a file or folder. */
+export const MENTION_MAX_TEXT = 1024
+/** Most pieces of reply text resolved in one call. */
+export const MENTION_MAX_BATCH = 50
+
+/** What a click on a file or folder named in a reply does. */
+export type MentionAction = 'open' | 'reveal'
+
+/**
+ * What main decided about a piece of reply text. The text is only a proposal:
+ * `ok: false` covers every reason (not a path, not inside a granted folder, missing, a
+ * link, a secret file, ...) without telling them apart, so the reply cannot probe.
+ * `path` is the real path main resolved, `action` what a click will do, and `note`
+ * says why a file is shown in Explorer instead of opened.
+ */
+export type MentionResolution =
+  | { ok: true; path: string; kind: 'file' | 'dir'; action: MentionAction; note?: string }
+  | { ok: false }
+
+export type MentionOpenResult =
+  { ok: true; path: string; action: MentionAction; note?: string } | { ok: false; reason: string }
 
 /** A granted folder as the tree shows it. `path` is for display only; calls use `id`. */
 export interface FilesRoot {
@@ -135,6 +159,13 @@ export interface FilesApi {
      * the path again when they use it.
      */
     reference: (location: FileLocation) => Promise<FileReferenceResult>
+    /**
+     * Asks main which pieces of reply text are files or folders inside the granted folders
+     * and what a click would do. One answer per text, in order. Opens nothing.
+     */
+    resolveMentions: (texts: string[]) => Promise<MentionResolution[]>
+    /** Re-checks the text against the current grants, then opens or shows it, as decided by main. */
+    openMention: (text: string) => Promise<MentionOpenResult>
     onChanged: (listener: (change: FilesChanged) => void) => () => void
   }
 }
