@@ -23,6 +23,7 @@ test('right-click params map to the right menu; shortcuts work', async () => {
   const app = await launch()
   try {
     const page = await app.firstWindow()
+    await expect(page.getByRole('heading', { name: 'Workspace chat' })).toBeVisible()
     await app.evaluate(({ BrowserWindow }) => {
       const g = globalThis as unknown as { lastMenu?: unknown }
       const [window] = BrowserWindow.getAllWindows()
@@ -113,6 +114,7 @@ test('the app’s own right-click menus suppress the native event', async () => 
   const app = await launch()
   try {
     const page = await app.firstWindow()
+    await expect(page.getByRole('heading', { name: 'Workspace chat' })).toBeVisible()
     await app.evaluate(({ BrowserWindow }) => {
       const g = globalThis as unknown as { menuEvents: number }
       g.menuEvents = 0
