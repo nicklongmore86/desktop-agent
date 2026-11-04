@@ -265,6 +265,67 @@ test.describe('packaged build', () => {
     await expect(settings).toBeVisible()
   })
 
+  test('the right-click menu is on the app window, and the app menu is unchanged by it', async () => {
+    const { app } = launched
+    const page = await app.firstWindow()
+    const wizard = page.getByRole('dialog', { name: 'Which AI do you want to use?' })
+    await wizard.getByRole('button', { name: 'Close' }).click()
+    await expect(wizard).toBeHidden()
+
+    // Popups are recorded, not shown: a real one would wait for a click nothing here can make.
+    await app.evaluate(({ Menu }) => {
+      const popups: { items: string[]; isAppMenu: boolean }[] = []
+      ;(globalThis as unknown as { popups: typeof popups }).popups = popups
+      Menu.prototype.popup = function (this: Electron.Menu) {
+        popups.push({
+          items: this.items.map((item) => item.role ?? item.label),
+          isAppMenu: this === Menu.getApplicationMenu(),
+        })
+      }
+    })
+    const popups = () =>
+      app.evaluate(
+        () =>
+          (globalThis as unknown as { popups: { items: string[]; isAppMenu: boolean }[] }).popups,
+      )
+    const topLevel = () =>
+      app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.items.map((item) => item.label))
+    const before = await topLevel()
+    expect(before).toEqual(expect.arrayContaining(['&File', '&Edit', '&View', '&Help']))
+
+    expect(
+      await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((w) => w.webContents.listenerCount('context-menu')),
+      ),
+    ).toEqual([1])
+
+    await page.evaluate(() => {
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        `<div style="position:fixed;top:0;left:0;z-index:99999;background:#fff;padding:8px">
+           <input id="probe-text" value="hello world" />
+           <a id="probe-link" href="https://example.com/">a link</a>
+         </div>`,
+      )
+    })
+    await page.locator('#probe-text').click({ button: 'right' })
+    await expect.poll(async () => (await popups()).length).toBe(1)
+    await page.locator('#probe-link').click({ button: 'right' })
+    await expect.poll(async () => (await popups()).length).toBe(2)
+    const [text, link] = await popups()
+    expect(text?.items).toEqual(expect.arrayContaining(['cut', 'copy', 'paste']))
+    expect(text?.isAppMenu).toBe(false)
+    expect(link?.items).toEqual(expect.arrayContaining(['Open Link', 'Copy Link Address']))
+
+    // The app menu is still the one in charge, and still works.
+    expect(await topLevel()).toEqual(before)
+    await page.evaluate(() => {
+      document.body.lastElementChild?.remove()
+    })
+    await clickMenuItem(app, 'settings')
+    await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible()
+  })
+
   test('recovers from a renderer crash, and stops offering reload when it keeps crashing', async () => {
     const { app, userData } = launched
     await stubPrompts(app, 'Reload')
