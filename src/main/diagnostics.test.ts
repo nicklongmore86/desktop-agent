@@ -27,6 +27,7 @@ const {
   redactText,
   RotatingLogFile,
   routeConsole,
+  stackFrames,
   watchRenderer,
 } = await import('./diagnostics')
 const { cancelOnPageEnd } = await import('./chat/lifecycle')
@@ -255,6 +256,138 @@ describe('formatLogArgs, the limit on free text', () => {
     const text = formatLogArgs([changed], '/nowhere')
     expect(text).not.toContain('the shops')
     expect(text).toContain('at real (file.js:1:2)')
+  })
+
+  describe('stack frames', () => {
+    const withStack = (...lines: string[]): Error => {
+      const error = new Error('failed')
+      error.stack = ['Error: failed', ...lines].join('\n')
+      return error
+    }
+    const REAL = '    at real (file.js:1:2)'
+
+    it.each([
+      'at f (file.js:1:2)',
+      'at file.js:1:2',
+      'at async f (file.js:1:2)',
+      'at async file:///C:/Program%20Files%20(x86)/app/main.mjs:1:2',
+      'at new Foo (/app/out/main/index.js:1:2)',
+      'at new Promise (<anonymous>)',
+      'at Array.map (<anonymous>)',
+      'at <anonymous>',
+      'at <anonymous>:1:2',
+      'at Object.<anonymous> (/app/a.js:1:2)',
+      'at Foo.<computed> [as bar] (/app/a.js:1:2)',
+      'at Foo.get bar [as bar] (/app/a.js:1:2)',
+      'at Foo.#secretless (/app/a.js:1:2)',
+      'at Foo.[Symbol.iterator] (/app/a.js:1:2)',
+      'at $_é1.b2 (/app/a.js:1:2)',
+      'at Module._extensions..js (node:internal/modules/cjs/loader:1:2)',
+      'at node:internal/process/task_queues:95:5',
+      'at process.processTicksAndRejections (node:internal/process/task_queues:95:5)',
+      'at node:electron/js2c/browser_init:2:123',
+      'at [eval]-wrapper:6:22',
+      'at async Promise.all (index 0)',
+      'at f (native)',
+      'at f (unknown location)',
+      'at eval (eval at g (/app/a.js:1:2), <anonymous>:3:4)',
+      'at f (C:\\Program Files (x86)\\Desktop Agent\\resources\\app.asar\\out\\main\\index.js:1:2)',
+      'at C:\\Users\\Some One\\app\\index.js:1:2',
+      'at f (\\\\server\\my share\\app\\index.js:1:2)',
+      'at /home/some one/app/index.ts:1:2',
+    ])('keeps a real frame: %s', (frame) => {
+      expect(stackFrames(withStack(`    ${frame}`), '/nowhere')).toEqual([frame])
+    })
+
+    it('keeps the frames of a real error', () => {
+      let thrown: unknown
+      try {
+        ;[1].map(() => {
+          JSON.parse('{')
+        })
+      } catch (error) {
+        thrown = error
+      }
+      const text = formatLogArgs([thrown], '/nowhere')
+      expect(text).toContain('at JSON.parse (<anonymous>)')
+      expect(text).toContain('at Array.map (<anonymous>)')
+      expect(text).toMatch(/at .*diagnostics\.test\.ts:\d+:\d+/)
+    })
+
+    it.each([
+      'at <prompt text>',
+      'at <prompt text> (file.js:1:2)',
+      'at <prompt text>:1:2',
+      'at my private prompt text',
+      'at my private prompt text (file.js:1:2)',
+      'at my private prompt text:1:2',
+      'at my private prompt text <anonymous>',
+      'at my private prompt text (<anonymous>)',
+      'at my private prompt text (native)',
+      'at f (my private prompt text:1:2)',
+      'at f (my private prompt text)',
+      'at my private prompt text at g (file.js:1:2)',
+      'at eval (eval at my private prompt text (file.js:1:2), <anonymous>:3:4)',
+      'at /my private prompt text:1:2',
+      'at f (index my private prompt)',
+      `at f (/app/${'my-private-prompt/'.repeat(40)}a.js:1:2)`,
+    ])('drops a crafted line that only starts like a frame: %s', (line) => {
+      expect(stackFrames(withStack(`    ${line}`, REAL), '/nowhere')).toEqual([REAL.trim()])
+      const text = formatLogArgs([withStack(`    ${line}`, REAL)], '/nowhere')
+      expect(text).not.toContain('prompt')
+      expect(text).toContain('at real (file.js:1:2)')
+    })
+
+    it('cannot tell a line in the exact form of a frame from one, as the README says', () => {
+      const frame = 'at /words in a path/a.js:1:2'
+      expect(stackFrames(withStack(`    ${frame}`), '/nowhere')).toEqual([frame])
+    })
+
+    it('does not treat a line break other than \\n as the end of a frame', () => {
+      for (const brk of ['\r', '\u2028', '\v']) {
+        const frames = stackFrames(
+          withStack(`    at f (file.js:1:2)${brk}my private prompt`),
+          '/nowhere',
+        )
+        expect(frames).toEqual(['at f (file.js:1:2)'])
+      }
+    })
+
+    it('drops frame-shaped lines of a message when the error was renamed after capture', () => {
+      // this.name = 'MyError' in a constructor: the stack's header still has the old name.
+      const message = 'failed\n   at privateFunction (my-private-file.ts:1:2)'
+      const error = new Error(message)
+      error.stack = `Error: ${message}\n    at real (file.js:1:2)`
+      error.name = 'MyError'
+      expect(stackFrames(error, '/nowhere')).toEqual(['at real (file.js:1:2)'])
+    })
+
+    it.each([
+      ['a key in a path', 'at f (/app/sk-ant-api03-abcDEF123456/a.js:1:2)', 'sk-ant'],
+      ['a key as a location', 'at sk-ant-api03-abcDEF123456:1:2', 'sk-ant'],
+      ['a query string', 'at f (https://x.test/a.js?token=plainvalue:1:2)', 'plainvalue'],
+      ['a sign-in in a URL', 'at f (https://me:hunter2@x.test/a.js:1:2)', 'hunter2'],
+      ['a token in a path', 'at f (/app/ya29.abcDEF123456/a.js:1:2)', 'ya29'],
+    ])('removes %s from a frame, in the frame itself and in the log', (_what, frame, secret) => {
+      const [kept] = stackFrames(withStack(`    ${frame}`), '/nowhere')
+      expect(kept).toMatch(/^at /)
+      expect(kept).toContain('[redacted]')
+      expect(kept).not.toContain(secret)
+      expect(formatLogArgs([withStack(`    ${frame}`)], '/nowhere')).not.toContain(secret)
+    })
+
+    it('shortens the home folder in a frame', () => {
+      expect(
+        stackFrames(withStack('    at f (/home/someone/app/a.js:1:2)'), '/home/someone'),
+      ).toEqual(['at f (~/app/a.js:1:2)'])
+    })
+
+    it('still keeps only the first frames', () => {
+      const frames = Array.from({ length: 30 }, (_, i) => `    at f${String(i)} (a.js:1:2)`)
+      const kept = stackFrames(withStack(...frames), '/nowhere')
+      expect(kept).toHaveLength(20)
+      expect(kept[0]).toBe('at f0 (a.js:1:2)')
+    })
   })
 
   it('reaches the file the same way through the console route', () => {

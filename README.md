@@ -127,8 +127,9 @@ Log lines are meant to hold what went wrong, not what you were working on:
 - The app's own log calls write fixed text and safe fields (status codes, counts, file system errors), never prompts, replies, file contents, attachment data or tool arguments.
 - Every console call in main, including those made by libraries, goes through the same formatter. Patterns remove known secrets (API keys, tokens, encoded data, bodies pasted into errors) and shorten the home folder to `~`. Objects show only fields whose names look safe, nested values and arrays are not shown, and errors show their name, code, cause and stack frames.
 - Patterns cannot recognise a prompt, so free text is limited by its shape: of each string, and of each error message, only the first line is kept, up to 300 characters (200 for an object's field), marked `...[truncated]` when anything was dropped.
+- A stack line is kept only if all of it has the form of a V8 frame, up to 512 characters, and the same patterns run on it. Starting with `at` is not enough.
 
-**What remains possible:** that one short line is still written. If a library logs part of a prompt or a reply as a plain string, or puts it in an error message, up to 300 characters of its first line can reach the log, unless a pattern recognises it. File paths and file names also appear in file system errors. The log stays on this PC and is never sent anywhere by the app, but check it before attaching it to a public issue.
+**What remains possible:** that one short line is still written. If a library logs part of a prompt or a reply as a plain string, or puts it in an error message, up to 300 characters of its first line can reach the log, unless a pattern recognises it. A stack edited to hold a line in the exact form of a frame, such as an absolute path with words in it ending in `.js`, cannot be told from a real one. File paths and file names also appear in file system errors. The log stays on this PC and is never sent anywhere by the app, but check it before attaching it to a public issue.
 
 ### Permissions and tools
 

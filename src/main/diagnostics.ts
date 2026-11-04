@@ -85,6 +85,7 @@ export function redactText(text: string, home: string = homedir()): string {
 
 const RECORD_CUT = '...[truncated]'
 const LINE_BREAK = /[\n\v\f\r\u0085\u2028\u2029]/
+const LINE_BREAKS = new RegExp(LINE_BREAK.source, 'g')
 
 const cap = (text: string, max: number): string =>
   text.length > max ? `${text.slice(0, max)}${RECORD_CUT}` : text
@@ -106,17 +107,52 @@ function firstLine(text: string, max: number, home: string | undefined): string 
 const SENSITIVE_KEY =
   /prompt|message|content|text|body|data|attachment|file|input|output|token|key|secret|pass|auth|cookie|code|image|base64|credential|header|session|request|response/i
 
-/** Ends like a V8 frame: "at f (file.js:1:2)", "at file.js:1:2", "at Array.map (<anonymous>)". */
-const STACK_FRAME = /^\s*at .*(?::\d+:\d+\)?|<anonymous>\)?|\(native\))$/
+/** Longer than a Windows path (near 260) and a function name: not a frame, whatever it looks like. */
+const FRAME_MAX_CHARS = 512
 
-/** The frames only. A stack starts with the message, and a line of that can look like a frame. */
-function stackFrames(error: Error): string[] {
+// The parts of a V8 frame. Each is what V8 writes and no more, so that prose does not fit.
+const NAME_PART = String.raw`(?:[\p{L}\p{N}_$#]+|<(?:anonymous|computed|static_initializer|instance_members_initializer)>|\[Symbol\.\w+\])`
+const FUNCTION_NAME = String.raw`(?:async )?(?:new )?(?:${NAME_PART}\.{1,2})*(?:[gs]et )?${NAME_PART}(?: \[as ${NAME_PART}\])?`
+/** One word: file.js:1:2, node:internal/x:1:2, https://host/a.js:1:2, <anonymous>:1:2. */
+const FILE_POSITION = String.raw`[^\s()]+:\d+:\d+`
+/** Paths may hold spaces and brackets (C:\Program Files (x86)\...), if they are absolute and name code. */
+const CODE_PATH_POSITION = String.raw`(?:file:\/\/\/?|[A-Za-z]:[\\/]|\\\\|\/).*\.(?:[cm]?[jt]s|[jt]sx):\d+:\d+`
+const POSITION = `(?:${FILE_POSITION}|${CODE_PATH_POSITION})`
+const EVAL_ORIGIN = String.raw`eval at ${FUNCTION_NAME} \(${POSITION}\), ${FILE_POSITION}`
+
+/**
+ * What a kept stack line must be, whole: "at f (where)" or "at where". Starting with "at" and
+ * ending in a position is not enough, since a line of prose can do both. A line shaped exactly
+ * like a frame is still kept, as nothing can tell it from one: a one-word name, or an absolute
+ * path ending in a code file, whose spaces could hold words (README.md says so).
+ */
+const STACK_FRAME = new RegExp(
+  String.raw`^at (?:(?:async )?(?:${POSITION}|<anonymous>)|${FUNCTION_NAME} \((?:${POSITION}|<anonymous>|native|index \d+|unknown location|${EVAL_ORIGIN})\))$`,
+  'u',
+)
+
+/**
+ * The frames of a stack, with secrets removed. A stack starts with the message, and a line of
+ * that can look like a frame, so everything up to the message's end goes, wherever it starts:
+ * an error renamed after its capture still has the old name in front of it.
+ */
+export function stackFrames(error: Error, home: string | undefined): string[] {
   const stack = error.stack ?? ''
-  const header = `${error.name}: ${error.message}`
-  return (stack.startsWith(header) ? stack.slice(header.length) : stack)
-    .split('\n')
-    .filter((line) => STACK_FRAME.test(line))
+  const messageAt = error.message === '' ? -1 : stack.indexOf(error.message)
+  return (messageAt < 0 ? stack : stack.slice(messageAt + error.message.length))
+    .split(LINE_BREAKS)
+    .map((line) => line.trim())
+    .filter((line) => line.length <= FRAME_MAX_CHARS && STACK_FRAME.test(line))
     .slice(0, STACK_MAX_FRAMES)
+    .map((frame) => redactText(frame, home))
+}
+
+/**
+ * How an error's message reaches the log: its first line, up to LINE_MAX_CHARS, secrets removed.
+ * The one place to change that for errors, and separate from the frames, which never hold it.
+ */
+function errorSummary(error: Error, home: string | undefined): string {
+  return firstLine(`${error.name}: ${error.message}`, LINE_MAX_CHARS, home)
 }
 
 function describeError(error: Error, depth: number, home: string | undefined): string {
@@ -125,8 +161,7 @@ function describeError(error: Error, depth: number, home: string | undefined): s
     typeof code === 'string' || typeof code === 'number'
       ? ` [${firstLine(String(code), KEY_MAX_CHARS, home)}]`
       : ''
-  const title = firstLine(`${error.name}: ${error.message}`, LINE_MAX_CHARS, home)
-  const lines = [`${title}${label}`, ...stackFrames(error)]
+  const lines = [`${errorSummary(error, home)}${label}`, ...stackFrames(error, home)]
   // Only this. SDK errors also carry the request, its headers and its body.
   if (error.cause instanceof Error && depth < 2) {
     lines.push(`Caused by: ${describeError(error.cause, depth + 1, home)}`)
