@@ -50,7 +50,11 @@ test.afterEach(() => {
   for (const app of started.splice(0)) {
     try {
       const child = app.process()
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      if (child.exitCode === null && child.signalCode === null) {
+        // Windows: also the commands it started, or they keep the test run waiting.
+        if (WINDOWS && child.pid) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'])
+        else child.kill('SIGKILL')
+      }
     } catch {
       // Already closed: the connection is gone with it.
     }
@@ -347,29 +351,28 @@ async function startCommand(page: Page, command: string, cwd: string): Promise<A
   )
 }
 
-const running = (marker: string): boolean => {
+/**
+ * Whether the command that wrote its process id to `file` in `folder` is still alive. The
+ * command writes the id itself, so this is the same on every platform and needs no process
+ * listing (the shell that runs it may be a different process from the one that sleeps).
+ */
+const running = (folder: string, file: string): boolean => {
   try {
-    if (WINDOWS) {
-      const out = execFileSync(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-Command',
-          `(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${marker}*' -and $_.Name -ne 'powershell.exe' } | Measure-Object).Count`,
-        ],
-        { encoding: 'utf8' },
-      )
-      return Number(out.trim()) > 0
-    }
-    return execFileSync('pgrep', ['-f', marker], { encoding: 'utf8' }).trim().length > 0
+    const pid = Number(readFileSync(join(folder, file), 'utf8').trim())
+    if (!Number.isInteger(pid) || pid <= 0) return false
+    process.kill(pid, 0)
+    return true
   } catch {
     return false
   }
 }
 
 test.describe('warning before closing during work', () => {
-  const sleep = (marker: string): string =>
-    WINDOWS ? `Start-Sleep -Seconds 40; # ${marker}` : `sleep 40 # ${marker}`
+  /** Writes its own process id to `file` (in the granted folder), then sleeps 40 seconds. */
+  const sleep = (file: string): string =>
+    WINDOWS
+      ? `$pid | Set-Content -NoNewline ${file}; Start-Sleep -Seconds 40`
+      : `echo $$ > ${file}; sleep 40`
 
   test('no prompt when idle: the window just closes', async () => {
     const { userData } = seedData()
@@ -382,7 +385,7 @@ test.describe('warning before closing during work', () => {
 
   test('Cancel keeps the app and the open approval; stopping denies it and quits', async () => {
     const { userData, folder } = seedData()
-    const marker = `marker-${String(Date.now())}-deny`
+    const marker = `pid-deny-${String(Date.now())}.txt`
     const { app, page } = await launch(userData)
     await stubDialog(app)
     await startCommand(page, sleep(marker), folder)
@@ -400,19 +403,19 @@ test.describe('warning before closing during work', () => {
     expect(JSON.stringify(dialog)).not.toContain(marker)
     await new Promise((resolve) => setTimeout(resolve, 500))
     expect(await windowCount(app)).toBe(1)
-    expect(running(marker)).toBe(false)
+    expect(running(folder, marker)).toBe(false)
 
     await answerWith(app, 1)
     const closed = app.waitForEvent('close')
     await requestClose(app)
     await closed
     // The approval was denied on the way out, so the command never started.
-    expect(running(marker)).toBe(false)
+    expect(running(folder, marker)).toBe(false)
   })
 
   test('a running command is named, and is stopped when the user confirms', async () => {
     const { userData, folder } = seedData()
-    const marker = `marker-${String(Date.now())}-run`
+    const marker = `pid-run-${String(Date.now())}.txt`
     const { app, page } = await launch(userData)
     await stubDialog(app)
     const prompt = await startCommand(page, sleep(marker), folder)
@@ -421,7 +424,7 @@ test.describe('warning before closing during work', () => {
         (window as unknown as { desktopApi: DesktopApi }).desktopApi.approvals.respond(id, true),
       prompt.id,
     )
-    await expect.poll(() => running(marker), { timeout: 15_000 }).toBe(true)
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(true)
 
     // First Cancel: the dialog names the command, and the command keeps running.
     await requestClose(app)
@@ -430,21 +433,21 @@ test.describe('warning before closing during work', () => {
     expect(JSON.stringify(await dialogs(app))).not.toContain(marker)
     await new Promise((resolve) => setTimeout(resolve, 500))
     expect(await windowCount(app)).toBe(1)
-    expect(running(marker)).toBe(true)
+    expect(running(folder, marker)).toBe(true)
 
     // Then confirm: the app ends and takes the command's process with it.
     await answerWith(app, 1)
     const closed = app.waitForEvent('close')
     await requestClose(app)
     await closed
-    await expect.poll(() => running(marker), { timeout: 15_000 }).toBe(false)
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(false)
   })
 
   test('the prompt never shows twice when closed and quit repeatedly while it is open', async () => {
     const { userData, folder } = seedData()
     const { app, page } = await launch(userData)
     await stubDialog(app)
-    await startCommand(page, sleep(`marker-${String(Date.now())}-twice`), folder)
+    await startCommand(page, sleep(`pid-twice-${String(Date.now())}.txt`), folder)
     await answerWith(app, 0, true) // the dialog stays open until released
     await requestClose(app)
     await requestClose(app)
@@ -537,7 +540,7 @@ test.describe('notifications and taskbar flash', () => {
       () => (window as unknown as { __approvals: unknown[] }).__approvals.length,
     )
     expect(pending).toBe(1)
-    expect(await page.getByRole('alertdialog').isVisible()).toBe(true)
+    await expect(page.getByRole('alertdialog')).toBeVisible()
 
     // Focus stops the flashing; the same approval is not announced again.
     await app.evaluate(({ BrowserWindow }) => {
