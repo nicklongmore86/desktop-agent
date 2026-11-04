@@ -25,6 +25,7 @@ import { Composer } from './Composer'
 import { ErrorBanner } from './ErrorBanner'
 import { useExternalFileDrop } from './files/external-drop'
 import { Markdown } from './Markdown'
+import { LinksSuspended } from './ReplyLinks'
 import { MessageActions } from './MessageActions'
 import { PromptRail } from './PromptRail'
 import { WorkFold } from './WorkFold'
@@ -390,7 +391,9 @@ export function ChatView({
                         {item.connection ? connectionName(item.connection) : providerName}
                       </span>
                     )}
-                    <Markdown text={item.text} />
+                    <LinksSuspended suspended={state.approvals.length > 0}>
+                      <Markdown text={item.text} />
+                    </LinksSuspended>
                     {item.stopped && (
                       <p className="message-note">Stopped. This reply was not saved.</p>
                     )}

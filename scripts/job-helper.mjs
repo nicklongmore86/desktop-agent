@@ -75,7 +75,7 @@ export function checkHardening(bytes, name = JOB_RUN.name) {
 }
 
 /** Main entries built only for the real-Electron tests (electron.vite.config.ts). */
-const TEST_ENTRIES = ['tools.js', 'documents.js']
+const TEST_ENTRIES = ['tools.js', 'documents.js', 'network.js']
 /** Written into out/main by the main build: its chunks and their imports, from Rollup. */
 export const BUILD_MANIFEST = '.build-manifest.json'
 /**

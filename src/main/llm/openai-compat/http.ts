@@ -1,4 +1,11 @@
-import { endpointUrl, FLAVOR_LABELS, resolveBaseUrl, type OpenAICompatFlavor } from './base-url'
+import { cloudFetch, localFetch, networkErrorMessage, networkFailureIn } from '../../net/network'
+import {
+  endpointUrl,
+  FLAVOR_LABELS,
+  isHosted,
+  resolveBaseUrl,
+  type OpenAICompatFlavor,
+} from './base-url'
 import { OpenAICompatError, statusError } from './errors'
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>
@@ -18,7 +25,7 @@ export interface ConnectionOptions {
   baseUrl: string
   apiKey?: string
   flavor: OpenAICompatFlavor
-  /** For tests. Defaults to the global fetch. */
+  /** For tests. Defaults to the shared network layer: see net/network.ts. */
   fetch?: FetchLike
   /** Abort when no response bytes arrive for this long. Default 120 s. */
   timeoutMs?: number
@@ -101,7 +108,8 @@ export function connect(options: ConnectionOptions): Connection {
       throw new OpenAICompatError('auth_expired', `The ${label} sign-in is invalid. Sign in again.`)
     return token
   }
-  const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init))
+  // Hosted flavors use the system proxy; a local server is reached without one.
+  const doFetch: FetchLike = options.fetch ?? (isHosted(flavor) ? cloudFetch : localFetch)
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const url = (endpoint: string): string => endpointUrl(root, endpoint)
 
@@ -130,10 +138,16 @@ export function connect(options: ConnectionOptions): Connection {
         if (timedOut)
           return new OpenAICompatError('network', `The ${label} request timed out. Try again.`)
         if (error instanceof OpenAICompatError) return error
+        // The network layer refuses a redirect by rejecting, so there is no 3xx to read below.
+        if (networkFailureIn(error)?.kind === 'redirect') return redirectError(label)
         // fetch failures (TypeError) carry socket details; never forward them.
         return new OpenAICompatError(
           'network',
-          `Could not connect to ${label}. Check that it is running and reachable.`,
+          networkErrorMessage(
+            label,
+            error,
+            `Could not connect to ${label}. Check that it is running and reachable.`,
+          ),
         )
       }
       let sent: string | undefined
@@ -158,11 +172,7 @@ export function connect(options: ConnectionOptions): Connection {
         touch()
         if (response.status >= 300 && response.status < 400) {
           await response.body?.cancel().catch(() => {})
-          throw new OpenAICompatError(
-            'api',
-            `${label} answered with a redirect, which is not followed. Check the base URL.`,
-            { status: response.status },
-          )
+          throw redirectError(label, response.status)
         }
         if (!response.ok) {
           const body = await readErrorBody(response)
@@ -176,6 +186,13 @@ export function connect(options: ConnectionOptions): Connection {
     },
   }
 }
+
+const redirectError = (label: string, status?: number): OpenAICompatError =>
+  new OpenAICompatError(
+    'api',
+    `${label} answered with a redirect, which is not followed. Check the base URL.`,
+    status === undefined ? {} : { status },
+  )
 
 async function readErrorBody(response: Response): Promise<unknown> {
   if (!response.body) return undefined

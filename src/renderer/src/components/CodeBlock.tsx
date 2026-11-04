@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import type { ExtraProps } from 'react-markdown'
 import { copyText } from '../clipboard'
+import { splitMentions } from '../mentions'
+import { MentionText } from './ReplyLinks'
 import { useToast } from './Toast'
 
 type Element = NonNullable<ExtraProps['node']>
@@ -22,6 +24,14 @@ function languageOf(node: Element): string | null {
     ? classes.map(String).find((name) => name.startsWith('language-'))
     : undefined
   return match ? match.slice('language-'.length) : null
+}
+
+/** The lines of a plain listing, or null when none of its first lines could be a file or folder. */
+function listingLines(source: string): string[] | null {
+  const lines = source.replace(/\n$/, '').split('\n').slice(0, 300)
+  return lines.some((line) => splitMentions(line, true).some((part) => part.mention !== undefined))
+    ? lines
+    : null
 }
 
 /** A fenced code block: language label and a Copy button that copies the raw source, not HTML. */
@@ -47,6 +57,13 @@ export function CodeBlock({
     } else notify('Could not copy')
   }
 
+  // A plain listing (no language) with file or folder names in it: each line may be one. A
+  // block with a language is code and stays as it is.
+  const listing =
+    node && (language === null || ['text', 'txt', 'plaintext'].includes(language))
+      ? listingLines(sourceText(node))
+      : null
+
   return (
     <div className="code-block">
       <div className="code-block-header">
@@ -62,7 +79,20 @@ export function CodeBlock({
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre>{children}</pre>
+      <pre>
+        {listing ? (
+          <code>
+            {listing.map((line, index) => (
+              <span key={index}>
+                <MentionText text={line} whole />
+                {'\n'}
+              </span>
+            ))}
+          </code>
+        ) : (
+          children
+        )}
+      </pre>
     </div>
   )
 }

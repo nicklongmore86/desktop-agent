@@ -1469,6 +1469,120 @@
   color: var(--color-text-muted);
 }
 
+/*
+ * Links and file names in a reply. The line under one (where it really goes, or what a click
+ * does) shows on hover and on keyboard focus, in the untrusted-text style (left to right, hidden
+ * characters visible).
+ */
+/*
+ * The line sits in the message's own box (not under the link), so it never runs past the edge
+ * of a narrow window. It has no pointer events, so it never covers what is beneath it.
+ */
+.markdown {
+  position: relative;
+}
+
+.link-dest {
+  display: none;
+  position: absolute;
+  inset-inline: 0;
+  margin-top: 1.6em;
+  z-index: 30;
+  width: max-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-0);
+  box-shadow: var(--shadow-raised);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.link-wrap:hover > .link-dest,
+.link-wrap:focus-within > .link-dest {
+  display: block;
+}
+
+.link-dest > * {
+  display: block;
+}
+
+.link-dest-label {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.link-dest-site {
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+}
+
+.link-dest-warning {
+  margin-top: var(--space-1);
+  color: var(--color-warning-text);
+}
+
+.link-dest-inline {
+  color: var(--color-text-muted);
+}
+
+.markdown a[data-mismatch] {
+  text-decoration-style: wavy;
+}
+
+/* A file or folder named in a reply, once main has agreed it can be opened or shown. */
+.markdown .path-mention {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dotted currentcolor;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--color-accent-text);
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.markdown .path-mention:hover:not(:disabled) {
+  background: var(--color-accent-bg);
+}
+
+.markdown .path-mention[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.markdown .path-mention code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.link-confirm {
+  width: min(480px, 100%);
+}
+
+.link-confirm-value {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
 /* Tool calls */
 
 .tool-card {
@@ -2619,6 +2733,16 @@
   }
 
   .manage-usage {
+    color: LinkText;
+  }
+
+  .link-dest {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .markdown .path-mention {
     color: LinkText;
   }
 

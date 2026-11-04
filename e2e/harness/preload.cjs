@@ -106,7 +106,29 @@ let files = {
   docs: [f('docs/plan.docx'), f('docs/brief.md')],
   'src/components': [f('src/components/FileTree.tsx')],
 }
-const filesCalls = { watch: [], reveal: [], copy: [], reference: [], search: [] }
+const filesCalls = { watch: [], reveal: [], copy: [], reference: [], search: [], open: [] }
+// Text a reply may name as a file or folder, and what a click would do (like main's decision).
+const MENTIONS = {
+  'C:\\Users\\me\\Projects\\notes.md': {
+    ok: true,
+    path: 'C:\\Users\\me\\Projects\\notes.md',
+    kind: 'file',
+    action: 'open',
+  },
+  'C:\\Users\\me\\Projects\\setup.exe': {
+    ok: true,
+    path: 'C:\\Users\\me\\Projects\\setup.exe',
+    kind: 'file',
+    action: 'reveal',
+    note: 'Files of this type are not opened from a reply, because they could run code. It is shown in Explorer instead.',
+  },
+  'C:\\Users\\me\\Projects\\src': {
+    ok: true,
+    path: 'C:\\Users\\me\\Projects\\src',
+    kind: 'dir',
+    action: 'open',
+  },
+}
 const filesRoots = () => (rootsGranted ? [{ id: ROOT_ID, name: 'Projects', path: ROOT }] : [])
 // A first run (E2E_SCENARIO=first-run) starts with no folder granted.
 let rootsGranted = process.env.E2E_SCENARIO !== 'first-run'
@@ -606,6 +628,17 @@ contextBridge.exposeInMainWorld('desktopApi', {
         return Promise.resolve({ ok: false, reason: 'Not allowed.' })
       const path = location.rel ? `${ROOT}\\${location.rel.replaceAll('/', '\\')}` : ROOT
       return Promise.resolve({ ok: true, text: `@"${path}"` })
+    },
+    resolveMentions: (texts) =>
+      Promise.resolve(texts.map((text) => MENTIONS[text] ?? { ok: false })),
+    openMention: (text) => {
+      filesCalls.open.push(text)
+      const found = MENTIONS[text]
+      return Promise.resolve(
+        found
+          ? { ok: true, path: found.path, action: found.action, note: found.note }
+          : { ok: false, reason: 'That is not a file or folder inside a folder you have granted.' },
+      )
     },
     onChanged: subscribe(listeners.files),
     attachDropped: (file) => Promise.resolve(attachOutcome(file)),

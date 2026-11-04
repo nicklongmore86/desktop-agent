@@ -14,6 +14,8 @@ const HOSTED: Partial<Record<OpenAICompatFlavor, { host: string; path: string }>
   openai: { host: 'api.openai.com', path: '/v1' },
   openrouter: { host: 'openrouter.ai', path: '/api/v1' },
 }
+/** True for a provider's hosted API, false for a server on this computer. */
+export const isHosted = (flavor: OpenAICompatFlavor): boolean => HOSTED[flavor] !== undefined
 const LOOPBACK = new Set(['127.0.0.1', '[::1]', 'localhost'])
 
 export const DEFAULT_BASE_URLS: Record<OpenAICompatFlavor, string> = {

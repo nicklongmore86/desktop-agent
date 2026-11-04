@@ -42,7 +42,7 @@ const NOT_ENTITLED =
   'Needs ChatGPT Plus or Pro. On other plans, use Codex · ChatGPT or an OpenAI API key instead.'
 
 /** Sign-in service errors as a safe code; every ChatgptAuthError message is fixed text. */
-function authFailure(error: ChatgptAuthError): { code: AgentErrorCode; message: string } {
+export function authFailure(error: ChatgptAuthError): { code: AgentErrorCode; message: string } {
   switch (error.code) {
     case 'signed-out':
       return { code: 'authentication', message: SIGNED_OUT_MESSAGE }
@@ -50,6 +50,8 @@ function authFailure(error: ChatgptAuthError): { code: AgentErrorCode; message: 
     case 'plan-not-enabled':
       return { code: 'auth_expired', message: SIGN_IN_AGAIN }
     case 'network':
+    case 'proxy':
+    case 'certificate':
       return { code: 'network', message: error.message }
     case 'server':
       return { code: 'overloaded', message: error.message }

@@ -1,6 +1,8 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { attachContextMenu, type ContextMenuOptions } from './context-menu'
+import { openWebLink } from './web-links'
 import { isAppUrl, isLoopbackHttpUrl, secureWebPreferences } from './security'
 
 /**
@@ -14,7 +16,7 @@ export function appUrl(): string {
   return pathToFileURL(join(__dirname, '../renderer/index.html')).href
 }
 
-export function createMainWindow(): BrowserWindow {
+export function createMainWindow(options: ContextMenuOptions): BrowserWindow {
   const url = appUrl()
   const window = new BrowserWindow({
     width: 1000,
@@ -33,7 +35,7 @@ export function createMainWindow(): BrowserWindow {
 
   // Never open new windows; hand http(s) links to the user's browser instead.
   window.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (/^https?:\/\//.test(target)) void shell.openExternal(target)
+    openWebLink(target)
     return { action: 'deny' }
   })
 
@@ -43,6 +45,8 @@ export function createMainWindow(): BrowserWindow {
   }
   window.webContents.on('will-navigate', blockExternalNavigation)
   window.webContents.on('will-redirect', blockExternalNavigation)
+
+  attachContextMenu(window.webContents, options)
 
   void window.loadURL(url)
   return window

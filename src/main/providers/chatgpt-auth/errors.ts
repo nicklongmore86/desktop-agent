@@ -19,6 +19,9 @@ const MESSAGES = {
   'plan-not-enabled':
     'ChatGPT plan use was not allowed for Desktop Agent. Sign in again and allow it to use your plan.',
   network: 'Could not reach OpenAI. Check your connection and try again.',
+  proxy: "Could not reach OpenAI through your network's proxy or security software.",
+  certificate:
+    "Could not reach OpenAI through your network's proxy or security software: the connection's certificate is not trusted.",
   server: 'OpenAI sign-in is unavailable right now. Try again later.',
   discovery: 'OpenAI returned an unexpected sign-in configuration.',
   'signed-out': 'Sign in with ChatGPT first.',
@@ -29,12 +32,21 @@ const MESSAGES = {
 export type ChatgptAuthErrorCode = keyof typeof MESSAGES
 
 /** Errors worth retrying later without signing in again. */
-const TRANSIENT: ReadonlySet<ChatgptAuthErrorCode> = new Set(['network', 'server'])
+const TRANSIENT: ReadonlySet<ChatgptAuthErrorCode> = new Set([
+  'network',
+  'proxy',
+  'certificate',
+  'server',
+])
 
 export class ChatgptAuthError extends Error {
   override readonly name = 'ChatgptAuthError'
-  constructor(readonly code: ChatgptAuthErrorCode) {
-    super(MESSAGES[code])
+  /** `detail` is the network layer's pattern-checked name for the failure (see net/network.ts). */
+  constructor(
+    readonly code: ChatgptAuthErrorCode,
+    detail?: string,
+  ) {
+    super(detail ? `${MESSAGES[code]} Details: ${detail}.` : MESSAGES[code])
   }
   get transient(): boolean {
     return TRANSIENT.has(this.code)

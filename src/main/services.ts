@@ -51,6 +51,8 @@ export interface AppServiceDeps {
   copyText?: (text: string) => Promise<void>
   /** Shows a path in Explorer: Electron's shell.showItemInFolder. */
   revealPath?: (path: string) => void
+  /** Electron's shell.openPath, for files and folders clicked in a reply. */
+  openPath?: (path: string) => Promise<string>
   onFilesChanged?: (change: FilesChanged) => void
   onGitChanged?: (change: GitChanged) => void
   /** Shows the native multi-select file picker for attachments; [] when cancelled. */
@@ -127,6 +129,8 @@ export async function createAppServices(deps: AppServiceDeps) {
       (() => {
         throw new Error('Showing files is unavailable.')
       }),
+    ...(deps.openPath ? { open: deps.openPath } : {}),
+    audit,
     copyText: deps.copyText ?? (() => Promise.reject(new Error('Copying is unavailable.'))),
     emit: (change) => deps.onFilesChanged?.(change),
   })
