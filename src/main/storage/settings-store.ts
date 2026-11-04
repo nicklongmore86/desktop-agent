@@ -20,6 +20,8 @@ import { DEFAULT_MODEL } from '../agent'
 import { readJsonFile, writeJsonFile } from './json-file'
 import { CONVERSATION_ID } from './history-store'
 import { parseLayout } from './layout-schema'
+import { parseWindowState } from './window-state-schema'
+import type { WindowState } from '../../shared/window-state'
 
 /** Models offered in Settings. The default comes from the agent module. */
 export const MODEL_OPTIONS: readonly ModelOption[] = [
@@ -99,6 +101,10 @@ interface SettingsFile {
    * current connection's own `activeId` (which older builds still keep) decides.
    */
   activeChat?: ChatRef | null
+  /** Added later without a version bump: a missing or invalid value means no saved window. */
+  windowState?: WindowState
+  /** Added later without a version bump: a missing or non-boolean value means on. */
+  notifications?: boolean
 }
 
 export interface SettingsStore {
@@ -141,6 +147,13 @@ export interface SettingsStore {
   readonly activeChat: ChatRef | null | undefined
   /** Throws for a ref that does not validate. The caller checks the home is registered. */
   setActiveChat: (chat: ChatRef | null) => Promise<void>
+  /** The window's last size, position and maximized state; undefined when never saved or unusable. */
+  readonly windowState: WindowState | undefined
+  /** Validates (never throws): an unusable value is dropped. */
+  setWindowState: (state: unknown) => Promise<void>
+  /** Native notifications and the taskbar flash while the window is not in front. Default on. */
+  readonly notifications: boolean
+  setNotifications: (enabled: boolean) => Promise<boolean>
 }
 
 const isOffered = (model: unknown): model is string =>
@@ -236,6 +249,9 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
   let connectionModels: Partial<Record<ConnectionId, string>> = {}
   let chatgptAuth: ChatgptAuthSettings | undefined
   let activeChat: ChatRef | null | undefined
+  let windowState: WindowState | undefined
+  // Undefined until the user chooses: the file then has no field, and it reads as on.
+  let notifications: boolean | undefined
   try {
     const parsed = (await readJsonFile(file)) as Record<string, unknown> | undefined
     if (parsed?.['version'] === 3) {
@@ -269,6 +285,8 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     if (auth.success) chatgptAuth = withoutUndefined(auth.data)
     const chat = activeChatSchema.safeParse(parsed?.['activeChat'])
     if (chat.success) activeChat = chat.data
+    windowState = parseWindowState(parsed?.['windowState'])
+    if (typeof parsed?.['notifications'] === 'boolean') notifications = parsed['notifications']
   } catch {
     // Keep the default.
   }
@@ -291,6 +309,8 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
     layout,
     ...(chatgptAuth ? { chatgptAuth } : {}),
     ...(activeChat !== undefined ? { activeChat } : {}),
+    ...(windowState ? { windowState } : {}),
+    ...(notifications !== undefined ? { notifications } : {}),
     ...changes,
   })
   const view = (): ModelSettings => ({
@@ -449,6 +469,28 @@ export async function openSettingsStore(file: string): Promise<SettingsStore> {
       await serial(async () => {
         await writeJsonFile(file, snapshot({ activeChat: validated }))
         activeChat = validated
+      })
+    },
+    get windowState() {
+      return windowState ? { ...windowState } : undefined
+    },
+    async setWindowState(next) {
+      const validated = parseWindowState(next)
+      if (!validated) return
+      await serial(async () => {
+        await writeJsonFile(file, snapshot({ windowState: validated }))
+        windowState = validated
+      })
+    },
+    get notifications() {
+      return notifications ?? true
+    },
+    async setNotifications(next) {
+      if (typeof next !== 'boolean') throw new Error('Invalid choice.')
+      return serial(async () => {
+        await writeJsonFile(file, snapshot({ notifications: next }))
+        notifications = next
+        return next
       })
     },
   }

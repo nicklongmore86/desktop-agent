@@ -10,6 +10,7 @@ import type { SettingsSection } from '../open-settings'
 import { AccountsSection } from './settings/AccountsSection'
 import { AgentSection } from './settings/AgentSection'
 import { FoldersSection } from './settings/FoldersSection'
+import { NotificationsSection } from './settings/NotificationsSection'
 import { AppearanceSection, PrivacySection, AboutSection } from './settings/OtherSections'
 export interface SettingsPanelProps {
   provider?: ProviderStatus | null | undefined
@@ -30,6 +31,7 @@ export const SETTINGS_SECTIONS = {
   agent: 'Agent',
   folders: 'Folders & permissions',
   appearance: 'Appearance',
+  notifications: 'Notifications',
   privacy: 'Privacy & audit log',
   about: 'About',
 } as const
@@ -45,6 +47,7 @@ export function SettingsPanel(
         <FoldersSection grants={props.grants} onGrants={props.onGrants} />
       )}
       {(!section || section === 'appearance') && <AppearanceSection />}
+      {(!section || section === 'notifications') && <NotificationsSection />}
       {(!section || section === 'privacy') && <PrivacySection audit={props.audit} />}
       {(!section || section === 'about') && <AboutSection appInfo={props.appInfo} />}
     </div>

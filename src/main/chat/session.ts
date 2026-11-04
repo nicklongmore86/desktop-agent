@@ -269,6 +269,23 @@ export class ChatSession {
     return this.active !== null
   }
 
+  /**
+   * What holds the send slot: a reply, a command typed in the command bar, or an action the
+   * user asked for in the app. Null when idle. For the close warning (window-behaviour).
+   */
+  get runKind(): 'reply' | 'command' | 'action' | null {
+    switch (this.active?.origin) {
+      case undefined:
+        return null
+      case 'user-terminal':
+        return 'command'
+      case 'user':
+        return 'action'
+      default:
+        return 'reply'
+    }
+  }
+
   /** Approval ids still waiting for an answer (for tests and diagnostics). */
   get pendingApprovals(): string[] {
     return [...this.pending.keys()]

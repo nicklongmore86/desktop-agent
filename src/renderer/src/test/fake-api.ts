@@ -169,6 +169,8 @@ export interface FakeApiOptions {
   turnLimit?: number
   history?: HistoryState
   layout?: LayoutPrefs
+  /** Settings > Notifications; default on. */
+  notifications?: boolean
   files?: Record<string, FileEntry[]>
   /** Text main would accept as a file or folder in a reply, with what a click does. */
   mentions?: Record<string, Extract<MentionResolution, { ok: true }>>
@@ -230,6 +232,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
   let theme: ThemePreference = options.theme ?? 'system'
   let turnLimit = options.turnLimit ?? TURN_LIMIT.default
   let layout: LayoutPrefs = options.layout ?? DEFAULT_LAYOUT
+  let notifications = options.notifications ?? true
   // Like main: one list of every connection's chats (each with its home), and the open one.
   const startProvider = options.provider?.provider ?? 'anthropic-api'
   const startHistory: HistoryState = options.history ?? { conversations: [], activeId: null }
@@ -627,6 +630,13 @@ export function fakeApi(options: FakeApiOptions = {}) {
       set: vi.fn((next: LayoutPrefs) => {
         layout = next
         return Promise.resolve(layout)
+      }),
+    },
+    notifications: {
+      get: vi.fn(() => Promise.resolve(notifications)),
+      set: vi.fn((next: boolean) => {
+        notifications = next
+        return Promise.resolve(notifications)
       }),
     },
     theme: {

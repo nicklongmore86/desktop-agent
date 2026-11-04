@@ -1,9 +1,11 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, type WebPreferences } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { appIconPath } from './app-icon'
 import { attachContextMenu, type ContextMenuOptions } from './context-menu'
 import { openWebLink } from './web-links'
 import { isAppUrl, isLoopbackHttpUrl, secureWebPreferences } from './security'
+import { DEFAULT_WINDOW_SIZE, MIN_WINDOW_SIZE, type Rect } from './window-state'
 
 /**
  * URL the main window loads: the Vite dev server in dev, the bundled index.html otherwise.
@@ -16,17 +18,29 @@ export function appUrl(): string {
   return pathToFileURL(join(__dirname, '../renderer/index.html')).href
 }
 
-export function createMainWindow(options: ContextMenuOptions): BrowserWindow {
+/**
+ * The app window's webPreferences: the shared secure set, and in a packaged build also no
+ * developer tools. The menu's Toggle Developer Tools and F12 / Ctrl+Shift+I are then dead too,
+ * a second lock beside the menu leaving them out. Development and test builds keep them.
+ */
+export function windowWebPreferences(preload: string, packaged: boolean): WebPreferences {
+  return { ...secureWebPreferences(preload), ...(packaged ? { devTools: false } : {}) }
+}
+
+export function createMainWindow(
+  options: ContextMenuOptions & { bounds?: Rect | undefined },
+): BrowserWindow {
   const url = appUrl()
+  const icon = appIconPath()
   const window = new BrowserWindow({
-    width: 1000,
-    height: 720,
-    minWidth: 480,
-    minHeight: 400,
+    ...(options.bounds ?? DEFAULT_WINDOW_SIZE),
+    minWidth: MIN_WINDOW_SIZE.width,
+    minHeight: MIN_WINDOW_SIZE.height,
     show: false,
     title: 'Desktop Agent',
+    ...(icon ? { icon } : {}),
     autoHideMenuBar: true,
-    webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js')),
+    webPreferences: windowWebPreferences(join(__dirname, '../preload/index.js'), app.isPackaged),
   })
 
   window.once('ready-to-show', () => {

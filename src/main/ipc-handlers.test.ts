@@ -13,6 +13,7 @@ import { FEATURE_CHANNELS } from '../shared/ipc-features'
 import { filesChannels, filesPushChannels } from '../shared/ipc-files'
 import { gitChannels } from '../shared/ipc-git'
 import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
+import { notificationsChannels } from '../shared/ipc-notifications'
 import { projectsChannels, type ProjectsState } from '../shared/ipc-projects'
 import type { RunOptions } from './agent'
 import { cancelOnPageEnd } from './chat/lifecycle'
@@ -223,6 +224,10 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       get: vi.fn(() => ({ ...DEFAULT_LAYOUT })),
       set: vi.fn((layout: unknown) => Promise.resolve(layout as LayoutPrefs)),
     },
+    notifications: {
+      get: vi.fn(() => true),
+      set: vi.fn((enabled: boolean) => Promise.resolve(enabled)),
+    },
     projects: fakeProjects(),
     revealAudit: vi.fn(),
     audit: () => ({ healthy: true, path: '/data/audit.jsonl' }),
@@ -276,6 +281,24 @@ describe('registerIpcHandlers', () => {
       'takes no arguments',
     )
     expect(revealAudit).toHaveBeenCalledTimes(1)
+  })
+
+  describe('notifications', () => {
+    it('answers the saved choice', async () => {
+      const { invoke } = setup()
+      expect(await invoke(notificationsChannels.notificationsGet, appFrame)).toBe(true)
+    })
+
+    it('saves a boolean and refuses anything else', async () => {
+      const { invoke, services } = setup()
+      expect(await invoke(notificationsChannels.notificationsSet, appFrame, false)).toBe(false)
+      expect(services.notifications.set).toHaveBeenCalledWith(false)
+      for (const bad of [undefined, null, 'true', 1, {}])
+        await expect(invoke(notificationsChannels.notificationsSet, appFrame, bad)).rejects.toThrow(
+          'Invalid choice.',
+        )
+      expect(services.notifications.set).toHaveBeenCalledOnce()
+    })
   })
 
   describe('layout', () => {

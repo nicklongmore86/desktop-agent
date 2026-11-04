@@ -10,6 +10,7 @@ import { connectionsApi } from './connections'
 import { filesApi } from './files'
 import { gitApi } from './git'
 import { layoutApi } from './layout'
+import { notificationsApi } from './notifications'
 import { projectsApi } from './projects'
 
 export type Invoke = <T>(channel: string, ...args: unknown[]) => Promise<T>
@@ -27,5 +28,6 @@ export const featureApis = (invoke: Invoke, subscribe: Subscribe): FeatureApis =
   ...filesApi(invoke, subscribe),
   ...gitApi(invoke, subscribe),
   ...layoutApi(invoke),
+  ...notificationsApi(invoke),
   ...projectsApi(invoke),
 })

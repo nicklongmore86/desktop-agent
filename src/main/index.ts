@@ -1,3 +1,5 @@
+// First: a second copy of the app ends here, before any other module of the app loads.
+import { ownsInstance } from './startup'
 import { discoverRuntime, CLAUDE_VERSION, CODEX_VERSION } from './providers/runtime'
 import {
   app,
@@ -22,19 +24,19 @@ import { createElectronTransports } from './net/electron-transports'
 import { installNetworkTransports } from './net/network'
 import { isTrustedIpcSender } from './security'
 import { createAppServices } from './services'
+import { focusWindow } from './instance-lock'
 import { appUrl, createMainWindow } from './window'
+import { createWindowBehaviour, type WindowBehaviour } from './window-behaviour'
 
 // Sandbox every renderer, even if a future window forgets to ask for it.
 app.enableSandbox()
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit()
-}
-
 let mainWindow: BrowserWindow | null = null
+let behaviour: WindowBehaviour | null = null
 
 /** Sends a main -> renderer push to the app window, if it is still there. */
 function push<C extends PushChannel>(channel: C, payload: PushPayloads[C]): void {
+  behaviour?.onPush(channel, payload)
   const window = mainWindow
   if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
   window.webContents.send(channel, payload)
@@ -57,14 +59,11 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.on('second-instance', () => {
-  const [window] = BrowserWindow.getAllWindows()
-  if (window) {
-    if (window.isMinimized()) window.restore()
-    window.focus()
-  }
+  focusWindow(mainWindow)
 })
 
 void app.whenReady().then(async () => {
+  if (!ownsInstance) return
   hardenSessions()
   // Before anything that could send a request: until then, requests fail rather than go around it.
   installNetworkTransports(await createElectronTransports())
@@ -133,6 +132,18 @@ void app.whenReady().then(async () => {
   })
   const { chat } = services
   grantedRoots = () => services.grants.list()
+  // What quitting always stopped; the window behaviour calls it once the user has confirmed.
+  const stopWork = (): Promise<void> => {
+    services.files.close()
+    services.git.close()
+    void services.provider.cancelLogin()
+    return chat.stop()
+  }
+  behaviour = createWindowBehaviour({
+    activity: () => ({ run: chat.runKind, approvals: chat.pendingApprovals.length }),
+    stopWork,
+    settings: services.settings,
+  })
 
   // Only the app window's current main frame may call in, and only on an app URL.
   const isTrustedSender = (event: { senderFrame: { url: string; parent: unknown } | null }) => {
@@ -180,6 +191,10 @@ void app.whenReady().then(async () => {
       get: () => services.settings.layout,
       set: (layout) => services.settings.setLayout(layout),
     },
+    notifications: {
+      get: () => services.settings.notifications,
+      set: (enabled) => services.settings.setNotifications(enabled),
+    },
     projects: services.projects,
     provider: services.provider,
     chat,
@@ -192,8 +207,13 @@ void app.whenReady().then(async () => {
   })
 
   const openWindow = (): void => {
-    const window = createMainWindow({ approvalOpen: () => chat.pendingApprovals.length > 0 })
+    const planned = behaviour?.plan()
+    const window = createMainWindow({
+      approvalOpen: () => chat.pendingApprovals.length > 0,
+      bounds: planned?.bounds,
+    })
     mainWindow = window
+    if (planned) behaviour?.attach(window, planned)
     // Reload, crash or close: deny pending approvals and stop the run.
     cancelOnPageEnd(window.webContents, () => {
       // The page that expanded those folders is gone; a reloaded one watches its own.
@@ -210,12 +230,6 @@ void app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) openWindow()
-  })
-  app.on('before-quit', () => {
-    services.files.close()
-    services.git.close()
-    void services.provider.cancelLogin()
-    void chat.stop()
   })
 })
 
