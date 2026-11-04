@@ -53,6 +53,7 @@ export const IpcChannels = {
   approvalRequest: 'approval:request',
   auditStatusChanged: 'audit:status-changed',
   providerLoginStateChanged: 'provider:login-state-changed',
+  menuCommand: 'menu:command',
 } as const
 
 /**
@@ -451,12 +452,16 @@ export interface ApprovalPrompt {
   origin?: ApprovalOrigin
 }
 
+/** An application menu item the page answers, by the same rules as its keyboard shortcut. */
+export type MenuCommand = 'new-chat' | 'open-settings'
+
 /** The main -> renderer channels and their payloads; the preload only subscribes to these. */
 export interface PushPayloads {
   [IpcChannels.chatEvent]: ChatEvent
   [IpcChannels.approvalRequest]: ApprovalPrompt
   [IpcChannels.auditStatusChanged]: AuditStatus
   [IpcChannels.providerLoginStateChanged]: ProviderLoginState
+  [IpcChannels.menuCommand]: MenuCommand
   [filesPushChannels.filesChanged]: FilesChanged
   [gitPushChannels.gitChanged]: GitChanged
 }
@@ -540,4 +545,5 @@ export interface DesktopApi extends FeatureApis {
   onApprovalRequest: (listener: (prompt: ApprovalPrompt) => void) => Unsubscribe
   onAuditStatus: (listener: (status: AuditStatus) => void) => Unsubscribe
   onProviderLoginState: (listener: (state: ProviderLoginState) => void) => Unsubscribe
+  onMenuCommand: (listener: (command: MenuCommand) => void) => Unsubscribe
 }

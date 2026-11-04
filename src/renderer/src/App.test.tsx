@@ -19,6 +19,42 @@ async function renderApp(options: FakeApiOptions = {}) {
   return { ...fake, user, view }
 }
 
+describe('application menu commands', () => {
+  it('opens Settings and starts a new chat, once each', async () => {
+    const { api, pushMenuCommand } = await renderApp()
+    act(() => {
+      pushMenuCommand('new-chat')
+    })
+    expect(api.chat.newChat).toHaveBeenCalledOnce()
+    act(() => {
+      pushMenuCommand('open-settings')
+    })
+    expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeTruthy()
+  })
+
+  it('starts nothing while an approval is open', async () => {
+    const { api, pushApproval, pushMenuCommand } = await renderApp()
+    act(() => {
+      pushApproval({
+        id: 'approval',
+        runId: 'run',
+        toolUseId: null,
+        tool: 'write_file',
+        kind: 'write',
+        summary: 'Write a file',
+        detail: null,
+      })
+    })
+    await screen.findByRole('alertdialog')
+    act(() => {
+      pushMenuCommand('new-chat')
+      pushMenuCommand('open-settings')
+    })
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+  })
+})
+
 describe('chat view', () => {
   it('sends a message and renders the streamed reply and tool cards', async () => {
     const { api, user, pushChat } = await renderApp()
@@ -239,8 +275,8 @@ describe('chat view', () => {
 
   it('unsubscribes from main pushes on unmount', async () => {
     const { view, listenerCount } = await renderApp()
-    // Chat events twice (the chat, and the chat list's projects), approvals, audit.
-    expect(listenerCount()).toBe(4)
+    // Chat events twice (the chat, and the chat list's projects), approvals, audit, the menu.
+    expect(listenerCount()).toBe(5)
     view.unmount()
     expect(listenerCount()).toBe(0)
   })

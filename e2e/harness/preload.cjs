@@ -7,6 +7,7 @@ const listeners = {
   approval: new Set(),
   audit: new Set(),
   login: new Set(),
+  menu: new Set(),
   files: new Set(),
   git: new Set(),
 }
@@ -1015,6 +1016,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   onApprovalRequest: subscribe(listeners.approval),
   onAuditStatus: subscribe(listeners.audit),
   onProviderLoginState: subscribe(listeners.login),
+  onMenuCommand: subscribe(listeners.menu),
 })
 
 contextBridge.exposeInMainWorld('e2e', {

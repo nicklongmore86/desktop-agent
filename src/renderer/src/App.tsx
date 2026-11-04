@@ -46,7 +46,7 @@ import { useTheme } from './theme'
 import { useChat } from './use-chat'
 import { useChatView } from './use-chat-view'
 import { useCommandLine } from './use-command-line'
-import { useShortcuts, useViewModeHotkey } from './use-shortcuts'
+import { useMenuCommands, useShortcuts, useViewModeHotkey } from './use-shortcuts'
 
 function SetupGuide({
   connection,
@@ -225,6 +225,12 @@ function AppWindow(): React.JSX.Element {
     shell.current?.closeDrawer()
     void chat.newChat()
   }
+  const shortcutsHeld =
+    approval !== undefined ||
+    listDialog ||
+    wizard !== null ||
+    planNoticeVisible ||
+    chat.sharing !== null
   useShortcuts(
     {
       newChat: startNewChat,
@@ -237,11 +243,17 @@ function AppWindow(): React.JSX.Element {
         focusInput(view)
       },
     },
-    approval !== undefined ||
-      listDialog ||
-      wizard !== null ||
-      planNoticeVisible ||
-      chat.sharing !== null,
+    shortcutsHeld,
+  )
+  useMenuCommands(
+    api.onMenuCommand,
+    {
+      newChat: startNewChat,
+      openSettings: () => {
+        openSettings()
+      },
+    },
+    shortcutsHeld,
   )
   useViewModeHotkey(
     () => {

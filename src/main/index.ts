@@ -18,12 +18,14 @@ import { defaultSystemHeifDecoder } from './documents/system-heif'
 import { defaultSystemOcr } from './documents/system-ocr'
 import { DocumentWorkerHost, documentWorkerPaths } from './documents/worker-host'
 import { registerIpcHandlers } from './ipc-handlers'
+import { startAppShell } from './menu'
 import { isTrustedIpcSender } from './security'
 import { createAppServices } from './services'
 import { appUrl, createMainWindow } from './window'
 
 // Sandbox every renderer, even if a future window forgets to ask for it.
 app.enableSandbox()
+const appShell = startAppShell()
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -189,6 +191,7 @@ void app.whenReady().then(async () => {
   const openWindow = (): void => {
     const window = createMainWindow()
     mainWindow = window
+    appShell.attachWindow(window)
     // Reload, crash or close: deny pending approvals and stop the run.
     cancelOnPageEnd(window.webContents, () => {
       // The page that expanded those folders is gone; a reloaded one watches its own.
