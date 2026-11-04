@@ -475,14 +475,20 @@ wait for more than that one page. Main never decodes an image: it passes the byt
 helper. Scanned pages with no ink (blank backs, scanner noise included: under 0.005% of pixels
 clearly off the page's commonest grey) skip the helper.
 
-**Sideways pages.** PDFium applies the page's own `/Rotate`, at no cost. A scan stored sideways
-with no `/Rotate` reads as next to nothing, and Windows' OCR reports no confidence, so main scores
-each reading: at least 40 letters and digits in words of three or more, making up at least half
-of what came back (characters in scripts OCR splits apart count one by one). A page that falls
-short is turned in main, on its raw pixels, 90, then 270, then 180 degrees, stopping at the first
-that reads well and keeping the best. A page that reads well costs one helper run, a sideways page
-two to four. A page that never reads well, such as a sparse drawing, also costs four and is listed
-as `OCR found little text`. Text at other angles than the page's main one is not read.
+**Sideways and upside-down pages.** PDFium applies the page's own `/Rotate`, at no cost. Past that
+Windows' OCR reports no confidence, so main judges each reading by how it looks, calibrated on its
+real output: text the right way up is almost all well-formed words (`Invoice number 48213`),
+sideways text reads as scattered characters (`o | 0 | -c`), and upside-down text reads as plenty of
+letters, about 40% of them in well-formed words (`90!JJ0 pelW00 peu6!s eseeld`). A page reads well
+with at least 40 letters and digits in well-formed words of three or more (lower case, Capitalised,
+ALL CAPS, numbers, codes like A501; characters in scripts OCR splits apart count one by one), making
+up at least 70% of what came back. A page that falls short is turned in main, on its raw pixels: 90
+and 270 degrees, both always, since one of them is upside down, and 180 if neither read well. The
+reading with the most well-formed characters is kept. A page that reads well costs one helper run,
+a sideways page three, and an upside-down page or a sparse drawing four; a page that never reads
+well is listed as `OCR found little text`. Text at other angles than the page's main one is not
+read. This judgment assumes the Latin-style case rules above, so a page in another script or with
+unusual capitalisation may cost the extra runs, but its best reading is still kept.
 
 **Cache.** Format 2 replaced `scanned` and `blankPages` with `ocr`: per page, why it needs OCR,
 the long edge, its state (`pending`, `done` or `failed`), what was read, whether little was, and

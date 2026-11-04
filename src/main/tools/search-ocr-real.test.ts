@@ -21,7 +21,7 @@ import type { DocumentReader, ExtractOptions } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
 import { DocumentTextCache } from './document-text-cache'
 import { verifyPinnedHelper } from './job-launcher'
-import { readingScore, turnGray } from './search-ocr'
+import { turnGray } from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
 
 const BUILD = path.resolve('build')
@@ -219,38 +219,20 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
   )
 
   it(
-    'logs what each orientation of a page reads as, for the scoring',
+    'reads an upside-down scan, which reads as plenty of letters as it is',
     async () => {
-      const sparse = toGray(
-        renderPage({
-          width: PAGE_WIDTH,
-          height: PAGE_HEIGHT,
-          lines: ['A-101', 'NORTH ELEVATION', 'KITCHEN', 'SCALE 1:50'],
-          fontPx: 40,
-        }),
-      )
-      for (const [label, image] of [
-        ['letter', picture()],
-        ['sparse', sparse],
-      ] as const) {
-        for (const degrees of [0, 90, 180, 270] as const) {
-          const turned = degrees === 0 ? image : turnGray(image, degrees)
-          const result = await real.recognize(turned)
-          const lines = result.lines.map((line) => line.text)
-          const score = readingScore(lines)
-          console.log(
-            `search-ocr reading ${label} ${String(degrees)}: words ${String(score.words)} of ` +
-              `${String(score.all)}, angle ${String(result.angle)}, lines ${String(lines.length)}, ` +
-              `${String(result.stats.ms)} ms: ${JSON.stringify(lines.join(' | ').slice(0, 300))}`,
-          )
-        }
-      }
+      await writePdf('flipped.pdf', [scanPage(turnGray(picture(), 180))])
+      const started = performance.now()
+      const r = await search({ contentPattern: 'invoice number 48213', context: 0 })
+      log('upside down', started, 1)
+      expect(r.content).toContain('flipped.pdf (page 1, OCR): Invoice number 48213')
+      expect(runs).toHaveLength(4)
     },
     SLOW,
   )
 
   it(
-    'logs what each orientation of a page reads as, for the scoring',
+    'keeps what it read of a sparse page, the right way up, saying it was little',
     async () => {
       const sparse = toGray(
         renderPage({
@@ -260,22 +242,13 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
           fontPx: 40,
         }),
       )
-      for (const [label, image] of [
-        ['letter', picture()],
-        ['sparse', sparse],
-      ] as const) {
-        for (const degrees of [0, 90, 180, 270] as const) {
-          const turned = degrees === 0 ? image : turnGray(image, degrees)
-          const result = await real.recognize(turned)
-          const lines = result.lines.map((line) => line.text)
-          const score = readingScore(lines)
-          console.log(
-            `search-ocr reading ${label} ${String(degrees)}: words ${String(score.words)} of ` +
-              `${String(score.all)}, angle ${String(result.angle)}, lines ${String(lines.length)}, ` +
-              `${String(result.stats.ms)} ms: ${JSON.stringify(lines.join(' | ').slice(0, 300))}`,
-          )
-        }
-      }
+      await writePdf('plan.pdf', [scanPage(sparse)])
+      const started = performance.now()
+      const r = await search({ contentPattern: 'north elevation', context: 0 })
+      log('sparse page', started, 1)
+      expect(r.content).toContain('plan.pdf (page 1, OCR): NORTH ELEVATION')
+      expect(r.content).toContain('OCR found little text on 1 of 1 scanned page')
+      expect(runs).toHaveLength(4)
     },
     SLOW,
   )

@@ -26,37 +26,55 @@ const MAX_FAILURES_IN_A_ROW = 3
 const SAVE_EVERY_MS = 5000
 
 /**
- * A page counts as read well with this many letters and digits in words of at least three, and
- * with those making up at least half of what came back. Sideways text reads as next to
- * nothing, or as scattered single characters; Windows' OCR reports no confidence of its own.
+ * Windows' OCR reports no confidence of its own, so a reading is judged by what it looks like.
+ * Measured on its real output: text the right way up is almost all well-formed words ("Invoice
+ * number 48213"). Sideways text reads as scattered characters ("o | 0 | -c"). Upside-down text
+ * reads as plenty of letters, most of them not well-formed ("90!JJ0 pelW00 peu6!s eseeld"), about
+ * 40% by this measure. A page reads well with this many characters in well-formed words...
  */
 const GOOD_READING_CHARS = 40
+/** ...making up at least this share of its letters and digits. */
+const GOOD_READING_SHARE = 0.7
 /** A word in a script Windows' OCR splits by the character reads as such one character at a time. */
 const WHOLE_CHARS = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
-/** The turns tried on a page that did not read well, in order, stopping at the first that does. */
+/** The turns tried on a page that did not read well, in order. */
 const TURNS = [90, 270, 180] as const
 /** Pixels differing from the page's commonest grey by more than this are ink. */
 const INK_CONTRAST = 32
 /** A share of ink under this is a blank page, scanner noise included: not worth a helper run. */
 const BLANK_INK = 0.00005
 
-/** How much of what OCR returned looks like words. */
+/** Lower case, Capitalised, ALL CAPS, a number, a code (A501, 10mm), or a script with no case. */
+const WELL_FORMED =
+  /^(?:\p{Ll}[\p{Ll}\p{M}]*|\p{Lu}[\p{Ll}\p{M}]*|\p{Lu}[\p{Lu}\p{M}]*|\p{N}+|\p{Lu}+\p{N}+|\p{N}+\p{L}{1,3}|[\p{Lo}\p{M}]+)$/u
+
+/**
+ * A token's parts between separators (A-501, 1284.50, 3/4) are each well-formed, once the
+ * punctuation around it is off.
+ */
+function wellFormed(token: string): boolean {
+  const core = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+  return core !== '' && core.split(/[-./:,'’&+]/u).every((part) => WELL_FORMED.test(part))
+}
+
+/** Of the letters and digits OCR returned (`all`), how many are in well-formed words (`words`). */
 export function readingScore(lines: readonly string[]): { words: number; all: number } {
   let words = 0
   let all = 0
   for (const line of lines) {
     for (const token of line.split(/\s+/u)) {
-      if (!token) continue
-      all += token.length
       const chars = token.match(/[\p{L}\p{N}]/gu)?.length ?? 0
-      if (chars >= 3 || (chars > 0 && WHOLE_CHARS.test(token))) words += chars
+      all += chars
+      if ((chars >= 3 || (chars > 0 && WHOLE_CHARS.test(token))) && wellFormed(token)) {
+        words += chars
+      }
     }
   }
   return { words, all }
 }
 
-const readsWell = ({ words, all }: { words: number; all: number }): boolean =>
-  words >= GOOD_READING_CHARS && words * 2 >= all
+export const readsWell = ({ words, all }: { words: number; all: number }): boolean =>
+  words >= GOOD_READING_CHARS && words >= all * GOOD_READING_SHARE
 
 /** A grey image turned clockwise by 90, 180 or 270 degrees: pixels only, no parsing. */
 export function turnGray(image: OcrImage, degrees: 90 | 180 | 270): OcrImage {
@@ -215,9 +233,10 @@ function ocrFailure(error: unknown, job: OcrDocumentJob): Exclude<PageOutcome, {
 }
 
 /**
- * Reads an image as it is, and, if that gave little that looks like words, turned 90, 270 and
- * then 180 degrees, keeping the best: the bounded answer to sideways scans. Costs up to three
- * more helper runs on such a page, none on a page that reads well the first time.
+ * Reads an image as it is, and, if that gave little that looks like words, turned 90 and 270
+ * degrees, then 180 if neither read well, keeping the best: the bounded answer to sideways and
+ * upside-down scans. Costs two or three more helper runs on such a page, none on a page that
+ * reads well the first time.
  */
 async function readImage(job: OcrDocumentJob, image: OcrImage): Promise<PageOutcome> {
   const recognize = async (turned: OcrImage) => {

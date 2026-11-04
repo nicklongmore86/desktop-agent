@@ -36,7 +36,7 @@ import type { ToolDeps } from './deps'
 import { DocumentTextCache, type CachedText, type OcrPage } from './document-text-cache'
 import { ocrReason } from './search-documents'
 import { MAX_FILES_LISTED, SCANNED_TITLE } from './search-files'
-import { inkShare, readingScore, turnGray } from './search-ocr'
+import { inkShare, readingScore, readsWell, turnGray } from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
 
 /**
@@ -387,6 +387,43 @@ describe('helpers', () => {
     expect(readingScore(['l | i', 'I .']).words).toBe(0)
     expect(readingScore(['設 計 図 面 の 確 認']).words).toBe(7)
     expect(readingScore([])).toEqual({ words: 0, all: 0 })
+    // Well-formed: separators, codes and numbers are not held against a word.
+    for (const word of ['A-501', 'A501', '1284.50', '10mm', 'Walk-In', 'ELEVATION', 'hello,']) {
+      expect(readingScore([word]).words, word).toBeGreaterThan(0)
+    }
+    for (const word of ['90!JJ0', 'pelW00', 'peu6!s', 'd01hsea', 'sKep']) {
+      expect(readingScore([word]).words, word).toBe(0)
+    }
+  })
+
+  // Windows' OCR's real output for one page in each orientation (CI, PR #77).
+  const UPRIGHT = [
+    'The quick brown fox jumps over the lazy dog',
+    'Invoice number 48213 dated 3 November 2026',
+    'Desktop Agent reads text in scanned pages',
+    'Total amount due 1284.50 payable within thirty days',
+    'Please return the signed contract to the office',
+  ]
+  const UPSIDE_DOWN = [
+    '90!JJ0 01 pelW00 peu6!s eseeld',
+    'sKep elqeKed enp lunowe le101',
+    'se6ed peuueos u! spea lue6y d01hsea',
+    'ueqweAON t pelep .leqwnu eo!0Al-ll',
+    '60p Azel sdwn( I-IMOJq MO!nb',
+  ]
+  const SIDEWAYS = ['o', '0', '0', 'o', '-4', '0', 'oo', 'o', '00', '3', 'O', 'c', '><', '3']
+
+  it('tells a page the right way up from the same page turned', () => {
+    expect(readsWell(readingScore(UPRIGHT))).toBe(true)
+    expect(readsWell(readingScore(UPSIDE_DOWN))).toBe(false)
+    expect(readsWell(readingScore(SIDEWAYS))).toBe(false)
+    expect(readingScore(UPRIGHT).words).toBeGreaterThan(readingScore(UPSIDE_DOWN).words)
+    // A sparse drawing the right way up is little text, but more than it is upside down.
+    const sparse = readingScore(['A-IOI', 'NORTH ELEVATION', 'KITCHEN', 'SCALE 1:50'])
+    expect(readsWell(sparse)).toBe(false)
+    expect(sparse.words).toBeGreaterThan(
+      readingScore(['31YOS', 'N3HOLlY', 'NOILY/\\272 HLEON', 'LOL-Y']).words,
+    )
   })
 })
 
@@ -713,6 +750,38 @@ describe('search_files OCR of sideways pages', () => {
       expect((await ocrOf('side.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: false })
     },
   )
+
+  it('turns a page that reads as plenty of letters upside down, as Windows reads one', async () => {
+    const lines = [
+      'The quick brown fox jumps over the lazy dog',
+      'Invoice number 48213 dated 3 November 2026',
+    ]
+    const upsideDown = [
+      '60p Azel sdwn( I-IMOJq MO!nb',
+      'sKep elqeKed enp lunowe le101 90!JJ0 01 pelW00 peu6!s eseeld d01hsea',
+    ]
+    await put(path.join(sb.root, 'flipped.pdf'), doc(scan(...lines)))
+    const readings: Record<number, string[]> = {
+      0: upsideDown,
+      90: ['o', '0'],
+      270: ['-c'],
+      180: lines,
+    }
+    h = harness({
+      ocr: {
+        ...ocr,
+        recognize: (image) => {
+          ocr.runs.push({ name: '', page: 1, width: image.width, height: image.height, format: '' })
+          const turn = TURN_OF_FIRST_PIXEL[image.pixels[0] ?? -1] ?? -1
+          return Promise.resolve(answer(image, readings[turn] ?? []))
+        },
+      },
+    })
+    const r = await search({ contentPattern: 'invoice number 48213', context: 0 })
+    expect(r.content).toContain('flipped.pdf (page 1, OCR): Invoice number 48213')
+    expect(ocr.runs).toHaveLength(4)
+    expect((await ocrOf('flipped.pdf'))?.ocr[0]?.low).toBe(false)
+  })
 
   it('keeps the better of the two sideways readings, not the first that passes', async () => {
     // One sideways turn of a sideways page is upside down, which reads as plausible letters:

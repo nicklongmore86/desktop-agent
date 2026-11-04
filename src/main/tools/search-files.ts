@@ -348,10 +348,12 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       'how far it got and gives a cursor: call again with the same arguments and that cursor ' +
       'to continue where it stopped. Only a result saying "Every file was checked" (or "Every ' +
       'file after the cursor was checked") covers the whole search, and not the files it ' +
-      'reports as skipped. For very large folders, narrow the search with a ' +
+      'reports as skipped or the scanned pages it reports as not fully read. For very large folders, narrow the search with a ' +
       'subfolder path or namePattern. Do not run several search_files calls in parallel. ' +
-      'Scanned PDF pages are read by Windows OCR on this PC within the same time ("(page 3, ' +
-      'OCR)"), and what OCR could not read is listed. Never searched: ' +
+      'Scanned PDF pages are read by OCR when this PC has it, on this PC, within the same time ' +
+      '("(page 3, OCR)"). OCR text can contain errors, so no match in a scanned file is not ' +
+      'proof of absence. Pages not reached or not OCR-able are reported; a PDF still waiting ' +
+      'for OCR is named, and reported once with the cursor. Never searched: ' +
       'images, cloud-only files (not downloaded), files with ' +
       `several hard links, and plain text files over ${formatBytes(limits.maxReadBytes)}; ` +
       'skipped files are counted by reason. Skips .git, node_modules and protected files.',
