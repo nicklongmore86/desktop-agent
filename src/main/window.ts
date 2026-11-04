@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { attachContextMenu } from './context-menu'
 import { isAppUrl, isLoopbackHttpUrl, secureWebPreferences } from './security'
 
 /**
@@ -43,6 +44,8 @@ export function createMainWindow(): BrowserWindow {
   }
   window.webContents.on('will-navigate', blockExternalNavigation)
   window.webContents.on('will-redirect', blockExternalNavigation)
+
+  attachContextMenu(window.webContents)
 
   void window.loadURL(url)
   return window
