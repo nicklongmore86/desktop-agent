@@ -8,6 +8,7 @@ import { createKeyStore, type SafeStorage } from '../../secrets'
 import { openSettingsStore, type SettingsStore } from '../../storage/settings-store'
 import { startCallbackListener } from './callback-server'
 import { PRODUCTION } from './config'
+import { NetworkFailure } from '../../net/network'
 import { ChatgptAuthError, redact } from './errors'
 import { startFakeOpenAi, type FakeOpenAi } from './fake-openai'
 import { openChatgptAuth, UNCONFIRMED_SIGN_OUT, type ChatgptAuth } from './service'
@@ -378,6 +379,30 @@ describe('refresh', () => {
     expect(form?.get('resource')).toBe('https://api.openai.com/v1')
     expect(form?.has('scope')).toBe(false)
     noteSecrets()
+  })
+
+  it('a proxy failure during refresh keeps the sign-in and names the proxy', async () => {
+    const auth = await signedIn()
+    const before = await auth.getAccessToken()
+    clock += 3600 * 1000 // Past expiry: only a refresh could answer.
+    const saved = await savedRecord()
+    const behindProxy = openChatgptAuth(
+      {
+        keys: createKeyStore({ userDataPath: dir, safeStorage }),
+        settings,
+        log: (line) => logs.push(line),
+        now: () => clock,
+        sleep: () => Promise.resolve(),
+        fetch: () => Promise.reject(new NetworkFailure('proxy', 'ERR_TUNNEL_CONNECTION_FAILED')),
+      },
+      fake.endpoints,
+    )
+    const error = await failure(behindProxy.getAccessToken())
+    expect(error.code).toBe('proxy')
+    expect(error.transient).toBe(true)
+    expect(error.message).toContain('ERR_TUNNEL_CONNECTION_FAILED')
+    expect(error.message).not.toContain(before)
+    expect(await savedRecord()).toEqual(saved)
   })
 
   it('sends one refresh for concurrent callers', async () => {

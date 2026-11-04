@@ -7,6 +7,7 @@ import {
   discoverRuntime,
   providerDirectories,
   runtimeEnv,
+  runtimeProxyEnv,
   type RuntimeName,
 } from './runtime'
 
@@ -56,6 +57,7 @@ export async function isolatedContext(
   }
   const env = {
     ...runtimeEnv(),
+    ...runtimeProxyEnv(),
     ...(name === 'claude'
       ? { CLAUDE_CONFIG_DIR: home, DISABLE_AUTOUPDATER: '1' }
       : { CODEX_HOME: home }),

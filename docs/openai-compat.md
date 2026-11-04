@@ -27,7 +27,7 @@ openAICompatErrorEvent(error): AgentEvent // { type: 'error', code, message, res
 | ollama     | `http`  | `127.0.0.1`, `::1`, `localhost` | `/v1`               |
 | lmstudio   | `http`  | `127.0.0.1`, `::1`, `localhost` | `/v1`               |
 
-These are also rejected: credentials in the URL, query strings and fragments. Rejections never echo the URL. Requests use `redirect: 'manual'`, and any 3xx is an error, so a redirect can never carry the key to another host.
+These are also rejected: credentials in the URL, query strings and fragments. Rejections never echo the URL. The network layer (`docs/network.md`) refuses redirects whatever a request asks, and any 3xx is an error, so a redirect can never carry the key to another host.
 
 ## Translation
 

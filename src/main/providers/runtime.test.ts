@@ -16,7 +16,7 @@ import {
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
-import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import pinsJson from './runtime-pins.json'
 import {
   bundledRuntimeCandidates,
@@ -25,6 +25,7 @@ import {
   discoverRuntime,
   runtimeCandidates,
   runtimeEnv,
+  runtimeProxyEnv,
   RUNTIME_PINS,
   supportedVersion,
   type RuntimeName,
@@ -299,4 +300,65 @@ it('enforces exact pinned versions', () => {
   expect(supportedVersion('codex', 'codex-cli 0.162.10')).toBe(false)
   expect(supportedVersion('claude', '2.1.299 (Claude Code)')).toBe(true)
   expect(supportedVersion('claude', '2.1.300')).toBe(false)
+})
+
+describe('runtimeProxyEnv', () => {
+  const PROXY = 'http://proxy.corp.example:8080'
+  const LOOPBACK = 'localhost,127.0.0.1,::1'
+
+  it('adds nothing when no proxy is set, even with a NO_PROXY', () => {
+    expect(runtimeProxyEnv({ PATH: '/bin', NO_PROXY: 'corp.example' })).toEqual({})
+  })
+
+  it('passes a plain proxy on, always excluding loopback', () => {
+    expect(runtimeProxyEnv({ HTTPS_PROXY: PROXY, HTTP_PROXY: PROXY })).toEqual({
+      HTTPS_PROXY: PROXY,
+      HTTP_PROXY: PROXY,
+      NO_PROXY: LOOPBACK,
+    })
+  })
+
+  it("keeps the user's NO_PROXY, and adds loopback to it", () => {
+    expect(runtimeProxyEnv({ HTTPS_PROXY: PROXY, NO_PROXY: '.corp.example,10.0.0.1' })).toEqual({
+      HTTPS_PROXY: PROXY,
+      NO_PROXY: `.corp.example,10.0.0.1,${LOOPBACK}`,
+    })
+  })
+
+  it('reads the names in any case, and sends them in the one the runtimes read', () => {
+    expect(runtimeProxyEnv({ https_proxy: PROXY, no_proxy: 'a.example' })).toEqual({
+      HTTPS_PROXY: PROXY,
+      NO_PROXY: `a.example,${LOOPBACK}`,
+    })
+    expect(runtimeProxyEnv({ Https_Proxy: PROXY })).toEqual({
+      HTTPS_PROXY: PROXY,
+      NO_PROXY: LOOPBACK,
+    })
+  })
+
+  it.each([
+    'evil',
+    '127.0.0.1:8080',
+    'http://user:secret@proxy.example:8080',
+    'http://user@proxy.example:8080',
+    'socks5://proxy.example:1080',
+    'file:///etc/passwd',
+    'http://proxy.example:8080/path',
+    'http://proxy.example:8080/?x=1',
+  ])('passes nothing on for %s', (value) => {
+    expect(runtimeProxyEnv({ HTTPS_PROXY: value })).toEqual({})
+  })
+
+  it('drops a NO_PROXY with characters no host list has', () => {
+    expect(runtimeProxyEnv({ HTTPS_PROXY: PROXY, NO_PROXY: 'a.example;$(evil)\n' })).toEqual({
+      HTTPS_PROXY: PROXY,
+      NO_PROXY: LOOPBACK,
+    })
+  })
+
+  it('leaves runtimeEnv itself without any proxy setting', () => {
+    expect(runtimeEnv({ PATH: '/bin', HTTPS_PROXY: PROXY, NO_PROXY: 'x' })).toEqual({
+      PATH: '/bin',
+    })
+  })
 })

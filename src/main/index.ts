@@ -18,6 +18,8 @@ import { defaultSystemHeifDecoder } from './documents/system-heif'
 import { defaultSystemOcr } from './documents/system-ocr'
 import { DocumentWorkerHost, documentWorkerPaths } from './documents/worker-host'
 import { registerIpcHandlers } from './ipc-handlers'
+import { createElectronTransports } from './net/electron-transports'
+import { installNetworkTransports } from './net/network'
 import { isTrustedIpcSender } from './security'
 import { createAppServices } from './services'
 import { appUrl, createMainWindow } from './window'
@@ -64,6 +66,8 @@ app.on('second-instance', () => {
 
 void app.whenReady().then(async () => {
   hardenSessions()
+  // Before anything that could send a request: until then, requests fail rather than go around it.
+  installNetworkTransports(await createElectronTransports())
   // One sandboxed document reader for the app: read_document and PDF attachments share it.
   // HEIC photos are decoded by Windows' codec in heif-decode.exe, never from a granted folder.
   let grantedRoots: () => readonly string[] = () => []

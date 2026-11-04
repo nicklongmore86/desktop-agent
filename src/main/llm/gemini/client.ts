@@ -5,6 +5,7 @@ import type {
   MessageCreateParamsNonStreaming,
 } from '@anthropic-ai/sdk/resources/messages'
 import type { AgentClient, AgentStream } from '../../agent/types'
+import { cloudFetch, networkErrorMessage, networkFailureIn } from '../../net/network'
 import { GeminiError, httpError } from './errors'
 import { toGeminiRequest, toStopReason, toUsage } from './translate'
 import { GEMINI_HOST, type CallRecord, type GeminiResponseChunk } from './types'
@@ -52,11 +53,15 @@ export async function geminiFetch(
       redirect: 'error',
       signal: init.signal,
     })
-  } catch {
+  } catch (error) {
     if (init.signal.aborted) throw new GeminiError('aborted', 'Gemini request cancelled.')
     throw new GeminiError(
       'network',
-      'Could not connect to Gemini. Check your connection and try again.',
+      networkErrorMessage(
+        'Gemini',
+        error,
+        'Could not connect to Gemini. Check your connection and try again.',
+      ),
     )
   }
   if (response.ok) return response
@@ -104,7 +109,7 @@ async function* sseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string
 export function createGeminiClient({
   apiKey,
   model,
-  fetch: fetchImpl = fetch,
+  fetch: fetchImpl = cloudFetch,
 }: GeminiClientOptions): AgentClient {
   const calls = new Map<string, CallRecord>()
   const remember = (id: string, record: CallRecord): void => {
@@ -210,7 +215,16 @@ export function createGeminiClient({
             if (controller.signal.aborted)
               throw new GeminiError('aborted', 'Gemini request cancelled.')
             if (error instanceof GeminiError) throw error
-            throw new GeminiError('network', 'The connection to Gemini was interrupted. Try again.')
+            throw new GeminiError(
+              'network',
+              networkFailureIn(error)
+                ? networkErrorMessage(
+                    'Gemini',
+                    error,
+                    'The connection to Gemini was interrupted. Try again.',
+                  )
+                : 'The connection to Gemini was interrupted. Try again.',
+            )
           } finally {
             clearTimeout(idle)
             signal.removeEventListener('abort', abort)

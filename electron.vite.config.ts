@@ -163,6 +163,8 @@ export default defineConfig({
           documents: fromRoot('./src/main/documents/index.ts'),
           // The tools with the document reader, for the real-Electron tests (e2e/read-document).
           tools: fromRoot('./src/main/tools/e2e-entry.ts'),
+          // The network layer and clients, for the real-Electron tests (e2e/network-proxy).
+          network: fromRoot('./src/main/net/e2e-entry.ts'),
           // The utility process between main and the worker page (see broker.ts).
           'document-broker': fromRoot('./src/main/documents/broker.ts'),
         },

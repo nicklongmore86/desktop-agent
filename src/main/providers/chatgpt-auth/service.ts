@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { cloudFetch, localFetch } from '../../net/network'
 import type { KeyStore } from '../../secrets'
 import type { ChatgptAuthSettings, SettingsStore } from '../../storage/settings-store'
 import {
@@ -115,7 +116,8 @@ export function openChatgptAuth(
   endpoints: Endpoints = PRODUCTION,
 ): ChatgptAuth {
   checkEndpoints(endpoints)
-  const fetchImpl = deps.fetch ?? fetch
+  // checkEndpoints allows anything but PRODUCTION only for a test server on loopback.
+  const fetchImpl = deps.fetch ?? (endpoints === PRODUCTION ? cloudFetch : localFetch)
   const now = deps.now ?? Date.now
   const sleep =
     deps.sleep ??

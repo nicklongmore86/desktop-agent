@@ -9,11 +9,12 @@ directories:
 
 # Only the compiled app goes into app.asar; the renderer bundles its own deps. out/ includes
 # the sandboxed document worker (out/document-worker: page, PDFium WASM, its licenses).
-# out/main/tools.js is only for the real-Electron tests; afterPack checks it stays out.
+# out/main/tools.js and network.js are only for the real-Electron tests; afterPack checks they stay out.
 # out/main/.build-manifest.json is read by afterPack from out/, not from the package.
 files:
   - out/**/*
   - '!out/main/tools.js'
+  - '!out/main/network.js'
   - '!out/main/.build-manifest.json'
   - package.json
 asar: true

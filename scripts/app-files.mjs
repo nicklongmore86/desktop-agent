@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /** Files electron-builder.yml excludes from the package; their presence fails the build. */
-export const TEST_ONLY = ['out/main/tools.js']
+export const TEST_ONLY = ['out/main/tools.js', 'out/main/network.js']
 
 /** Every file path in an asar archive, '/'-separated, from its JSON header. */
 export async function listAsar(file) {

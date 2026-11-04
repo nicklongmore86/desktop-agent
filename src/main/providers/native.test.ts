@@ -1,13 +1,18 @@
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, cp } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { claudeOptions } from './claude'
+import { isolatedContext } from './isolation'
 import { codexAccount, connectCodex } from './codex'
 import { object } from './rpc'
 import {
   capture,
+  killRuntime,
+  launch,
   CLAUDE_VERSION,
   CODEX_VERSION,
   runtimeEnv,
@@ -299,3 +304,67 @@ it('reads signed-out native Claude auth status without treating exit 1 as a brok
   )
   expect(auth['loggedIn']).toBe(false)
 })
+
+// Both runtimes read HTTPS_PROXY, so a proxy named in the environment reaches them in their
+// isolated environment. The proxy refuses the tunnel: nothing leaves this computer.
+it.each([
+  ['claude', ['-p', 'hi', '--max-turns', '1'], 'ANTHROPIC_API_KEY', 'api.anthropic.com:443'],
+  ['codex', ['exec', '--skip-git-repo-check', 'hi'], 'OPENAI_API_KEY', 'api.openai.com:443'],
+] as const)(
+  'pinned native %s sends its requests through the proxy in the environment',
+  async (name, args, keyName, target) => {
+    const connects: string[] = []
+    let sawTarget: () => void = () => {}
+    const reached = new Promise<void>((resolve) => {
+      sawTarget = resolve
+    })
+    const proxy = createServer()
+    proxy.on('connect', (req, socket) => {
+      socket.on('error', () => {})
+      connects.push(req.url ?? '')
+      if (req.url === target) sawTarget()
+      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n')
+    })
+    await new Promise<void>((resolve) => {
+      proxy.listen(0, '127.0.0.1', resolve)
+    })
+    const root = await mkdtemp(join(tmpdir(), 'Desktop runtime proxy '))
+    dirs.push(root)
+    vi.stubEnv('HTTPS_PROXY', `http://127.0.0.1:${String((proxy.address() as AddressInfo).port)}`)
+    vi.stubEnv('NO_PROXY', '.corp.example')
+    try {
+      const context = await isolatedContext(root, name)
+      expect(context.env['NO_PROXY']).toBe('.corp.example,localhost,127.0.0.1,::1')
+      const child = launch(context.file, [...args], context.cwd, {
+        ...context.env,
+        [keyName]: 'not-a-real-key',
+      })
+      child.stdin.end()
+      child.stdout.resume()
+      child.stderr.resume()
+      child.on('error', () => {})
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          reached,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              reject(new Error('Runtime did not reach the proxy'))
+            }, 30_000)
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+        await killRuntime(child)
+      }
+      expect(connects).toContain(target)
+    } finally {
+      vi.unstubAllEnvs()
+      proxy.closeAllConnections()
+      await new Promise((resolve) => {
+        proxy.close(resolve)
+      })
+    }
+  },
+  60_000,
+)
