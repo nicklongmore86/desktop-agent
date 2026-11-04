@@ -12,6 +12,7 @@
     "src/shared/ipc-*.ts",
     "src/shared/attachments.ts",
     "src/main/context-menu-template.ts",
+    "src/main/web-link-rule.ts",
     "src/main/documents/fixtures.test-util.ts",
     "src/main/documents/office-fixtures.test-util.ts",
     "src/main/documents/heif-fixtures.test-util.ts",

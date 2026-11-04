@@ -1,4 +1,5 @@
-import { Menu, type WebContents } from 'electron'
+import { clipboard, Menu, type WebContents } from 'electron'
+import { openWebLink } from './web-links'
 import { contextMenuTemplate } from './context-menu-template'
 
 /**
@@ -8,7 +9,12 @@ import { contextMenuTemplate } from './context-menu-template'
  */
 export function attachContextMenu(contents: WebContents): void {
   contents.on('context-menu', (_event, params) => {
-    const template = contextMenuTemplate(params)
+    const template = contextMenuTemplate(params, {
+      open: openWebLink,
+      copy: (url) => {
+        void clipboard.writeText(url)
+      },
+    })
     if (template.length === 0) return
     Menu.buildFromTemplate(template).popup()
   })

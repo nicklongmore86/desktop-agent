@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { contextMenuTemplate, type ContextMenuParams } from './context-menu-template'
 
 const ALL = {
@@ -95,5 +95,51 @@ describe('contextMenuTemplate', () => {
         expect(item.click).toBeUndefined()
       }
     }
+  })
+
+  describe('links', () => {
+    const open = vi.fn()
+    const copy = vi.fn()
+    const links = { open, copy }
+    const labels = (p: ContextMenuParams): (string | undefined)[] =>
+      contextMenuTemplate(p, links).map((i) => i.label)
+
+    it.each(['http://example.com/a', 'https://example.com/a?b=1'])(
+      'offers Open Link and Copy Link Address for %s',
+      (linkURL) => {
+        expect(labels(params({ linkURL }))).toEqual(['Open Link', 'Copy Link Address'])
+        const items = contextMenuTemplate(params({ linkURL }), links)
+        items[0]?.click?.(undefined as never, undefined, undefined as never)
+        items[1]?.click?.(undefined as never, undefined, undefined as never)
+        expect(open).toHaveBeenLastCalledWith(linkURL)
+        expect(copy).toHaveBeenLastCalledWith(linkURL)
+      },
+    )
+
+    it.each(['file:///etc/passwd', 'javascript:alert(1)', 'mailto:a@b.c', 'data:text/html,x', ''])(
+      'offers no link items for %j',
+      (linkURL) => {
+        expect(labels(params({ linkURL }))).toEqual([])
+      },
+    )
+
+    it('offers no link items without a link or without actions', () => {
+      expect(labels(params({}))).toEqual([])
+      expect(contextMenuTemplate(params({ linkURL: 'https://x.test/' }))).toEqual([])
+    })
+
+    it('puts link items before the selection items', () => {
+      const items = contextMenuTemplate(
+        params({ linkURL: 'https://x.test/', selectionText: 'x' }),
+        links,
+      )
+      expect(items.map((i) => i.label ?? i.role ?? '-')).toEqual([
+        'Open Link',
+        'Copy Link Address',
+        '-',
+        'copy',
+        'selectAll',
+      ])
+    })
   })
 })

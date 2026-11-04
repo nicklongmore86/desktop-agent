@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const electron = vi.hoisted(() => {
   const popup = vi.fn()
-  return { popup, Menu: { buildFromTemplate: vi.fn(() => ({ popup })) } }
+  return {
+    popup,
+    Menu: { buildFromTemplate: vi.fn((_template: unknown) => ({ popup })) },
+    clipboard: { writeText: vi.fn(() => Promise.resolve()) },
+    shell: { openExternal: vi.fn(() => Promise.resolve()) },
+  }
 })
 vi.mock('electron', () => electron)
 
@@ -45,6 +50,24 @@ describe('attachContextMenu', () => {
       {},
       { isEditable: false, selectionText: '', formControlType: 'none', editFlags: flags },
     )
+    expect(electron.popup).not.toHaveBeenCalled()
+  })
+
+  it('opens and copies an http(s) link, and nothing for other schemes', () => {
+    const fire = listener()
+    const items = (linkURL: string): { label?: string; click?: () => void }[] => {
+      electron.Menu.buildFromTemplate.mockClear()
+      fire({}, { isEditable: false, selectionText: '', linkURL, editFlags: flags })
+      const call = electron.Menu.buildFromTemplate.mock.calls[0]
+      return (call?.[0] ?? []) as { label?: string; click?: () => void }[]
+    }
+    const web = items('https://example.com/x')
+    web.find((i) => i.label === 'Open Link')?.click?.()
+    web.find((i) => i.label === 'Copy Link Address')?.click?.()
+    expect(electron.shell.openExternal).toHaveBeenCalledWith('https://example.com/x')
+    expect(electron.clipboard.writeText).toHaveBeenCalledWith('https://example.com/x')
+    electron.popup.mockClear()
+    expect(items('javascript:alert(1)')).toEqual([])
     expect(electron.popup).not.toHaveBeenCalled()
   })
 })
