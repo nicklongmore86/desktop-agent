@@ -98,6 +98,11 @@ describe('createMainWindow', () => {
     expect(options.webPreferences['preload']).toMatch(/preload[\\/]index\.js$/)
   })
 
+  it('shows the native text context menu in the app window', () => {
+    createMainWindow()
+    expect(electron.webContents.on).toHaveBeenCalledWith('context-menu', expect.any(Function))
+  })
+
   it('denies every window.open and opens web links externally', () => {
     createMainWindow()
     const handler = electron.webContents.setWindowOpenHandler.mock.calls[0]?.[0] as OpenHandler
