@@ -225,6 +225,11 @@ function AppWindow(): React.JSX.Element {
     shell.current?.closeDrawer()
     void chat.newChat()
   }
+  /** Ctrl+, and the menu. Already open, they leave it alone: a new section would remount it. */
+  const showSettings = (): void => {
+    setSettingsSection((current) => current ?? 'accounts')
+  }
+  // Settings is not here on purpose: New chat and Ctrl+K close it and carry on.
   const shortcutsHeld =
     approval !== undefined ||
     listDialog ||
@@ -234,9 +239,7 @@ function AppWindow(): React.JSX.Element {
   useShortcuts(
     {
       newChat: startNewChat,
-      openSettings: () => {
-        openSettings()
-      },
+      openSettings: showSettings,
       focusComposer: () => {
         setSettingsSection(null)
         // The message box (or command line) mounts when the chat view is showing.
@@ -247,12 +250,7 @@ function AppWindow(): React.JSX.Element {
   )
   useMenuCommands(
     api.onMenuCommand,
-    {
-      newChat: startNewChat,
-      openSettings: () => {
-        openSettings()
-      },
-    },
+    { newChat: startNewChat, openSettings: showSettings },
     shortcutsHeld,
   )
   useViewModeHotkey(

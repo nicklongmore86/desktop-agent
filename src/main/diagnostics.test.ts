@@ -7,6 +7,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,6 +29,7 @@ const {
   routeConsole,
   watchRenderer,
 } = await import('./diagnostics')
+const { cancelOnPageEnd } = await import('./chat/lifecycle')
 
 const SECRETS = [
   'sk-ant-api03-abcDEF123456',
@@ -160,9 +162,118 @@ describe('formatLogArgs', () => {
   })
 
   it('caps a record, and a pasted line break cannot forge a new one', () => {
-    expect(formatLogArgs(['y'.repeat(500_000)], '/nowhere').length).toBeLessThan(2100)
-    const forged = formatLogArgs(['a\n2026-01-01T00:00:00.000Z ERROR forged\u0007'], '/nowhere')
-    expect(forged).toBe('a\n    2026-01-01T00:00:00.000Z ERROR forged ')
+    expect(formatLogArgs(['y'.repeat(500_000)], '/nowhere').length).toBeLessThan(400)
+    const forged = formatLogArgs(['a\n2026-01-01T00:00:00.000Z ERROR forged'], '/nowhere')
+    expect(forged).toBe('a ...[truncated]')
+    expect(formatLogArgs(['a b\u0007c'], '/nowhere')).toBe('a b c')
+  })
+})
+
+describe('formatLogArgs, the limit on free text', () => {
+  const PROMPT = 'Summarise my contract\nThe rent is 900 a month\n\nmy private second paragraph'
+  const leaks = ['The rent is', 'second paragraph']
+
+  it.each([
+    ['alone', [PROMPT]],
+    ['last', ['sending', 'to', PROMPT]],
+    ['first', [PROMPT, 'failed', 3]],
+    ['in the middle', ['sending', PROMPT, { path: 'a.txt' }]],
+  ])('keeps only the first line of a multi-line string %s', (_where, args) => {
+    const text = formatLogArgs(args, '/nowhere')
+    expect(text).toContain('Summarise my contract ...[truncated]')
+    for (const leak of leaks) expect(text).not.toContain(leak)
+  })
+
+  it.each([
+    ['CRLF', 'first\r\nmy private rest'],
+    ['CR', 'first\rmy private rest'],
+    ['a line separator', 'first\u2028my private rest'],
+    ['a paragraph separator', 'first\u2029my private rest'],
+    ['a next line', 'first\u0085my private rest'],
+    ['a form feed', 'first\fmy private rest'],
+  ])('counts %s as the end of the line', (_name, text) => {
+    expect(formatLogArgs([text], '/nowhere')).toBe('first ...[truncated]')
+  })
+
+  it('caps one long line, and says so', () => {
+    const line = 'word '.repeat(200)
+    const text = formatLogArgs([line], '/nowhere')
+    expect(text).toBe(`${line.slice(0, 300)} ...[truncated]`)
+  })
+
+  it('leaves an ordinary message as it is, whatever whitespace surrounds it', () => {
+    const line = 'could not save the conversation: ENOSPC'
+    expect(formatLogArgs([line], '/nowhere')).toBe(line)
+    expect(formatLogArgs([`\n\n  ${line}\n`], '/nowhere')).toBe(line)
+    expect(formatLogArgs(['x'.repeat(30).replaceAll('x', 'ab ')], '/nowhere')).not.toContain(
+      'truncated',
+    )
+  })
+
+  it('still redacts a secret on a single line, and one the cut would have split', () => {
+    expect(formatLogArgs(['key is sk-ant-api03-abcDEF123456 ok'], '/nowhere')).toBe(
+      'key is [redacted] ok',
+    )
+    const atTheCut = `${'word '.repeat(59)}sk-ant-api03-abcDEF123456`
+    const text = formatLogArgs([atTheCut], '/nowhere')
+    expect(text).not.toContain('sk-')
+    expect(formatLogArgs(['token=', 'plainvalue'], '/nowhere')).not.toContain('plainvalue')
+  })
+
+  it('does not let a cut hide the home folder', () => {
+    const home = '/home/somebody-with-a-name'
+    const text = formatLogArgs([`${'a '.repeat(145)}${home}/secret.txt`], home)
+    expect(text).not.toContain('somebody')
+  })
+
+  it('applies to the fields of a logged object, and its keys', () => {
+    const text = formatLogArgs(
+      [{ path: 'a.txt\nmy private rest', 'odd\nmy private rest': 1 }],
+      '/nowhere',
+    )
+    expect(text).toBe('{ path: a.txt ...[truncated], odd ...[truncated]: 1 }')
+  })
+
+  it('keeps an error first line and its frames, not the rest of its message', () => {
+    const error = new Error(`Request failed\n${PROMPT}`)
+    const text = formatLogArgs(['send failed', error], '/nowhere')
+    expect(text).toContain('send failed Error: Request failed ...[truncated]')
+    expect(text).toMatch(/\n {4}at .*diagnostics\.test\.ts:\d+:\d+/)
+    for (const leak of leaks) expect(text).not.toContain(leak)
+  })
+
+  it('does not take a line of an error message for a stack frame', () => {
+    const plain = new Error('failed\n   at the beach with my private prompt\n')
+    expect(formatLogArgs([plain], '/nowhere')).not.toContain('the beach')
+    // Even when the line is frame-shaped: what the message said is not a frame.
+    const pasted = new Error('failed\n   at privateFunction (my-private-file.ts:1:2)')
+    expect(formatLogArgs([pasted], '/nowhere')).not.toContain('privateFunction')
+    // Or when the stack no longer starts with the message: it was changed after the capture.
+    const changed = new Error('changed')
+    changed.stack =
+      'Error: my private prompt\n   at the shops with my private prompt\n   at real (file.js:1:2)'
+    const text = formatLogArgs([changed], '/nowhere')
+    expect(text).not.toContain('the shops')
+    expect(text).toContain('at real (file.js:1:2)')
+  })
+
+  it('reaches the file the same way through the console route', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'desktop-agent-log-'))
+    try {
+      const file = new RotatingLogFile({ dir })
+      const target = { debug: vi.fn(), log: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+      const restore = routeConsole(
+        createLogger(file, { now: () => new Date(0), home: '/nowhere' }),
+        target as unknown as Console,
+      )
+      target.info('library says', PROMPT, 'and', 'sk-ant-api03-abcDEF123456')
+      restore()
+      expect(readFileSync(join(dir, 'main.log'), 'utf8')).toBe(
+        '1970-01-01T00:00:00.000Z INFO  library says Summarise my contract ...[truncated] and [redacted]\n',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -381,6 +492,105 @@ describe('watchRenderer', () => {
     crash('clean-exit')
     await settle()
     expect(show).not.toHaveBeenCalled()
+  })
+
+  describe('a renderer that exits normally', () => {
+    const exit = (emit: (event: string, ...args: unknown[]) => void): void => {
+      emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 })
+    }
+
+    it('is not logged as a crash or asked about, and the page comes back', async () => {
+      const { contents, emit, settle, show, deps } = setup()
+      exit(emit)
+      await settle()
+      expect(show).not.toHaveBeenCalled()
+      expect(deps.logger.log.mock.calls).toEqual([
+        ['info', 'renderer exited normally (exit code 0)'],
+      ])
+      expect(contents.reload).toHaveBeenCalledOnce()
+    })
+
+    it('does nothing more when the window has gone or the app is quitting', async () => {
+      for (const quitting of [true, false]) {
+        const { contents, window, emit, settle, show, deps } = setup()
+        deps.isQuitting.mockReturnValue(quitting)
+        window.isDestroyed.mockReturnValue(!quitting)
+        exit(emit)
+        await settle()
+        expect(show).not.toHaveBeenCalled()
+        expect(contents.reload).not.toHaveBeenCalled()
+      }
+      const { contents, emit, settle } = setup()
+      contents.isDestroyed.mockReturnValue(true)
+      exit(emit)
+      await settle()
+      expect(contents.reload).not.toHaveBeenCalled()
+    })
+
+    it('still ends the run, through the handler that does so', () => {
+      const contents = Object.assign(new EventEmitter(), {
+        reload: vi.fn(),
+        forcefullyCrashRenderer: vi.fn(),
+        isDestroyed: () => false,
+      })
+      const cancel = vi.fn()
+      const show = vi.fn(() => Promise.resolve(0))
+      watchRenderer(
+        { isDestroyed: () => false, webContents: contents },
+        {
+          logger: { log: vi.fn() },
+          guard: new CrashLoopGuard(),
+          show,
+          quit: vi.fn(),
+          openLogs: vi.fn(),
+          isQuitting: () => false,
+        },
+      )
+      cancelOnPageEnd(contents, cancel)
+      contents.emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 })
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(show).not.toHaveBeenCalled()
+    })
+
+    it('stops reloading a page that keeps exiting, and offers a way out that is not a crash', async () => {
+      const { contents, emit, settle, show, deps } = setup(['open-logs-and-quit'])
+      for (let i = 0; i < 3; i += 1) {
+        exit(emit)
+        await settle()
+      }
+      expect(contents.reload).toHaveBeenCalledTimes(2)
+      expect(show).toHaveBeenCalledOnce()
+      const plan = show.mock.calls[0]?.[1] as unknown as { message: string; detail: string }
+      expect(`${plan.message} ${plan.detail}`).not.toMatch(/crash/i)
+      expect(deps.openLogs).toHaveBeenCalledOnce()
+      expect(deps.quit).toHaveBeenCalledOnce()
+      expect(deps.logger.log.mock.calls.filter(([level]) => level === 'error')).toEqual([])
+    })
+
+    it('takes down a prompt about a hang, and a later hang can ask again', async () => {
+      const { contents, emit, settle, show } = setup([new Promise<string>(() => undefined), 'wait'])
+      emit('unresponsive')
+      await settle()
+      expect(show).toHaveBeenCalledOnce()
+      const signal = show.mock.calls[0]?.[2 as never] as AbortSignal
+      exit(emit)
+      await settle()
+      expect(signal.aborted).toBe(true)
+      expect(contents.reload).toHaveBeenCalledOnce()
+      emit('unresponsive')
+      await settle()
+      expect(show).toHaveBeenCalledTimes(2)
+    })
+
+    it('counts as the hung renderer going, when this code killed it to reload', async () => {
+      const { contents, emit, settle, show } = setup(['reload'])
+      emit('unresponsive')
+      await settle()
+      exit(emit)
+      await settle()
+      expect(contents.reload).toHaveBeenCalledOnce()
+      expect(show).toHaveBeenCalledOnce()
+    })
   })
 
   it('kills a hung renderer and reloads once it has gone, without calling that a crash', async () => {

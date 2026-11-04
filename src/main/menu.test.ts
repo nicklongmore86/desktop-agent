@@ -72,6 +72,14 @@ describe('buildMenuTemplate', () => {
     }
   })
 
+  it('zooms in on Ctrl+= and the keypad by hidden items, and lists Zoom In once', () => {
+    const zoomIn = items(template(true).menu).filter((item) => item.role === 'zoomIn')
+    expect(zoomIn.filter((item) => item.visible !== false)).toEqual([{ role: 'zoomIn' }])
+    expect(zoomIn.filter((item) => item.visible === false).map((item) => item.accelerator)).toEqual(
+      ['CommandOrControl+=', 'CommandOrControl+numadd'],
+    )
+  })
+
   it('shows Ctrl+N and Ctrl+, without registering them, so the page answers them once', () => {
     const { menu } = template(true)
     for (const [id, key] of [

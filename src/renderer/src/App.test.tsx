@@ -55,6 +55,79 @@ describe('application menu commands', () => {
   })
 })
 
+describe('application menu commands during first-run setup', () => {
+  it('holds them like the shortcuts, then lets them through once it is closed', async () => {
+    const { api, user, pushMenuCommand } = await renderApp({
+      key: { saved: false, error: null },
+      configured: ['anthropic-api'],
+    })
+    const wizard = await screen.findByRole('dialog', { name: 'Which AI do you want to use?' })
+    await user.keyboard('{Control>}n{/Control}')
+    act(() => {
+      pushMenuCommand('new-chat')
+      pushMenuCommand('open-settings')
+    })
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+    await user.click(within(wizard).getByRole('button', { name: 'Close' }))
+    act(() => {
+      pushMenuCommand('new-chat')
+    })
+    expect(api.chat.newChat).toHaveBeenCalledOnce()
+  })
+})
+
+describe('application menu commands while Settings is open', () => {
+  const settings = () => screen.getByRole('dialog', { name: 'Settings' })
+
+  // The same steps through the menu and through Ctrl+N, which has always closed Settings first.
+  it.each(['menu', 'Ctrl+N'] as const)(
+    '%s closes Settings and starts a new chat, leaving the app usable',
+    async (how) => {
+      const { api, user, pushMenuCommand } = await renderApp()
+      await user.keyboard('{Control>},{/Control}')
+      expect(settings()).toBeTruthy()
+      if (how === 'menu') {
+        act(() => {
+          pushMenuCommand('new-chat')
+        })
+      } else {
+        await user.keyboard('{Control>}n{/Control}')
+      }
+      expect(api.chat.newChat).toHaveBeenCalledOnce()
+      expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+      const box = screen.getByRole('textbox', { name: 'Message' })
+      expect(box.closest('[inert]')).toBeNull()
+      await user.type(box, 'still works')
+      expect((box as HTMLTextAreaElement).value).toBe('still works')
+    },
+  )
+
+  // Opened from the Files tab on Folders: a change of section would remount the whole dialog.
+  it.each(['menu', 'Ctrl+,'] as const)(
+    '%s leaves Settings as it is, on any section',
+    async (how) => {
+      const { api, user, pushMenuCommand } = await renderApp()
+      await user.click(await screen.findByRole('button', { name: 'Manage folders' }))
+      const open = settings()
+      expect(within(open).getByRole('button', { name: 'Folders & permissions' })).toBeTruthy()
+      const current = () => within(settings()).getByRole('button', { current: 'page' }).textContent
+      const before = current()
+      expect(before).toBe('Folders & permissions')
+      if (how === 'menu') {
+        act(() => {
+          pushMenuCommand('open-settings')
+        })
+      } else {
+        await user.keyboard('{Control>},{/Control}')
+      }
+      expect(settings()).toBe(open)
+      expect(current()).toBe(before)
+      expect(api.chat.newChat).not.toHaveBeenCalled()
+    },
+  )
+})
+
 describe('chat view', () => {
   it('sends a message and renders the streamed reply and tool cards', async () => {
     const { api, user, pushChat } = await renderApp()

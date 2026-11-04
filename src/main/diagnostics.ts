@@ -15,13 +15,26 @@ import { join } from 'node:path'
  * The main process's log file and its last line of defence: a renderer that crashes or hangs,
  * and errors nothing else caught. The hidden document reader window and the helper processes
  * have their own failure handling (documents/worker-host.ts) and are not watched here.
+ *
+ * What a log line can hold: patterns find secrets of a known shape, and nothing can recognise
+ * a prompt. So free text is limited by its shape instead (LINE_MAX_CHARS): one short line per
+ * string, whoever wrote it. That line can still be free text from a library. This app's own
+ * calls log fixed text and safe fields; README.md says what that leaves.
  */
 
 const LOG_MAX_BYTES = 1024 * 1024
 const LOG_MAX_FILES = 3
 /** Longest text the patterns look at; what they cut short never survives RECORD_MAX_CHARS. */
 const SCAN_MAX_CHARS = 64 * 1024
-const STRING_MAX_CHARS = 2000
+/**
+ * How much of a string reaches the log: its first line, up to this long. Room for every message
+ * this app writes (under 100 characters, plus a path, and Windows paths stop near 260) and for a
+ * library's one-line warning. Not room for a pasted document, and it is the same for everyone
+ * because nothing here can tell a library's message from a prompt it was handed.
+ */
+const LINE_MAX_CHARS = 300
+const FIELD_MAX_CHARS = 200
+const KEY_MAX_CHARS = 60
 const RECORD_MAX_CHARS = 8000
 const STACK_MAX_FRAMES = 20
 /** How long a quit may take before a broken app is made to exit. */
@@ -70,29 +83,58 @@ export function redactText(text: string, home: string = homedir()): string {
   return home.length > 1 ? out.replaceAll(home, '~') : out
 }
 
+const RECORD_CUT = '...[truncated]'
+const LINE_BREAK = /[\n\v\f\r\u0085\u2028\u2029]/
+
 const cap = (text: string, max: number): string =>
-  text.length > max ? `${text.slice(0, max)}...[${String(text.length - max)} more]` : text
+  text.length > max ? `${text.slice(0, max)}${RECORD_CUT}` : text
+
+/**
+ * The first line with anything on it, up to `max`, marked when something was dropped. Redacted
+ * before it is cut, so the cut cannot hide part of a secret or the home folder from the patterns.
+ */
+function firstLine(text: string, max: number, home: string | undefined): string {
+  const body = text.trimStart()
+  const end = body.search(LINE_BREAK)
+  const line = redactText(end < 0 ? body : body.slice(0, end), home)
+  const dropped = end >= 0 && body.slice(end).trim() !== ''
+  if (line.length > max) return `${line.slice(0, max)} ${RECORD_CUT}`
+  return dropped ? `${line} ${RECORD_CUT}` : line
+}
 
 /** Fields of a logged object that may hold secrets or user content: named, never shown. */
 const SENSITIVE_KEY =
   /prompt|message|content|text|body|data|attachment|file|input|output|token|key|secret|pass|auth|cookie|code|image|base64|credential|header|session|request|response/i
 
-function describeError(error: Error, depth: number): string {
-  const code = (error as { code?: unknown }).code
-  const label = typeof code === 'string' || typeof code === 'number' ? ` [${String(code)}]` : ''
-  const frames = (error.stack ?? '')
+/** Ends like a V8 frame: "at f (file.js:1:2)", "at file.js:1:2", "at Array.map (<anonymous>)". */
+const STACK_FRAME = /^\s*at .*(?::\d+:\d+\)?|<anonymous>\)?|\(native\))$/
+
+/** The frames only. A stack starts with the message, and a line of that can look like a frame. */
+function stackFrames(error: Error): string[] {
+  const stack = error.stack ?? ''
+  const header = `${error.name}: ${error.message}`
+  return (stack.startsWith(header) ? stack.slice(header.length) : stack)
     .split('\n')
-    .filter((line) => /^\s*at /.test(line))
+    .filter((line) => STACK_FRAME.test(line))
     .slice(0, STACK_MAX_FRAMES)
-  const lines = [`${error.name}: ${cap(error.message, STRING_MAX_CHARS)}${label}`, ...frames]
+}
+
+function describeError(error: Error, depth: number, home: string | undefined): string {
+  const code = (error as { code?: unknown }).code
+  const label =
+    typeof code === 'string' || typeof code === 'number'
+      ? ` [${firstLine(String(code), KEY_MAX_CHARS, home)}]`
+      : ''
+  const title = firstLine(`${error.name}: ${error.message}`, LINE_MAX_CHARS, home)
+  const lines = [`${title}${label}`, ...stackFrames(error)]
   // Only this. SDK errors also carry the request, its headers and its body.
   if (error.cause instanceof Error && depth < 2) {
-    lines.push(`Caused by: ${describeError(error.cause, depth + 1)}`)
+    lines.push(`Caused by: ${describeError(error.cause, depth + 1, home)}`)
   }
   return lines.join('\n')
 }
 
-function describeObject(value: object): string {
+function describeObject(value: object, home: string | undefined): string {
   if (Array.isArray(value)) return `[array of ${String(value.length)}]`
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
     return `[binary, ${String(value.byteLength)} bytes]`
@@ -100,29 +142,30 @@ function describeObject(value: object): string {
   const fields = Object.entries(value)
     .slice(0, 20)
     .map(([key, field]: [string, unknown]) => {
-      if (SENSITIVE_KEY.test(key)) return `${key}: ${REDACTED}`
-      if (typeof field === 'string') return `${key}: ${cap(field, 200)}`
+      const name = firstLine(key, KEY_MAX_CHARS, home)
+      if (SENSITIVE_KEY.test(key)) return `${name}: ${REDACTED}`
+      if (typeof field === 'string') return `${name}: ${firstLine(field, FIELD_MAX_CHARS, home)}`
       if (typeof field === 'number' || typeof field === 'boolean' || field == null) {
-        return `${key}: ${String(field)}`
+        return `${name}: ${String(field)}`
       }
-      return `${key}: [${typeof field}]`
+      return `${name}: [${typeof field}]`
     })
   return `{ ${fields.join(', ')} }`
 }
 
-function describeValue(value: unknown): string {
-  if (typeof value === 'string') return cap(value, STRING_MAX_CHARS)
-  if (value instanceof Error) return describeError(value, 0)
-  if (typeof value === 'object' && value !== null) return describeObject(value)
+function describeValue(value: unknown, home: string | undefined): string {
+  if (typeof value === 'string') return firstLine(value, LINE_MAX_CHARS, home)
+  if (value instanceof Error) return describeError(value, 0, home)
+  if (typeof value === 'object' && value !== null) return describeObject(value, home)
   if (typeof value === 'function') return '[function]'
-  return String(value)
+  return firstLine(String(value), LINE_MAX_CHARS, home)
 }
 
 /** Turns console-style arguments into one safe piece of text. Never throws. */
 export function formatLogArgs(args: readonly unknown[], home?: string): string {
   const parts = args.map((arg) => {
     try {
-      return describeValue(arg)
+      return describeValue(arg, home)
     } catch {
       return '[unreadable]'
     }
@@ -284,7 +327,7 @@ export class CrashLoopGuard {
   }
 }
 
-export type RecoveryKind = 'crashed' | 'unresponsive'
+export type RecoveryKind = 'crashed' | 'unresponsive' | 'exited'
 export type RecoveryChoice = 'reload' | 'quit' | 'wait' | 'open-logs-and-quit'
 
 export interface RecoveryPrompt {
@@ -339,6 +382,15 @@ export function recoveryPrompt(kind: RecoveryKind, canReload: boolean): Recovery
           'wait',
         )
   }
+  if (kind === 'exited') {
+    // Only asked once reloading has stopped helping: one normal exit just reloads.
+    return prompt(
+      'The Desktop Agent window keeps stopping.',
+      `${stopped} It has stopped several times in the last few minutes, so it is not being reloaded again.`,
+      ['quit', 'open-logs-and-quit'],
+      'quit',
+    )
+  }
   return canReload
     ? prompt(
         'The Desktop Agent window crashed.',
@@ -392,6 +444,9 @@ export interface RecoveryDeps {
 /**
  * Offers Reload or Quit when the app window's renderer dies or hangs. The run and its approvals
  * are not handled here: chat/lifecycle.ts cancels them when the page goes, and they stay denied.
+ *
+ * A renderer can also exit normally (reason 'clean-exit', exit code 0). That is no crash to log
+ * or ask about, but if the window is still open it is blank, so the page comes back by itself.
  */
 export function watchRenderer(window: WatchedWindow, deps: RecoveryDeps): void {
   const { logger, guard } = deps
@@ -434,16 +489,26 @@ export function watchRenderer(window: WatchedWindow, deps: RecoveryDeps): void {
   }
 
   contents.on('render-process-gone', (_event, details) => {
-    logger.log('error', `renderer gone: ${details.reason} (exit code ${String(details.exitCode)})`)
-    if (deps.isQuitting() || window.isDestroyed()) return
+    const clean = details.reason === 'clean-exit'
+    const code = `(exit code ${String(details.exitCode)})`
+    if (clean) logger.log('info', `renderer exited normally ${code}`)
+    else logger.log('error', `renderer gone: ${details.reason} ${code}`)
+    if (deps.isQuitting() || window.isDestroyed() || contents.isDestroyed()) return
     if (killedForReload) {
       killedForReload = false
       contents.reload()
       return
     }
     showing?.controller.abort()
+    showing = null
     guard.record()
-    void ask('crashed')
+    if (!clean) {
+      void ask('crashed')
+    } else if (guard.canReload()) {
+      contents.reload()
+    } else {
+      void ask('exited')
+    }
   })
   contents.on('unresponsive', () => {
     logger.log('warn', 'renderer unresponsive')

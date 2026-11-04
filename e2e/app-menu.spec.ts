@@ -180,6 +180,47 @@ test.describe('packaged build', () => {
     await expect.poll(() => zoomLevel(app)).toBe(0)
   })
 
+  test('every zoom-in key steps once, and the menu bar stays hidden until Alt', async () => {
+    const { app } = launched
+    const page = await app.firstWindow()
+    const barVisible = () =>
+      app.evaluate(
+        ({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible() ?? true,
+      )
+    await waitForKeys(app)
+    // Plus is Shift+=, so plain Ctrl+Plus and Ctrl+Shift+Plus are one key on a US keyboard, and
+    // Ctrl+= is what a keyboard with its own + key sends as well.
+    let level = 0
+    const keys: [string, string[]][] = [
+      ['=', ['control']],
+      ['Plus', ['control']],
+      ['Plus', ['control', 'shift']],
+      ['numadd', ['control']],
+    ]
+    for (const [key, modifiers] of keys) {
+      await press(app, key, modifiers)
+      level += 0.5
+      await expect.poll(() => zoomLevel(app)).toBe(level)
+      // A second handler would show up after the first.
+      await page.waitForTimeout(300)
+      expect(await zoomLevel(app)).toBe(level)
+      expect(await barVisible()).toBe(false)
+    }
+    await press(app, '0', ['control'])
+    await expect.poll(() => zoomLevel(app)).toBe(0)
+
+    const listed = await app.evaluate(({ Menu }) =>
+      Menu.getApplicationMenu()
+        ?.items.flatMap((item) => item.submenu?.items ?? [])
+        .filter((item) => item.role?.toLowerCase() === 'zoomin' && item.visible)
+        .map((item) => item.label),
+    )
+    expect(listed).toHaveLength(1)
+
+    await press(app, 'Alt', [])
+    await expect.poll(barVisible).toBe(true)
+  })
+
   test('Ctrl+N and Ctrl+, reach the page once; the menu items do the same job', async () => {
     const { app } = launched
     const page = await app.firstWindow()
@@ -244,6 +285,45 @@ test.describe('packaged build', () => {
     const log = readFileSync(join(userData, 'logs', 'main.log'), 'utf8')
     expect(log).toContain('starting')
     expect(log).toContain('renderer gone: crashed')
+  })
+
+  test('a page that exits normally comes back without asking or logging a crash', async () => {
+    const { app, userData } = launched
+    await stubPrompts(app, 'Quit')
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.emit(
+        'render-process-gone',
+        {},
+        { reason: 'clean-exit', exitCode: 0 },
+      )
+    })
+    await expect.poll(() => loads(app)).toBeGreaterThan(0)
+    await expect.poll(() => windowShowsApp(app), { timeout: 15_000 }).toBe(true)
+    expect(await offered(app)).toEqual([])
+    const log = readFileSync(join(userData, 'logs', 'main.log'), 'utf8')
+    expect(log).toContain('renderer exited normally (exit code 0)')
+    expect(log).not.toContain('renderer gone')
+  })
+
+  test('a multi-line string reaches the file as its first line, in any position', async () => {
+    const { app, userData } = launched
+    const closed = new Promise<void>((resolve) => {
+      app.once('close', () => {
+        resolve()
+      })
+    })
+    await app.evaluate(({ app: electronApp }) => {
+      const prompt = 'first line\nmy private second line\nmy private third line'
+      console.info(prompt, 'then', prompt)
+      console.info('single line sk-ant-api03-abcDEF123456')
+      electronApp.quit()
+    })
+    await closed
+    const log = readFileSync(join(userData, 'logs', 'main.log'), 'utf8')
+    expect(log).toContain('first line ...[truncated] then first line ...[truncated]')
+    expect(log).toContain('single line [redacted]')
+    expect(log).not.toContain('my private')
+    expect(log).not.toContain('sk-ant-api03')
   })
 
   test('offers Reload or Quit when the page hangs, and Reload brings it back', async () => {

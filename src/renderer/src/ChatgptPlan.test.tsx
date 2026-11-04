@@ -201,6 +201,25 @@ describe('the plan notice and an approval together', () => {
     expect(localStorage.getItem('plan-notice-seen:chatgpt-plan')).toBe('1')
   })
 
+  it('holds the application menu under the notice, like the shortcuts', async () => {
+    const { api, user, pushMenuCommand } = await renderApp({
+      provider: PLAN,
+      configured: PLAN_CONFIGURED,
+    })
+    await screen.findByRole('dialog', { name: 'You’re using your ChatGPT plan' })
+    act(() => {
+      pushMenuCommand('new-chat')
+      pushMenuCommand('open-settings')
+    })
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+    await user.click(await screen.findByRole('button', { name: 'Got it' }))
+    act(() => {
+      pushMenuCommand('new-chat')
+    })
+    expect(api.chat.newChat).toHaveBeenCalledOnce()
+  })
+
   it('leaves the global shortcuts as they were: off under an approval, off under the notice', async () => {
     const { api, user, pushApproval, pushChat } = await renderApp({
       provider: PLAN,

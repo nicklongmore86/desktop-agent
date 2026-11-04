@@ -86,6 +86,10 @@ export function buildMenuTemplate(options: MenuOptions): MenuItemConstructorOpti
               { type: 'separator' },
             ] as const)),
         { role: 'zoomIn' },
+        // The role's own key is Plus, which Electron takes as Shift+=. These are the same action
+        // on the unshifted key and the keypad, hidden so that View lists Zoom In once.
+        { role: 'zoomIn', accelerator: 'CommandOrControl+=', visible: false },
+        { role: 'zoomIn', accelerator: 'CommandOrControl+numadd', visible: false },
         { role: 'zoomOut' },
         { role: 'resetZoom' },
       ],
