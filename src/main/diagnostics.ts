@@ -52,9 +52,12 @@ const TEXT_PATTERNS: readonly (readonly [RegExp, string])[] = [
   // A sign-in's code and state, and anything else a query string or a user:pass@ carries.
   [/\b(https?:\/\/)[^\s/@"']+@/gi, `$1${REDACTED}@`],
   [/\b(https?:\/\/[^\s?#"')]+)[?#][^\s"')]*/gi, `$1?${REDACTED}`],
-  // Encoded data (a key we do not know the shape of, an image, a file).
-  [/[A-Za-z0-9+/_-]{64,}={0,2}/g, REDACTED],
 ]
+
+/** Encoded data: a key we do not know the shape of, an image, a file. */
+const ENCODED_RUN = /[A-Za-z0-9+/_-]{64,}={0,2}/g
+/** Which a long absolute path, as in a stack frame, only looks like. */
+const ABSOLUTE_PATH = /^(?:\/[\w+-]{1,40})+\/?$/
 
 /**
  * Removes what must never reach a log from free text: API keys, sign-in tokens, encoded data,
@@ -63,6 +66,7 @@ const TEXT_PATTERNS: readonly (readonly [RegExp, string])[] = [
 export function redactText(text: string, home: string = homedir()): string {
   let out = text.length > SCAN_MAX_CHARS ? text.slice(0, SCAN_MAX_CHARS) : text
   for (const [pattern, replacement] of TEXT_PATTERNS) out = out.replace(pattern, replacement)
+  out = out.replace(ENCODED_RUN, (run) => (ABSOLUTE_PATH.test(run) ? run : REDACTED))
   return home.length > 1 ? out.replaceAll(home, '~') : out
 }
 

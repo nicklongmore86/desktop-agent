@@ -79,6 +79,15 @@ describe('redactText', () => {
     expect(redactText(`blob ${'QUJD'.repeat(40)} end`, '/nowhere')).toBe('blob [redacted] end')
   })
 
+  it('keeps a long absolute path, as in a stack frame, but not encoded data with slashes', () => {
+    const frame =
+      'at f (file:///home/runner/work/desktop-agent/desktop-agent/src/main/some/deep/dir/x.ts:1:2)'
+    expect(redactText(frame, '/nowhere')).toBe(frame)
+    const blob = `${'QUJD'.repeat(12)}/${'QUJD'.repeat(12)}`
+    expect(redactText(`blob ${blob} end`, '/nowhere')).toBe('blob [redacted] end')
+    expect(redactText(`blob /${'QUJD'.repeat(20)} end`, '/nowhere')).toBe('blob [redacted] end')
+  })
+
   it('shortens the home folder, which names the user', () => {
     expect(redactText('could not read C:\\Users\\Ann\\x.txt', 'C:\\Users\\Ann')).toBe(
       'could not read ~\\x.txt',
