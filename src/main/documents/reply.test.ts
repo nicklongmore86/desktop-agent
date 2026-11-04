@@ -42,6 +42,110 @@ function verdict(raw: unknown, request: ReplyJob = job()): string {
   }
 }
 
+describe('checkReply: page layouts and raw pixels', () => {
+  const layout = {
+    imageCoverage: 1,
+    textCoverage: 0.1,
+    ink: true,
+    incomplete: false,
+    longEdgePoints: 792,
+  }
+  const one = {
+    meta: { kind: 'pdf', mime: 'application/pdf', pageCount: 3 },
+    images: [],
+    warnings: [],
+  }
+  const rasterJob = job({ view: 'raster', select: { from: 2 }, budget: { longEdge: 100 } })
+  const rasterView = (raster: ReturnType<typeof pixels>, shown = 2, overrides: object = {}) => ({
+    ...one,
+    sections: [],
+    rasters: [raster],
+    position: { unit: 'page', total: 3, shown: { from: shown, to: shown }, next: null },
+    ...overrides,
+  })
+  const pixels = (width: number, height: number, size = width * height) => ({
+    page: 2,
+    width,
+    height,
+    pixels: new Uint8Array(size),
+  })
+
+  it('takes layouts only when asked, inside their bounds', () => {
+    const view = (over: object) =>
+      pdfView({ images: [], sections: [{ page: 1, text: 'one', layout: { ...layout, ...over } }] })
+    const asked = job({ pageLayout: true })
+    expect(verdict(reply(view({})), asked)).toBe('accepted')
+    expect(verdict(reply(view({})))).toBe('it described pages it was not asked about')
+    for (const bad of [
+      { imageCoverage: 1.5 },
+      { imageCoverage: -1 },
+      { textCoverage: Number.NaN },
+      { ink: 'yes' },
+      { incomplete: 'yes' },
+      { longEdgePoints: 0 },
+      { longEdgePoints: 1e12 },
+      { extra: 1 },
+    ]) {
+      expect(verdict(reply(view(bad)), asked)).toBe('its reply did not match what was asked')
+    }
+  })
+
+  it('takes exactly the page asked for, exactly its size, as a fresh copy', () => {
+    const good = rasterView(pixels(50, 100))
+    expect(verdict(reply(good), rasterJob)).toBe('accepted')
+    const checked = checkReply(reply(good), rasterJob)
+    if (checked.type !== 'result') throw new Error('not a result')
+    const copy = checked.view.rasters?.[0]
+    expect(copy?.pixels.buffer).not.toBe(good.rasters[0]?.pixels.buffer)
+    expect(copy?.pixels.byteLength).toBe(5000)
+
+    // One byte more or less than the claimed size.
+    expect(verdict(reply(rasterView(pixels(50, 100, 5001))), rasterJob)).toBe(
+      'its pixels are not the size it claims',
+    )
+    expect(verdict(reply(rasterView(pixels(50, 100, 4999))), rasterJob)).toBe(
+      'its pixels are not the size it claims',
+    )
+    // Larger than asked for.
+    expect(verdict(reply(rasterView(pixels(101, 100))), rasterJob)).toBe(
+      'its reply did not match what was asked',
+    )
+    // Some other page.
+    expect(verdict(reply(rasterView({ ...pixels(50, 100), page: 1 }, 1)), rasterJob)).toBe(
+      'it did not return the page asked for',
+    )
+    // Not the bytes it claims to be.
+    const fake = { ...pixels(50, 100), pixels: 'x' } as unknown as ReturnType<typeof pixels>
+    expect(verdict(reply(rasterView(fake)), rasterJob)).toBe(
+      'its reply did not match what was asked',
+    )
+    // A second page's pixels, or text and pictures besides.
+    const two = rasterView(pixels(50, 100), 2, { rasters: [pixels(50, 100), pixels(50, 100)] })
+    expect(verdict(reply(two), rasterJob)).toBe('its reply did not match what was asked')
+    const more = rasterView(pixels(50, 100), 2, { sections: [{ page: 2, text: 'x' }] })
+    expect(verdict(reply(more), rasterJob)).toBe('it returned more than the pixels asked for')
+    // No pixels at all, or from something that is not a PDF.
+    expect(verdict(reply({ ...good, rasters: [] }), rasterJob)).toBe(
+      'it did not return the page asked for',
+    )
+    const notPdf = { ...good, meta: { kind: 'png', mime: 'image/png' } }
+    expect(verdict(reply(notPdf), rasterJob)).toBe('it did not return the page asked for')
+  })
+
+  it('refuses pixels nobody asked for', () => {
+    const view = rasterView(pixels(50, 100))
+    expect(verdict(reply(view), job({ budget: { longEdge: 100 } }))).toBe(
+      'it returned pixels it was not asked for',
+    )
+  })
+
+  it('keeps a raster inside the pixel cap, whatever long edge was asked for', () => {
+    const limits = { ...DEFAULT_LIMITS, maxDecodedPixels: 100 }
+    const request = job({ view: 'raster', select: { from: 2 }, budget: { longEdge: 100 } }, limits)
+    expect(verdict(reply(rasterView(pixels(50, 100))), request)).toBe('an image is too large')
+  })
+})
+
 describe('checkReply', () => {
   it('accepts a well-formed reply and returns a fresh copy', () => {
     const view = pdfView()

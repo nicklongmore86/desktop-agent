@@ -1,7 +1,7 @@
 // search_files' document phase: the text of PDFs, Word, Excel, PowerPoint and OpenDocument
 // files, read through the same sandboxed document reader as read_document (main never
 // parses a document), a call at a time, as plain lines with where each one is.
-import { DEFAULT_LIMITS as DOCUMENT_LIMITS } from '../documents/limits'
+import { DEFAULT_LIMITS as DOCUMENT_LIMITS, SCAN_IMAGE_COVERAGE } from '../documents/limits'
 import {
   DocumentError,
   type DocumentErrorCode,
@@ -9,8 +9,9 @@ import {
   type DocumentReader,
   type DocumentView,
   type ExtractOptions,
+  type PageLayout,
 } from '../documents/types'
-import type { CachedText, TextSegment } from './document-text-cache'
+import type { CachedText, OcrPage, TextSegment } from './document-text-cache'
 
 /** Kinds whose text search_files reads. Not images, and not .ppt, which the reader refuses. */
 const SEARCHABLE_KINDS = new Set<DocumentKind>([
@@ -47,11 +48,45 @@ export const SEARCHABLE_EXTENSIONS = new Set([
   'csv',
 ])
 
-/**
- * A PDF page with fewer non-space characters than this has no text layer to speak of: at
- * most a stamp or a page number on a scan.
- */
+/** A PDF page with fewer non-space characters than this has no text layer to speak of. */
 const BLANK_PAGE = 8
+/** Over a page-sized image, fewer non-space characters than this are a stamp or a footer. */
+const STAMP_CHARS = 200
+/** Over a page-sized image, text covering less of the page than this is a stamp or a footer. */
+const STAMP_TEXT_COVERAGE = 0.05
+
+/**
+ * Whether a PDF page needs OCR, decided per page from what the reader says is on it (main
+ * never parses the PDF):
+ * - 'no-text': fewer than 8 non-space characters and something drawn (an image, or paths,
+ *   which may be a CAD drawing's outlined text). A page with neither is simply blank.
+ * - 'stamp': images cover at least half the page and the text is small: under 200 non-space
+ *   characters, or covering under 5% of the page (a big "RECEIVED", a long footer). A scan
+ *   with a real OCR layer has far more than that, so it stays a text page.
+ * - A page the reader could not fully inspect may hide a scan, so it gets OCR whatever was measured:
+ *   'no-text' under the first rule's count, 'stamp' otherwise.
+ * A wrong 'stamp' costs one page's OCR and repeats some lines as "(page N, OCR)" matches; a
+ * wrong text page would hide the scan, so the rule leans towards OCR. The page's own text
+ * stays searched either way. A reader without layouts (a fake, in tests) gets the first rule.
+ */
+export function ocrReason(text: string, layout?: PageLayout): OcrPage['reason'] | null {
+  const chars = text.replace(/\s/g, '').length
+  if (chars < BLANK_PAGE) return !layout || layout.ink || layout.incomplete ? 'no-text' : null
+  if (!layout) return null
+  if (layout.incomplete) return 'stamp'
+  if (layout.imageCoverage < SCAN_IMAGE_COVERAGE) return null
+  return chars < STAMP_CHARS || layout.textCoverage < STAMP_TEXT_COVERAGE ? 'stamp' : null
+}
+
+/** The long edge, in pixels, an ordinary page is rendered at for OCR. */
+const OCR_EDGE = 2200
+/** A big sheet's (drawings): labels read better up to about this size, and no better past it. */
+const OCR_EDGE_LARGE = 3300
+/** Past this long edge in points (A4 is 842, US Letter 792, 11x17 1224), a sheet counts as big. */
+const LARGE_PAGE_POINTS = 900
+
+const ocrEdge = (layout?: PageLayout): number =>
+  layout && layout.longEdgePoints > LARGE_PAGE_POINTS ? OCR_EDGE_LARGE : OCR_EDGE
 
 /**
  * Smallest file taken for a cloud-only placeholder. NTFS keeps files of up to about 700
@@ -87,7 +122,7 @@ function isUncPath(path: string): boolean {
 }
 
 /** Refusals that will not change until the file does: kept in the cache like text. */
-const LASTING: ReadonlySet<DocumentErrorCode> = new Set([
+export const LASTING: ReadonlySet<DocumentErrorCode> = new Set([
   'password-protected',
   'malformed',
   'zip-bomb',
@@ -111,6 +146,26 @@ export const FAILURE_LABEL: Record<string, string> = {
   'out-of-range': 'the document reader failed',
 }
 
+/** How long a search waits before sending a document again to a reader that was busy. */
+export const BUSY_RETRY_MS = 250
+
+/** Waits `ms` (at most until the deadline), or less when the signal aborts. */
+export function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted || ms <= 0) {
+      resolve()
+      return
+    }
+    const done = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
 export interface ExtractBudget {
   /** Characters of text kept from one document; the rest is not searched. */
   maxChars: number
@@ -121,8 +176,7 @@ export interface ExtractBudget {
 const EMPTY: CachedText = {
   kind: 'unknown',
   segments: [],
-  scanned: false,
-  blankPages: 0,
+  ocr: [],
   truncated: null,
   failure: null,
 }
@@ -139,7 +193,7 @@ export type ExtractOutcome =
  * of a document, not the whole text the cache keeps. Until it ends the reader refuses
  * any other search's job, so abandoned jobs never pile up.
  */
-async function within(
+export async function within(
   reader: DocumentReader,
   bytes: Uint8Array,
   options: ExtractOptions,
@@ -244,6 +298,7 @@ export async function extractForSearch(
     const options: ExtractOptions = {
       name,
       view: 'text',
+      pageLayout: true,
       budget: { maxChars: DOCUMENT_LIMITS.maxCharsPerCall, maxImages: 0 },
       ...(select ? { select } : {}),
     }
@@ -283,8 +338,7 @@ export async function extractForSearch(
     }
   }
   const unit = view.position.unit
-  let pages = 0
-  let blankPages = 0
+  const ocr: OcrPage[] = []
   try {
     if (unit === 'sheet') {
       const sheets = view.meta.sheets ?? []
@@ -324,8 +378,19 @@ export async function extractForSearch(
             })
           } else {
             const number = section.page ?? 0
-            pages++
-            if (unit === 'page' && section.text.replace(/\s/g, '').length < BLANK_PAGE) blankPages++
+            const reason =
+              kind === 'pdf' && unit === 'page' ? ocrReason(section.text, section.layout) : null
+            if (reason) {
+              ocr.push({
+                page: number,
+                reason,
+                longEdge: ocrEdge(section.layout),
+                state: 'pending',
+                text: '',
+                low: false,
+                failure: null,
+              })
+            }
             more = add({ at: `${unit} ${String(number)}`, text: section.text })
           }
           if (!more) {
@@ -351,14 +416,12 @@ export async function extractForSearch(
   } catch (error) {
     return failed(error)
   }
-  const scanned = kind === 'pdf' && pages > 0 && blankPages === pages
   return {
     kind: 'text',
     text: {
       kind,
       segments,
-      scanned,
-      blankPages: scanned ? 0 : blankPages,
+      ocr,
       truncated,
       failure: null,
     },
@@ -376,10 +439,28 @@ export interface DocumentLine {
   cell?: true
 }
 
+/** What OCR read as a segment of its own, located "page 3, OCR". */
+const ocrSegment = (page: OcrPage): TextSegment => ({
+  at: `page ${String(page.page)}, OCR`,
+  text: page.text,
+})
+
+const pageNumberOf = (segment: TextSegment): number =>
+  Number(/^page (\d+)/.exec(segment.at)?.[1] ?? 0)
+
+/** A document's segments with OCR text among them, a page's text layer before its OCR. */
+function allSegments(text: CachedText): TextSegment[] {
+  const read = text.ocr.filter((page) => page.state === 'done' && page.text)
+  if (read.length === 0) return text.segments
+  return [...text.segments, ...read.map(ocrSegment)].sort(
+    (a, b) => pageNumberOf(a) - pageNumberOf(b),
+  )
+}
+
 /** Every line of a document's text with its location: page, slide, sheet!cell or character. */
 export function documentLines(text: CachedText, maxLine: number): DocumentLine[] {
   const lines: DocumentLine[] = []
-  for (const [index, segment] of text.segments.entries()) {
+  for (const [index, segment] of allSegments(text).entries()) {
     let position = 0
     for (let line of segment.text.split('\n')) {
       const start = position

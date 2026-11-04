@@ -1,3 +1,4 @@
+import type { SystemOcr } from '../documents/system-ocr'
 import type { DocumentReader } from '../documents/types'
 import type { AuditSink } from '../permissions/audit'
 import type { DocumentTextCacheLike } from './document-text-cache'
@@ -102,6 +103,11 @@ export interface ToolDeps {
    * Without one, every search reads its documents again.
    */
   documentCache?: DocumentTextCacheLike
+  /**
+   * Reads scanned PDF pages for search_files (ocr-text.exe on Windows), which needs the reader
+   * and the cache as well. Without one, those pages are reported as not read.
+   */
+  ocr?: SystemOcr
   /** Monotonic clock in ms, for time caps and audit durations. */
   now?: () => number
   /**
@@ -122,5 +128,6 @@ export interface ResolvedDeps {
   env: NodeJS.ProcessEnv
   documents: DocumentReader | null
   documentCache: DocumentTextCacheLike | null
+  ocr: SystemOcr | null
   now: () => number
 }

@@ -14,6 +14,7 @@ import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from 
 import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
 import { createAttachmentsService } from './attachments/service'
+import type { SystemOcr } from './documents/system-ocr'
 import type { DocumentReader } from './documents/types'
 import type { HeicSupport } from '../shared/attachments'
 import type { ImageScaler } from './attachments/image'
@@ -67,6 +68,8 @@ export interface AppServiceDeps {
   documents?: DocumentReader
   /** Whether HEIC photos can be decoded (the document reader's system decoder). */
   heicSupport?: () => Promise<HeicSupport>
+  /** Reads scanned PDF pages for search_files. */
+  ocr?: SystemOcr
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
@@ -114,6 +117,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     trash: deps.trash,
     onAuditFailure: reportAudit,
     ...(deps.documents ? { documents: deps.documents, documentCache } : {}),
+    ...(deps.ocr ? { ocr: deps.ocr } : {}),
   })
 
   const files = createFilesService({

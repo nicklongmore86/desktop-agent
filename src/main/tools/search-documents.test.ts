@@ -25,7 +25,14 @@ import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test
 import type { ToolDeps } from './deps'
 import { DocumentTextCache } from './document-text-cache'
 import { isCloudOnly, tableCells } from './search-documents'
-import { addCapped, fileTextEnd, fileTextStart, neutralise, type CappedList } from './search-files'
+import {
+  addCapped,
+  fileTextEnd,
+  fileTextStart,
+  neutralise,
+  SCANNED_TITLE,
+  type CappedList,
+} from './search-files'
 import { toolHarness, type ToolHarness } from './test-support'
 import { walk } from './walk'
 
@@ -487,36 +494,45 @@ describe('search_files inside documents', () => {
   })
 
   it('says a PDF with no text layer is scanned, not that it has no match', async () => {
-    await put(path.join(sb.root, 'scan.pdf'), Buffer.from(makePdf([{ drawing: true }, {}])))
+    await put(
+      path.join(sb.root, 'scan.pdf'),
+      Buffer.from(makePdf([{ drawing: true }, { drawing: true }, {}])),
+    )
     const r = await search({ contentPattern: 'freezer' })
     expect(lines(r.content)[0]).toBe(`0 results in ${sb.root}`)
     expect(r.content).toContain('Searched 0 of 1 document.')
     expect(r.content).toContain('1 files skipped: 1 no text layer (scanned).')
     // Named in its own list, inside the markers, not in the list of skipped files.
     const out = lines(r.content)
-    const at = out.indexOf(
-      'Scanned PDFs (pages with no text layer, so not searched: read them with read_document):',
-    )
-    expect(out.slice(at - 1, at + 3)).toEqual([START, out[at], '  scan.pdf (no text layer)', END])
+    const at = out.indexOf(SCANNED_TITLE)
+    // Its third page has nothing on it at all, so it is blank rather than scanned.
+    expect(out.slice(at - 1, at + 3)).toEqual([
+      START,
+      SCANNED_TITLE,
+      '  scan.pdf (2 of 2 scanned pages not read: OCR unavailable)',
+      END,
+    ])
     expect(r.content).not.toContain('…and 1 more not listed')
     // Kept as scanned: the next search does not read it again.
     reader.calls.length = 0
     const again = await search({ contentPattern: 'freezer' })
     expect(reader.calls).toEqual([])
     expect(again.content).toContain('Searched 0 of 1 document.')
-    expect(again.content).toContain('  scan.pdf (no text layer)')
+    expect(again.content).toContain('  scan.pdf (2 of 2 scanned pages not read: OCR unavailable)')
   })
 
   it('searches the text of a PDF with some scanned pages and names the pages it could not', async () => {
     await put(
       path.join(sb.root, 'mixed.pdf'),
-      Buffer.from(makePdf([{ text: ['Cover sheet: walk-in freezer'] }, { drawing: true }, {}])),
+      Buffer.from(
+        makePdf([{ text: ['Cover sheet: walk-in freezer'] }, { drawing: true }, { drawing: true }]),
+      ),
     )
     const r = await search({ contentPattern: 'freezer' })
     expect(r.content).toContain('mixed.pdf (page 1): Cover sheet: walk-in freezer')
     expect(r.content).toContain('Searched 1 of 1 document.')
-    expect(r.content).toContain('Scanned PDFs (pages with no text layer')
-    expect(r.content).toContain('  mixed.pdf (2 pages with no text layer)')
+    expect(r.content).toContain(SCANNED_TITLE)
+    expect(r.content).toContain('  mixed.pdf (2 of 2 scanned pages not read: OCR unavailable)')
   })
 
   it('reports documents the reader refuses, and keeps the refusal', async () => {
@@ -776,10 +792,10 @@ describe('search_files over a large folder in one call', () => {
     expect(partial[0]).toBe('  docs/r0000.pdf (stopped at page 2 of 3)')
     expect(partial.at(-1)).toBe('  …and 290 more.')
     // Scanned pages have their own, longer list.
-    const blank = after('Scanned PDFs')
+    const blank = after(SCANNED_TITLE)
     expect(blank).toHaveLength(51)
-    expect(blank[0]).toBe('  docs/r0000.pdf (1 page with no text layer)')
-    expect(blank[49]).toBe('  docs/r0049.pdf (1 page with no text layer)')
+    expect(blank[0]).toBe('  docs/r0000.pdf (1 of 1 scanned page not read: OCR unavailable)')
+    expect(blank[49]).toBe('  docs/r0049.pdf (1 of 1 scanned page not read: OCR unavailable)')
     expect(blank.at(-1)).toBe('  …and 250 more.')
   })
 

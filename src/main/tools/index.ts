@@ -42,6 +42,7 @@ export function createTools(deps: ToolDeps): AgentTool[] {
     env: shellEnv(deps.env ?? process.env),
     documents: deps.documents ?? null,
     documentCache: deps.documentCache ?? null,
+    ocr: deps.ocr ?? null,
     now: deps.now ?? (() => performance.now()),
   }
   const wrap = {

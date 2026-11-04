@@ -5,12 +5,14 @@ import { GrantStore } from '../permissions/grants'
 import { makeSandbox, put, trySymlink, type Sandbox } from '../permissions/test-support'
 import {
   CACHE_FORMAT,
+  CACHE_LIMITS,
   DocumentTextCache,
   entryName,
   grantId,
   parseEntry,
   type CachedText,
   type DocumentFileKey,
+  type OcrPage,
 } from './document-text-cache'
 
 let sb: Sandbox
@@ -30,8 +32,7 @@ afterEach(async () => {
 const text = (words: string, extra: Partial<CachedText> = {}): CachedText => ({
   kind: 'pdf',
   segments: [{ at: 'page 1', text: words }],
-  scanned: false,
-  blankPages: 0,
+  ocr: [],
   truncated: null,
   failure: null,
   ...extra,
@@ -46,6 +47,16 @@ const key = (overrides: Partial<DocumentFileKey> = {}): DocumentFileKey => ({
   ctimeNs: 1_700_000_000_123_456_789n,
   ...overrides,
 })
+
+const goodPage: OcrPage = {
+  page: 1,
+  reason: 'no-text',
+  longEdge: 2200,
+  state: 'done',
+  text: 'read by OCR',
+  low: false,
+  failure: null,
+}
 
 /** The token every granted root has here (GrantStore's are tested with the store). */
 const T = 'grant-token'
@@ -283,9 +294,22 @@ describe('DocumentTextCache', () => {
       { ...good, segments: [{ at: '', text: 'a', cells: 'yes' }] },
       { ...good, segments: [{ at: '', text: 'a', script: 'x' }] },
       { ...good, failure: 'Not A Code' },
-      { ...good, scanned: 'no' },
-      { ...good, blankPages: -1 },
-      { ...good, blankPages: undefined },
+      { ...good, scanned: false },
+      { ...good, blankPages: 0 },
+      { ...good, ocr: 'no' },
+      { ...good, ocr: undefined },
+      { ...good, ocr: [{ page: 1 }] },
+      { ...good, ocr: [{ ...goodPage, page: 0 }] },
+      { ...good, ocr: [goodPage, goodPage] },
+      { ...good, ocr: [{ ...goodPage, reason: 'other' }] },
+      { ...good, ocr: [{ ...goodPage, longEdge: 8192 }] },
+      { ...good, ocr: [{ ...goodPage, state: 'waiting' }] },
+      { ...good, ocr: [{ ...goodPage, state: 'pending', text: 'x' }] },
+      { ...good, ocr: [{ ...goodPage, state: 'failed' }] },
+      { ...good, ocr: [{ ...goodPage, failure: 'memory' }] },
+      { ...good, ocr: [{ ...goodPage, failure: 'NOT A CODE!', state: 'failed', text: '' }] },
+      { ...good, ocr: [{ ...goodPage, extra: 1 }] },
+      { ...good, ocr: [{ ...goodPage, text: 'x'.repeat(CACHE_LIMITS.maxChars + 1) }] },
     ]
     for (const value of bad) {
       await put(file, typeof value === 'string' ? value : JSON.stringify(value))
@@ -296,6 +320,43 @@ describe('DocumentTextCache', () => {
       // Dropped from disk too, so it is not read again.
       await expect(fs.stat(file)).rejects.toMatchObject({ code: 'ENOENT' })
     }
+  })
+
+  it('keeps a document’s OCR state, page by page, and re-reads older formats', async () => {
+    const cache = open()
+    const pages: OcrPage[] = [
+      goodPage,
+      { ...goodPage, page: 2, reason: 'stamp', state: 'pending', text: '' },
+      { ...goodPage, page: 5, state: 'failed', text: '', failure: 'memory' },
+    ]
+    await cache.put(key(), text('a', { ocr: pages }), T)
+    expect((await open().get(key()))?.ocr).toEqual(pages)
+
+    // A format 1 entry, under the name format 1 gave it, is never looked up: what it said
+    // about a scanned or stamp-only page is read afresh.
+    expect(CACHE_FORMAT).toBeGreaterThan(1)
+    const raw = (value: unknown) => Buffer.from(JSON.stringify(value))
+    const file = {
+      dev: '2049',
+      ino: '1234567',
+      size: '5000',
+      mtimeNs: '1700000000123456789',
+      ctimeNs: '1700000000123456789',
+    }
+    const old = {
+      format: 1,
+      grant: 'g',
+      file,
+      kind: 'pdf',
+      segments: [],
+      scanned: true,
+      blankPages: 0,
+      truncated: null,
+      failure: null,
+    }
+    expect(parseEntry(raw(old), 'g', key())).toBeNull()
+    // Nor does changing only its format number make it pass for a new one.
+    expect(parseEntry(raw({ ...old, format: CACHE_FORMAT }), 'g', key())).toBeNull()
   })
 
   it('refuses an entry grown past the per-entry limit on disk', async () => {

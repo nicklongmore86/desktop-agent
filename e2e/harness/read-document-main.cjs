@@ -3,15 +3,18 @@
 // worker, exactly as the app wires them. The test drives it through
 // `electronApp.evaluate` and `globalThis.reader`. Run `pnpm build` first.
 const { app, nativeImage } = require('electron')
-const { cpSync, mkdtempSync } = require('node:fs')
+const { cpSync, existsSync, mkdtempSync, readFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 const {
+  createSystemOcr,
   createTools,
   DocumentTextCache,
   DocumentWorkerHost,
   documentWorkerPaths,
+  OCR_TEXT_PATH,
   PathGuard,
+  verifyPinnedHelper,
 } = require('../../out/main/tools.js')
 
 // No app.enableSandbox() here (it overrides --no-sandbox, which Linux CI containers need);
@@ -26,6 +29,26 @@ if (hostile) {
   cpSync(join(__dirname, 'hostile-worker.js'), join(dir, 'assets', 'index.js'))
   paths.workerDir = dir
 }
+
+// Windows' OCR through ocr-text.exe as `pnpm build:helpers` built and pinned it (build/helpers);
+// elsewhere, or without a build, it says why it is unavailable.
+const pins = join(__dirname, '../../build/job-helper-pins.json')
+const ocrPin = existsSync(pins)
+  ? (JSON.parse(readFileSync(pins, 'utf8'))['helpers/ocr-text.exe']?.sha256 ?? null)
+  : null
+const ocr = createSystemOcr({
+  platform: process.platform,
+  findHelper: () =>
+    verifyPinnedHelper(
+      {
+        resources: join(__dirname, '../../build'),
+        sha256: ocrPin,
+        grantedRoots: () => [],
+        platform: process.platform,
+      },
+      OCR_TEXT_PATH,
+    ),
+})
 
 app.whenReady().then(() => {
   const host = new DocumentWorkerHost({ ...paths, ...options })
@@ -44,15 +67,16 @@ app.whenReady().then(() => {
   })
   globalThis.reader = {
     /**
-     * Grants `root` (only), with `blocked` as the app's protected paths, and keeps
-     * search_files' document text in `cacheDir` when one is given.
+     * Grants `root` (only), with `blocked` as the app's protected paths, keeps search_files'
+     * document text in `cacheDir` when one is given, and reads scanned pages when `withOcr`.
      */
-    grant: (root, blocked = [], cacheDir) => {
+    grant: (root, blocked = [], cacheDir, withOcr = false) => {
       tools = createTools({
         guard: new PathGuard({ roots: () => [root], protectedPaths: blocked }),
         audit,
         trash: () => Promise.reject(new Error('not in this harness')),
         documents: host,
+        ...(withOcr ? { ocr } : {}),
         ...(cacheDir
           ? {
               documentCache: new DocumentTextCache({

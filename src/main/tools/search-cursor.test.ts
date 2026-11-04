@@ -105,3 +105,14 @@ describe('SortedCapped', () => {
     expect(list.items.map((i) => i.key)).toEqual(['a'])
   })
 })
+
+describe('a cursor for the PDFs left waiting for OCR', () => {
+  const binding = cursorBinding(['/root', 'freezer'])
+
+  it('keeps saying so, and only says so when it was so', () => {
+    const position = { key: 'a.pdf', inclusive: true, ocrOnly: true }
+    expect(decodeCursor(encodeCursor(position, binding), binding)).toEqual(position)
+    const plain = { key: 'a.pdf', inclusive: true }
+    expect(decodeCursor(encodeCursor(plain, binding), binding)).toEqual(plain)
+  })
+})

@@ -1,14 +1,14 @@
 import { randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { DEFAULT_LIMITS as DOCUMENT_LIMITS } from '../documents/limits'
-import { sniff } from '../documents/sniff'
+import { pdfHeaderAt, sniff } from '../documents/sniff'
 import type { DocumentReader } from '../documents/types'
 import { isSecretName } from '../files/secret-names'
 import { isInside } from '../permissions/paths'
 import { UNSAFE_TITLE_CHARS } from '../storage/plain-text'
 import { ToolFailure, ToolInputError, type RunResult, type ToolCall, type ToolSpec } from './define'
 import type { ResolvedDeps } from './deps'
-import type { CachedText, DocumentFileKey } from './document-text-cache'
+import type { CachedText, DocumentFileKey, OcrPage } from './document-text-cache'
 import { globToRegExp } from './glob'
 import { PatternMatcher, type MatchOutcome, type PatternSource } from './matcher'
 import { MAX_ANY_OF, MAX_TERM_LENGTH, PhraseError, PhraseMatcher } from './phrase'
@@ -26,13 +26,16 @@ import {
 } from './search-cursor'
 import { assertSingleLinkHandle, openVerified, readBounded } from './safe-fs'
 import {
+  BUSY_RETRY_MS,
   documentLines,
   extractForSearch,
   FAILURE_LABEL,
   isCloudOnly,
+  pause,
   SEARCHABLE_EXTENSIONS,
   searchableKind,
 } from './search-documents'
+import { newOcrRun, ocrDocument, type OcrOff } from './search-ocr'
 import { decodeText, formatBytes, splitLines } from './text'
 import { walk, type WalkEntry } from './walk'
 
@@ -136,9 +139,6 @@ export function addCapped(list: CappedList, item: string, max = MAX_SKIPPED_LIST
   list.count++
   if (list.items.length < max) list.items.push(item)
 }
-/** How long a search waits before sending a document again to a reader that was busy. */
-const BUSY_RETRY_MS = 250
-
 /**
  * Readers a search is reading documents through right now: one search at a time per
  * reader. Another search meanwhile searches only what is cached and says so.
@@ -208,6 +208,21 @@ const DOCUMENT_REASONS = new Set<SkipReason>([
   'password',
   'unreadable-document',
 ])
+
+/** Heads the list of scanned PDFs a search could not fully read. */
+export const SCANNED_TITLE =
+  'Scanned PDF pages OCR could not fully read, so no match in these is not proof of absence:'
+
+/** What a result says about pages shown to the AI instead of read by OCR. */
+const OCR_READ_DOCUMENT =
+  'read_document shows pages to the AI as images: use it for a few pages you pick, and ask ' +
+  'the user before doing many.'
+
+/** What a result says whenever OCR text was searched. */
+const OCR_CAUTION =
+  'OCR text, marked "(page N, OCR)", can contain errors, in drawing labels especially, and a ' +
+  'scanned file with no match is not proof the words are absent. read_document with vision is ' +
+  'more reliable for those: use it for a few pages you pick, and ask the user before doing many.'
 
 /** Why a search stopped before searching everything it found. */
 type Stop = 'cancelled' | 'time' | 'pattern-time' | 'pattern-failed' | 'entries'
@@ -333,10 +348,13 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       'how far it got and gives a cursor: call again with the same arguments and that cursor ' +
       'to continue where it stopped. Only a result saying "Every file was checked" (or "Every ' +
       'file after the cursor was checked") covers the whole search, and not the files it ' +
-      'reports as skipped. For very large folders, narrow the search with a ' +
+      'reports as skipped or the scanned pages it reports as not fully read. For very large folders, narrow the search with a ' +
       'subfolder path or namePattern. Do not run several search_files calls in parallel. ' +
-      'Scanned PDFs are listed for read_document. Never searched: ' +
-      'images, scanned PDFs with no text layer, cloud-only files (not downloaded), files with ' +
+      'Scanned PDF pages are read by OCR when this PC has it, on this PC, within the same time ' +
+      '("(page 3, OCR)"). OCR text can contain errors, so no match in a scanned file is not ' +
+      'proof of absence. Pages not reached or not OCR-able are reported; a PDF still waiting ' +
+      'for OCR is named, and reported once with the cursor. Never searched: ' +
+      'images, cloud-only files (not downloaded), files with ' +
       `several hard links, and plain text files over ${formatBytes(limits.maxReadBytes)}; ` +
       'skipped files are counted by reason. Skips .git, node_modules and protected files.',
     inputSchema: {
@@ -518,6 +536,25 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
   }
 }
 
+/** Why scanned pages were not read, as a line of the scanned list says it. */
+const OCR_OFF_LABEL: Record<OcrOff, string> = {
+  unsupported: 'OCR needs Windows',
+  unavailable: 'OCR unavailable',
+  'no-language': 'no OCR language installed',
+  failed: 'OCR failed',
+}
+
+/** Bytes read from a file to see whether it is a PDF, for a sniff that reads nothing else. */
+const PDF_SNIFF_BYTES = 1029
+
+const sameFile = (a: DocumentFileKey, b: DocumentFileKey): boolean =>
+  a.root === b.root &&
+  a.dev === b.dev &&
+  a.ino === b.ino &&
+  a.size === b.size &&
+  a.mtimeNs === b.mtimeNs &&
+  a.ctimeNs === b.ctimeNs
+
 /** The granted folder a file is in: the innermost, when grants are nested. */
 function grantRootOf(file: string, deps: ResolvedDeps): string | null {
   let best: string | null = null
@@ -527,23 +564,6 @@ function grantRootOf(file: string, deps: ResolvedDeps): string | null {
     }
   }
   return best
-}
-
-/** Waits `ms` (at most until the deadline), or less when the signal aborts. */
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted || ms <= 0) {
-      resolve()
-      return
-    }
-    const done = (): void => {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', done)
-      resolve()
-    }
-    const timer = setTimeout(done, ms)
-    signal.addEventListener('abort', done, { once: true })
-  })
 }
 
 /** A file with matches: its name made safe, how many of its lines matched, what is shown. */
@@ -574,6 +594,35 @@ interface ScannedFile {
   key: string
   line: string
 }
+
+/** A PDF with pages that need OCR: set aside until the text of every other file is searched. */
+interface ScannedDocument {
+  entry: WalkEntry
+  root: string | null
+  /** Its text as read, or null when the cache holds it under `key`. */
+  text: CachedText | null
+  key: DocumentFileKey | null
+  cached: boolean
+  order: number
+  /** Pages that were pending when it was set aside. */
+  pending: number
+}
+
+/** How the pages of a finished document went, for its line in the scanned list. */
+interface OcrStatus {
+  off: OcrOff | null
+  failedNow: ReadonlySet<number>
+}
+
+/** A document read through the reader: its text, and whether the cache kept it under `key`. */
+interface ReadDocumentResult {
+  text: CachedText
+  key: DocumentFileKey | null
+  kept: boolean
+}
+
+const pages = (n: number): string => `${String(n)} scanned page${n === 1 ? '' : 's'}`
+const isPending = (page: OcrPage): boolean => page.state === 'pending'
 
 async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Promise<RunResult> {
   const { limits } = deps
@@ -646,6 +695,10 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const reader: DocumentReader | null =
     input.contentPattern !== undefined && input.documents ? deps.documents : null
   const cache = reader ? deps.documentCache : null
+  // Resuming a document needs the cache, and the app always has both.
+  const systemOcr = reader && cache ? deps.ocr : null
+  /** Every other file was reported by earlier calls: only PDFs with scanned pages are left. */
+  const ocrOnly = from?.ocrOnly === true
   const contextChars = contextLineChars(input.context)
   const showSnippets = input.output === 'content'
 
@@ -700,7 +753,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const skip = (entry: WalkEntry, reason: SkipReason, why?: string): void => {
     skips[reason]++
     if (reason === 'scanned') {
-      scanned.add({ key: orderKey(entry.rel), line: `  ${safeRel(entry.rel)} (no text layer)` })
+      scanned.add({ key: orderKey(entry.rel), line: `  ${safeRel(entry.rel)} (${why ?? ''})` })
       return
     }
     const document =
@@ -882,8 +935,35 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     shownNames.lastShown = orderKey(entry.rel)
   }
 
+  /**
+   * Whether a call that only has PDFs with scanned pages left should look at a file: it is in
+   * the cache (which says), named .pdf, or starts like a PDF. Every other file, and why any of
+   * these could not be read, was reported by an earlier call.
+   */
+  async function mayHoldScans(entry: WalkEntry): Promise<boolean> {
+    if (!reader || entry.nlink > 1 || isSecretName(entry.name)) return false
+    if (isCloudOnly(entry, deps.platform)) return false
+    if (extensionOf(entry.name) === 'pdf') return true
+    const root = grantRootOf(entry.path, deps)
+    if (root !== null && cache?.has(fileKey(entry, root))) return true
+    try {
+      const { handle } = await openVerified(deps.guard, entry.path, 'read', entry.id)
+      try {
+        return pdfHeaderAt(await readBounded(handle, PDF_SNIFF_BYTES)) >= 0
+      } finally {
+        await handle.close()
+      }
+    } catch {
+      return false
+    }
+  }
+
   /** Searches one plain text file, setting documents aside; false when the search must stop. */
   async function searchFile(entry: WalkEntry): Promise<boolean> {
+    if (ocrOnly) {
+      if (await mayHoldScans(entry)) documents.push(entry)
+      return true
+    }
     if (entry.nlink > 1) {
       skip(entry, 'hard-link')
       return true
@@ -986,10 +1066,122 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     locked: false,
     /** Documents cut short: the first few named, all counted. */
     partial: { items: [], count: 0 } as CappedList,
+    /** PDFs with scanned pages this call looked at. */
+    scanned: 0,
+    /** Of those, the ones not reported by this call (see `held`). */
+    held: 0,
+    heldPages: 0,
+    heldTime: false,
+    /** Pages needing OCR in what this call reported, by what became of them. */
+    ocrPages: 0,
+    ocrDone: 0,
+    ocrNotRead: 0,
+    ocrFailed: 0,
+    ocrLow: 0,
   }
+  const ocrRun = newOcrRun()
+  /**
+   * PDFs with scanned pages this call did not finish, named on their own: until a call has read
+   * all of a file's pages, it reports none of that file. So its matches come together, once.
+   */
+  const held = new SortedCapped<ScannedFile>(MAX_SCANNED_LISTED)
+  /**
+   * Set when the text of every file was searched and PDFs with scanned pages are left, from
+   * this one on: the next call reports only those, so nothing else is reported twice.
+   */
+  const deferred: { key: string | null } = { key: null }
   const notReached = (entry: WalkEntry): void => {
     docs.notReached++
     notChecked(entry)
+  }
+  const fileKey = (entry: WalkEntry, root: string): DocumentFileKey => ({
+    root,
+    dev: entry.id.dev,
+    ino: entry.id.ino,
+    size: BigInt(entry.size),
+    mtimeNs: entry.mtimeNs,
+    ctimeNs: entry.ctimeNs,
+  })
+
+  /** What the scanned list says of a document's pages, or null when OCR read them all well. */
+  function ocrCoverage(text: CachedText, status: OcrStatus): string | null {
+    const total = text.ocr.length
+    const notRead = text.ocr.filter(
+      (page) => isPending(page) && !status.failedNow.has(page.page),
+    ).length
+    const failed = text.ocr.filter((page) => page.state === 'failed').length + status.failedNow.size
+    const low = text.ocr.filter((page) => page.state === 'done' && page.low).length
+    const said: string[] = []
+    if (notRead > 0) {
+      const why = status.off ? OCR_OFF_LABEL[status.off] : 'not reached'
+      said.push(`${String(notRead)} of ${pages(total)} not read: ${why}`)
+    }
+    if (failed > 0) said.push(`OCR failed on ${String(failed)} of ${pages(total)}`)
+    if (low > 0) said.push(`OCR found little text on ${String(low)} of ${pages(total)}`)
+    return said.length > 0 ? said.join('; ') : null
+  }
+
+  /** Counts a document and its matches: the end of the road for its text, OCR's included. */
+  async function finishDocument(
+    entry: WalkEntry,
+    text: CachedText,
+    cached: boolean,
+    status: OcrStatus = { off: null, failedNow: new Set() },
+  ): Promise<void> {
+    const coverage = ocrCoverage(text, status)
+    if (text.ocr.length > 0) {
+      const count = (state: OcrPage['state']): number =>
+        text.ocr.filter((page) => page.state === state).length
+      const unread = text.ocr.length - count('done')
+      docs.ocrPages += text.ocr.length
+      docs.ocrDone += count('done')
+      docs.ocrNotRead += count('pending') - status.failedNow.size
+      docs.ocrFailed += count('failed') + status.failedNow.size
+      docs.ocrLow += text.ocr.filter((page) => page.state === 'done' && page.low).length
+      const hasText =
+        text.segments.some((segment) => segment.text.trim()) ||
+        text.ocr.some((page) => page.text.trim())
+      // Nothing to search in it at all, as far as anything could read it.
+      if (!hasText && unread === text.ocr.length) {
+        skip(entry, 'scanned', coverage ?? '')
+        return
+      }
+    }
+    docs.searched++
+    if (cached) docs.fromCache++
+    if (text.truncated !== null) {
+      addCapped(docs.partial, `  ${safeRel(entry.rel)} (${text.truncated})`)
+    }
+    if (coverage !== null) {
+      scanned.add({ key: orderKey(entry.rel), line: `  ${safeRel(entry.rel)} (${coverage})` })
+    }
+    const lines = documentLines(text, MAX_MATCH_LINE)
+    // Every match is counted, however many are shown.
+    const hits = await matchLines(
+      lines.map((line) => line.text),
+      lines.length,
+      (i) => !lines[i]?.cell && lines[i]?.segment === lines[i - 1]?.segment,
+    )
+    if (hits === null) {
+      if (stopped() === 'time') notChecked(entry)
+      return
+    }
+    if (hits.length === 0) return
+    const name = safeRel(entry.rel)
+    addMatches(
+      entry,
+      hits,
+      lines.length,
+      (i, match, max) => {
+        const line = lines[i]
+        const at = line?.at ? ` (${safeLine(line.at)})` : ''
+        const clean = safeLine(line?.text ?? '')
+        return match
+          ? `${name}${at}: ${matchText(i, clean, max)}`
+          : `${name}${at}- ${cut(clean, max)}`
+      },
+      (i) => lines[i]?.segment ?? -1,
+    )
   }
 
   /**
@@ -1001,14 +1193,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   async function searchDocuments(): Promise<void> {
     if (!reader || documents.length === 0) return
     await cache?.load()
-    const keyOf = (entry: WalkEntry, root: string): DocumentFileKey => ({
-      root,
-      dev: entry.id.dev,
-      ino: entry.id.ino,
-      size: BigInt(entry.size),
-      mtimeNs: entry.mtimeNs,
-      ctimeNs: entry.ctimeNs,
-    })
+    const keyOf = fileKey
     // `documents` is in walk order, which is path order.
     const ranked = documents
       .map((entry, order) => {
@@ -1020,8 +1205,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
 
     const holder = !readingDocuments.has(reader)
     if (holder) readingDocuments.add(reader)
+    const scannedDocs: ScannedDocument[] = []
     try {
-      for (const { entry, root } of ranked) {
+      for (const { entry, root, order } of ranked) {
         if (state.stop === 'cancelled' || signal.aborted) {
           state.stop = 'cancelled'
           return
@@ -1041,6 +1227,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
           continue
         }
         let text: CachedText | null = null
+        let key: DocumentFileKey | null = root === null ? null : keyOf(entry, root)
+        let kept = false
         if (cache && root !== null && cache.has(keyOf(entry, root))) {
           try {
             // The listing's link count and identity, proven through a handle (not read).
@@ -1055,6 +1243,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
             continue
           }
           text = await cache.get(keyOf(entry, root))
+          kept = text !== null
         }
         const cached = text !== null
         if (!text) {
@@ -1069,8 +1258,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
             continue
           }
           if (read === 'skipped') continue
-          text = read
+          text = read.text
+          key = read.key
+          kept = read.kept
         }
+        // Anything else about this file was reported by the call that left this one to do.
+        if (ocrOnly && text.ocr.length === 0) continue
         if (text.failure === 'password-protected') {
           skip(entry, 'password')
           continue
@@ -1083,65 +1276,218 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
           )
           continue
         }
-        if (text.scanned) {
-          skip(entry, 'scanned')
-          continue
-        }
-        docs.searched++
-        if (cached) docs.fromCache++
-        if (text.truncated !== null) {
-          addCapped(docs.partial, `  ${safeRel(entry.rel)} (${text.truncated})`)
-        }
-        if (text.blankPages > 0) {
-          const pages = text.blankPages
-          scanned.add({
-            key: orderKey(entry.rel),
-            line: `  ${safeRel(entry.rel)} (${String(pages)} page${pages === 1 ? '' : 's'} with no text layer)`,
+        if (text.ocr.length > 0) {
+          scannedDocs.push({
+            entry,
+            root,
+            // The cache holds it for later, so a folder of big documents does not pile up here.
+            text: kept ? null : text,
+            key,
+            cached,
+            order,
+            pending: text.ocr.filter(isPending).length,
           })
-        }
-        const lines = documentLines(text, MAX_MATCH_LINE)
-        // Every match is counted, however many are shown.
-        const hits = await matchLines(
-          lines.map((line) => line.text),
-          lines.length,
-          (i) => !lines[i]?.cell && lines[i]?.segment === lines[i - 1]?.segment,
-        )
-        if (hits === null) {
-          if (stopped() === 'time') notChecked(entry)
           continue
         }
-        if (hits.length === 0) continue
-        const name = safeRel(entry.rel)
-        addMatches(
-          entry,
-          hits,
-          lines.length,
-          (i, match, max) => {
-            const line = lines[i]
-            const at = line?.at ? ` (${safeLine(line.at)})` : ''
-            const clean = safeLine(line?.text ?? '')
-            return match
-              ? `${name}${at}: ${matchText(i, clean, max)}`
-              : `${name}${at}- ${cut(clean, max)}`
-          },
-          (i) => lines[i]?.segment ?? -1,
-        )
+        await finishDocument(entry, text, cached)
       }
+      if (stopped() !== 'cancelled') await searchScannedPages(scannedDocs, holder)
     } finally {
       if (holder) readingDocuments.delete(reader)
     }
   }
 
   /**
-   * Reads one document through the reader and keeps its text; 'skipped' when it cannot be
-   * (counted as skipped), 'not-reached' when time ran out or the search was cancelled.
-   * A busy reader (another job of a search in it, or its queue full) is asked again
-   * after a moment, until the search's time runs out.
+   * After all the text: each PDF with scanned pages in path order, its pending pages read with
+   * the time left. A PDF is reported only when none of its pages is left waiting, and the first
+   * that has to wait takes the ones after it along, read or not, so a later call can tell what
+   * it has to report by where it starts.
    */
-  async function readDocument(
+  async function searchScannedPages(
+    scannedDocs: ScannedDocument[],
+    holder: boolean,
+  ): Promise<void> {
+    if (scannedDocs.length === 0) return
+    docs.scanned = scannedDocs.length
+    scannedDocs.sort((a, b) => a.order - b.order)
+    // Text comes first: while some of it waits for the next call, no time goes to OCR.
+    const textWaits = !ocrOnly && (unchecked.key !== null || stopped() !== null)
+    if (scannedDocs.some((doc) => doc.pending > 0) && !textWaits && holder) {
+      await checkOcr()
+      if (signal.aborted) {
+        state.stop = 'cancelled'
+        return
+      }
+    }
+    for (const [at, doc] of scannedDocs.entries()) {
+      if (signal.aborted) {
+        state.stop = 'cancelled'
+        return
+      }
+      if (stopped() !== null) {
+        holdFrom(scannedDocs, at)
+        break
+      }
+      let text = doc.text ?? (doc.key ? await cache?.get(doc.key) : null) ?? null
+      if (!text) {
+        // Gone from the cache since (the least recently used go first): read it again.
+        const read = await readDocument(doc.entry, doc.root)
+        if (read === 'not-reached') {
+          holdFrom(scannedDocs, at)
+          break
+        }
+        if (read === 'skipped') continue
+        text = read.text
+        doc.key = read.key
+        if (text.ocr.length === 0) {
+          if (!ocrOnly) await finishDocument(doc.entry, text, false)
+          continue
+        }
+      }
+      const failedNow = new Set<number>()
+      let off = ocrRun.off
+      if (!systemOcr && text.ocr.some(isPending)) off = 'unavailable'
+      if (text.ocr.some(isPending) && off === null) {
+        if (!holder) docs.locked = true
+        if (!holder || textWaits) {
+          doc.pending = text.ocr.filter(isPending).length
+          holdFrom(scannedDocs, at)
+          break
+        }
+        const outcome = await readScannedPages(doc, text, failedNow)
+        if (outcome === 'skipped') continue
+        if (outcome === 'cancelled') {
+          state.stop = 'cancelled'
+          return
+        }
+        if (outcome === 'held') {
+          doc.pending = doc.text?.ocr.filter(isPending).length ?? doc.pending
+          docs.heldTime = true
+          docs.timedOut = true
+          holdFrom(scannedDocs, at)
+          break
+        }
+        text = doc.text ?? text
+        // Past where the pages could be kept, or left by the call's OCR going off: not reached.
+        off = ocrRun.off
+      }
+      await finishDocument(doc.entry, text, doc.cached, { off, failedNow })
+    }
+  }
+
+  /** Asks whether OCR can run at all, once per search: a language may have been installed. */
+  async function checkOcr(): Promise<void> {
+    if (!systemOcr) {
+      ocrRun.off = 'unavailable'
+      return
+    }
+    const waiting = new AbortController()
+    const answer = await Promise.race([
+      systemOcr.probe({ refresh: true }),
+      pause(timeLeft(), AbortSignal.any([signal, waiting.signal])).then(() => null),
+    ])
+    waiting.abort()
+    if (answer === null) return
+    if (!answer.available) {
+      ocrRun.off = answer.reason
+      ocrRun.offMessage = answer.message
+    }
+  }
+
+  /** Leaves this PDF and the ones after it to a later call, all their matches with them. */
+  function holdFrom(scannedDocs: ScannedDocument[], at: number): void {
+    const first = scannedDocs[at]
+    if (!first) return
+    for (const doc of scannedDocs.slice(at)) {
+      docs.held++
+      docs.heldPages += doc.pending
+      if (doc.pending === 0) continue
+      held.add({
+        key: orderKey(doc.entry.rel),
+        line: `  ${safeRel(doc.entry.rel)} (${pages(doc.pending)} not read yet)`,
+      })
+    }
+    // With text still to come, or nothing but these left, the cursor is a plain path order.
+    if (ocrOnly || unchecked.key !== null || stopped() !== null) notChecked(first.entry)
+    else deferred.key = orderKey(first.entry.rel)
+  }
+
+  /**
+   * OCR of one document's pending pages. The bytes are read again from the same checked handle
+   * path as its text was, and if the file changed since, its text is read again from them first.
+   */
+  async function readScannedPages(
+    doc: ScannedDocument,
+    text: CachedText,
+    failedNow: Set<number>,
+  ): Promise<'done' | 'skipped' | 'held' | 'cancelled'> {
+    const { entry, root } = doc
+    if (root === null || systemOcr === null || !reader) {
+      skip(entry, 'unreadable')
+      return 'skipped'
+    }
+    const file = await readFileForReader(entry, root, false)
+    if (file === 'skipped') return 'skipped'
+    let current = text
+    if (doc.key === null || file.key === null || !sameFile(doc.key, file.key)) {
+      const fresh = await extractAndKeep(entry, file)
+      if (fresh === 'not-reached') return signal.aborted ? 'cancelled' : 'held'
+      if (fresh.text.failure !== null) {
+        const why = FAILURE_LABEL[fresh.text.failure] ?? 'the document reader failed'
+        skip(entry, 'unreadable-document', why)
+        return 'skipped'
+      }
+      current = fresh.text
+      doc.key = file.key
+    }
+    doc.text = current
+    const key = file.key
+    const token = file.token
+    const result = await ocrDocument({
+      reader,
+      ocr: systemOcr,
+      bytes: file.bytes,
+      name: entry.name,
+      text: current,
+      maxChars: limits.maxSearchDocumentChars,
+      timeLeft,
+      now: deps.now,
+      signal,
+      stillGranted: () => token !== null && cache?.token(root) === token,
+      keep: async (value) =>
+        cache !== null &&
+        key !== null &&
+        token !== null &&
+        deps.guard.blockedReason(entry.path) === null &&
+        (await cache.put(key, value, token)),
+      run: ocrRun,
+    })
+    for (const page of result.failedNow) failedNow.add(page)
+    switch (result.outcome) {
+      case 'finished':
+      case 'off':
+        return 'done'
+      case 'cancelled':
+        return 'cancelled'
+      case 'gone':
+        // What was read after the folder's grant went is neither kept nor shown.
+        skip(entry, 'unreadable')
+        return 'skipped'
+      case 'time':
+        // Nothing would carry over to a later call: say what is unread rather than promise it.
+        if (result.kept) return 'held'
+        docs.timedOut = true
+        return 'done'
+    }
+  }
+
+  /** A file's bytes for the reader, with the cache key and grant token they are kept under. */
+  async function readFileForReader(
     entry: WalkEntry,
     root: string | null,
-  ): Promise<CachedText | 'skipped' | 'not-reached'> {
+    /** Past the first pass, what is wrong with a file was already said, unless it is held. */
+    quiet = ocrOnly,
+  ): Promise<{ bytes: Buffer; key: DocumentFileKey | null; token: string | null } | 'skipped'> {
     let bytes: Buffer
     let key: DocumentFileKey | null = null
     // Taken before the file is read: a grant removed since (even if granted again) keeps nothing.
@@ -1150,7 +1496,17 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       const { handle, stats } = await openVerified(deps.guard, entry.path, 'read', entry.id)
       try {
         if (stats.size > BigInt(DOCUMENT_LIMITS.maxDocumentBytes)) {
-          skip(entry, 'too-large')
+          if (!quiet) skip(entry, 'too-large')
+          return 'skipped'
+        }
+        // What the walk saw may have changed since: reading it now would download it.
+        if (
+          isCloudOnly(
+            { path: entry.path, size: Number(stats.size), blocks: stats.blocks },
+            deps.platform,
+          )
+        ) {
+          if (!quiet) skip(entry, 'cloud-only')
           return 'skipped'
         }
         bytes = await readBounded(handle, Number(stats.size))
@@ -1169,12 +1525,38 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         }
       }
     } catch (error) {
-      skip(
-        entry,
-        error instanceof ToolFailure && error.code === 'hard-link' ? 'hard-link' : 'unreadable',
-      )
+      if (!quiet) {
+        skip(
+          entry,
+          error instanceof ToolFailure && error.code === 'hard-link' ? 'hard-link' : 'unreadable',
+        )
+      }
       return 'skipped'
     }
+    return { bytes, key, token }
+  }
+
+  /**
+   * Reads one document through the reader and keeps its text; 'skipped' when it cannot be
+   * (counted as skipped), 'not-reached' when time ran out or the search was cancelled.
+   */
+  async function readDocument(
+    entry: WalkEntry,
+    root: string | null,
+  ): Promise<ReadDocumentResult | 'skipped' | 'not-reached'> {
+    const file = await readFileForReader(entry, root)
+    return file === 'skipped' ? file : extractAndKeep(entry, file)
+  }
+
+  /**
+   * The reader's text of a file's bytes, kept in the cache. A busy reader (another job of a
+   * search in it, or its queue full) is asked again after a moment, until the time runs out.
+   */
+  async function extractAndKeep(
+    entry: WalkEntry,
+    file: { bytes: Buffer; key: DocumentFileKey | null; token: string | null },
+  ): Promise<ReadDocumentResult | 'not-reached'> {
+    const { bytes, key, token } = file
     for (;;) {
       const outcome = await extractForSearch(
         reader as DocumentReader,
@@ -1199,6 +1581,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         }
         continue
       }
+      let kept = false
       if (
         cache &&
         key &&
@@ -1206,9 +1589,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         outcome.cacheable &&
         deps.guard.blockedReason(entry.path) === null
       ) {
-        await cache.put(key, outcome.text, token)
+        kept = await cache.put(key, outcome.text, token)
       }
-      return outcome.text
+      return { text: outcome.text, key, kept }
     }
   }
 
@@ -1254,12 +1637,21 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   // limit, documents another search held) continues from the first file not checked;
   // anything this call found from there on is left for that call to report, so no file is
   // reported twice. A slow or failing pattern would only stop again: no cursor then.
+  // PDFs with scanned pages left behind while every other file is done (`deferred`): the next
+  // call reports only those, so what this call found after the first of them stays reported.
   const continuable = state.stop === null || state.stop === 'time' || state.stop === 'entries'
-  const complete = state.stop === null && unchecked.key === null
-  let next: CursorPosition | null =
-    continuable && unchecked.key !== null ? { key: unchecked.key, inclusive: true } : null
-  const cutAway = next ? files.cutAt(next) : 0
-  let scannedCut = next ? scanned.cutAt(next) : 0
+  const complete = state.stop === null && unchecked.key === null && deferred.key === null
+  const cursorFlag = ocrOnly ? { ocrOnly: true } : {}
+  let next: CursorPosition | null = !continuable
+    ? null
+    : unchecked.key !== null
+      ? { key: unchecked.key, inclusive: true, ...cursorFlag }
+      : deferred.key !== null
+        ? { key: deferred.key, inclusive: true, ocrOnly: true }
+        : null
+  const keepsLaterFiles = next?.ocrOnly === true && !ocrOnly
+  let cutAway = next && !keepsLaterFiles ? files.cutAt(next) : 0
+  let scannedCut = next && !keepsLaterFiles ? scanned.cutAt(next) : 0
 
   // The marked region (see `budget`): the matches, then the files with matches, then scanned
   // PDFs, documents only partly searched and the skipped files named.
@@ -1301,15 +1693,25 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   if (skippedLines.length > 0 && unlisted > 0) {
     skippedLines.push(`  …and ${String(unlisted)} more not listed.`)
   }
+  // PDFs still waiting for OCR, whatever the cursor: they stay to be reported.
+  const heldLines = namedLines(
+    'Scanned PDFs waiting for OCR (not counted yet; all their matches come with the cursor below):',
+    held.items.map((item) => item.line),
+    Math.floor(scannedRoom / 2),
+  )
+  const heldMore = held.total - Math.max(0, heldLines.length - 1)
+  if (heldLines.length > 0 && heldMore > 0) heldLines.push(`  …and ${String(heldMore)} more.`)
   // The files list: as many of the first MAX_FILES_LISTED as fit (a title line aside).
   const listRoom =
     (showSnippets ? Math.floor(budget / 2) : budget - scannedRoom) -
     40 -
     size(partialLines) -
     size(skippedLines)
-  const listed: MatchedFile[] = []
-  const listLines: string[] = []
-  {
+  let listed: MatchedFile[] = []
+  let listLines: string[] = []
+  const buildList = (): void => {
+    listed = []
+    listLines = []
     let used = 0
     for (const file of files.items) {
       const count = `${String(file.count)} match${file.count === 1 ? '' : 'es'}`
@@ -1324,15 +1726,24 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       listed.push(file)
     }
   }
-  // A full list (or one cut to fit) continues after its last file, before any later stop.
+  /** A full list (or one cut to fit) continues after its last file, before any later stop. */
+  const listIsCut = (): boolean =>
+    listed.length > 0 && (listed.length < files.items.length || (files.overflowed && cutAway === 0))
+  buildList()
+  // A list that cannot hold everything found past the first held PDF cannot leave those files
+  // for a call that reports only held PDFs: the cursor falls back to plain path order there.
+  if (keepsLaterFiles && next && listIsCut()) {
+    next = { key: next.key, inclusive: true }
+    cutAway += files.cutAt(next)
+    scannedCut += scanned.cutAt(next)
+    buildList()
+  }
   const lastListed = listed.at(-1)
-  const listCut =
-    lastListed !== undefined &&
-    (listed.length < files.items.length || (files.overflowed && cutAway === 0))
+  const listCut = lastListed !== undefined && listIsCut()
   // A name-only search shows a run of names from the start: the next call goes on after it.
   const shownUpTo = listCut ? lastListed.key : shownNames.full ? shownNames.lastShown : null
   if (shownUpTo !== null) {
-    const after: CursorPosition = { key: shownUpTo, inclusive: false }
+    const after: CursorPosition = { key: shownUpTo, inclusive: false, ...cursorFlag }
     if (next === null || positionBefore(after, next)) next = after
     scannedCut += scanned.cutAt(after)
   }
@@ -1358,14 +1769,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     let used = 0
     for (const item of scanned.items) {
       const line = neutralise(item.line, token)
-      if (used + line.length + 1 > scannedRoom) break
+      if (used + line.length + 1 > scannedRoom - size(heldLines)) break
       used += line.length + 1
       scannedLines.push(line)
     }
     const more = (scannedCut > 0 ? scanned.items.length : scanned.total) - scannedLines.length
-    scannedLines.unshift(
-      'Scanned PDFs (pages with no text layer, so not searched: read them with read_document):',
-    )
+    scannedLines.unshift(SCANNED_TITLE)
     if (more > 0) scannedLines.push(`  …and ${String(more)} more.`)
   }
 
@@ -1375,7 +1784,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   let snippetsCut = false
   if (showSnippets) {
     let room =
-      budget - size(scannedLines) - size(listLines) - size(partialLines) - size(skippedLines)
+      budget -
+      size(heldLines) -
+      size(scannedLines) -
+      size(listLines) -
+      size(partialLines) -
+      size(skippedLines)
     outer: for (const file of listed) {
       const snippets = file.snippets
       if (!snippets) continue
@@ -1412,6 +1826,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     ...results,
     ...fileText,
     ...listLines,
+    ...heldLines,
     ...scannedLines,
     ...partialLines,
     ...skippedLines,
@@ -1455,9 +1870,17 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     notes.push(
       complete
         ? `Every file${after} was checked: ${found}` +
-            `${skippedTotal > 0 ? '; files that could not be searched are counted below' : ''}.`
+            (skippedTotal > 0 ? '; files that could not be searched are counted below' : '') +
+            (docs.ocrNotRead + docs.ocrFailed + docs.ocrLow > 0
+              ? '; scanned pages OCR could not fully read are counted below'
+              : '') +
+            '.'
         : `Not every file${after} was checked: ${found} so far` +
-            `${next ? ', in the files up to where this call stopped' : ''}.`,
+            (next
+              ? next.ocrOnly
+                ? ', not counting the PDFs still waiting for OCR.'
+                : ', in the files up to where this call stopped.'
+              : '.'),
     )
     if (showSnippets && shownMatches < reportedMatches) {
       notes.push(
@@ -1479,8 +1902,10 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         `use a more specific pattern.`,
     )
   }
-  if (reader && documents.length > 0) {
-    const total = documents.length
+  // Past the point where only held PDFs are left, the others looked at are no one's business.
+  const documentsTotal = ocrOnly ? docs.scanned + docs.notReached : documents.length
+  if (reader && documentsTotal > 0) {
+    const total = documentsTotal
     const fromCache = docs.fromCache ? ` (${String(docs.fromCache)} from cache)` : ''
     let line = `Searched ${String(docs.searched)} of ${String(total)} document${total === 1 ? '' : 's'}${fromCache}`
     if (docs.notReached === 0) {
@@ -1507,6 +1932,29 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     }
     notes.push(line)
   }
+  if (docs.held > 0) {
+    const why = docs.locked
+      ? 'another search_files call is reading documents'
+      : docs.heldTime
+        ? `the ${formatDuration(limits.searchTimeMs)} time budget ran out`
+        : 'the text of the other files comes first'
+    notes.push(
+      `${String(docs.held)} PDF${docs.held === 1 ? '' : 's'} with scanned pages not counted yet ` +
+        `(${pages(docs.heldPages)} left for OCR): ${why}. Continue with the cursor below: ` +
+        'pages already read are kept, and each file is reported once.',
+    )
+  }
+  if (docs.ocrPages > 0) {
+    const said = [
+      `${String(docs.ocrDone)} read by OCR`,
+      ...(docs.ocrNotRead > 0 ? [`${String(docs.ocrNotRead)} not read`] : []),
+      ...(docs.ocrFailed > 0 ? [`${String(docs.ocrFailed)} failed`] : []),
+      ...(docs.ocrLow > 0 ? [`${String(docs.ocrLow)} with little text found`] : []),
+    ]
+    notes.push(`Of ${pages(docs.ocrPages)} in the files reported: ${said.join(', ')}.`)
+    notes.push(docs.ocrDone > 0 ? OCR_CAUTION : OCR_READ_DOCUMENT)
+  }
+  if (ocrRun.off !== null && ocrRun.offMessage !== null) notes.push(ocrRun.offMessage)
   if (skippedTotal > 0) {
     const counts = (Object.keys(SKIP_LABEL) as SkipReason[])
       .filter((reason) => skips[reason] > 0)
@@ -1530,8 +1978,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   if (fileText.some((line) => /^[^\n]* \(character \d+\): /.test(line))) {
     notes.push('A "(character N)" match is read in context with read_document and start: N.')
   }
-  if (hidden > 0) notes.push(`${String(hidden)} protected entries hidden.`)
-  if (unreadable > 0) notes.push(`${String(unreadable)} entries could not be read.`)
+  if (hidden > 0 && !ocrOnly) notes.push(`${String(hidden)} protected entries hidden.`)
+  if (unreadable > 0 && !ocrOnly) notes.push(`${String(unreadable)} entries could not be read.`)
   if (cursorText) {
     const why = listCut && next?.inclusive === false ? 'list the rest' : 'continue the search'
     notes.push(
@@ -1545,12 +1993,20 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const fromFiles = region.length ? [start, ...region, end] : []
   return {
     content: [header, ...fromFiles, ...notes].join('\n'),
-    ...(reader && documents.length > 0
+    ...(reader && documentsTotal > 0
       ? {
           audit: {
             documentsSearched: docs.searched,
             documentsFromCache: docs.fromCache,
-            documentsNotSearched: documents.length - docs.searched,
+            documentsNotSearched: documentsTotal - docs.searched,
+            ...(docs.ocrPages + docs.heldPages > 0
+              ? {
+                  ocrPagesRead: ocrRun.pagesRead,
+                  ocrHelperRuns: ocrRun.helperRuns,
+                  ocrPagesNotRead: docs.ocrNotRead + docs.heldPages,
+                  ocrPagesFailed: docs.ocrFailed,
+                }
+              : {}),
           },
         }
       : {}),

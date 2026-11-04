@@ -54,8 +54,14 @@ export interface ExtractOptions {
    * take a sheet name and an A1 range (`Sheet1!A1:H200`, `A1:H200`, `A:C`, `5:20`).
    */
   select?: { from?: number; to?: number; region?: PageRegion; sheet?: string; range?: string }
-  /** 'auto' renders pages with little or no text; 'images' renders every page shown; 'text' none. */
-  view?: 'auto' | 'text' | 'images'
+  /**
+   * 'auto' renders pages with little or no text; 'images' renders every page shown; 'text'
+   * none. 'raster' (PDFs only) renders the one page `select.from` as raw grey pixels for
+   * text recognition: see DocumentView.rasters.
+   */
+  view?: 'auto' | 'text' | 'images' | 'raster'
+  /** PDFs in the text view: say what is on each page (DocumentSection.layout). */
+  pageLayout?: boolean
   budget?: {
     /** Text characters to return before stopping at a page boundary. */
     maxChars?: number
@@ -105,6 +111,33 @@ export interface DocumentSection {
   text: string
   /** Spreadsheets: the sheet this section shows. */
   sheet?: SheetPart
+  /** PDFs, when ExtractOptions.pageLayout asked for it. */
+  layout?: PageLayout
+}
+
+/** What is on a PDF page besides its text, for telling a scan from a page of text. */
+export interface PageLayout {
+  /** Share of the page's area under images (0 to 1; overlaps count twice, capped at 1). */
+  imageCoverage: number
+  /** Share of the page's area under text, measured only when imageCoverage is 0.5 or more (else 0). */
+  textCoverage: number
+  /** Anything is drawn besides text: images, paths or shadings. */
+  ink: boolean
+  /**
+   * Part of the page went unmeasured (too many objects, forms nested too deep, an image with no
+   * bounds), so an image as big as the page may be missing from imageCoverage and ink.
+   */
+  incomplete: boolean
+  /** The page's long edge in points (1/72 inch). */
+  longEdgePoints: number
+}
+
+/** A rendered page as raw pixels: 8-bit grey, rows top to bottom with no padding. */
+export interface PageRaster {
+  page: number
+  width: number
+  height: number
+  pixels: Uint8Array
 }
 
 /** One sheet of a workbook, as a section shows it. Ranges are A1 references without the sheet. */
@@ -139,6 +172,8 @@ export interface DocumentView {
   }
   sections: DocumentSection[]
   images: DocumentImage[]
+  /** The 'raster' view's one page, turned as the page's own rotation says. */
+  rasters?: PageRaster[]
   /**
    * Where this view sits in the whole: `shown` is inclusive, `next` is where to continue.
    * Slides count like pages (`meta.pageCount` is the slide count); `char` positions are in

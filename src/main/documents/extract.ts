@@ -74,6 +74,9 @@ export async function extractDocument(
     warnings.push(`The file says it is ${options.mime} but its contents are a ${KIND_LABEL[kind]}.`)
   }
 
+  if (options.view === 'raster' && kind !== 'pdf') {
+    throw new DocumentError('unsupported', 'Only PDF pages are rendered as raw pixels.')
+  }
   let view: DocumentView
   if (kind === 'pdf') {
     view = await extractPdf(await env.pdfium(), bytes, options, env.encode, limits)

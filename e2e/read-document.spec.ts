@@ -12,6 +12,7 @@ import {
   wp,
 } from '../src/main/documents/office-fixtures.test-util'
 import { imageDimensions } from '../src/main/documents/limits'
+import { KNOWN_LINES, renderPage, toGray } from '../src/main/documents/ocr-fixtures.test-util'
 
 /**
  * read_document in real Electron: the agent's tools (out/main/tools.js) over the real
@@ -47,7 +48,7 @@ interface AuditEntry {
 }
 
 interface Harness {
-  grant: (root: string, blocked?: string[], cacheDir?: string) => void
+  grant: (root: string, blocked?: string[], cacheDir?: string, withOcr?: boolean) => void
   run: (tool: string, input: unknown) => Promise<Result>
   audit: () => AuditEntry[]
   makeJpeg: (width: number, height: number) => string
@@ -72,12 +73,12 @@ async function launch(hostOptions: Record<string, unknown> = {}): Promise<Electr
 }
 
 const reader = (app: ElectronApplication) => ({
-  grant: (root: string, blocked: string[] = [], cacheDir?: string) =>
+  grant: (root: string, blocked: string[] = [], cacheDir?: string, withOcr = false) =>
     app.evaluate(
-      (_electron, [r, b, c]) => {
-        ;(globalThis as unknown as { reader: Harness }).reader.grant(r, b, c)
+      (_electron, [r, b, c, o]) => {
+        ;(globalThis as unknown as { reader: Harness }).reader.grant(r, b, c, o)
       },
-      [root, blocked, cacheDir] as const,
+      [root, blocked, cacheDir, withOcr] as const,
     ),
   run: (input: Record<string, unknown>, tool = 'read_document'): Promise<Result> =>
     app.evaluate(
@@ -349,7 +350,8 @@ test.describe('read_document over the sandboxed worker', () => {
     expect(first.content).toContain('Files with matches (5):\n  RFI-014.pdf (1 match)')
     expect(first.content).toContain('Every file was checked: 5 matches in 5 files;')
     expect(first.content).toContain('Searched 4 of 6 documents.')
-    expect(first.content).toContain('  scan.pdf (no text layer)')
+    // This harness has no OCR: the drawn page is reported as not read, and why.
+    expect(first.content).toContain('  scan.pdf (1 of 1 scanned page not read: OCR unavailable)')
     expect(first.content).toContain(
       '  credentials.docx (document, name looks like it holds secrets, not read)',
     )
@@ -369,12 +371,28 @@ test.describe('read_document over the sandboxed worker', () => {
       [
         'search_files',
         'ok',
-        { documentsSearched: 4, documentsFromCache: 0, documentsNotSearched: 2 },
+        {
+          documentsSearched: 4,
+          documentsFromCache: 0,
+          documentsNotSearched: 2,
+          ocrPagesRead: 0,
+          ocrHelperRuns: 0,
+          ocrPagesNotRead: 1,
+          ocrPagesFailed: 0,
+        },
       ],
       [
         'search_files',
         'ok',
-        { documentsSearched: 4, documentsFromCache: 4, documentsNotSearched: 2 },
+        {
+          documentsSearched: 4,
+          documentsFromCache: 4,
+          documentsNotSearched: 2,
+          ocrPagesRead: 0,
+          ocrHelperRuns: 0,
+          ocrPagesNotRead: 1,
+          ocrPagesFailed: 0,
+        },
       ],
     ])
     // The audit holds counts and the pattern's shape, never what was found.
@@ -391,6 +409,68 @@ test.describe('read_document over the sandboxed worker', () => {
       isError: true,
       content: `${file} is a PDF, not text; use read_document to read it.`,
     })
+  })
+})
+
+test.describe('search_files reading scanned pages, in the whole chain', () => {
+  // Real Electron: the sandboxed worker renders each page, the broker and main check the
+  // pixels, and on Windows the real ocr-text.exe reads them.
+  test('without OCR on this PC, says why and that a scan has no text to search', async () => {
+    test.skip(process.platform === 'win32', 'Windows has OCR, in the test below')
+    const dirs = sandbox()
+    const app = await launch()
+    try {
+      await reader(app).grant(dirs.root, [dirs.userData], join(dirs.userData, 'cache'), true)
+      const gray = new Uint8Array(4800).fill(255).fill(0, 0, 1200)
+      writeFileSync(
+        join(dirs.root, 'scan.pdf'),
+        makePdf([{ image: { width: 60, height: 80, gray } }]),
+      )
+      const r = await reader(app).run({ path: dirs.root, contentPattern: 'x y z' }, 'search_files')
+      expect(r.content).toContain('  scan.pdf (1 of 1 scanned page not read: OCR needs Windows)')
+      expect(r.content).toContain('only on Windows')
+    } finally {
+      await app.close()
+      dirs.cleanup()
+    }
+  })
+
+  test('reads an image-only PDF through the sandboxed worker and the real helper', async () => {
+    test.skip(process.platform !== 'win32', 'Windows only')
+    test.setTimeout(180_000)
+    const dirs = sandbox()
+    const app = await launch()
+    try {
+      await reader(app).grant(dirs.root, [dirs.userData], join(dirs.userData, 'cache'), true)
+      const page = toGray(renderPage({ width: 1700, height: 2200, lines: KNOWN_LINES, fontPx: 40 }))
+      const image = { width: page.width, height: page.height, gray: page.pixels }
+      const scan = { width: 612, height: 792, image }
+      writeFileSync(join(dirs.root, 'scan.pdf'), makePdf([scan, scan, scan, scan]))
+      const search = () =>
+        reader(app).run(
+          { path: dirs.root, contentPattern: 'invoice number 48213', context: 0 },
+          'search_files',
+        )
+      const started = Date.now()
+      const first = await search()
+      const seconds = (Date.now() - started) / 1000
+      console.log(
+        `search-ocr real worker and helper: 4 pages in ${seconds.toFixed(2)} s ` +
+          `(${(4 / seconds).toFixed(2)} pages/s)`,
+      )
+      expect(first.content).toContain('scan.pdf (page 4, OCR): Invoice number 48213')
+      expect(first.content).toContain('Every file was checked: 4 matches in 1 file.')
+      const repeat = Date.now()
+      const second = await search()
+      console.log(`search-ocr real worker repeat: ${String(Date.now() - repeat)} ms`)
+      expect(second.content).toContain('Searched 1 of 1 document (1 from cache).')
+      const audit = (await reader(app).audit()).at(-2)
+      expect(audit?.args['extra']).toMatchObject({ ocrPagesRead: 4 })
+      expect(JSON.stringify(audit)).not.toMatch(/Invoice|48213/)
+    } finally {
+      await app.close()
+      dirs.cleanup()
+    }
   })
 })
 

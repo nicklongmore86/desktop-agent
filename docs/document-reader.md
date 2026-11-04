@@ -406,13 +406,9 @@ cursor: "sf1...."`. The cursor is a position in path order, AES-GCM encrypted wi
   before the cursor are walked past without being read or counted toward the entry
   limit. A slow or failing pattern gives no cursor: it would stop again.
 - Not searched, and counted by reason (at most 10 files named, protected files never):
-  a PDF whose every page has fewer than 8 non-space characters is `no text layer
-(scanned)` (no OCR). Scanned PDFs, and PDFs with some such pages, are named in a list of
-  their own inside the markers (`Scanned PDFs (...: read them with read_document):`, up to
-  50, path order), not among the 10. Follow-up: a page with a little text over a page-sized
-  image (a stamp on a scan) has more than 8 characters, so it counts as text; telling it
-  apart needs the PDF worker to report image objects per page, which its text path does
-  not do today;
+  a PDF with nothing to search because OCR could not read any of its scanned pages is
+  `no text layer (scanned)` and named in the list of scanned pages below, not among the 10
+  (see [OCR of scanned pages](#ocr-of-scanned-pages));
   documents the reader refuses (`password-protected`, `could not be read: ...`); names
   that look like secrets (`credentials.xlsx`, `secrets.docx`: `isSecretName`) are never
   sent to the reader or kept; hard-linked files. The summary is one line, `Searched 1000
@@ -444,6 +440,104 @@ run searches in parallel)`;
   20 MB in all) fit several messages over.
 - Audit: `args.extra` gets `documentsSearched`, `documentsFromCache` and
   `documentsNotSearched` (counts only); the pattern is logged by kind and length as before.
+
+### OCR of scanned pages
+
+`src/main/tools/search-ocr.ts`, over [ocr-text.exe](ocr-text.md). On by default, in the
+search's own time budget, with the languages installed in Windows. Nothing leaves the PC.
+Showing scanned pages to the AI as images stays a separate choice: results tell the agent it
+may use `read_document` for a few pages it picks and should ask before doing many.
+
+**Which pages.** The reader's text view, asked with `pageLayout`, says what is on each page
+without drawing it: the share of the page under images (an image inside a form XObject counts
+as the form's bounds; at most 5,000 objects are looked at per page), the share under text
+(invisible text included, and only measured at 50% image coverage or more), whether anything
+is drawn besides text, and the long edge. `ocrReason` decides per page, in main, from those
+numbers (main never parses the PDF, and they are capped and checked like the rest of a reply):
+
+- fewer than 8 non-space characters and something drawn: `no-text`. A page with nothing drawn
+  is blank and is left alone, and a scanned page's text-free back is found out when it renders.
+- images over at least half the page and text under 200 non-space characters, or covering under
+  5% of the page: `stamp`. This is the RFI number or footer on a scan, which used to pass for a
+  page of text. A scan with a real OCR layer has far more text than that.
+- anything else is a text page.
+
+Getting `stamp` wrong one way costs a page's OCR and repeats a few lines as `(page N, OCR)`
+matches; the other way hides a scan, so the rule leans towards OCR. A stamped page's own text
+stays searched, beside what OCR reads there. A vector drawing with real text in its title block
+counts as text (it has no image), so its outlined labels are not read.
+
+**How a page is read.** One page per background job: the reader's `raster` view renders the page
+in the worker, at a long edge of 2200 px, or 3300 px for sheets over 900 pt (the spike's labels
+read better up to 3300 and no better past it). It returns raw 8-bit grey pixels, checked to be
+exactly width x height for the page asked (`reply.ts`), and no other job in the reader has to
+wait for more than that one page. Main never decodes an image: it passes the bytes on to the
+helper. Scanned pages with no ink (blank backs, scanner noise included: under 0.005% of pixels
+clearly off the page's commonest grey) skip the helper.
+
+**Sideways and upside-down pages.** PDFium applies the page's own `/Rotate`, at no cost. Past that
+Windows' OCR reports no confidence, so main judges each reading by how it looks, calibrated on its
+real output: text the right way up is almost all well-formed words (`Invoice number 48213`),
+sideways text reads as scattered characters (`o | 0 | -c`), and upside-down text reads as plenty of
+letters, about 40% of them in well-formed words (`90!JJ0 pelW00 peu6!s eseeld`). A page reads well
+with at least 40 letters and digits in well-formed words of three or more (lower case, Capitalised,
+ALL CAPS, numbers, codes like A501; characters in scripts OCR splits apart count one by one), making
+up at least 70% of what came back. A page that falls short is turned in main, on its raw pixels: 90
+and 270 degrees, both always, since one of them is upside down, and 180 if neither read well. The
+reading with the most well-formed characters is kept. A page that reads well costs one helper run,
+a sideways page three, and an upside-down page or a sparse drawing four; a page that never reads
+well is listed as `OCR found little text`. Text at other angles than the page's main one is not
+read. This judgment assumes the Latin-style case rules above, so a page in another script or with
+unusual capitalisation may cost the extra runs, but its best reading is still kept.
+
+**Cache.** Format 2 replaced `scanned` and `blankPages` with `ocr`: per page, why it needs OCR,
+the long edge, its state (`pending`, `done` or `failed`), what was read, whether little was, and
+why it failed. Format 1 entries are never looked up, so a page they called a text page is looked
+at afresh. The same key, grant-token checks, limits and read-back checks apply: entries are saved
+every 5 s and whenever OCR of a document stops, so a page is read once and a stopped document
+resumes where it was. Failures that will not change until the file does are kept (helper memory,
+size, bad output, its own 60 s limit, the reader's lasting refusals). A helper crash or the reader
+failing is not kept, and is tried again by the next search. Three in a row stop OCR for that call.
+The text is capped with the document's own, at 2 million characters. Text read with one language
+stays until the file changes, even if another language is installed later.
+
+**Time, and what a call reports.** Plain text and text layers come first, and while any of that
+waits for a later call OCR gets no time. Then each PDF with scanned pages in path order: every
+page job is a background job, so a `read_document` waits behind one page at most, and the helper
+runs outside the reader. Each helper run gets what is left of the search's time, at most 60 s.
+Stop aborts the job's wait and kills the helper at once.
+
+A file is reported whole, once. Until all of a PDF's scanned pages are read it is `held`: named
+in `Scanned PDFs waiting for OCR`, its text matches with it, not counted. Other files are not
+held back. When a call has searched the text of every file and only held PDFs are left, its
+cursor says so (`ocrOnly`), and the next call reports only PDFs with scanned pages, from the first
+held one on, in path order. A later PDF with scanned pages is held too, even if the cache has all
+its pages, so that the cursor alone says what is left. A call stopped earlier than that (the
+time ran out in the text, the entry limit, a full files list) falls back to a plain cursor at the
+first held PDF, so the files after it are reported again from the cache rather than twice.
+`Every file was checked` needs a cursor-free call: no page waiting, or each one explicitly listed
+as not readable, with the counts in `Of N scanned pages in the files reported`.
+
+**What the result says.** OCR matches read `path (page 3, OCR): text`, inside the markers, cleaned
+and neutralised like any other text; the flexible matcher joins wrapped lines within a page's OCR
+text. `Scanned PDF pages OCR could not fully read, so no match in these is not proof of absence:`
+lists each file with what remains and why (`OCR needs Windows`, `no OCR language installed`,
+`OCR unavailable`, `OCR failed`, `not reached`, and pages with little text). A note tells the agent
+OCR text can contain errors, drawing labels especially, that a scanned file with no match is not
+proof of absence, and that `read_document` with vision is more reliable.
+
+**Safety.** The helper is first started by a search that finds such pages, never at startup. The
+check whether OCR can run is repeated once per search, so a language installed since is picked up,
+and the helper's pin is verified before each run. The grant, hard-link, protected and secret-name
+rules are those of the search itself. OCR needs the file's bytes where a cached text does not, so
+the cloud-only check runs on the walk's listing and again on the handle just before reading: a
+file freed since its text was read is skipped, not downloaded. If a grant goes during a page, what
+was read is neither kept nor shown. The audit log gets `ocrPagesRead`, `ocrHelperRuns`,
+`ocrPagesNotRead` and `ocrPagesFailed`: counts only.
+
+**Cost.** Each page job sends the whole document to the worker (three copies), so a 100 MB PDF
+costs about as much per page as its size says, whatever the page. Measured speed is in
+[ocr-text.md](ocr-text.md#speed). There is no OCR setting: it runs when Windows can do it.
 
 ### OneDrive Files-On-Demand
 
@@ -483,8 +577,8 @@ protected: the agent's tools can never read or write it).
   ctime in nanoseconds. Names are hashes, so nothing in them comes from a path or a file,
   and a file whose size or times change (or that is replaced) is a different entry: a
   stale text is never used. The key comes from the handle that read the bytes.
-- Contents: the text segments with their locations, the kind, scanned and blank-page
-  counts, truncation, and lasting refusals (password-protected, damaged, unsupported,
+- Contents: the text segments with their locations, the kind, each scanned page's OCR state
+  (see [OCR of scanned pages](#ocr-of-scanned-pages)), truncation, and lasting refusals (password-protected, damaged, unsupported,
   too large, reader timeout); a reader crash is not kept.
 - Writes go to a random temporary file (`wx`, mode 0600) renamed into place, in folders
   created 0700 and checked not to be links (Windows: userData's own per-user ACL).
@@ -546,11 +640,20 @@ part, 10,000 cells per call, a 20 x 30 preview per sheet, 200 sheets listed.
   (search over the reader's real extraction code in-process, PDFium WASM included:
   locations in PDF, Word, Excel, PowerPoint and ODF, every cell past the preview, cache
   hits and re-reads after a change, the per-call document limit and continuing, the
-  document time budget, a stuck reader call, cancel, scanned and partly scanned PDFs,
+  document time budget, a stuck reader call, cancel, PDFs with scanned pages and no OCR,
   refusals kept or not, partial texts, secret and hard-linked documents never read or
   kept, cleaned lines, the cloud-only check, and on Windows the allocation it relies on).
   `e2e/read-document.spec.ts` runs a search over the real sandboxed worker, then again
   from the cache, and checks the audit holds counts only.
+- OCR in search: `src/main/tools/search-ocr.test.ts` (a fake helper for every state, over the
+  real PDF code or a scripted reader: which pages, labels and markers, availability, turning,
+  failures kept or retried, the cache and resuming, text first, continuing with each file
+  reported once, Stop, the reader's queue, grants and hard links),
+  `search-ocr-cloud.test.ts` (cloud-only files at the walk and at the handle),
+  `src/main/documents/pdf-pages.test.ts` (layouts and rasters from real PDFium) and `reply.test.ts`.
+  `search-ocr-real.test.ts` runs the real helper on Windows (an image-only PDF, a stamp, sideways
+  pages both ways and by `/Rotate`, the cache, Stop, a grant going mid-page, a timed run), and
+  `e2e/read-document.spec.ts` the whole chain there: sandboxed worker, broker, main and helper.
 - Real Electron (Playwright, `e2e/document-worker.spec.ts`, after `pnpm build`): a PDF
   (text, rendered page, region), a rotated JPEG with EXIF, the 5 MB image cap, the
   sandbox probe, every Office and OpenDocument format and the hostile Office corpus inside

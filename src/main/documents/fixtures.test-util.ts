@@ -1,9 +1,29 @@
-import { deflateRawSync } from 'node:zlib'
+import { deflateRawSync, deflateSync } from 'node:zlib'
 
-/** A page for {@link makePdf}: lines of text (Helvetica 12pt) and/or a drawn grid of lines. */
+/** 8-bit grey pixels, rows top to bottom, for a page's image. */
+export interface FixtureImage {
+  width: number
+  height: number
+  gray: Uint8Array
+  /** Where on the page: `[x, y, width, height]` in points. Default: the whole page. */
+  box?: readonly [number, number, number, number]
+  /** Wrap the image in a form XObject, as some scanners do; a number nests that many. */
+  inForm?: boolean | number
+  /** Draw it after the page's text and paths, not before them. */
+  last?: boolean
+}
+
+/**
+ * A page for {@link makePdf}: lines of text (Helvetica 12pt), a drawn grid of lines, and/or
+ * an image (a page of nothing else is what a scanner makes). `invisibleText` draws the text
+ * lines in rendering mode 3, as a scanner's OCR layer does; `rotate` is the page's /Rotate.
+ */
 export interface FixturePage {
   text?: string[]
   drawing?: boolean
+  image?: FixtureImage
+  invisibleText?: boolean
+  rotate?: 0 | 90 | 180 | 270
   width?: number
   height?: number
 }
@@ -24,8 +44,33 @@ export function makePdf(pages: FixturePage[], { encrypted = false } = {}): Uint8
     const width = page.width ?? 612
     const height = page.height ?? 792
     let content = ''
+    let xobjects = ''
+    let imageContent = ''
+    if (page.image) {
+      const { image } = page
+      const [x, y, w, h] = image.box ?? [0, 0, width, height]
+      // Hex over deflate: this builder's output is text, and the pixels stay small.
+      const data = deflateSync(image.gray).toString('hex') + '>'
+      const picture = add(
+        `<< /Type /XObject /Subtype /Image /Width ${String(image.width)} /Height ${String(image.height)} ` +
+          `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode] ` +
+          `/Length ${String(data.length)} >>\nstream\n${data}\nendstream`,
+      )
+      let drawn = picture
+      for (let forms = Number(image.inForm ?? 0); forms > 0; forms--) {
+        const body = 'q 1 0 0 1 0 0 cm /Im0 Do Q'
+        drawn = add(
+          `<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Im0 ${String(drawn)} 0 R >> >> ` +
+            `/Length ${String(body.length)} >>\nstream\n${body}\nendstream`,
+        )
+      }
+      xobjects = ` /XObject << /Im0 ${String(drawn)} 0 R >>`
+      imageContent = `q ${String(w)} 0 0 ${String(h)} ${String(x)} ${String(y)} cm /Im0 Do Q\n`
+      if (!image.last) content += imageContent
+    }
     if (page.text?.length) {
-      content += `BT /F1 12 Tf 72 ${String(height - 72)} Td 14 TL\n`
+      const mode = page.invisibleText ? '3 Tr ' : ''
+      content += `BT ${mode}/F1 12 Tf 72 ${String(height - 72)} Td 14 TL\n`
       for (const line of page.text) content += `(${line.replace(/[()\\]/g, '\\$&')}) '\n`
       content += 'ET\n'
     }
@@ -34,11 +79,13 @@ export function makePdf(pages: FixturePage[], { encrypted = false } = {}): Uint8
       for (let x = 100; x <= 500; x += 50) content += `${String(x)} 100 m ${String(x)} 600 l S\n`
       for (let y = 100; y <= 600; y += 50) content += `100 ${String(y)} m 500 ${String(y)} l S\n`
     }
+    if (page.image?.last) content += imageContent
     const stream = add(`<< /Length ${String(content.length)} >>\nstream\n${content}endstream`)
     kids.push(
       add(
         `<< /Type /Page /Parent ${String(pageTree)} 0 R /MediaBox [0 0 ${String(width)} ${String(height)}] ` +
-          `/Resources << /Font << /F1 ${String(font)} 0 R >> >> /Contents ${String(stream)} 0 R >>`,
+          (page.rotate ? `/Rotate ${String(page.rotate)} ` : '') +
+          `/Resources << /Font << /F1 ${String(font)} 0 R >>${xobjects} >> /Contents ${String(stream)} 0 R >>`,
       ),
     )
   }

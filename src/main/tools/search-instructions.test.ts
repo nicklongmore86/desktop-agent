@@ -1,7 +1,10 @@
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_SYSTEM_PROMPT } from '../agent'
+import { OcrError } from '../documents/system-ocr'
+import type { DocumentReader } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
+import { DocumentTextCache } from './document-text-cache'
 import { toolHarness, type ToolHarness } from './test-support'
 
 /**
@@ -32,7 +35,12 @@ describe('search guidance', () => {
     ['broad terms', 'start with output: "files" to see where it occurs, then narrow'],
     ['continuation', 'continue with that cursor before concluding'],
     ['absence', 'never state or imply that something is not mentioned unless'],
-    ['coverage', 'skipped files, scanned PDFs with no text layer'],
+    ['coverage', 'skipped files, scanned pages OCR did not read or found little text on'],
+    ['what OCR reads', 'reads scanned PDF pages with OCR when this PC has it'],
+    ['OCR errors', 'OCR text can contain errors'],
+    ['what OCR leaves', 'scanned pages not reached or not OCR-able are reported'],
+    ['no proof from OCR', 'a scanned file with no match is not proof the words are absent'],
+    ['picking pages', 'Read the likely scanned pages with read_document, picking a few'],
     ['next step', 'offer that as the next step'],
     ['hit limits', 'A limit on the matches shown says nothing about which files were checked'],
   ])('covers %s', (_topic, phrase) => {
@@ -82,6 +90,87 @@ describe('search guidance', () => {
     expect(h.tool('search_files').description).toContain(
       'Every match in the files checked is counted',
     )
+  })
+
+  it('no longer says scanned PDFs are not searched, here or in the tool', () => {
+    const description = h.tool('search_files').description
+    for (const stale of [
+      'scanned PDFs with no text layer',
+      'not images or scanned PDFs',
+      'read photos, scanned PDFs',
+      'Read the likely scanned files',
+    ]) {
+      expect(DEFAULT_SYSTEM_PROMPT).not.toContain(stale)
+      expect(description).not.toContain(stale)
+    }
+  })
+
+  it('tells the truth about OCR, in the tool’s description and what the tool reports', async () => {
+    const description = h.tool('search_files').description
+    expect(description).toContain('Scanned PDF pages are read by OCR when this PC has it')
+    expect(description).toContain('OCR text can contain errors')
+    expect(description).toContain('Pages not reached or not OCR-able are reported')
+    expect(description).toContain('"(page 3, OCR)"')
+    expect(description).toContain('the scanned pages it reports as not fully read')
+
+    // A scanned page, read through the real tool with a fake reader and helper.
+    await put(path.join(sb.root, 'read.pdf'), Buffer.from('%PDF-1.7\nread'))
+    await put(path.join(sb.root, 'failed.pdf'), Buffer.from('%PDF-1.7\nfailed'))
+    let current = ''
+    const reader: DocumentReader = {
+      extract: (bytes, options = {}) => {
+        current = options.name ?? ''
+        return Promise.resolve({
+          meta: { kind: 'pdf', mime: 'application/pdf', pageCount: 1 },
+          images: [],
+          warnings: [],
+          sections: options.view === 'raster' ? [] : [{ page: 1, text: '' }],
+          ...(options.view === 'raster'
+            ? {
+                rasters: [
+                  { page: 1, width: 2, height: 2, pixels: new Uint8Array([0, 255, 255, 0]) },
+                ],
+              }
+            : {}),
+          position: { unit: 'page', total: 1, shown: { from: 1, to: 1 }, next: null },
+        })
+      },
+    }
+    const text = 'Walk-in freezer door seals are shown on drawing A-501 with the heated threshold'
+    h = toolHarness(sb, {
+      documents: reader,
+      documentCache: new DocumentTextCache({
+        dir: path.join(sb.userData, 'cache'),
+        grants: { list: () => [sb.root], token: () => 'grant' },
+      }),
+      ocr: {
+        probe: () =>
+          Promise.resolve({ available: true, languages: ['en-US'], userLanguage: 'en-US' }),
+        recognize: (image) =>
+          current === 'failed.pdf'
+            ? Promise.reject(new OcrError('memory', 'too much'))
+            : Promise.resolve({
+                language: 'en-US',
+                angle: null,
+                width: image.width,
+                height: image.height,
+                lines: [{ text, box: { x: 0, y: 0, width: 1, height: 1 } }],
+                truncated: false,
+                stats: { ms: 1, peakBytes: 1 },
+              }),
+        cancelAll: () => undefined,
+      },
+    })
+    const result = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    expect(result).toContain('read.pdf (page 1, OCR): Walk-in freezer')
+    expect(result).toContain('Every file was checked')
+    // What the guidance says to leave out is said in the same words by the tool.
+    expect(result).toContain('pages OCR could not fully read')
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('scanned pages OCR could not fully read')
+    expect(result).toContain('OCR text, marked "(page N, OCR)", can contain errors')
+    expect(result).toContain('not proof the words are absent')
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('not proof the words are absent')
+    expect(result).toContain('ask the user before doing many')
   })
 
   it('tells the truth about flexible matching: spaces, hyphens and line breaks', async () => {

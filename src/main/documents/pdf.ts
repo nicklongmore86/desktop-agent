@@ -1,11 +1,13 @@
 import type { WrappedPdfiumModule } from '@embedpdf/pdfium'
-import { DEFAULT_LIMITS, effectiveBudget, type DocumentLimits } from './limits'
+import { DEFAULT_LIMITS, effectiveBudget, SCAN_IMAGE_COVERAGE, type DocumentLimits } from './limits'
 import {
   DocumentError,
   type DocumentImage,
   type DocumentSection,
   type DocumentView,
   type ExtractOptions,
+  type PageLayout,
+  type PageRaster,
   type PageRegion,
 } from './types'
 
@@ -29,6 +31,15 @@ const FPDF_REVERSE_BYTE_ORDER = 0x10
 /** A page with fewer non-space characters than this is treated as a scan or drawing. */
 const SPARSE_TEXT = 32
 const DEFAULT_MAX_IMAGES = 8
+// fpdf_edit.h
+const FPDF_PAGEOBJ_TEXT = 1
+const FPDF_PAGEOBJ_IMAGE = 3
+const FPDF_PAGEOBJ_FORM = 5
+/** Page objects looked at per page: a CAD drawing can hold millions. Past this, the layout is incomplete. */
+const MAX_LAYOUT_OBJECTS = 5000
+const MAX_FORM_DEPTH = 4
+/** Text rectangles measured per page. */
+const MAX_TEXT_RECTS = 5000
 
 /**
  * Reads a PDF with PDFium: text per page, page count and metadata, and rendered pages
@@ -121,6 +132,15 @@ async function readDocument(
     )
   }
   const mode = options.view ?? 'auto'
+  if (mode === 'raster') {
+    const raster = await withPage(pdfium, doc, from, (page) =>
+      Promise.resolve(rasterPage(pdfium, page, from, longEdge, limits)),
+    )
+    view.rasters = [raster]
+    view.position.shown = { from, to: from }
+    view.position.next = from < total ? from + 1 : null
+    return view
+  }
   // Every page shown is rendered in 'images' mode, so the image budget is the page budget.
   const pageBudget = mode === 'images' ? Math.max(1, maxImages) : limits.maxPagesPerCall
   const to = Math.min(
@@ -141,6 +161,7 @@ async function readDocument(
       }
       chars += text.length
       const section: DocumentSection = { page: number, text }
+      if (options.pageLayout) section.layout = pageLayout(pdfium, page)
       view.sections.push(section)
       const sparse = text.replace(/\s/g, '').length < SPARSE_TEXT
       if (mode === 'images' || (mode === 'auto' && sparse)) {
@@ -241,6 +262,122 @@ function pageText(pdfium: WrappedPdfiumModule, page: number): string {
   })
 }
 
+/** A number PDFium wrote into WASM memory (the heap may have moved: read it afterwards). */
+function float32At(pdfium: WrappedPdfiumModule, at: number): number {
+  const bytes = heap(pdfium)
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(at, true)
+}
+
+function float64At(pdfium: WrappedPdfiumModule, at: number): number {
+  const bytes = heap(pdfium)
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat64(at, true)
+}
+
+const share = (part: number, whole: number): number => {
+  const value = part / whole
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
+}
+
+/**
+ * What is on a page besides text, from its page objects, without drawing it. An image inside
+ * a form XObject (some scanners wrap the scan in one) counts as the form's own bounds.
+ */
+function pageLayout(pdfium: WrappedPdfiumModule, page: number): PageLayout {
+  const width = pdfium.FPDF_GetPageWidthF(page)
+  const height = pdfium.FPDF_GetPageHeightF(page)
+  const area = width * height
+  const { wasmExports } = pdfium.pdfium
+  const box = wasmExports.malloc(16)
+  if (!box) throw new DocumentError('memory', 'Not enough memory to read the page.')
+  let seen = 0
+  let imageArea = 0
+  let ink = false
+  let incomplete = false
+  /** What an object draws: 'image' when it is or holds one, 'ink' when anything but text. */
+  const inspect = (object: number, depth: number): 'image' | 'ink' | 'text' => {
+    seen++
+    const type = pdfium.FPDFPageObj_GetType(object)
+    if (type === FPDF_PAGEOBJ_TEXT) return 'text'
+    if (type === FPDF_PAGEOBJ_IMAGE) return 'image'
+    if (type !== FPDF_PAGEOBJ_FORM) return 'ink'
+    if (depth >= MAX_FORM_DEPTH) {
+      incomplete = true
+      return 'ink'
+    }
+    let found: 'image' | 'ink' | 'text' = 'text'
+    const inner = pdfium.FPDFFormObj_CountObjects(object)
+    for (let i = 0; i < inner; i++) {
+      if (seen >= MAX_LAYOUT_OBJECTS) {
+        incomplete = true
+        break
+      }
+      const kind = inspect(pdfium.FPDFFormObj_GetObject(object, i), depth + 1)
+      if (kind === 'image') return 'image'
+      if (kind === 'ink') found = 'ink'
+    }
+    return found
+  }
+  try {
+    const count = pdfium.FPDFPage_CountObjects(page)
+    for (let i = 0; i < count; i++) {
+      if (seen >= MAX_LAYOUT_OBJECTS) {
+        incomplete = true
+        break
+      }
+      const object = pdfium.FPDFPage_GetObject(page, i)
+      const kind = inspect(object, 0)
+      if (kind === 'text') continue
+      ink = true
+      if (kind !== 'image') continue
+      if (pdfium.FPDFPageObj_GetBounds(object, box, box + 4, box + 8, box + 12)) {
+        const left = float32At(pdfium, box)
+        const bottom = float32At(pdfium, box + 4)
+        const right = float32At(pdfium, box + 8)
+        const top = float32At(pdfium, box + 12)
+        imageArea += Math.max(0, right - left) * Math.max(0, top - bottom)
+      } else {
+        incomplete = true
+      }
+    }
+  } finally {
+    wasmExports.free(box)
+  }
+  const imageCoverage = share(imageArea, area)
+  return {
+    imageCoverage,
+    textCoverage: imageCoverage >= SCAN_IMAGE_COVERAGE ? textCoverage(pdfium, page, area) : 0,
+    ink,
+    incomplete,
+    longEdgePoints: Math.max(width, height),
+  }
+}
+
+/** The share of a page's area under its text, invisible text (a scan's OCR layer) included. */
+function textCoverage(pdfium: WrappedPdfiumModule, page: number, area: number): number {
+  return withText(pdfium, page, (text) => {
+    const count = pdfium.FPDFText_CountChars(text)
+    if (count <= 0) return 0
+    const rects = Math.min(pdfium.FPDFText_CountRects(text, 0, count), MAX_TEXT_RECTS)
+    const { wasmExports } = pdfium.pdfium
+    const box = wasmExports.malloc(32)
+    if (!box) throw new DocumentError('memory', 'Not enough memory to read the page.')
+    try {
+      let covered = 0
+      for (let i = 0; i < rects; i++) {
+        if (!pdfium.FPDFText_GetRect(text, i, box, box + 8, box + 16, box + 24)) continue
+        const left = float64At(pdfium, box)
+        const top = float64At(pdfium, box + 8)
+        const right = float64At(pdfium, box + 16)
+        const bottom = float64At(pdfium, box + 24)
+        covered += Math.abs(right - left) * Math.abs(top - bottom)
+      }
+      return share(covered, area)
+    } finally {
+      wasmExports.free(box)
+    }
+  })
+}
+
 /** The text inside a region; PDF space has its origin bottom left. */
 function boundedText(pdfium: WrappedPdfiumModule, page: number, region: PageRegion): string {
   const width = pdfium.FPDF_GetPageWidthF(page)
@@ -283,6 +420,44 @@ async function renderPage(
   encode: EncodeRaster,
   region?: PageRegion,
 ): Promise<DocumentImage> {
+  const { rgba, width, height } = drawPage(pdfium, page, longEdge, limits, region)
+  const encoded = await encode(rgba, width, height, limits.maxImageBytes)
+  const source: DocumentImage['source'] = region
+    ? { page: pageNumber, region }
+    : { page: pageNumber }
+  return { ...encoded, source }
+}
+
+/**
+ * A page as raw grey pixels, the long edge `longEdge`. PDFium applies the page's own /Rotate
+ * (its width and height are already as rotated), so this is the page as a viewer shows it.
+ */
+function rasterPage(
+  pdfium: WrappedPdfiumModule,
+  page: number,
+  pageNumber: number,
+  longEdge: number,
+  limits: DocumentLimits,
+): PageRaster {
+  const { rgba, width, height } = drawPage(pdfium, page, longEdge, limits)
+  const pixels = new Uint8Array(width * height)
+  for (let i = 0; i < pixels.length; i++) {
+    const at = i * 4
+    // Rec. 601 luma in fixed point; the page was painted on opaque white.
+    pixels[i] =
+      ((rgba[at] ?? 0) * 77 + (rgba[at + 1] ?? 0) * 150 + (rgba[at + 2] ?? 0) * 29 + 128) >> 8
+  }
+  return { page: pageNumber, width, height, pixels }
+}
+
+/** Paints a page, or one region of it, on white and copies the pixels out as RGBA. */
+function drawPage(
+  pdfium: WrappedPdfiumModule,
+  page: number,
+  longEdge: number,
+  limits: DocumentLimits,
+  region?: PageRegion,
+): { rgba: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } {
   const pageWidth = pdfium.FPDF_GetPageWidthF(page)
   const pageHeight = pdfium.FPDF_GetPageHeightF(page)
   if (!(pageWidth > 0 && pageHeight > 0)) {
@@ -324,9 +499,5 @@ async function renderPage(
   } finally {
     pdfium.FPDFBitmap_Destroy(bitmap)
   }
-  const encoded = await encode(rgba, width, height, limits.maxImageBytes)
-  const source: DocumentImage['source'] = region
-    ? { page: pageNumber, region }
-    : { page: pageNumber }
-  return { ...encoded, source }
+  return { rgba, width, height }
 }
