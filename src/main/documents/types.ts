@@ -123,6 +123,11 @@ export interface PageLayout {
   textCoverage: number
   /** Anything is drawn besides text: images, paths or shadings. */
   ink: boolean
+  /**
+   * Part of the page went unmeasured (too many objects, forms nested too deep, an image with no
+   * bounds), so an image as big as the page may be missing from imageCoverage and ink.
+   */
+  incomplete: boolean
   /** The page's long edge in points (1/72 inch). */
   longEdgePoints: number
 }

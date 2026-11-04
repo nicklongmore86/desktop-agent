@@ -1,7 +1,7 @@
 import { init, type WrappedPdfiumModule } from '@embedpdf/pdfium'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { extractDocument, type ExtractEnv } from './extract'
 import { makePdf, type FixtureImage, type FixturePage } from './fixtures.test-util'
 import { DEFAULT_LIMITS } from './limits'
@@ -99,6 +99,51 @@ describe('PDF page layouts', () => {
   it('caps an image larger than the page at the whole page', async () => {
     const [page] = await layouts([{ image: { ...picture(), box: [-100, -100, 900, 1000] } }])
     expect(page?.imageCoverage).toBe(1)
+  })
+
+  describe('says when part of a page went unmeasured', () => {
+    const CAP = 5000
+    const lines = (count: number): string[] => Array.from({ length: count }, () => 'x')
+
+    it('at the object cap, with a page-sized image past it', async () => {
+      const [page] = await layouts([{ text: lines(CAP), image: { ...picture(), last: true } }])
+      expect(page).toMatchObject({ imageCoverage: 0, ink: false, incomplete: true })
+    })
+
+    it('when the cap cuts into a form that holds the image', async () => {
+      const image = { ...picture(), inForm: true, last: true }
+      const [page] = await layouts([{ text: lines(CAP - 1), image }])
+      expect(page).toMatchObject({ imageCoverage: 0, ink: false, incomplete: true })
+    })
+
+    it('with forms nested past the depth limit', async () => {
+      const [page] = await layouts([
+        { image: { ...picture(), inForm: 5 }, text: ['RFI-014 stamp'] },
+      ])
+      expect(page).toMatchObject({ imageCoverage: 0, ink: true, incomplete: true })
+    })
+
+    it('with an image whose bounds cannot be read', async () => {
+      const bounds = vi.spyOn(pdfium, 'FPDFPageObj_GetBounds').mockReturnValue(false)
+      try {
+        const [page] = await layouts([{ image: picture() }])
+        expect(page).toMatchObject({ imageCoverage: 0, ink: true, incomplete: true })
+      } finally {
+        bounds.mockRestore()
+      }
+    })
+
+    it('but not when every object was looked at, up to the cap and its deepest form', async () => {
+      const pages = await layouts([
+        { text: lines(CAP) },
+        { image: { ...picture(), inForm: 4 } },
+        { image: picture() },
+      ])
+      expect(pages[0]).toMatchObject({ ink: false, incomplete: false })
+      expect(pages[1]).toMatchObject({ ink: true, incomplete: false })
+      expect(pages[1]?.imageCoverage).toBeCloseTo(1, 2)
+      expect(pages[2]?.incomplete).toBe(false)
+    })
   })
 })
 

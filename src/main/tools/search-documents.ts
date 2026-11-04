@@ -63,14 +63,18 @@ const STAMP_TEXT_COVERAGE = 0.05
  * - 'stamp': images cover at least half the page and the text is small: under 200 non-space
  *   characters, or covering under 5% of the page (a big "RECEIVED", a long footer). A scan
  *   with a real OCR layer has far more than that, so it stays a text page.
+ * - A page the reader could not fully inspect may hide a scan, so it gets OCR whatever was measured:
+ *   'no-text' under the first rule's count, 'stamp' otherwise.
  * A wrong 'stamp' costs one page's OCR and repeats some lines as "(page N, OCR)" matches; a
  * wrong text page would hide the scan, so the rule leans towards OCR. The page's own text
  * stays searched either way. A reader without layouts (a fake, in tests) gets the first rule.
  */
 export function ocrReason(text: string, layout?: PageLayout): OcrPage['reason'] | null {
   const chars = text.replace(/\s/g, '').length
-  if (chars < BLANK_PAGE) return !layout || layout.ink ? 'no-text' : null
-  if (!layout || layout.imageCoverage < SCAN_IMAGE_COVERAGE) return null
+  if (chars < BLANK_PAGE) return !layout || layout.ink || layout.incomplete ? 'no-text' : null
+  if (!layout) return null
+  if (layout.incomplete) return 'stamp'
+  if (layout.imageCoverage < SCAN_IMAGE_COVERAGE) return null
   return chars < STAMP_CHARS || layout.textCoverage < STAMP_TEXT_COVERAGE ? 'stamp' : null
 }
 

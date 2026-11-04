@@ -77,6 +77,7 @@ const SCAN_LAYOUT: PageLayout = {
   imageCoverage: 1,
   textCoverage: 0,
   ink: true,
+  incomplete: false,
   longEdgePoints: 792,
 }
 const doc = (...pages: PageSpec[]): Buffer =>
@@ -152,7 +153,13 @@ function scriptedReader(): ScriptedReader {
             layout: {
               ...(spec.ocr || spec.fails || spec.blank
                 ? SCAN_LAYOUT
-                : { imageCoverage: 0, textCoverage: 0, ink: false, longEdgePoints: 792 }),
+                : {
+                    imageCoverage: 0,
+                    textCoverage: 0,
+                    ink: false,
+                    incomplete: false,
+                    longEdgePoints: 792,
+                  }),
               ...spec.layout,
             },
           })),
@@ -321,6 +328,7 @@ describe('which PDF pages need OCR', () => {
     imageCoverage: 0,
     textCoverage: 0,
     ink: false,
+    incomplete: false,
     longEdgePoints: 792,
     ...over,
   })
@@ -349,6 +357,14 @@ describe('which PDF pages need OCR', () => {
     // An image on part of a page of text is just a picture.
     expect(ocrReason(words(8), { ...scanned, imageCoverage: 0.49 })).toBeNull()
     expect(ocrReason(words(8), { ...scanned, imageCoverage: 0.49, textCoverage: 0 })).toBeNull()
+  })
+
+  it('reads a page it could not fully inspect, whatever was measured of it', () => {
+    const incomplete = layout({ incomplete: true })
+    expect(ocrReason('', incomplete)).toBe('no-text')
+    expect(ocrReason(words(7), incomplete)).toBe('no-text')
+    expect(ocrReason(words(8), incomplete)).toBe('stamp')
+    expect(ocrReason(words(5000), { ...incomplete, textCoverage: 0.9 })).toBe('stamp')
   })
 })
 
@@ -734,6 +750,82 @@ describe('search_files OCR availability', () => {
       'pending',
       'pending',
     ])
+  })
+})
+
+describe('search_files OCR of a page past the object limit', () => {
+  const realReader: DocumentReader = {
+    extract: (bytes, options = {}) =>
+      extractDocument(bytes, options, {
+        pdfium: () => Promise.resolve(pdfium),
+        encode: () => Promise.reject(new Error('search never encodes')),
+        decodeImage: () => Promise.reject(new Error('search never decodes')),
+      }),
+  }
+  const image: FixtureImage = {
+    width: 60,
+    height: 80,
+    gray: new Uint8Array(4800).fill(255).fill(0, 0, 1200),
+    last: true,
+  }
+  const readAll = (seen: OcrImage[]): SystemOcr => ({
+    probe: () => Promise.resolve({ available: true, languages: ['en-US'], userLanguage: 'en-US' }),
+    recognize: (picture) => {
+      seen.push(picture)
+      return Promise.resolve(answer(picture, [SENTENCE]))
+    },
+    cancelAll: () => undefined,
+  })
+
+  it('reads a page-sized scan past the limit, and still searches the text layer', async () => {
+    const seen: OcrImage[] = []
+    h = harness({ documents: realReader, ocr: readAll(seen) })
+    const text = ['RFI-014 received', ...Array.from({ length: 5000 }, () => 'x')]
+    await put(path.join(sb.root, 'scan.pdf'), Buffer.from(makePdf([{ text, image }])))
+    const r = await search({ anyOf: ['RFI-014', 'walk-in freezer'], context: 0 })
+    expect(seen).toHaveLength(1)
+    const out = lines(r.content)
+    expect(out).toContain('scan.pdf (page 1): (matched "RFI-014") RFI-014 received')
+    expect(out).toContain(`scan.pdf (page 1, OCR): (matched "walk-in freezer") ${SENTENCE}`)
+  })
+
+  it('reads a scan behind empty objects, with no text and no ink measured', async () => {
+    const seen: OcrImage[] = []
+    h = harness({ documents: realReader, ocr: readAll(seen) })
+    const text = Array.from({ length: 5001 }, () => ' ')
+    await put(path.join(sb.root, 'scan.pdf'), Buffer.from(makePdf([{ text, image }])))
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    expect(seen).toHaveLength(1)
+    expect(r.content).toContain(`scan.pdf (page 1, OCR): ${SENTENCE}`)
+  })
+
+  const capped = (...read: string[]): PageSpec => ({
+    ...scan(...read),
+    text: 'x'.repeat(5000),
+    layout: { imageCoverage: 0, ink: false, incomplete: true },
+  })
+
+  it('tries no more turns on it than on any other page', async () => {
+    await put(path.join(sb.root, 'plan.pdf'), doc(capped('A-101 NORTH', 'KIT HEN')))
+    await search({ contentPattern: 'kit hen', context: 0 })
+    expect(ocr.runs).toHaveLength(4)
+    expect((await ocrOf('plan.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: true })
+  })
+
+  it('counts its failures against the same limit as any other page', async () => {
+    await put(path.join(sb.root, 'a.pdf'), doc(...Array.from({ length: 5 }, () => capped())))
+    let tries = 0
+    h = harness({
+      ocr: {
+        ...ocr,
+        recognize: () => {
+          tries++
+          return Promise.reject(new OcrError('failed', 'crash'))
+        },
+      },
+    })
+    await search({ contentPattern: 'freezer' })
+    expect(tries).toBe(3)
   })
 })
 

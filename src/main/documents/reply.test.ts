@@ -43,7 +43,13 @@ function verdict(raw: unknown, request: ReplyJob = job()): string {
 }
 
 describe('checkReply: page layouts and raw pixels', () => {
-  const layout = { imageCoverage: 1, textCoverage: 0.1, ink: true, longEdgePoints: 792 }
+  const layout = {
+    imageCoverage: 1,
+    textCoverage: 0.1,
+    ink: true,
+    incomplete: false,
+    longEdgePoints: 792,
+  }
   const one = {
     meta: { kind: 'pdf', mime: 'application/pdf', pageCount: 3 },
     images: [],
@@ -75,6 +81,7 @@ describe('checkReply: page layouts and raw pixels', () => {
       { imageCoverage: -1 },
       { textCoverage: Number.NaN },
       { ink: 'yes' },
+      { incomplete: 'yes' },
       { longEdgePoints: 0 },
       { longEdgePoints: 1e12 },
       { extra: 1 },

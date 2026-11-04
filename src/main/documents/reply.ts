@@ -155,6 +155,7 @@ export function checkReply(raw: unknown, job: ReplyJob): CheckedReply {
               imageCoverage: fraction,
               textCoverage: fraction,
               ink: z.boolean(),
+              incomplete: z.boolean(),
               longEdgePoints: z.number().positive().max(MAX_PAGE_POINTS),
             })
             .optional(),

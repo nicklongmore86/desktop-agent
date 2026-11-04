@@ -35,7 +35,7 @@ const DEFAULT_MAX_IMAGES = 8
 const FPDF_PAGEOBJ_TEXT = 1
 const FPDF_PAGEOBJ_IMAGE = 3
 const FPDF_PAGEOBJ_FORM = 5
-/** Page objects looked at per page: a CAD drawing can hold millions. Past this, it has ink anyway. */
+/** Page objects looked at per page: a CAD drawing can hold millions. Past this, the layout is incomplete. */
 const MAX_LAYOUT_OBJECTS = 5000
 const MAX_FORM_DEPTH = 4
 /** Text rectangles measured per page. */
@@ -292,6 +292,7 @@ function pageLayout(pdfium: WrappedPdfiumModule, page: number): PageLayout {
   let seen = 0
   let imageArea = 0
   let ink = false
+  let incomplete = false
   /** What an object draws: 'image' when it is or holds one, 'ink' when anything but text. */
   const inspect = (object: number, depth: number): 'image' | 'ink' | 'text' => {
     seen++
@@ -299,10 +300,17 @@ function pageLayout(pdfium: WrappedPdfiumModule, page: number): PageLayout {
     if (type === FPDF_PAGEOBJ_TEXT) return 'text'
     if (type === FPDF_PAGEOBJ_IMAGE) return 'image'
     if (type !== FPDF_PAGEOBJ_FORM) return 'ink'
-    if (depth >= MAX_FORM_DEPTH) return 'ink'
+    if (depth >= MAX_FORM_DEPTH) {
+      incomplete = true
+      return 'ink'
+    }
     let found: 'image' | 'ink' | 'text' = 'text'
     const inner = pdfium.FPDFFormObj_CountObjects(object)
-    for (let i = 0; i < inner && seen < MAX_LAYOUT_OBJECTS; i++) {
+    for (let i = 0; i < inner; i++) {
+      if (seen >= MAX_LAYOUT_OBJECTS) {
+        incomplete = true
+        break
+      }
       const kind = inspect(pdfium.FPDFFormObj_GetObject(object, i), depth + 1)
       if (kind === 'image') return 'image'
       if (kind === 'ink') found = 'ink'
@@ -311,7 +319,11 @@ function pageLayout(pdfium: WrappedPdfiumModule, page: number): PageLayout {
   }
   try {
     const count = pdfium.FPDFPage_CountObjects(page)
-    for (let i = 0; i < count && seen < MAX_LAYOUT_OBJECTS; i++) {
+    for (let i = 0; i < count; i++) {
+      if (seen >= MAX_LAYOUT_OBJECTS) {
+        incomplete = true
+        break
+      }
       const object = pdfium.FPDFPage_GetObject(page, i)
       const kind = inspect(object, 0)
       if (kind === 'text') continue
@@ -323,6 +335,8 @@ function pageLayout(pdfium: WrappedPdfiumModule, page: number): PageLayout {
         const right = float32At(pdfium, box + 8)
         const top = float32At(pdfium, box + 12)
         imageArea += Math.max(0, right - left) * Math.max(0, top - bottom)
+      } else {
+        incomplete = true
       }
     }
   } finally {
@@ -333,6 +347,7 @@ function pageLayout(pdfium: WrappedPdfiumModule, page: number): PageLayout {
     imageCoverage,
     textCoverage: imageCoverage >= SCAN_IMAGE_COVERAGE ? textCoverage(pdfium, page, area) : 0,
     ink,
+    incomplete,
     longEdgePoints: Math.max(width, height),
   }
 }

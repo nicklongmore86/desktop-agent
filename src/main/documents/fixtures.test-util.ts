@@ -7,8 +7,10 @@ export interface FixtureImage {
   gray: Uint8Array
   /** Where on the page: `[x, y, width, height]` in points. Default: the whole page. */
   box?: readonly [number, number, number, number]
-  /** Wrap the image in a form XObject, as some scanners do. */
-  inForm?: boolean
+  /** Wrap the image in a form XObject, as some scanners do; a number nests that many. */
+  inForm?: boolean | number
+  /** Draw it after the page's text and paths, not before them. */
+  last?: boolean
 }
 
 /**
@@ -43,6 +45,7 @@ export function makePdf(pages: FixturePage[], { encrypted = false } = {}): Uint8
     const height = page.height ?? 792
     let content = ''
     let xobjects = ''
+    let imageContent = ''
     if (page.image) {
       const { image } = page
       const [x, y, w, h] = image.box ?? [0, 0, width, height]
@@ -54,15 +57,16 @@ export function makePdf(pages: FixturePage[], { encrypted = false } = {}): Uint8
           `/Length ${String(data.length)} >>\nstream\n${data}\nendstream`,
       )
       let drawn = picture
-      if (image.inForm) {
+      for (let forms = Number(image.inForm ?? 0); forms > 0; forms--) {
         const body = 'q 1 0 0 1 0 0 cm /Im0 Do Q'
         drawn = add(
-          `<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Im0 ${String(picture)} 0 R >> >> ` +
+          `<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Im0 ${String(drawn)} 0 R >> >> ` +
             `/Length ${String(body.length)} >>\nstream\n${body}\nendstream`,
         )
       }
       xobjects = ` /XObject << /Im0 ${String(drawn)} 0 R >>`
-      content += `q ${String(w)} 0 0 ${String(h)} ${String(x)} ${String(y)} cm /Im0 Do Q\n`
+      imageContent = `q ${String(w)} 0 0 ${String(h)} ${String(x)} ${String(y)} cm /Im0 Do Q\n`
+      if (!image.last) content += imageContent
     }
     if (page.text?.length) {
       const mode = page.invisibleText ? '3 Tr ' : ''
@@ -75,6 +79,7 @@ export function makePdf(pages: FixturePage[], { encrypted = false } = {}): Uint8
       for (let x = 100; x <= 500; x += 50) content += `${String(x)} 100 m ${String(x)} 600 l S\n`
       for (let y = 100; y <= 600; y += 50) content += `100 ${String(y)} m 500 ${String(y)} l S\n`
     }
+    if (page.image?.last) content += imageContent
     const stream = add(`<< /Length ${String(content.length)} >>\nstream\n${content}endstream`)
     kids.push(
       add(
