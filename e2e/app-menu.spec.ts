@@ -107,6 +107,19 @@ const crashRenderer = (app: ElectronApplication): Promise<void> =>
     BrowserWindow.getAllWindows()[0]?.webContents.forcefullyCrashRenderer()
   })
 
+/**
+ * A window that has just opened can drop its first keys, and a dropped key would make "this key
+ * does nothing" pass by itself. Presses a key known to act until it does, then undoes it.
+ */
+async function waitForKeys(app: ElectronApplication): Promise<void> {
+  await expect(async () => {
+    await press(app, 'Plus', ['control', 'shift'])
+    await expect.poll(() => zoomLevel(app), { timeout: 1000 }).toBeGreaterThan(0)
+  }).toPass({ timeout: 20_000 })
+  await press(app, '0', ['control'])
+  await expect.poll(() => zoomLevel(app)).toBe(0)
+}
+
 // Long enough for an accelerator to have acted, in the runs where it does.
 const SETTLE_MS = 1000
 
@@ -127,6 +140,8 @@ test.describe('packaged build', () => {
     await page.evaluate(() => {
       ;(window as unknown as { marker: number }).marker = 1
     })
+    await waitForKeys(app)
+    const before = await loads(app)
     const keys: [string, string[]][] = [
       ['R', ['control']],
       ['R', ['control', 'shift']],
@@ -140,7 +155,7 @@ test.describe('packaged build', () => {
     for (const [key, modifiers] of keys) await press(app, key, modifiers)
     await page.waitForTimeout(SETTLE_MS)
 
-    expect(await loads(app)).toBe(0)
+    expect(await loads(app)).toBe(before)
     expect(await page.evaluate(() => (window as unknown as { marker?: number }).marker)).toBe(1)
     expect(await devToolsOpen(app)).toBe(false)
     const roles = await app.evaluate(({ Menu }) =>
@@ -154,7 +169,7 @@ test.describe('packaged build', () => {
 
   test('zooms by key, one step at a time', async () => {
     const { app } = launched
-    const page = await app.firstWindow()
+    await waitForKeys(app)
     await press(app, 'Plus', ['control', 'shift'])
     await expect.poll(() => zoomLevel(app)).toBe(0.5)
     await press(app, '-', ['control'])
@@ -163,7 +178,6 @@ test.describe('packaged build', () => {
     await expect.poll(() => zoomLevel(app)).toBe(0.5)
     await press(app, '0', ['control'])
     await expect.poll(() => zoomLevel(app)).toBe(0)
-    await page.waitForTimeout(100)
   })
 
   test('Ctrl+N and Ctrl+, reach the page once; the menu items do the same job', async () => {
