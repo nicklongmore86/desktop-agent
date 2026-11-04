@@ -74,6 +74,8 @@ async function launch(userData: string, env: Record<string, string> = {}): Promi
   started.push(app)
   const page = await app.firstWindow()
   await page.waitForFunction(() => 'desktopApi' in window)
+  // The page has mounted and listens for approvals (one pushed earlier would find no card).
+  await page.locator('textarea').first().waitFor({ state: 'attached' })
   return { app, page, userData }
 }
 
@@ -540,7 +542,10 @@ test.describe('notifications and taskbar flash', () => {
       () => (window as unknown as { __approvals: unknown[] }).__approvals.length,
     )
     expect(pending).toBe(1)
-    await expect(page.getByRole('alertdialog')).toBeVisible()
+    // Still unanswered: nothing was approved or denied, and no command ran.
+    const events = await page.evaluate(() => (window as unknown as { __events: string[] }).__events)
+    expect(events).not.toContain('approval_closed')
+    expect(events.some((event) => event.startsWith('tool_result'))).toBe(false)
 
     // Focus stops the flashing; the same approval is not announced again.
     await app.evaluate(({ BrowserWindow }) => {
