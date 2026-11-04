@@ -32,6 +32,8 @@ import type {
   FileLocation,
   FilesChanged,
   FileSearchHit,
+  MentionOpenResult,
+  MentionResolution,
   FilesRoot,
 } from '../../../shared/ipc-files'
 import type {
@@ -168,6 +170,8 @@ export interface FakeApiOptions {
   history?: HistoryState
   layout?: LayoutPrefs
   files?: Record<string, FileEntry[]>
+  /** Text main would accept as a file or folder in a reply, with what a click does. */
+  mentions?: Record<string, Extract<MentionResolution, { ok: true }>>
   projects?: Project[]
   /** Other providers' chats that are pinned or filed. */
   others?: ProviderChat[]
@@ -366,6 +370,27 @@ export function fakeApi(options: FakeApiOptions = {}) {
           return Promise.resolve({ ok: false as const, reason: 'Not allowed.' })
         const path = location.rel ? `${root}\\${location.rel.replaceAll('/', '\\')}` : root
         return Promise.resolve({ ok: true as const, text: `@"${path}"` })
+      }),
+      resolveMentions: vi.fn((texts: string[]) =>
+        Promise.resolve(
+          texts.map((text): MentionResolution => options.mentions?.[text] ?? { ok: false }),
+        ),
+      ),
+      openMention: vi.fn((text: string): Promise<MentionOpenResult> => {
+        const found = options.mentions?.[text]
+        return Promise.resolve(
+          found
+            ? {
+                ok: true,
+                path: found.path,
+                action: found.action,
+                ...(found.note ? { note: found.note } : {}),
+              }
+            : {
+                ok: false,
+                reason: 'That is not a file or folder inside a folder you have granted.',
+              },
+        )
       }),
       onChanged: vi.fn(subscribe(filesListeners)),
       attachDropped: vi.fn((_file: File): Promise<AttachOutcome> =>

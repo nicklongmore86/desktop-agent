@@ -435,6 +435,14 @@ describe('system prompt', () => {
     expect(DEFAULT_SYSTEM_PROMPT).not.toMatch(/\bClaude\b|\bGPT\b|\bpaths\b|\bcontext:/)
   })
 
+  it('asks for full paths in backticks, so a file named in a reply can be clicked', () => {
+    expect(DEFAULT_SYSTEM_PROMPT).toContain(
+      'When you name a file or folder, give its full path in backticks',
+    )
+    // It stays a request for text: nothing here grants access or changes a tool.
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('Access only folders explicitly granted')
+  })
+
   it('says earlier replies may have come from another model or provider (a chat can move)', () => {
     expect(DEFAULT_SYSTEM_PROMPT).toContain(
       'Earlier assistant replies in this conversation may have come from a different model or provider',

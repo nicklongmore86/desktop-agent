@@ -19,6 +19,8 @@ export const filesApi = (
     reveal: (location) => invoke(filesChannels.filesReveal, location),
     copyPath: (location) => invoke(filesChannels.filesCopyPath, location),
     reference: (location) => invoke(filesChannels.filesReference, location),
+    resolveMentions: (texts) => invoke(filesChannels.filesResolveMentions, texts),
+    openMention: (text) => invoke(filesChannels.filesOpenMention, text),
     onChanged: (listener) => subscribe(filesPushChannels.filesChanged, listener),
     // Only the path string crosses IPC. A drag with no file behind it (an item inside a
     // zip folder, a browser image) has an empty path and is refused without calling main.

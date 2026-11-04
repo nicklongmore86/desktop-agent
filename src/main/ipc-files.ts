@@ -3,6 +3,8 @@ import {
   FILES_MAX_QUERY,
   FILES_MAX_REL,
   FILES_MAX_WATCHED,
+  MENTION_MAX_BATCH,
+  MENTION_MAX_TEXT,
   filesChannels,
   type FileActionResult,
   type FileLocation,
@@ -10,6 +12,8 @@ import {
   type FileSearchHit,
   type FilesListResult,
   type FilesRoot,
+  type MentionOpenResult,
+  type MentionResolution,
 } from '../shared/ipc-files'
 import { ROOT_ID } from './files/location'
 import type { IpcHandle } from './ipc-features'
@@ -22,6 +26,8 @@ export interface FilesService {
   reveal: (location: FileLocation) => Promise<FileActionResult>
   copyPath: (location: FileLocation) => Promise<FileActionResult>
   reference: (location: FileLocation) => Promise<FileReferenceResult>
+  resolveMentions: (texts: string[]) => Promise<MentionResolution[]>
+  openMention: (text: string) => Promise<MentionOpenResult>
 }
 
 // A location is a granted folder's opaque id and a relative path: never an absolute
@@ -31,6 +37,8 @@ const locationSchema = z.strictObject({
   rel: z.string().max(FILES_MAX_REL),
 })
 const watchSchema = z.array(locationSchema).max(FILES_MAX_WATCHED * 4)
+const mentionSchema = z.string().min(1).max(MENTION_MAX_TEXT)
+const mentionsSchema = z.array(mentionSchema).max(MENTION_MAX_BATCH)
 const querySchema = z.string().max(FILES_MAX_QUERY)
 
 function location(value: unknown): FileLocation {
@@ -55,4 +63,14 @@ export function registerFilesHandlers(handle: IpcHandle, files: FilesService): v
   handle(filesChannels.filesReveal, (value) => files.reveal(location(value)))
   handle(filesChannels.filesCopyPath, (value) => files.copyPath(location(value)))
   handle(filesChannels.filesReference, (value) => files.reference(location(value)))
+  handle(filesChannels.filesResolveMentions, (value) => {
+    const parsed = mentionsSchema.safeParse(value)
+    if (!parsed.success) throw new Error('Invalid file names.')
+    return files.resolveMentions(parsed.data)
+  })
+  handle(filesChannels.filesOpenMention, (value) => {
+    const parsed = mentionSchema.safeParse(value)
+    if (!parsed.success) throw new Error('Invalid file name.')
+    return files.openMention(parsed.data)
+  })
 }

@@ -94,6 +94,7 @@ void app.whenReady().then(async () => {
     revealPath: (path) => {
       shell.showItemInFolder(path)
     },
+    openPath: (path) => shell.openPath(path),
     onFilesChanged: (change) => {
       push(filesPushChannels.filesChanged, change)
     },

@@ -206,6 +206,8 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       reveal: vi.fn(() => Promise.resolve({ ok: true as const })),
       copyPath: vi.fn(() => Promise.resolve({ ok: true as const })),
       reference: vi.fn(() => Promise.resolve({ ok: true as const, text: '@"/granted/a"' })),
+      resolveMentions: vi.fn(() => Promise.resolve([{ ok: false as const }])),
+      openMention: vi.fn(() => Promise.resolve({ ok: false as const, reason: 'no' })),
     },
     git: {
       overview: vi.fn(() => Promise.resolve({ git: 'missing' as const })),
@@ -440,6 +442,32 @@ describe('registerIpcHandlers', () => {
       expect(services.files.reveal).not.toHaveBeenCalled()
       expect(services.files.copyPath).not.toHaveBeenCalled()
       expect(services.files.reference).not.toHaveBeenCalled()
+    })
+
+    it('takes reply text only as bounded strings, for resolving and for clicking', async () => {
+      const { invoke, services } = setup()
+      await invoke(filesChannels.filesResolveMentions, appFrame, ['C:\\a.txt', 'src/b.ts'])
+      expect(services.files.resolveMentions).toHaveBeenCalledWith(['C:\\a.txt', 'src/b.ts'])
+      await invoke(filesChannels.filesOpenMention, appFrame, 'C:\\a.txt')
+      expect(services.files.openMention).toHaveBeenCalledWith('C:\\a.txt')
+      const tooMany = Array.from({ length: 51 }, () => 'a.txt')
+      for (const bad of [
+        'a.txt',
+        [''],
+        [7],
+        [{ rootId: ROOT_ID, rel: '' }],
+        tooMany,
+        ['x'.repeat(1025)],
+      ])
+        await expect(invoke(filesChannels.filesResolveMentions, appFrame, bad)).rejects.toThrow(
+          'Invalid file names.',
+        )
+      for (const bad of [undefined, '', 7, ['a.txt'], { path: 'a' }, 'x'.repeat(1025)])
+        await expect(invoke(filesChannels.filesOpenMention, appFrame, bad)).rejects.toThrow(
+          'Invalid file name.',
+        )
+      expect(services.files.resolveMentions).toHaveBeenCalledOnce()
+      expect(services.files.openMention).toHaveBeenCalledOnce()
     })
 
     it('watches a bounded list of locations', async () => {
