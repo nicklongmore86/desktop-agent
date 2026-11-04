@@ -238,13 +238,21 @@ describe('window behaviour: the close warning and the system', () => {
     expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
   })
 
-  it('does not ask just after a query-session-end, but asks again once it has clearly passed', async () => {
+  it('still asks after a query-session-end, which Windows may cancel', async () => {
     const { window } = setup({}, working)
     window.emit('query-session-end')
-    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
-    // Shutdown was cancelled by another program: the flag must not last for ever.
-    await vi.advanceTimersByTimeAsync(20_000)
     expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not ask after a query-session-end that is followed by the confirmed session-end', async () => {
+    const { window } = setup({}, working)
+    window.emit('query-session-end')
+    window.emit('session-end')
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
   })
 
   it('does not ask at an operating-system shutdown on Linux or macOS', () => {

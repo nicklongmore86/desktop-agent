@@ -1,7 +1,7 @@
 import type { ApprovalPrompt, ChatEvent } from '../shared/ipc'
 
 /** The three things worth pulling the user back to the window for. */
-export type Alert = 'reply-ready' | 'reply-failed' | 'approval'
+export type Alert = 'reply-ready' | 'reply-paused' | 'reply-failed' | 'approval'
 
 /**
  * The text of every notification. Fixed: a notification shows on the lock screen and stays in
@@ -10,9 +10,17 @@ export type Alert = 'reply-ready' | 'reply-failed' | 'approval'
  */
 export const NOTIFICATION_TEXT: Readonly<Record<Alert, { title: string; body: string }>> = {
   'reply-ready': { title: 'Desktop Agent', body: 'Your reply is ready.' },
+  'reply-paused': { title: 'Desktop Agent', body: 'The agent paused and is waiting for you.' },
   'reply-failed': { title: 'Desktop Agent', body: 'A reply could not be completed.' },
   approval: { title: 'Desktop Agent', body: 'An approval is waiting for your answer.' },
 }
+
+/**
+ * The code of a pause: the step limit, the time budget and stuck detection (the agent), and the
+ * Claude runtime's turn limit all end the run with an error event of this code ("Paused after
+ * N steps"). Progress is saved and Continue is offered, so it is neither ready nor failed.
+ */
+const PAUSED = 'max_turns'
 
 /** Stop reasons that mean the user (or the app) cancelled the run: nothing to announce. */
 const CANCELLED = new Set(['aborted'])
@@ -49,12 +57,13 @@ export class AttentionTracker {
         if (this.commands.has(event.runId) || this.failed.has(event.runId)) return null
         if (CANCELLED.has(event.code)) return null
         remember(this.failed, event.runId)
-        return 'reply-failed'
+        return event.code === PAUSED ? 'reply-paused' : 'reply-failed'
       case 'run_finished': {
         const { runId, stopReason } = event
         if (this.commands.delete(runId)) return null
         if (this.failed.delete(runId)) return null
         if (CANCELLED.has(stopReason)) return null
+        if (stopReason === PAUSED) return 'reply-paused'
         return stopReason === 'internal' || ERROR_STOP_REASONS.has(stopReason)
           ? 'reply-failed'
           : 'reply-ready'

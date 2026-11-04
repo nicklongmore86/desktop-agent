@@ -33,6 +33,29 @@ describe('AttentionTracker', () => {
     expect(tracker.onChatEvent(finished('r2', 'rate_limit'))).toBe('reply-failed')
   })
 
+  it('says paused, once, for every pause (error max_turns, then run_finished)', () => {
+    const tracker = new AttentionTracker()
+    const paused: ChatEvent = {
+      type: 'error',
+      runId: 'r1',
+      code: 'max_turns',
+      message: 'Paused after 100 steps. Your progress is saved.',
+    }
+    expect(tracker.onChatEvent(paused)).toBe('reply-paused')
+    expect(tracker.onChatEvent(finished('r1', 'max_turns'))).toBeNull()
+  })
+
+  it('says paused when only the stop reason shows the pause, never ready or failed', () => {
+    expect(new AttentionTracker().onChatEvent(finished('r1', 'max_turns'))).toBe('reply-paused')
+    expect(NOTIFICATION_TEXT['reply-paused'].body).toBe('The agent paused and is waiting for you.')
+  })
+
+  it('stays quiet for a paused typed command', () => {
+    const tracker = new AttentionTracker()
+    tracker.onChatEvent({ type: 'command_started', runId: 'c1', id: 'x', command: 'ls', cwd: '.' })
+    expect(tracker.onChatEvent(finished('c1', 'max_turns'))).toBeNull()
+  })
+
   it('stays quiet for a run the user stopped', () => {
     expect(new AttentionTracker().onChatEvent(finished('r1', 'aborted'))).toBeNull()
   })

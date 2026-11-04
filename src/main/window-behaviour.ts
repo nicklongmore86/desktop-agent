@@ -35,9 +35,6 @@ export interface WindowBehaviour {
   allowQuit: () => void
 }
 
-/** How long a "the system is going to end the session" warning counts. */
-const SESSION_END_WINDOW_MS = 15_000
-
 /**
  * The window's behaviour beyond opening it: where it opens (and remembering that), the warning
  * before closing during work, and the notification and taskbar flash when the window is not in
@@ -49,14 +46,14 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
   let window: BrowserWindow | null = null
   let tracker: WindowStateTracker | null = null
   let rendererHung = false
-  let sessionEndingUntil = 0
+  // Set only by a confirmed end (see attach); never by a query, which Windows may cancel.
+  let sessionEnding = false
   // Held so a notification is not garbage collected before the user clicks it.
   const live = new Set<Electron.Notification>()
 
-  const sessionEnding = (): boolean => Date.now() < sessionEndingUntil
   // Linux and macOS: the OS is shutting down. (Windows has the window events below.)
   powerMonitor.on('shutdown', () => {
-    sessionEndingUntil = Infinity
+    sessionEnding = true
   })
 
   const guard = createCloseGuard({
@@ -80,7 +77,7 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
     flushState: () => tracker?.flush() ?? Promise.resolve(),
     // No prompt while Windows ends the session, or when the page is hung (nobody can answer
     // in it; a crashed page already stopped the run through cancelOnPageEnd).
-    skipPrompt: () => sessionEnding() || rendererHung,
+    skipPrompt: () => sessionEnding || rendererHung,
     onError: (error) => {
       console.error('close guard', error)
     },
@@ -143,11 +140,12 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
       next.on('focus', () => {
         next.flashFrame(false)
       })
-      next.on('query-session-end', () => {
-        sessionEndingUntil = Date.now() + SESSION_END_WINDOW_MS
-      })
+      // Deliberately no 'query-session-end' handler. Windows can still cancel a queried logoff
+      // or shutdown, and nothing tells us when it does, so a query must not make a close skip
+      // the warning. A blocking dialog there would hold up a real logoff, and preventDefault
+      // would block it outright. 'session-end' cannot be cancelled: only that skips the warning.
       next.on('session-end', () => {
-        sessionEndingUntil = Infinity
+        sessionEnding = true
       })
       next.webContents.on('unresponsive', () => {
         rendererHung = true
