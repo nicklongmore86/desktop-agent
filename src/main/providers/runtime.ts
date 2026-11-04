@@ -34,6 +34,53 @@ export function runtimeEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proc
   )
 }
 
+/** The value of an environment variable; names are case-insensitive on Windows, by habit elsewhere. */
+function envValue(source: NodeJS.ProcessEnv, name: string): string | undefined {
+  const exact = source[name] ?? source[name.toLowerCase()]
+  if (exact !== undefined) return exact
+  return Object.entries(source).find(([key]) => key.toUpperCase() === name)?.[1]
+}
+
+/** A proxy's origin, or nothing: a password in the URL would reach whatever the runtime starts. */
+function proxyOrigin(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  const plain =
+    (url.protocol === 'http:' || url.protocol === 'https:') &&
+    !url.username &&
+    !url.password &&
+    url.pathname === '/' &&
+    !url.search &&
+    !url.hash
+  return plain ? url.origin : undefined
+}
+
+const NO_PROXY_LIST = /^[A-Za-z0-9.,*:[\]_ -]{1,4096}$/
+const LOOPBACK_NO_PROXY = 'localhost,127.0.0.1,::1'
+
+/**
+ * The proxy settings a bundled runtime needs, on top of runtimeEnv (which stays free of
+ * endpoint overrides). Only a plain http(s) proxy URL passes. TLS still ends at the provider,
+ * so this moves no credentials to the proxy, and loopback is always excluded from it.
+ * Both runtimes read these (checked against the pinned versions): see docs/network.md.
+ */
+export function runtimeProxyEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const https = proxyOrigin(envValue(source, 'HTTPS_PROXY'))
+  const http = proxyOrigin(envValue(source, 'HTTP_PROXY'))
+  if (!https && !http) return {}
+  const list = envValue(source, 'NO_PROXY')
+  return {
+    ...(https ? { HTTPS_PROXY: https } : {}),
+    ...(http ? { HTTP_PROXY: http } : {}),
+    NO_PROXY: list && NO_PROXY_LIST.test(list) ? `${list},${LOOPBACK_NO_PROXY}` : LOOPBACK_NO_PROXY,
+  }
+}
+
 export interface DiscoveryOptions {
   resourcesPath?: string
   platform?: NodeJS.Platform

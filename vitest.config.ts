@@ -14,6 +14,8 @@ export default defineConfig({
             'scripts/**/*.test.mjs',
           ],
           environment: 'node',
+          // Outside Electron the network layer has no transport: this gives it one, for tests only.
+          setupFiles: ['src/main/net/vitest-setup.ts'],
         },
       },
       {

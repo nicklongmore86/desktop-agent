@@ -287,6 +287,13 @@ describe('bundledPin', () => {
     await expect(bundledPin(root)).rejects.toThrow(/test-only entry: tools\.js/)
   })
 
+  it('fails when the main entry loads the network test entry', async () => {
+    await entry()
+    await manifest({ 'index.js': [[], ['chunks/../network.js']], 'network.js': [] })
+    await write('out/main/network.js', launcher(PIN))
+    await expect(bundledPin(root)).rejects.toThrow(/test-only entry: network\.js/)
+  })
+
   it('fails when package.json main is not in out/main', async () => {
     await write('package.json', JSON.stringify({ main: './index.js' }))
     await write('index.js', launcher(PIN))

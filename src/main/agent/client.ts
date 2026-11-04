@@ -1,11 +1,20 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { cloudFetch, networkErrorMessage } from '../net/network'
 import type { AgentClient, AgentEvent } from './types'
 
 export const DEFAULT_MODEL = 'claude-sonnet-5-5'
+/** Fixed, so an ANTHROPIC_BASE_URL in the environment cannot move the key. */
+const ANTHROPIC_ORIGIN = 'https://api.anthropic.com'
 
 /** Main-process only. SDK retries connection failures, 408/409/429 and 5xx twice. */
 export function createClaudeClient(apiKey: string): AgentClient {
-  return new Anthropic({ apiKey, maxRetries: 2, timeout: 120_000 })
+  return new Anthropic({
+    apiKey,
+    baseURL: ANTHROPIC_ORIGIN,
+    fetch: cloudFetch,
+    maxRetries: 2,
+    timeout: 120_000,
+  })
 }
 
 /** Do not forward raw SDK errors: they can contain request data. */
@@ -63,7 +72,11 @@ export function apiErrorEvent(error: unknown): Extract<AgentEvent, { type: 'erro
     return {
       type: 'error',
       code: 'network',
-      message: 'Could not connect to Claude. Check your connection and try again.',
+      message: networkErrorMessage(
+        'Claude',
+        error,
+        'Could not connect to Claude. Check your connection and try again.',
+      ),
     }
   return { type: 'error', code: 'api', message: 'The Claude request failed. Please try again.' }
 }

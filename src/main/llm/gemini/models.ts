@@ -1,3 +1,4 @@
+import { cloudFetch } from '../../net/network'
 import { geminiFetch } from './client'
 import { GeminiError } from './errors'
 
@@ -30,7 +31,7 @@ export async function listGeminiModels(
     const query = new URLSearchParams({ pageSize: String(PAGE_SIZE) })
     if (pageToken) query.set('pageToken', pageToken)
     const response = await geminiFetch(
-      options.fetch ?? fetch,
+      options.fetch ?? cloudFetch,
       `/v1beta/models?${query.toString()}`,
       apiKey,
       {

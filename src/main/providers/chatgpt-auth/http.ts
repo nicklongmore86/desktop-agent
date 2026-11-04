@@ -1,3 +1,4 @@
+import { networkFailureIn } from '../../net/network'
 import { REQUEST_TIMEOUT } from './config'
 import { ChatgptAuthError } from './errors'
 
@@ -31,6 +32,14 @@ async function readBody(response: Response): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
+/** A transport failure as a fixed error, naming the proxy or certificate when that is the cause. */
+function transportError(error: unknown): ChatgptAuthError {
+  const failure = networkFailureIn(error)
+  if (failure?.kind === 'proxy') return new ChatgptAuthError('proxy', failure.detail)
+  if (failure?.kind === 'certificate') return new ChatgptAuthError('certificate', failure.detail)
+  return new ChatgptAuthError('network')
+}
+
 /**
  * One request to OpenAI. Never follows a redirect, gives up after REQUEST_TIMEOUT,
  * and turns every transport failure into a fixed error: fetch's own errors can
@@ -57,16 +66,16 @@ export async function send(
           : { accept: 'application/json' },
       ...(init.method === 'POST' ? { body: new URLSearchParams(init.form).toString() } : {}),
     })
-  } catch {
+  } catch (error) {
     if (signal?.aborted) throw new ChatgptAuthError('cancelled')
-    throw new ChatgptAuthError('network')
+    throw transportError(error)
   }
   let text: string
   try {
     text = await readBody(response)
   } catch (error) {
     if (signal?.aborted) throw new ChatgptAuthError('cancelled')
-    throw error instanceof ChatgptAuthError ? error : new ChatgptAuthError('network')
+    throw error instanceof ChatgptAuthError ? error : transportError(error)
   }
   let json: unknown
   try {
