@@ -57,7 +57,7 @@ const TEXT_PATTERNS: readonly (readonly [RegExp, string])[] = [
 /** Encoded data: a key we do not know the shape of, an image, a file. */
 const ENCODED_RUN = /[A-Za-z0-9+/_-]{64,}={0,2}/g
 /** Which a long absolute path, as in a stack frame, only looks like. */
-const ABSOLUTE_PATH = /^(?:\/[\w+-]{1,40})+\/?$/
+const ABSOLUTE_PATH = /^\/+(?:[\w+-]{1,40}\/)*[\w+-]{0,40}$/
 
 /**
  * Removes what must never reach a log from free text: API keys, sign-in tokens, encoded data,
