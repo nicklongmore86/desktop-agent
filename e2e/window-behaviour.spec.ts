@@ -32,7 +32,8 @@ function seedData(options: { settings?: unknown; grants?: string[] } = {}): {
   folder: string
 } {
   const userData = mkdtempSync(join(tmpdir(), 'window-behaviour-'))
-  const folder = realpathSync(mkdtempSync(join(tmpdir(), 'window-behaviour-folder-')))
+  // .native: the long form of a Windows 8.3 short name (RUNNER~1), which grants are compared with.
+  const folder = realpathSync.native(mkdtempSync(join(tmpdir(), 'window-behaviour-folder-')))
   mkdirSync(userData, { recursive: true })
   if (options.settings !== undefined)
     writeFileSync(join(userData, 'settings.json'), JSON.stringify(options.settings))
@@ -306,8 +307,16 @@ async function startCommand(page: Page, command: string, cwd: string): Promise<A
   await page.evaluate(() => {
     const api = (window as unknown as { desktopApi: DesktopApi }).desktopApi
     const seen: ApprovalPrompt[] = []
+    const events: string[] = []
     ;(window as unknown as { __approvals: ApprovalPrompt[] }).__approvals = seen
+    ;(window as unknown as { __events: string[] }).__events = events
     api.onApprovalRequest((prompt) => seen.push(prompt))
+    // Kept for the failure message: what the chat said if no approval came.
+    api.onChatEvent((event) => {
+      events.push(
+        event.type === 'tool_result' ? `${event.type}: ${event.content.slice(0, 200)}` : event.type,
+      )
+    })
   })
   const sent = await page.evaluate(
     ([text, folder]) =>
@@ -318,11 +327,21 @@ async function startCommand(page: Page, command: string, cwd: string): Promise<A
     [command, cwd],
   )
   expect(sent).toEqual({ ok: true })
-  await expect
-    .poll(() =>
-      page.evaluate(() => (window as unknown as { __approvals: unknown[] }).__approvals.length),
+  try {
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => (window as unknown as { __approvals: unknown[] }).__approvals.length),
+        { timeout: 15_000 },
+      )
+      .toBe(1)
+  } catch (error) {
+    const events = await page.evaluate(() => (window as unknown as { __events: string[] }).__events)
+    throw new Error(
+      `no approval for the command (folder ${cwd}); chat events: ${JSON.stringify(events)}`,
+      { cause: error },
     )
-    .toBe(1)
+  }
   return page.evaluate(
     () => (window as unknown as { __approvals: ApprovalPrompt[] }).__approvals[0] as ApprovalPrompt,
   )
