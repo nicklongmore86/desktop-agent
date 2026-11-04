@@ -69,6 +69,11 @@ function setup(extra: { files?: string[]; links?: Record<string, string> } = {})
   files[`${ROOT}\\Other\\only-here.txt`] = { size: 1 }
   files[`${OTHER}\\twin.txt`] = { size: 1 }
   files[`${ROOT}\\twin.txt`] = { size: 1 }
+  // The same relative paths in two granted folders (only ambiguous once OTHER is granted).
+  for (const base of [ROOT, OTHER]) {
+    files[`${base}\\report.md`] = { size: 1 }
+    files[`${base}\\docs\\report.md`] = { size: 1 }
+  }
   files[`${OUTSIDE}\\private.txt`] = { size: 1 }
   files[`${USER_DATA}\\audit.jsonl`] = { size: 1 }
   const tree = fakeWindowsTree({
@@ -77,6 +82,8 @@ function setup(extra: { files?: string[]; links?: Record<string, string> } = {})
       'C:\\Users\\Me',
       ROOT,
       `${ROOT}\\sub`,
+      `${ROOT}\\docs`,
+      `${OTHER}\\docs`,
       `${ROOT}\\Other`,
       `${ROOT}\\evil.exe`,
       OTHER,
@@ -363,6 +370,23 @@ describe('a click on a file or folder named in a reply', () => {
     expect(await decideMention(env.guard, `${OTHER}\\twin.txt`, env.tree.listFs)).toMatchObject({
       ok: true,
       path: `${OTHER}\\twin.txt`,
+    })
+  })
+
+  it('stays plain, in resolve and in open, when one relative path is in two granted folders', async () => {
+    const env = setup()
+    env.roots.push(OTHER)
+    for (const text of ['report.md', 'docs/report.md', './docs\\report.md']) {
+      expect(await decideMention(env.guard, text, env.tree.listFs)).toMatchObject({ ok: false })
+      expect(await click(env, text)).toMatchObject({ ok: false })
+    }
+    expect(env.shell.open).not.toHaveBeenCalled()
+    expect(env.shell.reveal).not.toHaveBeenCalled()
+    // Granting only one of them makes the same text unambiguous again.
+    env.roots.splice(0, env.roots.length, OTHER)
+    expect(await decideMention(env.guard, 'report.md', env.tree.listFs)).toMatchObject({
+      ok: true,
+      path: `${OTHER}\\report.md`,
     })
   })
 

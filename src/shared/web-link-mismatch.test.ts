@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { displayUrl, misleadingHost, webDestination } from './links'
+import {
+  displayUrl,
+  linkMismatch,
+  misleadingHost,
+  plainDestination,
+  webDestination,
+} from './web-link-mismatch'
 
 describe('webDestination', () => {
   it('reads the host the browser would connect to', () => {
@@ -51,5 +57,27 @@ describe('displayUrl', () => {
     expect(displayUrl('https://ex%D0%B0mple.com/a%E2%80%AEb')).toBe('https://exаmple.com/a\u202Eb')
     expect(displayUrl('https://a.test/%2F%3F%20%25')).toBe('https://a.test/%2F%3F%20%25')
     expect(displayUrl('https://a.test/%E2%80')).toBe('https://a.test/%E2%80')
+  })
+})
+
+describe('linkMismatch', () => {
+  it('names the claimed and the real host when the text claims another site', () => {
+    expect(linkMismatch('https://paypal.com', 'https://evil.test/x')).toEqual({
+      claimed: 'paypal.com',
+      host: 'evil.test',
+    })
+    expect(linkMismatch('www.example.com', 'https://example.com/a')).toBeNull()
+    expect(linkMismatch('README.md', 'https://evil.test/')).toBeNull()
+    expect(linkMismatch('https://paypal.com', 'mailto:a@b.test')).toBeNull()
+  })
+})
+
+describe('plainDestination', () => {
+  it('shows only printable ASCII: punycode hosts, encoded paths, tokens for anything else', () => {
+    expect(plainDestination('https://exаmple.com/a‮b')).toBe(
+      'https://xn--exmple-4nf.com/a%E2%80%AEb',
+    )
+    expect(plainDestination('not a url ‮​')).toBe('not a url ⟨U+202E⟩⟨U+200B⟩')
+    expect(plainDestination(`https://a.test/${'x'.repeat(500)}`).length).toBe(401)
   })
 })

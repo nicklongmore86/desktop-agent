@@ -74,14 +74,16 @@ describe('createMainWindow', () => {
 
   it('loads the bundled file, not the env URL, when packaged', () => {
     electron.app.isPackaged = true
-    const window = createMainWindow() as unknown as { loadURL: ReturnType<typeof vi.fn> }
+    const window = createMainWindow({ approvalOpen: () => false }) as unknown as {
+      loadURL: ReturnType<typeof vi.fn>
+    }
     expect(window.loadURL).toHaveBeenCalledWith(
       expect.stringMatching(/^file:\/\/.*\/renderer\/index\.html$/),
     )
   })
 
   it('creates the BrowserWindow with secure webPreferences', () => {
-    createMainWindow()
+    createMainWindow({ approvalOpen: () => false })
 
     expect(electron.BrowserWindow).toHaveBeenCalledTimes(1)
     const options = electron.BrowserWindow.mock.calls[0]?.[0] as {
@@ -99,12 +101,12 @@ describe('createMainWindow', () => {
   })
 
   it('shows the native text context menu in the app window', () => {
-    createMainWindow()
+    createMainWindow({ approvalOpen: () => false })
     expect(electron.webContents.on).toHaveBeenCalledWith('context-menu', expect.any(Function))
   })
 
   it('denies every window.open and opens web links externally', () => {
-    createMainWindow()
+    createMainWindow({ approvalOpen: () => false })
     const handler = electron.webContents.setWindowOpenHandler.mock.calls[0]?.[0] as OpenHandler
 
     expect(handler({ url: 'https://example.com/' })).toEqual({ action: 'deny' })
@@ -115,7 +117,7 @@ describe('createMainWindow', () => {
   })
 
   it.each(['will-navigate', 'will-redirect'])('blocks %s away from the app', (eventName) => {
-    createMainWindow()
+    createMainWindow({ approvalOpen: () => false })
     const handler = navigationHandler(eventName)
 
     const external = { preventDefault: vi.fn() }

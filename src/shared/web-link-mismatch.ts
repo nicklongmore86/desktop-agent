@@ -1,4 +1,6 @@
-// Web links in a reply. The reply is untrusted (the agent reads untrusted documents), so a link
+// The one rule for a web link whose visible text claims a different site. Pure and shared: the
+// click in the page (ReplyLinks.tsx) and the native right-click menu in the main process both
+// ask it, so there is one rule, not two. The reply is untrusted (the agent reads untrusted documents), so a link
 // can say one thing and go to another: `[example.com](https://evil.test)`. This works out where a
 // link really goes and whether its visible text pretends to be somewhere else. It only advises
 // the click; the main process still opens nothing but http(s) (see main/window.ts).
@@ -97,4 +99,45 @@ export function displayUrl(href: string): string {
       return run
     }
   })
+}
+
+/** A link whose visible text names another site than the one it goes to. */
+export interface LinkMismatch {
+  /** The host the visible text claims (as the browser would read it). */
+  claimed: string
+  /** The host the link really goes to. */
+  host: string
+}
+
+/**
+ * Whether `text` (what the link shows) claims a different site than `href` (where it goes).
+ * Null when `href` is not an http(s) link, or the text does not read as another address.
+ */
+export function linkMismatch(text: string, href: string): LinkMismatch | null {
+  const destination = webDestination(href)
+  if (destination === null) return null
+  const claimed = misleadingHost(text, destination.host)
+  return claimed === null ? null : { claimed, host: destination.host }
+}
+
+/**
+ * A link target for a native (plain text) dialog, which has no way to mark hidden characters.
+ * The parsed form is ASCII (the host as punycode, other characters percent-encoded), and any
+ * character that is not printable ASCII is still replaced by a visible `⟨U+XXXX⟩` token, so
+ * nothing hidden or direction-changing can reach the dialog. Long targets are shortened.
+ */
+export function plainDestination(href: string, limit = 400): string {
+  let shown: string
+  try {
+    shown = new URL(href).href
+  } catch {
+    shown = href
+  }
+  let out = ''
+  for (const ch of shown) {
+    const code = ch.codePointAt(0) ?? 0
+    out +=
+      code >= 0x20 && code <= 0x7e ? ch : `⟨U+${code.toString(16).toUpperCase().padStart(4, '0')}⟩`
+  }
+  return out.length > limit ? `${out.slice(0, limit)}…` : out
 }

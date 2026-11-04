@@ -20,7 +20,7 @@ import {
 import { createPortal } from 'react-dom'
 import type { MentionResolution } from '../../../shared/ipc-files'
 import { ApiContext } from '../api'
-import { displayUrl, misleadingHost, webDestination } from '../links'
+import { displayUrl, linkMismatch, webDestination } from '../../../shared/web-link-mismatch'
 import { openMention, resolveMention, splitMentions, type TextPart } from '../mentions'
 import { plainTitle, SafeText } from './reveal'
 import { useToast } from './Toast'
@@ -157,7 +157,7 @@ function WebLink({
   const [asking, setAsking] = useState(false)
   const text = textOf(children)
   const destination = webDestination(href)
-  const claimed = destination ? misleadingHost(text, destination.host) : null
+  const claimed = linkMismatch(text, href)?.claimed ?? null
   const hold = (event: React.MouseEvent): void => {
     // The check happens before anything opens; the main process then applies its own
     // http(s) rule to whatever the page asks for.

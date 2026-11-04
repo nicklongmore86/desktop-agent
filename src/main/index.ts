@@ -188,7 +188,7 @@ void app.whenReady().then(async () => {
   })
 
   const openWindow = (): void => {
-    const window = createMainWindow()
+    const window = createMainWindow({ approvalOpen: () => chat.pendingApprovals.length > 0 })
     mainWindow = window
     // Reload, crash or close: deny pending approvals and stop the run.
     cancelOnPageEnd(window.webContents, () => {

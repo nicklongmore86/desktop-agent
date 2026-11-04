@@ -8,6 +8,8 @@ import { isWebLink } from './web-link-rule'
 export interface ContextMenuParams {
   /** The link under the cursor, resolved by Chromium; '' when there is none. */
   linkURL?: string
+  /** The text of the link under the cursor, as Chromium reports it; '' when there is none. */
+  linkText?: string
   isEditable: boolean
   selectionText: string
   /** 'input-password' for <input type="password">; 'none' outside a form control. */
@@ -27,7 +29,8 @@ export interface ContextMenuParams {
  * navigates, opens, or inspects. Returns [] when there is nothing useful to offer.
  */
 export interface LinkActions {
-  open: (url: string) => void
+  /** Left out while opening is held (an approval is showing): the menu then has no Open Link. */
+  open?: (url: string) => void
   copy: (url: string) => void
 }
 
@@ -35,13 +38,18 @@ export interface LinkActions {
 function linkItems(params: ContextMenuParams, links: LinkActions): MenuItemConstructorOptions[] {
   const url = params.linkURL ?? ''
   if (!isWebLink(url)) return []
+  const open = links.open
   return [
-    {
-      label: 'Open Link',
-      click: () => {
-        links.open(url)
-      },
-    },
+    ...(open
+      ? [
+          {
+            label: 'Open Link',
+            click: () => {
+              open(url)
+            },
+          },
+        ]
+      : []),
     {
       label: 'Copy Link Address',
       click: () => {
