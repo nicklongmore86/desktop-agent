@@ -16,7 +16,7 @@ with unit tests; `src/main/window-behaviour.ts` wires them to Electron.
 ## When the close warning does not appear
 
 - Nothing is running and no approval is open.
-- Windows is logging off or shutting down (`query-session-end` for 15 seconds, `session-end`), or
+- Windows has confirmed the session is ending (`session-end`; `query-session-end` does not skip it, because Windows can still cancel), or
   Linux/macOS report a shutdown.
 - A crash or hang prompt is on screen: it takes the warning's place and already offers Quit.
 - The page has crashed and its work has stopped: losing the page stops the run and denies its
