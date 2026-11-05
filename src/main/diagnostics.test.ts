@@ -21,6 +21,7 @@ vi.mock('node:fs', async (original) => {
 const {
   CrashLoopGuard,
   createLogger,
+  createQuitControl,
   fatalHandlers,
   formatLogArgs,
   recoveryPrompt,
@@ -31,6 +32,7 @@ const {
   watchRenderer,
 } = await import('./diagnostics')
 const { cancelOnPageEnd } = await import('./chat/lifecycle')
+const { createCloseGuard } = await import('./close-guard')
 
 const SECRETS = [
   'sk-ant-api03-abcDEF123456',
@@ -867,5 +869,366 @@ describe('fatalHandlers', () => {
     handlers.unhandledRejection(new Error('services failed'))
     expect(deps.showError).toHaveBeenCalledOnce()
     expect(deps.quit).toHaveBeenCalledOnce()
+  })
+})
+
+describe('the quit control with the real close guard', () => {
+  const QUIT_DEADLINE = 3000
+
+  /**
+   * Quits as Electron does: before-quit, which can cancel it; then the window's close event, which
+   * can too; and only then will-quit. `pauseAfterBeforeQuit` stops between the two, where a
+   * renderer can still die.
+   */
+  class ElectronLikeApp extends EventEmitter {
+    pauseAfterBeforeQuit = false
+    paused = false
+    finished = false
+    exit = vi.fn()
+    quit = vi.fn(() => {
+      const event = { prevented: false, preventDefault: () => (event.prevented = true) }
+      this.emit('before-quit', event)
+      if (event.prevented) return
+      if (this.pauseAfterBeforeQuit) {
+        this.paused = true
+        return
+      }
+      this.closeThenFinish()
+    })
+    closeThenFinish = (): void => {
+      this.paused = false
+      if (!this.window.destroyed) {
+        const event = { prevented: false, preventDefault: () => (event.prevented = true) }
+        this.window.emit('close', event)
+        if (event.prevented) return
+        this.window.destroyed = true
+      }
+      this.finished = true
+      this.emit('will-quit')
+    }
+    window = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      isDestroyed() {
+        return this.destroyed
+      },
+      close() {
+        // Unused here: every quit below is a quit, not a closed window.
+      },
+    })
+    override prependListener(name: string, listener: (event: never) => void): this {
+      return super.prependListener(name, listener as (...args: unknown[]) => void)
+    }
+  }
+
+  function setup(options: { activity?: { run: 'reply' | null; approvals: number } } = {}) {
+    let activity = options.activity ?? { run: 'reply' as const, approvals: 1 }
+    const app = new ElectronLikeApp()
+    const answers: boolean[] = []
+    const logger = { log: vi.fn() }
+    const control = createQuitControl(app, logger)
+    const confirm = vi.fn(
+      (_warning: unknown, signal: AbortSignal) =>
+        new Promise<boolean>((resolve) => {
+          if (answers.length > 0) {
+            resolve(answers.shift() ?? false)
+            return
+          }
+          signal.addEventListener('abort', () => {
+            resolve(false)
+          })
+        }),
+    )
+    const stopWork = vi.fn(() => Promise.resolve())
+    const guard = createCloseGuard({
+      app,
+      activity: () => activity,
+      confirm,
+      stopWork,
+      flushState: () => Promise.resolve(),
+      skipPrompt: control.recoveryOpen,
+      timeoutMs: 50,
+    })
+    guard.attach(app.window)
+    control.useGate({
+      allowQuit: guard.allowQuit,
+      isQuitting: guard.isClosing,
+      dismissWarning: guard.dismissWarning,
+    })
+
+    // The page, with the real recovery logic: a prompt is recorded and left open.
+    const listeners = new Map<string, (...args: unknown[]) => void>()
+    const contents = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener)
+      }),
+      reload: vi.fn(),
+      forcefullyCrashRenderer: vi.fn(),
+      isDestroyed: () => app.window.destroyed,
+    }
+    let answerRecovery: (index: number) => void = () => undefined
+    const show = vi.fn(
+      (_window: unknown, plan: { choices: readonly string[] }, signal: AbortSignal) =>
+        control.whileRecoveryShows(
+          () =>
+            new Promise<number>((resolve) => {
+              answerRecovery = (index) => {
+                resolve(index)
+              }
+              signal.addEventListener('abort', () => {
+                resolve(plan.choices.length)
+              })
+            }),
+        ),
+    )
+    watchRenderer(
+      { isDestroyed: () => app.window.destroyed, webContents: contents },
+      {
+        logger,
+        guard: new CrashLoopGuard({ limit: 3, windowMs: 60_000 }),
+        show,
+        quit: () => {
+          control.quitWithin(QUIT_DEADLINE, 0)
+        },
+        openLogs: vi.fn(),
+        isQuitting: control.isQuitting,
+      },
+    )
+    const emit = (event: string, ...args: unknown[]): void => {
+      listeners.get(event)?.(...args)
+    }
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 100; i++) await Promise.resolve()
+    }
+    return {
+      app,
+      answers,
+      confirm,
+      stopWork,
+      control,
+      show,
+      contents,
+      emit,
+      settle,
+      logger,
+      answerRecovery: (index: number) => {
+        answerRecovery(index)
+      },
+      crash: () => {
+        emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 })
+      },
+      idle: () => {
+        activity = { run: null, approvals: 0 }
+      },
+    }
+  }
+
+  /** File > Quit while work is active, answered Cancel. */
+  async function cancelledQuit(fixture: ReturnType<typeof setup>): Promise<void> {
+    fixture.answers.push(false)
+    fixture.app.quit()
+    await fixture.settle()
+    expect(fixture.confirm).toHaveBeenCalledOnce()
+    expect(fixture.app.finished).toBe(false)
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('is not quitting after a cancelled warning', async () => {
+    const fixture = setup()
+    await cancelledQuit(fixture)
+    expect(fixture.control.isQuitting()).toBe(false)
+  })
+
+  it('a crash after a cancelled warning still gets the recovery prompt', async () => {
+    const fixture = setup()
+    await cancelledQuit(fixture)
+    fixture.crash()
+    await fixture.settle()
+    expect(fixture.show).toHaveBeenCalledOnce()
+  })
+
+  it('a hang after a cancelled warning still gets the prompt', async () => {
+    const fixture = setup()
+    await cancelledQuit(fixture)
+    fixture.emit('unresponsive')
+    await fixture.settle()
+    expect(fixture.show).toHaveBeenCalledOnce()
+  })
+
+  it('a normal exit after a cancelled warning still reloads the page', async () => {
+    const fixture = setup()
+    await cancelledQuit(fixture)
+    fixture.emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 })
+    await fixture.settle()
+    expect(fixture.contents.reload).toHaveBeenCalledOnce()
+  })
+
+  it('a clean quit works after a cancelled warning', async () => {
+    const fixture = setup()
+    await cancelledQuit(fixture)
+    fixture.idle()
+    fixture.app.quit()
+    await fixture.settle()
+    expect(fixture.confirm).toHaveBeenCalledOnce()
+    // The guard holds the close to save the window state, then quits again.
+    expect(fixture.app.quit).toHaveBeenCalledTimes(3)
+    expect(fixture.app.finished).toBe(true)
+    expect(fixture.control.isQuitting()).toBe(true)
+  })
+
+  it('no prompt in the gap between before-quit and will-quit', async () => {
+    const fixture = setup({ activity: { run: null, approvals: 0 } })
+    fixture.app.pauseAfterBeforeQuit = true
+    fixture.app.quit()
+    expect(fixture.app.paused).toBe(true)
+    fixture.crash()
+    fixture.emit('unresponsive')
+    await fixture.settle()
+    expect(fixture.show).not.toHaveBeenCalled()
+    expect(fixture.contents.reload).not.toHaveBeenCalled()
+  })
+
+  it('no prompt while a confirmed warning is stopping the work', async () => {
+    const fixture = setup()
+    fixture.answers.push(true)
+    fixture.stopWork.mockImplementation(() => new Promise(() => undefined))
+    fixture.app.quit()
+    await fixture.settle()
+    fixture.crash()
+    await fixture.settle()
+    expect(fixture.show).not.toHaveBeenCalled()
+  })
+
+  it('no prompt once will-quit has come, whatever the warning says', async () => {
+    const fixture = setup({ activity: { run: null, approvals: 0 } })
+    fixture.control.useGate({
+      allowQuit: vi.fn(),
+      isQuitting: () => false,
+      dismissWarning: vi.fn(),
+    })
+    fixture.app.emit('will-quit')
+    fixture.crash()
+    await fixture.settle()
+    expect(fixture.show).not.toHaveBeenCalled()
+  })
+
+  it('a fatal error with work active quits without the warning', async () => {
+    const fixture = setup()
+    const handlers = fatalHandlers({
+      logger: fixture.logger,
+      isStarted: () => true,
+      logsPath: '/logs',
+      showError: vi.fn(),
+      quit: () => {
+        fixture.control.quitWithin(QUIT_DEADLINE, 1)
+      },
+    })
+    handlers.uncaughtException(new Error('boom'))
+    await fixture.settle()
+    expect(fixture.confirm).not.toHaveBeenCalled()
+    expect(fixture.app.finished).toBe(true)
+    expect(fixture.stopWork).toHaveBeenCalledOnce()
+  })
+
+  it('a fatal error while the warning is up ends the app, whatever it was answered', async () => {
+    const fixture = setup()
+    fixture.app.quit()
+    await fixture.settle()
+    expect(fixture.confirm).toHaveBeenCalledOnce()
+    fixture.control.quitWithin(QUIT_DEADLINE, 1)
+    await fixture.settle()
+    expect((fixture.confirm.mock.calls[0]?.[1] as AbortSignal).aborted).toBe(true)
+    expect(fixture.app.finished).toBe(true)
+  })
+
+  it('crash recovery Quit with work active quits without the warning', async () => {
+    const fixture = setup()
+    fixture.crash()
+    await fixture.settle()
+    fixture.answerRecovery(1) // Reload, Quit
+    await fixture.settle()
+    expect(fixture.confirm).not.toHaveBeenCalled()
+    expect(fixture.app.finished).toBe(true)
+  })
+
+  it('an app-decided quit that hangs is ended by the deadline, with its exit code', () => {
+    const fixture = setup()
+    fixture.app.quit = vi.fn()
+    fixture.control.quitWithin(QUIT_DEADLINE, 1)
+    expect(fixture.app.exit).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(QUIT_DEADLINE)
+    expect(fixture.app.exit).toHaveBeenCalledWith(1)
+  })
+
+  it('a quit the warning would have stopped still warns when nothing decided on it', async () => {
+    const fixture = setup()
+    fixture.app.quit()
+    await fixture.settle()
+    expect(fixture.confirm).toHaveBeenCalledOnce()
+    expect(fixture.app.finished).toBe(false)
+  })
+
+  it('a crash replaces a showing warning: one question at a time', async () => {
+    const fixture = setup()
+    fixture.app.quit()
+    await fixture.settle()
+    fixture.crash()
+    expect((fixture.confirm.mock.calls[0]?.[1] as AbortSignal).aborted).toBe(true)
+    expect(fixture.show).toHaveBeenCalledOnce()
+    expect(fixture.control.recoveryOpen()).toBe(true)
+    await fixture.settle()
+    // The quit is off until the prompt is answered.
+    expect(fixture.app.finished).toBe(false)
+    fixture.answerRecovery(0) // Reload
+    await fixture.settle()
+    expect(fixture.contents.reload).toHaveBeenCalledOnce()
+    expect(fixture.control.recoveryOpen()).toBe(false)
+    expect(fixture.control.isQuitting()).toBe(false)
+    // The guard is back to normal: the next quit asks.
+    fixture.app.quit()
+    await fixture.settle()
+    expect(fixture.confirm).toHaveBeenCalledTimes(2)
+  })
+
+  it('quitting while a crash prompt is up is not asked about again', async () => {
+    const fixture = setup()
+    fixture.crash()
+    await fixture.settle()
+    fixture.app.quit()
+    await fixture.settle()
+    expect(fixture.confirm).not.toHaveBeenCalled()
+    expect(fixture.stopWork).toHaveBeenCalled()
+    expect(fixture.app.finished).toBe(true)
+  })
+
+  it('still logs and carries on if the warning cannot be cleared', () => {
+    const fixture = setup()
+    fixture.control.useGate({
+      allowQuit: () => {
+        throw new Error('nope')
+      },
+      isQuitting: () => false,
+      dismissWarning: vi.fn(),
+    })
+    fixture.control.quitWithin(QUIT_DEADLINE, 1)
+    expect(fixture.logger.log).toHaveBeenCalledWith(
+      'error',
+      'could not clear the close warning',
+      expect.any(Error),
+    )
+    expect(fixture.app.quit).toHaveBeenCalled()
+  })
+
+  it('before the warning exists, an app-decided quit is a plain quit', () => {
+    const app = new ElectronLikeApp()
+    const control = createQuitControl(app, { log: vi.fn() })
+    control.quitWithin(QUIT_DEADLINE, 1)
+    expect(app.finished).toBe(true)
+    expect(control.isQuitting()).toBe(true)
   })
 })

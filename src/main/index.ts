@@ -145,7 +145,9 @@ void app.whenReady().then(async () => {
     activity: () => ({ run: chat.runKind, approvals: chat.pendingApprovals.length }),
     stopWork,
     settings: services.settings,
+    recoveryOpen: appShell.recoveryOpen,
   })
+  appShell.useQuitGate(behaviour)
 
   // Only the app window's current main frame may call in, and only on an app URL.
   const isTrustedSender = (event: { senderFrame: { url: string; parent: unknown } | null }) => {

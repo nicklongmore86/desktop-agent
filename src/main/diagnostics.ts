@@ -605,6 +605,77 @@ export function fatalHandlers(deps: FatalDeps): {
   }
 }
 
+/**
+ * What crash handling needs from the close warning. index.ts connects them once the chat exists
+ * (the warning has nothing to protect before that); neither module imports the other.
+ */
+export interface QuitGate {
+  /** Lets a quit the app decided on through, without the warning. */
+  allowQuit: () => void
+  /** A quit or close has got past the warning. False while it is up or after it was cancelled. */
+  isQuitting: () => boolean
+  /** Takes down a showing warning, as if cancelled. */
+  dismissWarning: () => void
+}
+
+export interface QuitControlApp {
+  on(event: 'will-quit', listener: () => void): unknown
+  quit: () => void
+  exit: (code: number) => void
+}
+
+export interface QuitControl {
+  useGate: (gate: QuitGate) => void
+  /**
+   * For the crash prompts: stay quiet because the app is on its way out. 'before-quit' cannot
+   * answer that, because the warning can still cancel a quit after it. So: the warning's own
+   * state from when it lets a quit through, then 'will-quit', which only a real quit reaches.
+   */
+  isQuitting: () => boolean
+  /** A quit the app decided on: no warning, and it ends by the deadline whatever holds it up. */
+  quitWithin: (deadlineMs: number, exitCode: number) => void
+  /** Shows a crash or hang prompt in place of the close warning: one question at a time. */
+  whileRecoveryShows: <T>(show: () => Promise<T>) => Promise<T>
+  recoveryOpen: () => boolean
+}
+
+export function createQuitControl(app: QuitControlApp, logger: Logger): QuitControl {
+  let gate: QuitGate | null = null
+  let willQuit = false
+  let recoveryPrompts = 0
+  app.on('will-quit', () => {
+    willQuit = true
+  })
+  return {
+    useGate(next) {
+      gate = next
+    },
+    isQuitting: () => willQuit || (gate?.isQuitting() ?? false),
+    quitWithin(deadlineMs, exitCode) {
+      try {
+        gate?.allowQuit()
+      } catch (error) {
+        logger.log('error', 'could not clear the close warning', error)
+      }
+      // Before-quit handlers still deny approvals, if main can get that far.
+      app.quit()
+      setTimeout(() => {
+        app.exit(exitCode)
+      }, deadlineMs)
+    },
+    async whileRecoveryShows(show) {
+      gate?.dismissWarning()
+      recoveryPrompts += 1
+      try {
+        return await show()
+      } finally {
+        recoveryPrompts -= 1
+      }
+    },
+    recoveryOpen: () => recoveryPrompts > 0,
+  }
+}
+
 /** The folder the logs live in. Fixed: nothing may ask to open another one. */
 export function logsFolder(): string {
   return join(app.getPath('userData'), 'logs')
@@ -615,6 +686,9 @@ export interface Diagnostics {
   openLogsFolder: () => void
   /** Call with the app window: not the hidden document reader, which handles its own failures. */
   watchWindow: (window: BrowserWindow) => void
+  /** Connects crash handling to the close warning (see QuitGate). */
+  useQuitGate: (gate: QuitGate) => void
+  recoveryOpen: () => boolean
 }
 
 /** Starts the log file, routes console to it and installs the handlers of last resort. */
@@ -636,17 +710,7 @@ export function installDiagnostics(): Diagnostics {
     `Desktop Agent ${app.getVersion()} starting (Electron ${process.versions.electron}, ${process.platform} ${process.arch})`,
   )
 
-  let quitting = false
-  app.on('before-quit', () => {
-    quitting = true
-  })
-  // Before-quit handlers still stop the run and deny approvals, if main can get that far.
-  const quitWithin = (deadlineMs: number, exitCode: number): void => {
-    app.quit()
-    setTimeout(() => {
-      app.exit(exitCode)
-    }, deadlineMs)
-  }
+  const quitControl = createQuitControl(app, logger)
   const openLogsFolder = (): void => {
     const folder = logsFolder()
     try {
@@ -668,7 +732,7 @@ export function installDiagnostics(): Diagnostics {
       dialog.showErrorBox(title, content)
     },
     quit: () => {
-      quitWithin(QUIT_DEADLINE_MS, 1)
+      quitControl.quitWithin(QUIT_DEADLINE_MS, 1)
     },
   })
   process.on('uncaughtException', fatal.uncaughtException)
@@ -681,33 +745,36 @@ export function installDiagnostics(): Diagnostics {
   return {
     logger,
     openLogsFolder,
+    useQuitGate: quitControl.useGate,
+    recoveryOpen: quitControl.recoveryOpen,
     watchWindow(window) {
       started = true
       watchRenderer(window, {
         logger,
         guard,
-        show: async (target, plan, signal) => {
-          const options: MessageBoxOptions = {
-            type: 'warning',
-            title: 'Desktop Agent',
-            message: plan.message,
-            detail: plan.detail,
-            buttons: [...plan.buttons],
-            defaultId: plan.defaultId,
-            cancelId: plan.cancelId,
-            noLink: true,
-            signal,
-          }
-          const { response } = target.isDestroyed()
-            ? await dialog.showMessageBox(options)
-            : await dialog.showMessageBox(target as BrowserWindow, options)
-          return response
-        },
+        show: (target, plan, signal) =>
+          quitControl.whileRecoveryShows(async () => {
+            const options: MessageBoxOptions = {
+              type: 'warning',
+              title: 'Desktop Agent',
+              message: plan.message,
+              detail: plan.detail,
+              buttons: [...plan.buttons],
+              defaultId: plan.defaultId,
+              cancelId: plan.cancelId,
+              noLink: true,
+              signal,
+            }
+            const { response } = target.isDestroyed()
+              ? await dialog.showMessageBox(options)
+              : await dialog.showMessageBox(target as BrowserWindow, options)
+            return response
+          }),
         quit: () => {
-          quitWithin(QUIT_DEADLINE_MS, 0)
+          quitControl.quitWithin(QUIT_DEADLINE_MS, 0)
         },
         openLogs: openLogsFolder,
-        isQuitting: () => quitting,
+        isQuitting: quitControl.isQuitting,
       })
     },
   }

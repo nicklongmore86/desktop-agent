@@ -75,6 +75,7 @@ function setup(
   activity: () => { run: 'reply' | null; approvals: number } = () => ({ run: null, approvals: 0 }),
 ) {
   const config = { notifications: settings.notifications ?? true }
+  const recovery = { open: false }
   const behaviour = createWindowBehaviour({
     activity,
     stopWork: () => Promise.resolve(),
@@ -87,10 +88,11 @@ function setup(
         return config.notifications
       },
     },
+    recoveryOpen: () => recovery.open,
   })
   const window = new FakeWindow()
   behaviour.attach(window as never, behaviour.plan())
-  return { behaviour, window, config }
+  return { behaviour, window, config, recovery }
 }
 
 const reply = (text: string): ChatEvent[] => [
@@ -98,6 +100,57 @@ const reply = (text: string): ChatEvent[] => [
   { type: 'text_delta', runId: 'r1', turn: 1, text: `reply with ${text}` },
   { type: 'run_finished', runId: 'r1', stopReason: 'end_turn' },
 ]
+
+describe('window behaviour: the close warning and the crash prompts', () => {
+  const working = () => ({ run: 'reply', approvals: 0 }) as const
+  const requestClose = (window: FakeWindow) => {
+    const event = { preventDefault: vi.fn() }
+    window.emit('close', event)
+    return event
+  }
+  beforeEach(() => {
+    electron.dialog.showMessageBox.mockReset()
+    electron.dialog.showMessageBox.mockImplementation(() => new Promise(() => undefined))
+  })
+
+  it('warns during work', () => {
+    const { window } = setup({}, working)
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('does not ask a second question while a crash or hang prompt is up', () => {
+    const { window, recovery } = setup({}, working)
+    recovery.open = true
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('warns again after a hung page was killed and reloaded', () => {
+    const { window } = setup({}, working)
+    window.webContents.emit('unresponsive')
+    window.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 1 })
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('gives the warning the signal that takes it down', () => {
+    const { window, behaviour } = setup({}, working)
+    requestClose(window)
+    const options = electron.dialog.showMessageBox.mock.calls[0]?.[0] as { signal: AbortSignal }
+    expect(options.signal.aborted).toBe(false)
+    behaviour.dismissWarning()
+    expect(options.signal.aborted).toBe(true)
+  })
+
+  it('counts a system shutdown as quitting, which the guard alone would not know', () => {
+    const { behaviour } = setup()
+    expect(behaviour.isQuitting()).toBe(false)
+    const shutdown = electron.powerMonitor.on.mock.calls.at(-1)?.[1] as () => void
+    shutdown()
+    expect(behaviour.isQuitting()).toBe(true)
+  })
+})
 
 describe('window behaviour: notifications and taskbar flash', () => {
   beforeEach(() => {
@@ -179,7 +232,14 @@ describe('window behaviour: notifications and taskbar flash', () => {
     expect(window.restore).toHaveBeenCalled()
     expect(window.focus).toHaveBeenCalled()
     // The behaviour has no way to answer an approval: it is given none.
-    expect(Object.keys(behaviour).sort()).toEqual(['allowQuit', 'attach', 'onPush', 'plan'])
+    expect(Object.keys(behaviour).sort()).toEqual([
+      'allowQuit',
+      'attach',
+      'dismissWarning',
+      'isQuitting',
+      'onPush',
+      'plan',
+    ])
   })
 
   it('stops flashing when the window gets focus', () => {

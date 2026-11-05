@@ -22,6 +22,8 @@ export interface WindowBehaviourDeps {
     setWindowState: (state: unknown) => Promise<void>
     readonly notifications: boolean
   }
+  /** A crash or hang prompt is up: quitting is an answer to it, so no second question. */
+  recoveryOpen: () => boolean
 }
 
 export interface WindowBehaviour {
@@ -33,6 +35,10 @@ export interface WindowBehaviour {
   onPush: (channel: PushChannel, payload: unknown) => void
   /** For a quit the app itself decided on (fatal error, crash-recovery choice): no question. */
   allowQuit: () => void
+  /** A quit or close is really happening, or the system is ending the session. */
+  isQuitting: () => boolean
+  /** Takes down a showing close warning, as if cancelled, for a crash or hang prompt to replace. */
+  dismissWarning: () => void
 }
 
 /**
@@ -60,7 +66,7 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
     app,
     activity: deps.activity,
     // Not a child of the window, so an approval in it can still be answered meanwhile.
-    confirm: async (warning) => {
+    confirm: async (warning, signal) => {
       const { response } = await dialog.showMessageBox({
         type: 'warning',
         title: 'Desktop Agent',
@@ -70,14 +76,16 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
         defaultId: warning.defaultId,
         cancelId: warning.cancelId,
         noLink: true,
+        signal,
       })
       return response === 1
     },
     stopWork: deps.stopWork,
     flushState: () => tracker?.flush() ?? Promise.resolve(),
     // No prompt while Windows ends the session, or when the page is hung (nobody can answer
-    // in it; a crashed page already stopped the run through cancelOnPageEnd).
-    skipPrompt: () => sessionEnding || rendererHung,
+    // in it; a crashed page already stopped the run through cancelOnPageEnd), or while a crash or
+    // hang prompt is up, which already offers Quit.
+    skipPrompt: () => sessionEnding || rendererHung || deps.recoveryOpen(),
     onError: (error) => {
       console.error('close guard', error)
     },
@@ -153,6 +161,10 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
       next.webContents.on('responsive', () => {
         rendererHung = false
       })
+      // A hung page that dies never reports 'responsive', and the reloaded page is not hung.
+      next.webContents.on('render-process-gone', () => {
+        rendererHung = false
+      })
     },
     onPush(channel, payload) {
       if (channel === IpcChannels.chatEvent) {
@@ -164,5 +176,7 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
       }
     },
     allowQuit: guard.allowQuit,
+    isQuitting: () => sessionEnding || guard.isClosing(),
+    dismissWarning: guard.dismissWarning,
   }
 }

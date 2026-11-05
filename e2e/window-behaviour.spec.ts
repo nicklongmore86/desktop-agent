@@ -471,6 +471,295 @@ test.describe('warning before closing during work', () => {
   })
 })
 
+test.describe('the warning together with the app menu and crash recovery', () => {
+  const sleep = (file: string): string =>
+    WINDOWS
+      ? `$pid | Set-Content -NoNewline ${file}; Start-Sleep -Seconds 40`
+      : `echo $$ > ${file}; sleep 40`
+
+  interface DialogProbe {
+    shown: string[][]
+    answers: string[]
+    holding: string[]
+    aborted: string[][]
+  }
+  const probe = () => (globalThis as unknown as { __quit: DialogProbe }).__quit
+
+  /**
+   * Replaces the native message box. A box is answered with the first of `answers` it offers, or
+   * left open if it offers one of `holding`, until its signal takes it down, as a real one does.
+   * Each box is logged too: the log outlives the app, which is gone by the time some tests check.
+   */
+  async function stubBoxes(app: ElectronApplication, answers: string[]): Promise<void> {
+    await app.evaluate(({ dialog }, labels) => {
+      const state: DialogProbe = { shown: [], answers: labels, holding: [], aborted: [] }
+      ;(globalThis as unknown as { __quit: DialogProbe }).__quit = state
+      dialog.showMessageBox = ((...args: unknown[]) => {
+        const options = args[args.length - 1] as {
+          buttons: string[]
+          cancelId: number
+          signal?: AbortSignal
+        }
+        state.shown.push(options.buttons)
+        console.info(`test box: ${options.buttons.join(' / ')}`)
+        if (options.buttons.some((button) => state.holding.includes(button)))
+          return new Promise((resolve) => {
+            options.signal?.addEventListener('abort', () => {
+              state.aborted.push(options.buttons)
+              resolve({ response: options.cancelId, checkboxChecked: false })
+            })
+          })
+        const response = options.buttons.findIndex((button) => state.answers.includes(button))
+        return Promise.resolve({
+          response: response < 0 ? options.cancelId : response,
+          checkboxChecked: false,
+        })
+      }) as unknown as typeof dialog.showMessageBox
+    }, answers)
+  }
+  const answerBoxes = (app: ElectronApplication, labels: string[]): Promise<void> =>
+    app.evaluate((_electron, next) => {
+      ;(globalThis as unknown as { __quit: DialogProbe }).__quit.answers = next
+    }, labels)
+  const holdBoxes = (app: ElectronApplication, labels: string[]): Promise<void> =>
+    app.evaluate((_electron, next) => {
+      ;(globalThis as unknown as { __quit: DialogProbe }).__quit.holding = next
+    }, labels)
+  const boxes = (app: ElectronApplication): Promise<DialogProbe> => app.evaluate(probe)
+  const logOf = (userData: string): string =>
+    readFileSync(join(userData, 'logs', 'main.log'), 'utf8')
+
+  const WARNING = ['Cancel', 'Stop and quit']
+  const CRASHED = ['Reload', 'Quit']
+  const HUNG = ['Keep waiting', 'Reload', 'Quit']
+
+  /** The real item in the File menu, clicked the way the menu does. */
+  const fileQuit = (app: ElectronApplication): Promise<void> =>
+    app.evaluate(({ BrowserWindow, Menu }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      const item = Menu.getApplicationMenu()
+        ?.items.flatMap((top) => top.submenu?.items ?? [])
+        .find((sub) => sub.role?.toLowerCase() === 'quit')
+      if (!item) throw new Error('no Quit in the menu')
+      ;(item as unknown as { click: (...args: unknown[]) => void }).click(
+        undefined,
+        window,
+        window?.webContents,
+      )
+    })
+  const crashPage = (app: ElectronApplication): Promise<void> =>
+    app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.forcefullyCrashRenderer()
+    })
+  /** The page is up again. Playwright's Page ends with a crash, so this asks main. */
+  const pageIsBack = (app: ElectronApplication): Promise<boolean> =>
+    app.evaluate(async ({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0]?.webContents
+      if (!contents || contents.isCrashed() || contents.isLoading()) return false
+      return (await contents.executeJavaScript("'desktopApi' in window")) as boolean
+    })
+  const emitOnPage = (app: ElectronApplication, event: 'unresponsive' | 'responsive') =>
+    app.evaluate(({ BrowserWindow }, name) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.emit(name)
+    }, event)
+
+  /** The app, with an approval waiting: work is active until someone answers it. */
+  async function withWork(name: string) {
+    const { userData, folder } = seedData()
+    const launched = await launch(userData)
+    await stubBoxes(launched.app, ['Cancel'])
+    const prompt = await startCommand(
+      launched.page,
+      sleep(`pid-${name}-${String(Date.now())}.txt`),
+      folder,
+    )
+    return { ...launched, folder, prompt }
+  }
+
+  test('File > Quit warns during work: Cancel keeps the app, Stop and quit ends it', async () => {
+    const { app } = await withWork('file-quit')
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING])
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(await windowCount(app)).toBe(1)
+
+    await answerBoxes(app, ['Stop and quit'])
+    const closed = app.waitForEvent('close')
+    await fileQuit(app)
+    await closed
+  })
+
+  test('File > Quit does not warn when idle', async () => {
+    const { userData } = seedData()
+    const { app } = await launch(userData)
+    await stubBoxes(app, ['Cancel'])
+    const closed = app.waitForEvent('close')
+    await fileQuit(app)
+    await closed
+    expect(logOf(userData)).not.toContain('test box')
+  })
+
+  test('a crash after a cancelled warning still gets the recovery prompt', async () => {
+    const { app, userData } = await withWork('cancel-crash')
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING])
+
+    await answerBoxes(app, ['Cancel', 'Reload'])
+    await crashPage(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING, CRASHED])
+    await expect.poll(() => pageIsBack(app), { timeout: 15_000 }).toBe(true)
+    expect(logOf(userData)).toContain('recovery (crashed): reload')
+    await endApp(app)
+  })
+
+  test('a normal exit after a cancelled warning reloads; a clean quit then works', async () => {
+    const { app, userData } = await withWork('cancel-clean-exit')
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING])
+    await app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0]?.webContents
+      ;(globalThis as Record<string, unknown>)['__loads'] = 0
+      contents?.on('did-start-loading', () => {
+        ;(globalThis as unknown as { __loads: number }).__loads += 1
+      })
+      contents?.emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 })
+    })
+    await expect
+      .poll(() => app.evaluate(() => (globalThis as unknown as { __loads: number }).__loads))
+      .toBeGreaterThan(0)
+    await expect.poll(() => pageIsBack(app), { timeout: 15_000 }).toBe(true)
+
+    // The reload ended the work, so this quit has nothing to ask about.
+    const closed = app.waitForEvent('close')
+    await fileQuit(app)
+    await closed
+    expect(logOf(userData).match(/test box/g)).toHaveLength(1)
+  })
+
+  test('a clean quit works after a cancelled warning and the work finishing', async () => {
+    const { app, page, userData, prompt } = await withWork('cancel-quit')
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING])
+
+    await page.evaluate(
+      (id) =>
+        (window as unknown as { desktopApi: DesktopApi }).desktopApi.approvals.respond(id, false),
+      prompt.id,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const closed = app.waitForEvent('close')
+    await fileQuit(app)
+    await closed
+    expect(logOf(userData).match(/test box/g)).toHaveLength(1)
+  })
+
+  test('a fatal error with a command running quits without the warning, and stops it', async () => {
+    const { userData, folder } = seedData()
+    const marker = `pid-fatal-${String(Date.now())}.txt`
+    const { app, page } = await launch(userData)
+    await stubBoxes(app, ['Cancel'])
+    const prompt = await startCommand(page, sleep(marker), folder)
+    await page.evaluate(
+      (id) =>
+        (window as unknown as { desktopApi: DesktopApi }).desktopApi.approvals.respond(id, true),
+      prompt.id,
+    )
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(true)
+
+    const closed = app.waitForEvent('close')
+    await app.evaluate(({ dialog }) => {
+      dialog.showErrorBox = () => undefined
+      setTimeout(() => {
+        throw new Error('boom')
+      }, 0)
+    })
+    await closed
+    const log = logOf(userData)
+    expect(log).toContain('fatal: uncaught exception')
+    expect(log).not.toContain('test box')
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(false)
+  })
+
+  test('crash-recovery Quit with a command running quits without the warning', async () => {
+    const { userData, folder } = seedData()
+    const marker = `pid-recover-${String(Date.now())}.txt`
+    const { app, page } = await launch(userData)
+    await stubBoxes(app, ['Cancel'])
+    const prompt = await startCommand(page, sleep(marker), folder)
+    await page.evaluate(
+      (id) =>
+        (window as unknown as { desktopApi: DesktopApi }).desktopApi.approvals.respond(id, true),
+      prompt.id,
+    )
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(true)
+
+    await answerBoxes(app, ['Quit'])
+    const closed = app.waitForEvent('close')
+    await crashPage(app)
+    await closed
+    const log = logOf(userData)
+    expect(log).toContain('recovery (crashed): quit')
+    expect(log).toContain(`test box: ${CRASHED.join(' / ')}`)
+    expect(log).not.toContain(`test box: ${WARNING.join(' / ')}`)
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(false)
+  })
+
+  test('a crash while the warning is up takes it down: one question at a time', async () => {
+    const { app } = await withWork('stack-crash')
+    await holdBoxes(app, ['Cancel'])
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING])
+
+    await answerBoxes(app, ['Reload'])
+    await crashPage(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING, CRASHED])
+    expect((await boxes(app)).aborted).toEqual([WARNING])
+    await expect.poll(() => pageIsBack(app), { timeout: 15_000 }).toBe(true)
+    expect(await windowCount(app)).toBe(1)
+    await endApp(app)
+  })
+
+  test('a hang prompt replaces the warning, and the guard works once the page recovers', async () => {
+    const { app } = await withWork('stack-hang')
+    await holdBoxes(app, ['Cancel', 'Keep waiting'])
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING])
+
+    await emitOnPage(app, 'unresponsive')
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING, HUNG])
+    expect((await boxes(app)).aborted).toEqual([WARNING])
+    await emitOnPage(app, 'responsive')
+    await expect.poll(async () => (await boxes(app)).aborted).toEqual([WARNING, HUNG])
+
+    await holdBoxes(app, [])
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING, HUNG, WARNING])
+    expect(await windowCount(app)).toBe(1)
+    await endApp(app)
+  })
+
+  test('an open About box does not get in the way of the warning or the quit', async () => {
+    const { app } = await withWork('about')
+    await holdBoxes(app, ['OK'])
+    await app.evaluate(({ BrowserWindow, Menu }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      Menu.getApplicationMenu()
+        ?.getMenuItemById('about')
+        ?.click(undefined, window, window?.webContents)
+    })
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([['OK']])
+
+    await fileQuit(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([['OK'], WARNING])
+    expect(await windowCount(app)).toBe(1)
+
+    await answerBoxes(app, ['Stop and quit'])
+    const closed = app.waitForEvent('close')
+    await fileQuit(app)
+    await closed
+  })
+})
+
 test.describe('notifications and taskbar flash', () => {
   /** Records what main would show or flash, and chooses whether the window is "focused". */
   async function probeAlerts(app: ElectronApplication, focused: boolean): Promise<void> {

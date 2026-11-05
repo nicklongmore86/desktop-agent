@@ -35,6 +35,12 @@ test('a second copy exits before any data access, and the first restores and foc
     const page = await first.firstWindow()
     await page.waitForFunction(() => 'desktopApi' in window)
     expect(read(firstTrace)).toContain('getPath:userData')
+    const log = join(userData, 'logs', 'main.log')
+    const startLines = () =>
+      read(log)
+        .split('\n')
+        .filter((line) => line.includes(' starting '))
+    await expect.poll(() => startLines().length).toBe(1)
 
     // The first copy's window is minimized and hidden from focus; count what it is asked to do.
     await first.evaluate(({ BrowserWindow, app }) => {
@@ -77,7 +83,10 @@ test('a second copy exits before any data access, and the first restores and foc
     )
     expect(exit).toEqual({ code: 0, signal: null })
     // It never reached the code that opens the app's data, logs or settings.
+    expect(read(secondTrace)).toContain('started')
     expect(read(secondTrace)).not.toContain('getPath')
+    // Its diagnostics never started either: the log still has only the first copy's start.
+    expect(startLines()).toHaveLength(1)
 
     // The first copy was told, restored its minimized window and focused it.
     await expect

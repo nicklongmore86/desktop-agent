@@ -120,7 +120,7 @@ src/shared     Code and types used by more than one process (IPC contract, CSP)
 
 ### Logs and crash recovery
 
-The main process writes a log to `logs/main.log` in the app's data folder (**Help → Open logs folder**), kept to three files of 1 MB each. The app window's renderer is watched: after a crash or a hang you are offered Reload or Quit, and reloading stops being offered when it keeps failing. A renderer that exits normally is not a crash: the page reloads by itself, and only if that keeps happening are you asked. Whatever the cause, the run in progress is stopped and its pending approvals are denied.
+The main process writes a log to `logs/main.log` in the app's data folder (**Help → Open logs folder**), kept to three files of 1 MB each. The app window's renderer is watched: after a crash or a hang you are offered Reload or Quit, and reloading stops being offered when it keeps failing. A renderer that exits normally is not a crash: the page reloads by itself, and only if that keeps happening are you asked. Whatever the cause, the run in progress is stopped and its pending approvals are denied. These prompts come one at a time with the warning before closing during work: a crash or hang prompt replaces the warning, and answering it with Quit, like a fatal error, ends the app without that warning. **File → Quit** does warn.
 
 Log lines are meant to hold what went wrong, not what you were working on:
 

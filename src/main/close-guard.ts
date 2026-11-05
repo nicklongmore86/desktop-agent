@@ -63,8 +63,11 @@ export interface GuardedApp {
 export interface CloseGuardDeps {
   app: GuardedApp
   activity: () => Activity
-  /** Shows the warning; true when the user chose to stop the work and quit. */
-  confirm: (warning: CloseWarning) => Promise<boolean>
+  /**
+   * Shows the warning; true when the user chose to stop the work and quit. An aborted signal
+   * takes the warning down: its answer no longer counts.
+   */
+  confirm: (warning: CloseWarning, signal: AbortSignal) => Promise<boolean>
   /** Stops the run, denies every approval, and closes watchers (what quitting always did). */
   stopWork: () => Promise<void>
   /** Writes pending window state; never rejects. */
@@ -80,9 +83,17 @@ export interface CloseGuard {
   attach: (window: GuardedWindow) => void
   /**
    * Lets the next quit and close through without asking, for a quit the app itself decided on
-   * (a fatal error, or the user's answer in the crash-recovery dialog).
+   * (a fatal error, or the user's answer in the crash-recovery dialog). Takes down a warning that
+   * is showing, and still stops the work, as far as main can get before the app ends.
    */
   allowQuit: () => void
+  /**
+   * True once a quit or close has got past the warning: a confirmed one, an idle one, one the
+   * app decided on. False while the warning is up and after it was cancelled.
+   */
+  isClosing: () => boolean
+  /** Takes down a warning that is showing, as if it was cancelled; otherwise does nothing. */
+  dismissWarning: () => void
 }
 
 /** Resolves when `work` does, or after `ms`, whichever is first; never rejects. */
@@ -114,6 +125,7 @@ export function createCloseGuard(deps: CloseGuardDeps): CloseGuard {
   let state: 'open' | 'prompting' | 'closing' = 'open'
   let quitRequested = false
   let window: GuardedWindow | null = null
+  let showing: AbortController | null = null
 
   /** Closes for real: the state is `closing`, so the close and quit events pass. */
   const proceed = (): void => {
@@ -126,12 +138,17 @@ export function createCloseGuard(deps: CloseGuardDeps): CloseGuard {
 
   const ask = async (): Promise<void> => {
     state = 'prompting'
+    const controller = new AbortController()
+    showing = controller
     let confirmed = false
     try {
-      confirmed = await deps.confirm(closeWarning(deps.activity()))
+      confirmed = await deps.confirm(closeWarning(deps.activity()), controller.signal)
     } catch (error) {
       deps.onError?.(error)
     }
+    // Taken down by allowQuit or dismissWarning, which already set what happens next.
+    if (controller.signal.aborted) return
+    showing = null
     if (!confirmed) {
       state = 'open'
       quitRequested = false
@@ -159,10 +176,16 @@ export function createCloseGuard(deps: CloseGuardDeps): CloseGuard {
     void ask()
   })
 
+  const takeDownWarning = (): void => {
+    showing?.abort()
+    showing = null
+  }
+
   return {
     attach(next) {
       window = next
       state = 'open'
+      quitRequested = false
       next.on('close', (event) => {
         if (state === 'closing') return
         if (state === 'prompting') {
@@ -188,7 +211,19 @@ export function createCloseGuard(deps: CloseGuardDeps): CloseGuard {
       })
     },
     allowQuit() {
+      takeDownWarning()
+      if (state === 'closing') return
       state = 'closing'
+      void within(deps.stopWork, timeoutMs, deps.onError)
+      void within(deps.flushState, timeoutMs, deps.onError)
+    },
+    // `open` with a quit requested: before-quit let it through and the window is about to close.
+    isClosing: () => state === 'closing' || (state === 'open' && quitRequested),
+    dismissWarning() {
+      if (state !== 'prompting') return
+      takeDownWarning()
+      state = 'open'
+      quitRequested = false
     },
   }
 }

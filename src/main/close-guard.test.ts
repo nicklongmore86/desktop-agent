@@ -65,7 +65,7 @@ class FakeWindow extends EventEmitter {
 function setup(
   options: {
     activity?: () => Activity
-    confirm?: (warning: CloseWarning) => Promise<boolean>
+    confirm?: (warning: CloseWarning, signal: AbortSignal) => Promise<boolean>
     stopWork?: () => Promise<void>
     flushState?: () => Promise<void>
     skipPrompt?: () => boolean
@@ -260,6 +260,122 @@ describe('createCloseGuard', () => {
     await settle()
     expect(deps.confirm).not.toHaveBeenCalled()
     expect(app.quitCompleted).toBe(true)
+  })
+
+  it('allowQuit still stops the work and saves the window state', async () => {
+    const { guard, deps, settle } = setup({ activity: () => ({ run: 'reply', approvals: 0 }) })
+    guard.allowQuit()
+    await settle()
+    expect(deps.stopWork).toHaveBeenCalledOnce()
+    expect(deps.flushState).toHaveBeenCalledOnce()
+    guard.allowQuit()
+    await settle()
+    expect(deps.stopWork).toHaveBeenCalledOnce()
+  })
+
+  /** The warning stays up until it is aborted or `answer` is called. */
+  const heldConfirm = () => {
+    const held: { signal?: AbortSignal; answer?: (yes: boolean) => void } = {}
+    const confirm = (_warning: CloseWarning, signal: AbortSignal) =>
+      new Promise<boolean>((resolve) => {
+        held.signal = signal
+        held.answer = resolve
+        signal.addEventListener('abort', () => {
+          resolve(false)
+        })
+      })
+    return { held, confirm }
+  }
+
+  it('allowQuit takes down a showing warning, and a late Cancel cannot undo it', async () => {
+    const { held, confirm } = heldConfirm()
+    const { app, guard, deps, settle } = setup({
+      activity: () => ({ run: 'reply', approvals: 0 }),
+      confirm,
+    })
+    app.quit()
+    await settle()
+    expect(app.quitCompleted).toBe(false)
+    guard.allowQuit()
+    expect(held.signal?.aborted).toBe(true)
+    await settle()
+    expect(guard.isClosing()).toBe(true)
+    app.quit()
+    expect(app.quitCompleted).toBe(true)
+    expect(deps.confirm).toHaveBeenCalledOnce()
+  })
+
+  it('dismissWarning cancels a showing warning, and the next close asks again', async () => {
+    const { held, confirm } = heldConfirm()
+    const { app, window, guard, deps, settle } = setup({
+      activity: () => ({ run: 'reply', approvals: 0 }),
+      confirm,
+    })
+    app.quit()
+    await settle()
+    guard.dismissWarning()
+    expect(held.signal?.aborted).toBe(true)
+    expect(guard.isClosing()).toBe(false)
+    await settle()
+    expect(app.quit).toHaveBeenCalledOnce()
+    expect(window.destroyed).toBe(false)
+    window.close()
+    await settle()
+    expect(deps.confirm).toHaveBeenCalledTimes(2)
+  })
+
+  it('dismissWarning does nothing to a close that is already going ahead', async () => {
+    const { window, guard, settle } = setup()
+    window.close()
+    guard.dismissWarning()
+    expect(guard.isClosing()).toBe(true)
+    await settle()
+    expect(window.destroyed).toBe(true)
+  })
+
+  describe('isClosing', () => {
+    const working = () => ({ run: 'reply', approvals: 0 }) as const
+
+    it('is false while the warning is up and after it is cancelled', async () => {
+      const { held, confirm } = heldConfirm()
+      const { app, guard, settle } = setup({ activity: working, confirm })
+      expect(guard.isClosing()).toBe(false)
+      app.quit()
+      await settle()
+      expect(guard.isClosing()).toBe(false)
+      held.answer?.(false)
+      await settle()
+      expect(guard.isClosing()).toBe(false)
+    })
+
+    it('is true once the warning is confirmed, while the work is being stopped', async () => {
+      const { held, confirm } = heldConfirm()
+      const { app, guard, settle } = setup({
+        activity: working,
+        confirm,
+        stopWork: () => new Promise(() => undefined),
+      })
+      app.quit()
+      await settle()
+      held.answer?.(true)
+      await settle()
+      expect(app.quitCompleted).toBe(false)
+      expect(guard.isClosing()).toBe(true)
+    })
+
+    it('is true when an idle quit is let through, before its window has closed', () => {
+      const { app, guard } = setup()
+      app.quit()
+      expect(app.quitCompleted).toBe(true)
+      expect(guard.isClosing()).toBe(true)
+    })
+
+    it('is false again in a window opened later', () => {
+      const { app, guard } = setup()
+      app.quit()
+      guard.attach(new FakeWindow())
+      expect(guard.isClosing()).toBe(false)
+    })
   })
 
   it('asks again for a window opened later (macOS reopen)', async () => {
