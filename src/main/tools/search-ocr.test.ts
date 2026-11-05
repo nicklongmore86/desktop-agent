@@ -2,7 +2,7 @@ import { init, type WrappedPdfiumModule } from '@embedpdf/pdfium'
 import { promises as fs, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { extractDocument } from '../documents/extract'
 import { makePdf, type FixtureImage } from '../documents/fixtures.test-util'
 import {
@@ -38,6 +38,12 @@ import { ocrReason } from './search-documents'
 import { MAX_FILES_LISTED, SCANNED_TITLE } from './search-files'
 import { inkShare, readingScore, readsWell, turnGray } from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
+
+// These tests write and walk up to hundreds of real files, so most of their time is disk and
+// process scheduling. Measured with 32 copies at once on 16 cores (load 110): the 5 s default failed
+// every run and always on the clock; with no effective limit all passed, the slowest test in this
+// file taking 17.2 s (idle: 0.6 s). A hang still fails, later. The default stays elsewhere.
+vi.setConfig({ testTimeout: 30_000 })
 
 /**
  * OCR of scanned PDF pages in search_files, with a fake OCR helper for every state it can be
