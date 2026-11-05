@@ -84,9 +84,9 @@ test('a second copy exits before any data access, and the first restores and foc
     expect(exit).toEqual({ code: 0, signal: null })
     // It never reached the code that opens the app's data, logs or settings.
     expect(read(secondTrace)).toContain('started')
-    expect(read(secondTrace)).not.toContain('getPath')
-    // Its diagnostics never started either: the log still has only the first copy's start.
+    // Its diagnostics never started: the log still has only the first copy's start.
     expect(startLines()).toHaveLength(1)
+    expect(read(secondTrace)).not.toContain('getPath')
 
     // The first copy was told, restored its minimized window and focused it.
     await expect
