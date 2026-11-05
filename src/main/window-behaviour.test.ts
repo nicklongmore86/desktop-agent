@@ -73,17 +73,21 @@ const approval: ApprovalPrompt = {
 function setup(
   settings: { notifications?: boolean } = {},
   activity: () => { run: 'reply' | null; approvals: number } = () => ({ run: null, approvals: 0 }),
+  work: {
+    stopWork?: () => Promise<void>
+    setWindowState?: () => Promise<void>
+  } = {},
 ) {
   const config = { notifications: settings.notifications ?? true }
   const recovery = { open: false }
   const behaviour = createWindowBehaviour({
     activity,
-    stopWork: () => Promise.resolve(),
+    stopWork: work.stopWork ?? (() => Promise.resolve()),
     settings: {
       get windowState() {
         return undefined
       },
-      setWindowState: () => Promise.resolve(),
+      setWindowState: work.setWindowState ?? (() => Promise.resolve()),
       get notifications() {
         return config.notifications
       },
@@ -321,12 +325,140 @@ describe('window behaviour: the close warning and the system', () => {
     ;(onShutdown?.[1] as () => void)()
     expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
   })
+})
 
-  it('does not ask while the page is hung, and asks again once it responds', () => {
-    const { window } = setup({}, working)
+describe('window behaviour: closing with a hung page', () => {
+  const working = () => ({ run: 'reply' as const, approvals: 1 })
+  const idle = () => ({ run: null, approvals: 0 })
+  const never = () => new Promise<void>(() => undefined)
+  const requestClose = (window: FakeWindow) => {
+    const event = { preventDefault: vi.fn() }
+    window.emit('close', event)
+    return event
+  }
+  /** The app's quit, as the guard of the latest setup() sees it. */
+  const requestQuit = () => {
+    const event = { preventDefault: vi.fn() }
+    const listener = electron.app.prependListener.mock.calls.at(-1)?.[1] as (e: unknown) => void
+    listener(event)
+    return event
+  }
+  /** The hang prompt came and the user chose Keep waiting: it is gone, and the page still hung. */
+  const hungAndKeptWaiting = (window: FakeWindow) => {
     window.webContents.emit('unresponsive')
+  }
+
+  beforeEach(() => {
+    electron.dialog.showMessageBox.mockReset()
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 0 })
+    electron.app.quit.mockClear()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('warns on a close after Keep waiting, with the page still marked hung', async () => {
+    const { window } = setup({}, working)
+    hungAndKeptWaiting(window)
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+    // Cancel keeps the app and its work.
+    expect(window.close).not.toHaveBeenCalled()
+  })
+
+  it('warns on a quit after Keep waiting, with the page still marked hung', async () => {
+    const stopWork = vi.fn(() => Promise.resolve())
+    const { window } = setup({}, working, { stopWork })
+    hungAndKeptWaiting(window)
+    expect(requestQuit().preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+    expect(stopWork).not.toHaveBeenCalled()
+  })
+
+  it('does not ask a second question while the prompt is up: not on a close, not on a quit', async () => {
+    const stopWork = vi.fn(() => Promise.resolve())
+    const { window, recovery } = setup({}, working, { stopWork })
+    window.webContents.emit('unresponsive')
+    recovery.open = true
     expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    expect(requestQuit().preventDefault).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+    // The quit still stops the work, as it always did.
+    expect(stopWork).toHaveBeenCalledOnce()
+  })
+
+  it('warns once the prompt has gone, even though the page never reloaded', async () => {
+    const { window, recovery } = setup({}, working)
+    window.webContents.emit('unresponsive')
+    recovery.open = true
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    recovery.open = false
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('warns when the page responds again without a reload', async () => {
+    const { window } = setup({}, working)
+    hungAndKeptWaiting(window)
     window.webContents.emit('responsive')
     expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('Stop and quit closes within both limits, when stopping and saving never finish', async () => {
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 1 })
+    const stopWork = vi.fn(never)
+    const setWindowState = vi.fn(never)
+    const { window } = setup({}, working, { stopWork, setWindowState })
+    hungAndKeptWaiting(window)
+    requestClose(window)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(stopWork).toHaveBeenCalledOnce()
+    expect(setWindowState).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(window.close).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(window.close).toHaveBeenCalledOnce()
+  })
+
+  it('Stop and quit on a quit ends the app within both limits too', async () => {
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 1 })
+    const { window } = setup({}, working, { stopWork: never, setWindowState: never })
+    hungAndKeptWaiting(window)
+    requestQuit()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(electron.app.quit).toHaveBeenCalledOnce()
+    // The quit it starts passes: no second question.
+    expect(requestQuit().preventDefault).not.toHaveBeenCalled()
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('an idle app with a hung page closes with no prompt, within the limit', async () => {
+    const { window } = setup({}, idle, { setWindowState: never })
+    hungAndKeptWaiting(window)
+    requestClose(window)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(window.close).toHaveBeenCalledOnce()
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('a dead page whose work has stopped closes with no prompt', async () => {
+    let work: { run: 'reply' | null; approvals: number } = working()
+    const { window, recovery } = setup({}, () => work)
+    window.webContents.emit('unresponsive')
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 })
+    // What cancelOnPageEnd does in index.ts; the recovery prompt has been answered or dismissed.
+    work = { run: null, approvals: 0 }
+    recovery.open = false
+    requestClose(window)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(window.close).toHaveBeenCalledOnce()
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
   })
 })

@@ -18,9 +18,15 @@ with unit tests; `src/main/window-behaviour.ts` wires them to Electron.
 - Nothing is running and no approval is open.
 - Windows is logging off or shutting down (`query-session-end` for 15 seconds, `session-end`), or
   Linux/macOS report a shutdown.
-- The page is not responding, or it has crashed (a crash already stopped the run and denied its
-  approvals).
+- A crash or hang prompt is on screen: it takes the warning's place and already offers Quit.
+- The page has crashed and its work has stopped: losing the page stops the run and denies its
+  approvals, so there is nothing left to warn about.
 - Code calls `allowQuit()` for a quit the app decided on itself.
+
+A page that is not responding does not turn the warning off. The warning is a native dialog that
+reads the work from main, and `unresponsive` can mean a page that is only busy for a moment. After
+Keep waiting, a close or quit during work warns as usual. Stop and quit does not need the page:
+stopping the work and saving the window state are limited to 5 seconds each.
 
 ## Notification text
 

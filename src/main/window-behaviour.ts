@@ -51,7 +51,6 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
   const attention = new AttentionTracker()
   let window: BrowserWindow | null = null
   let tracker: WindowStateTracker | null = null
-  let rendererHung = false
   // Set only by a confirmed end (see attach); never by a query, which Windows may cancel.
   let sessionEnding = false
   // Held so a notification is not garbage collected before the user clicks it.
@@ -82,10 +81,10 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
     },
     stopWork: deps.stopWork,
     flushState: () => tracker?.flush() ?? Promise.resolve(),
-    // No prompt while Windows ends the session, or when the page is hung (nobody can answer
-    // in it; a crashed page already stopped the run through cancelOnPageEnd), or while a crash or
-    // hang prompt is up, which already offers Quit.
-    skipPrompt: () => sessionEnding || rendererHung || deps.recoveryOpen(),
+    // No prompt while the system ends the session, or while a crash or hang prompt is up, which
+    // already offers Quit. A hung page is no reason on its own: the warning is a native dialog
+    // that reads main's state, and 'unresponsive' can mean a page that is only busy for a moment.
+    skipPrompt: () => sessionEnding || deps.recoveryOpen(),
     onError: (error) => {
       console.error('close guard', error)
     },
@@ -136,7 +135,6 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
       ),
     attach(next, planned) {
       window = next
-      rendererHung = false
       if (planned.maximized) next.maximize()
       tracker = trackWindowState(next, {
         save: (state) => deps.settings.setWindowState(state),
@@ -154,16 +152,6 @@ export function createWindowBehaviour(deps: WindowBehaviourDeps): WindowBehaviou
       // would block it outright. 'session-end' cannot be cancelled: only that skips the warning.
       next.on('session-end', () => {
         sessionEnding = true
-      })
-      next.webContents.on('unresponsive', () => {
-        rendererHung = true
-      })
-      next.webContents.on('responsive', () => {
-        rendererHung = false
-      })
-      // A hung page that dies never reports 'responsive', and the reloaded page is not hung.
-      next.webContents.on('render-process-gone', () => {
-        rendererHung = false
       })
     },
     onPush(channel, payload) {

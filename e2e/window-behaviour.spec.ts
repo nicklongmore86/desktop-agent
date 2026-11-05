@@ -562,6 +562,34 @@ test.describe('the warning together with the app menu and crash recovery', () =>
     app.evaluate(({ BrowserWindow }, name) => {
       BrowserWindow.getAllWindows()[0]?.webContents.emit(name)
     }, event)
+  /** Really spins the page's main thread: forever, or for `ms`. Asks main, which stays free. */
+  const spinPage = (app: ElectronApplication, ms?: number): Promise<void> =>
+    app.evaluate(({ BrowserWindow }, length) => {
+      const script =
+        length === undefined
+          ? 'for (;;) {}'
+          : `{ const end = Date.now() + ${String(length)}; while (Date.now() < end) {} }`
+      void BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(script)
+    }, ms)
+  const pageAnswers = (app: ElectronApplication): Promise<boolean> =>
+    app.evaluate(({ BrowserWindow }) =>
+      Promise.race([
+        BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript('true') as Promise<boolean>,
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => {
+            resolve(false)
+          }, 1000),
+        ),
+      ]),
+    )
+  /** A page that really does not answer, and the hang prompt that came for it. */
+  async function hangWithPrompt(app: ElectronApplication): Promise<void> {
+    await spinPage(app)
+    await expect.poll(() => pageAnswers(app), { timeout: 15_000 }).toBe(false)
+    await emitOnPage(app, 'unresponsive')
+  }
+  /** The limits for stopping the work and for saving the window state, and room to shut down. */
+  const EXIT_LIMIT_MS = 5_000 + 5_000 + 10_000
 
   /** The app, with an approval waiting: work is active until someone answers it. */
   async function withWork(name: string) {
@@ -736,6 +764,120 @@ test.describe('the warning together with the app menu and crash recovery', () =>
     await expect.poll(async () => (await boxes(app)).shown).toEqual([WARNING, HUNG, WARNING])
     expect(await windowCount(app)).toBe(1)
     await endApp(app)
+  })
+
+  test('a page really hung: Keep waiting, then a close warns, and Stop and quit exits', async () => {
+    const { userData, folder } = seedData()
+    const marker = `pid-hung-${String(Date.now())}.txt`
+    const { app, page } = await launch(userData)
+    await stubBoxes(app, ['Cancel', 'Keep waiting'])
+    const prompt = await startCommand(page, sleep(marker), folder)
+    await page.evaluate(
+      (id) =>
+        (window as unknown as { desktopApi: DesktopApi }).desktopApi.approvals.respond(id, true),
+      prompt.id,
+    )
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(true)
+
+    await hangWithPrompt(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([HUNG])
+
+    await requestClose(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([HUNG, WARNING])
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(await windowCount(app)).toBe(1)
+    expect(running(folder, marker)).toBe(true)
+
+    await answerBoxes(app, ['Stop and quit'])
+    const closed = app.waitForEvent('close')
+    const asked = Date.now()
+    await requestClose(app)
+    await closed
+    expect(Date.now() - asked).toBeLessThan(EXIT_LIMIT_MS)
+    await expect.poll(() => running(folder, marker), { timeout: 15_000 }).toBe(false)
+  })
+
+  test('a page really hung: File > Quit warns too, and Stop and quit exits', async () => {
+    const { app, userData } = await withWork('hung-quit')
+    await answerBoxes(app, ['Keep waiting', 'Stop and quit'])
+    await hangWithPrompt(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([HUNG])
+
+    const closed = app.waitForEvent('close')
+    const asked = Date.now()
+    await fileQuit(app)
+    await closed
+    expect(Date.now() - asked).toBeLessThan(EXIT_LIMIT_MS)
+    expect(logOf(userData)).toContain(`test box: ${WARNING.join(' / ')}`)
+  })
+
+  test('a page that was only busy: after Keep waiting and its recovery, a close warns', async () => {
+    const { app } = await withWork('busy')
+    await answerBoxes(app, ['Keep waiting', 'Cancel'])
+    await spinPage(app, 3_000)
+    await emitOnPage(app, 'unresponsive')
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([HUNG])
+    await expect.poll(() => pageAnswers(app), { timeout: 15_000 }).toBe(true)
+    await emitOnPage(app, 'responsive')
+
+    await requestClose(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([HUNG, WARNING])
+    expect(await windowCount(app)).toBe(1)
+    await endApp(app)
+  })
+
+  for (const [name, leave] of [
+    ['a close', requestClose],
+    ['File > Quit', fileQuit],
+  ] as const) {
+    test(`${name} while the hang prompt is up asks nothing more, and exits`, async () => {
+      const { app, userData } = await withWork('hung-prompt')
+      await holdBoxes(app, ['Keep waiting'])
+      await hangWithPrompt(app)
+      await expect.poll(async () => (await boxes(app)).shown).toEqual([HUNG])
+
+      const closed = app.waitForEvent('close')
+      const asked = Date.now()
+      await leave(app)
+      await closed
+      expect(Date.now() - asked).toBeLessThan(EXIT_LIMIT_MS)
+      const log = logOf(userData)
+      expect(log).toContain(`test box: ${HUNG.join(' / ')}`)
+      expect(log).not.toContain(`test box: ${WARNING.join(' / ')}`)
+    })
+  }
+
+  test('an idle app with a page really hung closes with no warning, and saves its place', async () => {
+    const { userData } = seedData()
+    const { app } = await launch(userData)
+    await stubBoxes(app, ['Keep waiting'])
+    await hangWithPrompt(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([HUNG])
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setBounds({ x: 30, y: 50, width: 860, height: 600 })
+    })
+
+    const closed = app.waitForEvent('close')
+    const asked = Date.now()
+    await requestClose(app)
+    await closed
+    expect(Date.now() - asked).toBeLessThan(EXIT_LIMIT_MS)
+    const log = logOf(userData)
+    expect(log).not.toContain(`test box: ${WARNING.join(' / ')}`)
+    expect(savedWindow(userData)).toMatchObject({ width: 860, height: 600 })
+  })
+
+  test('a page that really died: its work is stopped, so a close after Reload does not warn', async () => {
+    const { app, userData } = await withWork('dead')
+    await answerBoxes(app, ['Reload'])
+    await crashPage(app)
+    await expect.poll(async () => (await boxes(app)).shown).toEqual([CRASHED])
+    await expect.poll(() => pageIsBack(app), { timeout: 15_000 }).toBe(true)
+
+    const closed = app.waitForEvent('close')
+    await requestClose(app)
+    await closed
+    expect(logOf(userData)).not.toContain(`test box: ${WARNING.join(' / ')}`)
   })
 
   test('an open About box does not get in the way of the warning or the quit', async () => {
