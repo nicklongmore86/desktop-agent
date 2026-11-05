@@ -47,6 +47,23 @@ async function renderApp() {
 }
 
 describe('SharingDialog: main refused a send to another vendor', () => {
+  it('holds the application menu like it holds the shortcuts', async () => {
+    const { api, user, dialog, pushMenuCommand } = await renderApp()
+    await user.keyboard('{Control>}n{/Control}')
+    act(() => {
+      pushMenuCommand('new-chat')
+      pushMenuCommand('open-settings')
+    })
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+    expect(dialog.isConnected).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    act(() => {
+      pushMenuCommand('new-chat')
+    })
+    expect(api.chat.newChat).toHaveBeenCalledOnce()
+  })
+
   it('names what will be sent and where, with Cancel focused', async () => {
     const { dialog } = await renderApp()
     expect(dialog.textContent).toContain('Ollama · Local')

@@ -276,6 +276,37 @@ describe('chat menu', () => {
   })
 })
 
+describe('application menu commands wait for a chat-list dialog, like the shortcuts', () => {
+  it.each([
+    ['Delete…', 'alertdialog', 'Delete chat?'],
+    ['Fork…', 'dialog', 'Fork chat'],
+  ] as const)('%s', async (item, role, name) => {
+    const { api, user, pushMenuCommand } = await renderApp()
+    await user.click(within(nav()).getByRole('button', { name: 'Options for Plan the release' }))
+    await user.click(screen.getByRole('menuitem', { name: item }))
+    const dialog = screen.getByRole(role, { name })
+
+    await user.keyboard('{Control>}n{/Control}')
+    await user.keyboard('{Control>},{/Control}')
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+    act(() => {
+      pushMenuCommand('new-chat')
+      pushMenuCommand('open-settings')
+    })
+    expect(api.chat.newChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
+    expect(screen.getByRole(role, { name })).toBe(dialog)
+
+    // Not stuck: gone, and the menu works again.
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    act(() => {
+      pushMenuCommand('new-chat')
+    })
+    expect(api.chat.newChat).toHaveBeenCalledOnce()
+  })
+})
+
 describe('fork', () => {
   it('says what is copied, forks the open chat from a prompt and opens the fork', async () => {
     const { api, user } = await renderApp()

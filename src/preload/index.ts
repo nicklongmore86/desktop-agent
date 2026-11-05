@@ -83,6 +83,7 @@ const api: DesktopApi = {
   onApprovalRequest: (listener) => subscribe(IpcChannels.approvalRequest, listener),
   onAuditStatus: (listener) => subscribe(IpcChannels.auditStatusChanged, listener),
   onProviderLoginState: (listener) => subscribe(IpcChannels.providerLoginStateChanged, listener),
+  onMenuCommand: (listener) => subscribe(IpcChannels.menuCommand, listener),
 }
 
 contextBridge.exposeInMainWorld('desktopApi', api)

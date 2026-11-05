@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import type { MenuCommand } from '../../shared/ipc'
 
 export interface ShortcutHandlers {
   newChat: () => void
@@ -40,6 +41,28 @@ export function useShortcuts(handlers: ShortcutHandlers, disabled: boolean): voi
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [disabled])
+}
+
+/**
+ * The application menu's New chat and Settings. Dropped while `disabled`, exactly like their
+ * keyboard shortcuts: nothing starts while an approval or another dialog is open.
+ */
+export function useMenuCommands(
+  subscribe: (listener: (command: MenuCommand) => void) => () => void,
+  handlers: Pick<ShortcutHandlers, 'newChat' | 'openSettings'>,
+  disabled: boolean,
+): void {
+  const latest = useRef(handlers)
+  useEffect(() => {
+    latest.current = handlers
+  })
+  useEffect(() => {
+    if (disabled) return
+    return subscribe((command) => {
+      if (command === 'new-chat') latest.current.newChat()
+      else latest.current.openSettings()
+    })
+  }, [subscribe, disabled])
 }
 
 export type LayoutHotkey = 'left' | 'right'

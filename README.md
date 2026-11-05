@@ -118,6 +118,19 @@ src/shared     Code and types used by more than one process (IPC contract, CSP)
 - `window.open` is always denied (http(s) links open in the default browser). Navigation and redirects away from the app are blocked, and permission requests (camera, notifications, …) are denied.
 - The app loads no remote content: only the bundled renderer, or the local Vite dev server during `pnpm dev`. `ELECTRON_RENDERER_URL` is ignored in packaged builds and must be a loopback `http://` URL otherwise. The `file://` allow-list also checks the host, so UNC paths (`file://server/share/...`) are rejected.
 
+### Logs and crash recovery
+
+The main process writes a log to `logs/main.log` in the app's data folder (**Help → Open logs folder**), kept to three files of 1 MB each. The app window's renderer is watched: after a crash or a hang you are offered Reload or Quit, and reloading stops being offered when it keeps failing. A renderer that exits normally is not a crash: the page reloads by itself, and only if that keeps happening are you asked. Whatever the cause, the run in progress is stopped and its pending approvals are denied.
+
+Log lines are meant to hold what went wrong, not what you were working on:
+
+- The app's own log calls write fixed text and safe fields (status codes, counts, file system errors), never prompts, replies, file contents, attachment data or tool arguments.
+- Every console call in main, including those made by libraries, goes through the same formatter. Patterns remove known secrets (API keys, tokens, encoded data, bodies pasted into errors) and shorten the home folder to `~`. Objects show only fields whose names look safe, nested values and arrays are not shown, and errors show their name, code, cause and stack frames.
+- Patterns cannot recognise a prompt, so free text is limited by its shape: of each string, and of each error message, only the first line is kept, up to 300 characters (200 for an object's field), marked `...[truncated]` when anything was dropped.
+- A stack line is kept only if all of it has the form of a V8 frame, up to 512 characters, and the same patterns run on it. Starting with `at` is not enough.
+
+**What remains possible:** that one short line is still written. If a library logs part of a prompt or a reply as a plain string, or puts it in an error message, up to 300 characters of its first line can reach the log, unless a pattern recognises it. A stack edited to hold a line in the exact form of a frame, such as an absolute path with words in it ending in `.js`, cannot be told from a real one. File paths and file names also appear in file system errors. The log stays on this PC and is never sent anywhere by the app, but check it before attaching it to a public issue.
+
 ### Permissions and tools
 
 The agent touches the machine only through the tools in `src/main/tools`, and every tool goes through the permission layer in `src/main/permissions`. Wiring, for the agent loop:
