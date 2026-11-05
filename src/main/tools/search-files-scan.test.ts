@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentError, type DocumentReader, type DocumentView } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
 import type { ToolDeps, ToolLimits } from './deps'
@@ -15,6 +15,12 @@ import {
   SCANNED_TITLE,
 } from './search-files'
 import { toolHarness, type ToolHarness } from './test-support'
+
+// These tests write and walk up to hundreds of real files, so most of their time is disk and
+// process scheduling. Measured with 32 copies at once on 16 cores (load 110): the 5 s default failed
+// every run and always on the clock; with no effective limit all passed, the slowest test in this
+// file taking 10.2 s (idle: 0.3 s). A hang still fails, later. The default stays elsewhere.
+vi.setConfig({ testTimeout: 30_000 })
 
 /**
  * search_files checks every file however many matches it shows, lists the files with

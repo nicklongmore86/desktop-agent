@@ -8,7 +8,7 @@ import { toolHarness } from '../tools/test-support'
 import { makePdf, pngShell } from './fixtures.test-util'
 import { DEFAULT_LIMITS } from './limits'
 import type { ExtractJob, FromBroker, ToBroker } from './protocol'
-import { DocumentError, type DocumentView } from './types'
+import { DocumentError, type DocumentReader, type DocumentView } from './types'
 
 /**
  * Electron stand-ins. The fake broker answers main's messages however a test says;
@@ -555,6 +555,8 @@ describe('search_files over the reader', () => {
     await sb.cleanup()
   })
 
+  // The limit: 2 s of real waiting by design (four searches of 0.5 s), which leaves little of the
+  // default 5 s for the worker's start on a loaded machine.
   it('never has more than one search job in the reader, however often it is searched', async () => {
     const sent: ExtractJob[] = []
     const replies: ((message: unknown) => void)[] = []
@@ -564,11 +566,28 @@ describe('search_files over the reader', () => {
       replies.push(reply)
     }
     const h = host()
-    const tools = toolHarness(sb, { documents: h, limits: { searchTimeMs: 500 } })
-    const search = () =>
-      tools
+    // Each search's 0.5 s starts at its first call to the reader. On the real clock a loaded
+    // machine could spend them all before that call: the search would then leave no job in the
+    // reader, and this test is about the job it leaves. The busy retries below run on real time.
+    let heldAt: number | null = null
+    let lost = 0
+    const now = (): number => heldAt ?? performance.now() - lost
+    const reader: DocumentReader = {
+      extract: (...args) => {
+        if (heldAt !== null) {
+          lost = performance.now() - heldAt
+          heldAt = null
+        }
+        return h.extract(...args)
+      },
+    }
+    const tools = toolHarness(sb, { documents: reader, now, limits: { searchTimeMs: 500 } })
+    const search = () => {
+      heldAt = now()
+      return tools
         .tool('search_files')
         .execute({ path: sb.root, contentPattern: 'freezer' }, fakeContext().ctx)
+    }
     const first = await search()
     expect(first.content).toContain(
       'Searched 0 of 3 documents; the 0.5 s time budget ran out. To search the rest',
@@ -583,8 +602,15 @@ describe('search_files over the reader', () => {
       )
       expect(h.stats()).toMatchObject({ queued: 0, queuedBytes: 0 })
     }
-    // Only the first search's one call ever reached the reader.
-    expect(sent).toHaveLength(1)
+    // Only the first search's one call ever reached the reader. Its job counts as running from
+    // the moment it is taken, but gets here only once the worker has started, which a loaded
+    // machine can take longer than the searches above. (A second job would show up in sent[1].)
+    await vi.waitFor(
+      () => {
+        expect(sent).toHaveLength(1)
+      },
+      { timeout: 20_000 },
+    )
     // read_document goes ahead of everything else and waits for that one job only.
     const read = h.extract(Buffer.from(makePdf([{ text: ['x'] }])), { name: 'read.pdf' })
     expect(h.stats().queued).toBe(1)
@@ -596,7 +622,7 @@ describe('search_files over the reader', () => {
     replies[1]?.(result(sent[1]))
     await read
     await h.dispose()
-  })
+  }, 30_000)
 
   it('takes a search job that never started out of the queue at the deadline', async () => {
     const sent: ExtractJob[] = []

@@ -36,6 +36,12 @@ import {
 import { toolHarness, type ToolHarness } from './test-support'
 import { walk } from './walk'
 
+// These tests write and walk up to hundreds of real files, so most of their time is disk and
+// process scheduling. Measured with 32 copies at once on 16 cores (load 110): the 5 s default failed
+// every run and always on the clock; with no effective limit all passed, the slowest test in this
+// file taking 4.0 (past its 1000-document test, which has its own limit) s (idle: 0.3 s). A hang still fails, later. The default stays elsewhere.
+vi.setConfig({ testTimeout: 30_000 })
+
 const crypto = vi.hoisted(() => ({ fixed: null as Buffer | null }))
 vi.mock('node:crypto', async (original) => {
   const actual = await original<typeof import('node:crypto')>()
@@ -803,23 +809,25 @@ describe('search_files over a large folder in one call', () => {
     await writeDocs(5)
     const controller = new AbortController()
     let calls = 0
+    let stopped = 0
     const busy: DocumentReader = {
       extract: () => {
         calls++
         // Stop is pressed while the search waits to send the document again.
         setTimeout(() => {
+          stopped = performance.now()
           controller.abort()
         }, 10)
         return Promise.reject(new DocumentError('busy', 'busy'))
       },
     }
     h = harness({ documents: busy })
-    const started = performance.now()
     const r = await search({ contentPattern: 'freezer' }, controller.signal)
     expect(r).toEqual({ content: 'Cancelled.', isError: true })
     expect(calls).toBe(1)
-    // The retry waits 250 ms; Stop cuts that wait short.
-    expect(performance.now() - started).toBeLessThan(200)
+    // The retry waits 250 ms; Stop cuts that wait short. Timed from Stop itself: the walk before
+    // it has nothing to do with this, and a loaded machine can take 200 ms over it.
+    expect(performance.now() - stopped).toBeLessThan(200)
   })
 
   it('stops promptly when cancelled in the middle of a large folder', async () => {

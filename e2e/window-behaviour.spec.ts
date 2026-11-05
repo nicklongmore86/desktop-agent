@@ -558,6 +558,17 @@ test.describe('the warning together with the app menu and crash recovery', () =>
       if (!contents || contents.isCrashed() || contents.isLoading()) return false
       return (await contents.executeJavaScript("'desktopApi' in window")) as boolean
     })
+  /**
+   * Main says the work is over. The page ending stops it, but the run still saves what it did
+   * before it lets go, and this can come after the new page is up; until then a warning is right.
+   */
+  const workIsOver = (app: ElectronApplication): Promise<boolean> =>
+    app.evaluate(async ({ BrowserWindow }) => {
+      const state = (await BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
+        'window.desktopApi.chat.load()',
+      )) as { running: boolean }
+      return !state.running
+    })
   const emitOnPage = (app: ElectronApplication, event: 'unresponsive' | 'responsive') =>
     app.evaluate(({ BrowserWindow }, name) => {
       BrowserWindow.getAllWindows()[0]?.webContents.emit(name)
@@ -656,6 +667,7 @@ test.describe('the warning together with the app menu and crash recovery', () =>
       .poll(() => app.evaluate(() => (globalThis as unknown as { __loads: number }).__loads))
       .toBeGreaterThan(0)
     await expect.poll(() => pageIsBack(app), { timeout: 15_000 }).toBe(true)
+    await expect.poll(() => workIsOver(app), { timeout: 15_000 }).toBe(true)
 
     // The reload ended the work, so this quit has nothing to ask about.
     const closed = app.waitForEvent('close')
@@ -873,6 +885,7 @@ test.describe('the warning together with the app menu and crash recovery', () =>
     await crashPage(app)
     await expect.poll(async () => (await boxes(app)).shown).toEqual([CRASHED])
     await expect.poll(() => pageIsBack(app), { timeout: 15_000 }).toBe(true)
+    await expect.poll(() => workIsOver(app), { timeout: 15_000 }).toBe(true)
 
     const closed = app.waitForEvent('close')
     await requestClose(app)
@@ -968,6 +981,8 @@ test.describe('notifications and taskbar flash', () => {
         globalThis as unknown as { __lastNotification: { emit: (e: string) => void } }
       ).__lastNotification.emit('click')
     })
+    // Only reads the page, so the focus count just below still comes from the click alone.
+    await expect(page.getByRole('alertdialog', { name: /Approve/ })).toBeVisible()
     expect((await alerts(app)).focusCalls).toBe(1)
     const pending = await page.evaluate(
       () => (window as unknown as { __approvals: unknown[] }).__approvals.length,
