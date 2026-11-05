@@ -706,6 +706,7 @@ describe('registerIpcHandlers', () => {
       IpcChannels.approvalRequest,
       IpcChannels.auditStatusChanged,
       IpcChannels.providerLoginStateChanged,
+      IpcChannels.menuCommand,
       filesPushChannels.filesChanged,
     ])
     const expected = [

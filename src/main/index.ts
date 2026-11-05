@@ -20,6 +20,7 @@ import { defaultSystemHeifDecoder } from './documents/system-heif'
 import { defaultSystemOcr } from './documents/system-ocr'
 import { DocumentWorkerHost, documentWorkerPaths } from './documents/worker-host'
 import { registerIpcHandlers } from './ipc-handlers'
+import { startAppShell } from './menu'
 import { createElectronTransports } from './net/electron-transports'
 import { installNetworkTransports } from './net/network'
 import { isTrustedIpcSender } from './security'
@@ -30,6 +31,7 @@ import { createWindowBehaviour, type WindowBehaviour } from './window-behaviour'
 
 // Sandbox every renderer, even if a future window forgets to ask for it.
 app.enableSandbox()
+const appShell = startAppShell()
 
 let mainWindow: BrowserWindow | null = null
 let behaviour: WindowBehaviour | null = null
@@ -214,6 +216,7 @@ void app.whenReady().then(async () => {
     })
     mainWindow = window
     if (planned) behaviour?.attach(window, planned)
+    appShell.attachWindow(window)
     // Reload, crash or close: deny pending approvals and stop the run.
     cancelOnPageEnd(window.webContents, () => {
       // The page that expanded those folders is gone; a reloaded one watches its own.

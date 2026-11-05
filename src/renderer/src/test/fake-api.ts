@@ -10,6 +10,7 @@ import type {
   GrantsState,
   HistoryState,
   ModelSettings,
+  MenuCommand,
   ProviderLoginState,
   ProviderStatus,
   ConfirmSharingResult,
@@ -197,6 +198,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
   const chatListeners = new Set<(event: ChatEvent) => void>()
   const approvalListeners = new Set<(prompt: ApprovalPrompt) => void>()
   const auditListeners = new Set<(status: AuditStatus) => void>()
+  const menuListeners = new Set<(command: MenuCommand) => void>()
   const loginListeners = new Set<(state: ProviderLoginState) => void>()
   const filesListeners = new Set<(change: FilesChanged) => void>()
   const gitListeners = new Set<(change: GitChanged) => void>()
@@ -761,6 +763,7 @@ export function fakeApi(options: FakeApiOptions = {}) {
     onApprovalRequest: vi.fn(subscribe(approvalListeners)),
     onAuditStatus: vi.fn(subscribe(auditListeners)),
     onProviderLoginState: vi.fn(subscribe(loginListeners)),
+    onMenuCommand: vi.fn(subscribe(menuListeners)),
   } satisfies DesktopApi
 
   return {
@@ -772,6 +775,9 @@ export function fakeApi(options: FakeApiOptions = {}) {
     },
     pushApproval: (prompt: ApprovalPrompt) => {
       for (const listener of approvalListeners) listener(prompt)
+    },
+    pushMenuCommand: (command: MenuCommand) => {
+      for (const listener of menuListeners) listener(command)
     },
     pushAudit: (status: AuditStatus) => {
       for (const listener of auditListeners) listener(status)
@@ -786,6 +792,10 @@ export function fakeApi(options: FakeApiOptions = {}) {
       for (const listener of loginListeners) listener(state)
     },
     listenerCount: () =>
-      chatListeners.size + approvalListeners.size + auditListeners.size + loginListeners.size,
+      chatListeners.size +
+      approvalListeners.size +
+      auditListeners.size +
+      loginListeners.size +
+      menuListeners.size,
   }
 }
