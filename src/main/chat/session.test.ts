@@ -156,6 +156,25 @@ describe('ChatSession', () => {
     expect(await session.send('c')).toEqual({ ok: true })
   })
 
+  it('reports what holds the send slot, for the close warning', async () => {
+    let finish: () => void = () => {}
+    const runner = scriptedRunner(
+      (history) =>
+        new Promise((resolve) => {
+          finish = () => {
+            resolve(history)
+          }
+        }),
+    )
+    const { session } = setup(runner)
+    expect(session.runKind).toBeNull()
+    await session.send('a')
+    expect(session.runKind).toBe('reply')
+    finish()
+    await session.idle()
+    expect(session.runKind).toBeNull()
+  })
+
   it('rejects empty or non-string messages without starting a run', async () => {
     const { session, createRunner } = setup(scriptedRunner((h) => Promise.resolve(h)))
     for (const text of ['', '   ', 42, null]) {

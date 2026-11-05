@@ -1,0 +1,464 @@
+import { EventEmitter } from 'node:events'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { IpcChannels, type ApprovalPrompt, type ChatEvent } from '../shared/ipc'
+
+const electron = vi.hoisted(() => {
+  class FakeNotification {
+    static supported = true
+    static shown: FakeNotification[] = []
+    static isSupported = () => FakeNotification.supported
+    handlers = new Map<string, () => void>()
+    constructor(public options: { title: string; body: string; icon?: string }) {}
+    on(event: string, handler: () => void) {
+      this.handlers.set(event, handler)
+    }
+    show() {
+      FakeNotification.shown.push(this)
+    }
+  }
+  return {
+    FakeNotification,
+    app: { prependListener: vi.fn(), quit: vi.fn() },
+    dialog: { showMessageBox: vi.fn() },
+    powerMonitor: { on: vi.fn() },
+    screen: {
+      getAllDisplays: vi.fn(() => [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]),
+      getPrimaryDisplay: vi.fn(() => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } })),
+    },
+  }
+})
+
+vi.mock('electron', () => ({ ...electron, Notification: electron.FakeNotification }))
+vi.mock('./app-icon', () => ({ appIconPath: () => '/icons/icon.png' }))
+
+const { createWindowBehaviour } = await import('./window-behaviour')
+
+class FakeWindow extends EventEmitter {
+  focused = false
+  minimized = false
+  flashes: boolean[] = []
+  webContents = new EventEmitter()
+  isFocused = () => this.focused
+  isDestroyed = () => false
+  isMinimized = () => this.minimized
+  isVisible = () => true
+  restore = vi.fn(() => {
+    this.minimized = false
+  })
+  show = vi.fn()
+  focus = vi.fn(() => {
+    this.focused = true
+    this.emit('focus')
+  })
+  flashFrame = (on: boolean) => this.flashes.push(on)
+  maximize = vi.fn()
+  getNormalBounds = () => ({ x: 0, y: 0, width: 1000, height: 720 })
+  isMaximized = () => false
+  isFullScreen = () => false
+  close = vi.fn()
+}
+
+const SECRET = 'C:\\Users\\me\\secret-plans.docx'
+const approval: ApprovalPrompt = {
+  id: 'a1',
+  runId: 'r1',
+  toolUseId: null,
+  tool: 'write_file',
+  kind: 'write',
+  summary: `Write ${SECRET}`,
+  detail: 'password=hunter2',
+  origin: 'agent',
+}
+
+function setup(
+  settings: { notifications?: boolean } = {},
+  activity: () => { run: 'reply' | null; approvals: number } = () => ({ run: null, approvals: 0 }),
+  work: {
+    stopWork?: () => Promise<void>
+    setWindowState?: () => Promise<void>
+  } = {},
+) {
+  const config = { notifications: settings.notifications ?? true }
+  const recovery = { open: false }
+  const behaviour = createWindowBehaviour({
+    activity,
+    stopWork: work.stopWork ?? (() => Promise.resolve()),
+    settings: {
+      get windowState() {
+        return undefined
+      },
+      setWindowState: work.setWindowState ?? (() => Promise.resolve()),
+      get notifications() {
+        return config.notifications
+      },
+    },
+    recoveryOpen: () => recovery.open,
+  })
+  const window = new FakeWindow()
+  behaviour.attach(window as never, behaviour.plan())
+  return { behaviour, window, config, recovery }
+}
+
+const reply = (text: string): ChatEvent[] => [
+  { type: 'run_started', runId: 'r1', text: `my prompt ${text}` },
+  { type: 'text_delta', runId: 'r1', turn: 1, text: `reply with ${text}` },
+  { type: 'run_finished', runId: 'r1', stopReason: 'end_turn' },
+]
+
+describe('window behaviour: the close warning and the crash prompts', () => {
+  const working = () => ({ run: 'reply', approvals: 0 }) as const
+  const requestClose = (window: FakeWindow) => {
+    const event = { preventDefault: vi.fn() }
+    window.emit('close', event)
+    return event
+  }
+  beforeEach(() => {
+    electron.dialog.showMessageBox.mockReset()
+    electron.dialog.showMessageBox.mockImplementation(() => new Promise(() => undefined))
+  })
+
+  it('warns during work', () => {
+    const { window } = setup({}, working)
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('does not ask a second question while a crash or hang prompt is up', () => {
+    const { window, recovery } = setup({}, working)
+    recovery.open = true
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('warns again after a hung page was killed and reloaded', () => {
+    const { window } = setup({}, working)
+    window.webContents.emit('unresponsive')
+    window.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 1 })
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('gives the warning the signal that takes it down', () => {
+    const { window, behaviour } = setup({}, working)
+    requestClose(window)
+    const options = electron.dialog.showMessageBox.mock.calls[0]?.[0] as { signal: AbortSignal }
+    expect(options.signal.aborted).toBe(false)
+    behaviour.dismissWarning()
+    expect(options.signal.aborted).toBe(true)
+  })
+
+  it('counts a system shutdown as quitting, which the guard alone would not know', () => {
+    const { behaviour } = setup()
+    expect(behaviour.isQuitting()).toBe(false)
+    const shutdown = electron.powerMonitor.on.mock.calls.at(-1)?.[1] as () => void
+    shutdown()
+    expect(behaviour.isQuitting()).toBe(true)
+  })
+})
+
+describe('window behaviour: notifications and taskbar flash', () => {
+  beforeEach(() => {
+    electron.FakeNotification.shown.length = 0
+    electron.FakeNotification.supported = true
+  })
+
+  it('notifies and flashes when a reply finishes behind the window', () => {
+    const { behaviour, window } = setup()
+    for (const event of reply('x')) behaviour.onPush(IpcChannels.chatEvent, event)
+    expect(electron.FakeNotification.shown).toHaveLength(1)
+    expect(electron.FakeNotification.shown[0]?.options).toEqual({
+      title: 'Desktop Agent',
+      body: 'Your reply is ready.',
+      icon: '/icons/icon.png',
+    })
+    expect(window.flashes).toEqual([true])
+  })
+
+  it('stays silent while the window is focused', () => {
+    const { behaviour, window } = setup()
+    window.focused = true
+    for (const event of reply('x')) behaviour.onPush(IpcChannels.chatEvent, event)
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    expect(electron.FakeNotification.shown).toHaveLength(0)
+    expect(window.flashes).toEqual([])
+  })
+
+  it('stays silent when the setting is off', () => {
+    const { behaviour, window } = setup({ notifications: false })
+    for (const event of reply('x')) behaviour.onPush(IpcChannels.chatEvent, event)
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    expect(electron.FakeNotification.shown).toHaveLength(0)
+    expect(window.flashes).toEqual([])
+  })
+
+  it('announces a failure', () => {
+    const { behaviour } = setup()
+    behaviour.onPush(IpcChannels.chatEvent, {
+      type: 'error',
+      runId: 'r1',
+      code: 'network',
+      message: `could not read ${SECRET}`,
+    })
+    expect(electron.FakeNotification.shown[0]?.options.body).toBe('A reply could not be completed.')
+  })
+
+  it('shows only fixed text: nothing from the prompt, reply, path or tool arguments', () => {
+    const { behaviour } = setup()
+    for (const event of reply(SECRET)) behaviour.onPush(IpcChannels.chatEvent, event)
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    expect(electron.FakeNotification.shown).toHaveLength(2)
+    for (const shown of electron.FakeNotification.shown) {
+      const text = JSON.stringify(shown.options)
+      expect(text).not.toContain('secret')
+      expect(text).not.toContain('hunter2')
+      expect(text).not.toContain('write_file')
+      expect(text).not.toContain('prompt')
+    }
+    expect(electron.FakeNotification.shown[1]?.options.body).toBe(
+      'An approval is waiting for your answer.',
+    )
+  })
+
+  it('does not repeat for the same approval', () => {
+    const { behaviour } = setup()
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    expect(electron.FakeNotification.shown).toHaveLength(1)
+    behaviour.onPush(IpcChannels.approvalRequest, { ...approval, id: 'a2' })
+    expect(electron.FakeNotification.shown).toHaveLength(2)
+  })
+
+  it('clicking the notification only brings the window back; nothing is approved', () => {
+    const { behaviour, window } = setup()
+    window.minimized = true
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    electron.FakeNotification.shown[0]?.handlers.get('click')?.()
+    expect(window.restore).toHaveBeenCalled()
+    expect(window.focus).toHaveBeenCalled()
+    // The behaviour has no way to answer an approval: it is given none.
+    expect(Object.keys(behaviour).sort()).toEqual([
+      'allowQuit',
+      'attach',
+      'dismissWarning',
+      'isQuitting',
+      'onPush',
+      'plan',
+    ])
+  })
+
+  it('stops flashing when the window gets focus', () => {
+    const { behaviour, window } = setup()
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    window.focus()
+    expect(window.flashes).toEqual([true, false])
+  })
+
+  it('still flashes when the system cannot show notifications', () => {
+    electron.FakeNotification.supported = false
+    const { behaviour, window } = setup()
+    behaviour.onPush(IpcChannels.approvalRequest, approval)
+    expect(electron.FakeNotification.shown).toHaveLength(0)
+    expect(window.flashes).toEqual([true])
+  })
+})
+
+describe('window behaviour: the close warning and the system', () => {
+  const working = () => ({ run: 'reply' as const, approvals: 1 })
+  const requestClose = (window: FakeWindow): { preventDefault: ReturnType<typeof vi.fn> } => {
+    const event = { preventDefault: vi.fn() }
+    window.emit('close', event)
+    return event
+  }
+
+  beforeEach(() => {
+    electron.dialog.showMessageBox.mockReset()
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 0 })
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-04T12:00:00Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('asks while work is in progress, in a dialog that is not a child of the window', async () => {
+    const { window } = setup({}, working)
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledTimes(1)
+    // One argument: options only, so no window is the parent and an approval stays answerable.
+    expect(electron.dialog.showMessageBox.mock.calls[0]).toHaveLength(1)
+    expect(electron.dialog.showMessageBox.mock.calls[0]?.[0]).toMatchObject({
+      buttons: ['Cancel', 'Stop and quit'],
+      defaultId: 0,
+      cancelId: 0,
+    })
+  })
+
+  it('does not ask once Windows says the session is ending, and does not hold the close', async () => {
+    const { window } = setup({}, working)
+    window.emit('session-end')
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('still asks after a query-session-end, which Windows may cancel', async () => {
+    const { window } = setup({}, working)
+    window.emit('query-session-end')
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not ask after a query-session-end that is followed by the confirmed session-end', async () => {
+    const { window } = setup({}, working)
+    window.emit('query-session-end')
+    window.emit('session-end')
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('does not ask at an operating-system shutdown on Linux or macOS', () => {
+    const { window } = setup({}, working)
+    const onShutdown = electron.powerMonitor.on.mock.calls.find(([name]) => name === 'shutdown')
+    ;(onShutdown?.[1] as () => void)()
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+  })
+})
+
+describe('window behaviour: closing with a hung page', () => {
+  const working = () => ({ run: 'reply' as const, approvals: 1 })
+  const idle = () => ({ run: null, approvals: 0 })
+  const never = () => new Promise<void>(() => undefined)
+  const requestClose = (window: FakeWindow) => {
+    const event = { preventDefault: vi.fn() }
+    window.emit('close', event)
+    return event
+  }
+  /** The app's quit, as the guard of the latest setup() sees it. */
+  const requestQuit = () => {
+    const event = { preventDefault: vi.fn() }
+    const listener = electron.app.prependListener.mock.calls.at(-1)?.[1] as (e: unknown) => void
+    listener(event)
+    return event
+  }
+  /** The hang prompt came and the user chose Keep waiting: it is gone, and the page still hung. */
+  const hungAndKeptWaiting = (window: FakeWindow) => {
+    window.webContents.emit('unresponsive')
+  }
+
+  beforeEach(() => {
+    electron.dialog.showMessageBox.mockReset()
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 0 })
+    electron.app.quit.mockClear()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('warns on a close after Keep waiting, with the page still marked hung', async () => {
+    const { window } = setup({}, working)
+    hungAndKeptWaiting(window)
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+    // Cancel keeps the app and its work.
+    expect(window.close).not.toHaveBeenCalled()
+  })
+
+  it('warns on a quit after Keep waiting, with the page still marked hung', async () => {
+    const stopWork = vi.fn(() => Promise.resolve())
+    const { window } = setup({}, working, { stopWork })
+    hungAndKeptWaiting(window)
+    expect(requestQuit().preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+    expect(stopWork).not.toHaveBeenCalled()
+  })
+
+  it('does not ask a second question while the prompt is up: not on a close, not on a quit', async () => {
+    const stopWork = vi.fn(() => Promise.resolve())
+    const { window, recovery } = setup({}, working, { stopWork })
+    window.webContents.emit('unresponsive')
+    recovery.open = true
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    expect(requestQuit().preventDefault).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+    // The quit still stops the work, as it always did.
+    expect(stopWork).toHaveBeenCalledOnce()
+  })
+
+  it('warns once the prompt has gone, even though the page never reloaded', async () => {
+    const { window, recovery } = setup({}, working)
+    window.webContents.emit('unresponsive')
+    recovery.open = true
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+    recovery.open = false
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('warns when the page responds again without a reload', async () => {
+    const { window } = setup({}, working)
+    hungAndKeptWaiting(window)
+    window.webContents.emit('responsive')
+    expect(requestClose(window).preventDefault).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+  })
+
+  it('Stop and quit closes within both limits, when stopping and saving never finish', async () => {
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 1 })
+    const stopWork = vi.fn(never)
+    const setWindowState = vi.fn(never)
+    const { window } = setup({}, working, { stopWork, setWindowState })
+    hungAndKeptWaiting(window)
+    requestClose(window)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(stopWork).toHaveBeenCalledOnce()
+    expect(setWindowState).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(window.close).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(window.close).toHaveBeenCalledOnce()
+  })
+
+  it('Stop and quit on a quit ends the app within both limits too', async () => {
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 1 })
+    const { window } = setup({}, working, { stopWork: never, setWindowState: never })
+    hungAndKeptWaiting(window)
+    requestQuit()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(electron.app.quit).toHaveBeenCalledOnce()
+    // The quit it starts passes: no second question.
+    expect(requestQuit().preventDefault).not.toHaveBeenCalled()
+    expect(requestClose(window).preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('an idle app with a hung page closes with no prompt, within the limit', async () => {
+    const { window } = setup({}, idle, { setWindowState: never })
+    hungAndKeptWaiting(window)
+    requestClose(window)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(window.close).toHaveBeenCalledOnce()
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('a dead page whose work has stopped closes with no prompt', async () => {
+    let work: { run: 'reply' | null; approvals: number } = working()
+    const { window, recovery } = setup({}, () => work)
+    window.webContents.emit('unresponsive')
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 })
+    // What cancelOnPageEnd does in index.ts; the recovery prompt has been answered or dismissed.
+    work = { run: null, approvals: 0 }
+    recovery.open = false
+    requestClose(window)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(window.close).toHaveBeenCalledOnce()
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+})

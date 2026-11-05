@@ -56,6 +56,7 @@ let provider = { provider: 'anthropic-api', state: 'ready', message: 'API mode' 
 let loginState = { provider: null, active: false, url: null, result: null }
 let theme = 'system'
 let turnLimit = 100
+let notifications = true
 let stopCalls = 0
 let layout = {
   version: 1,
@@ -833,6 +834,13 @@ contextBridge.exposeInMainWorld('desktopApi', {
       layout = next
       layoutSaves.push(next)
       return Promise.resolve(layout)
+    },
+  },
+  notifications: {
+    get: () => Promise.resolve(notifications),
+    set: (next) => {
+      notifications = next
+      return Promise.resolve(notifications)
     },
   },
   theme: {

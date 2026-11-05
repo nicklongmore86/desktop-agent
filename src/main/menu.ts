@@ -7,7 +7,7 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron'
 import { IpcChannels, type MenuCommand } from '../shared/ipc'
-import { installDiagnostics } from './diagnostics'
+import { installDiagnostics, type Diagnostics } from './diagnostics'
 
 export const ISSUES_URL = 'https://github.com/nicklongmore86/desktop-agent/issues'
 
@@ -125,9 +125,13 @@ export function buildMenuTemplate(options: MenuOptions): MenuItemConstructorOpti
 
 /**
  * The hooks index.ts needs: logging and crash handling from here on, the menu once the app is
- * ready, and attachWindow for the app window.
+ * ready, attachWindow for the app window, and what connects crash handling to the close warning.
  */
-export function startAppShell(): { attachWindow: (window: BrowserWindow) => void } {
+export function startAppShell(): {
+  attachWindow: (window: BrowserWindow) => void
+  useQuitGate: Diagnostics['useQuitGate']
+  recoveryOpen: Diagnostics['recoveryOpen']
+} {
   const diagnostics = installDiagnostics()
   let appWindow: BrowserWindow | null = null
 
@@ -166,5 +170,7 @@ export function startAppShell(): { attachWindow: (window: BrowserWindow) => void
       appWindow = window
       diagnostics.watchWindow(window)
     },
+    useQuitGate: diagnostics.useQuitGate,
+    recoveryOpen: diagnostics.recoveryOpen,
   }
 }

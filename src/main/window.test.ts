@@ -20,8 +20,10 @@ const electron = vi.hoisted(() => {
 })
 
 vi.mock('electron', () => electron)
+vi.mock('./app-icon', () => ({ appIconPath: () => '/icons/icon.png' }))
 
-const { appUrl, createMainWindow } = await import('./window')
+const { appUrl, createMainWindow, windowWebPreferences } = await import('./window')
+const { secureWebPreferences } = await import('./security')
 
 type OpenHandler = (details: { url: string }) => { action: string }
 type NavigationHandler = (event: { preventDefault: () => void }, url: string) => void
@@ -100,6 +102,45 @@ describe('createMainWindow', () => {
     expect(options.webPreferences['preload']).toMatch(/preload[\\/]index\.js$/)
   })
 
+  it('opens at the planned bounds, never below the minimum size, with the app icon', () => {
+    createMainWindow({
+      approvalOpen: () => false,
+      bounds: { x: 40, y: 50, width: 900, height: 650 },
+    })
+    expect(electron.BrowserWindow.mock.calls[0]?.[0]).toMatchObject({
+      x: 40,
+      y: 50,
+      width: 900,
+      height: 650,
+      minWidth: 480,
+      minHeight: 400,
+      icon: '/icons/icon.png',
+    })
+  })
+
+  it('opens at 1000x720 with no position when it is given no bounds', () => {
+    createMainWindow({ approvalOpen: () => false })
+    const options = electron.BrowserWindow.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(options).toMatchObject({ width: 1000, height: 720 })
+    expect(options).not.toHaveProperty('x')
+  })
+
+  it('turns developer tools off in a packaged build only', () => {
+    electron.app.isPackaged = true
+    createMainWindow({ approvalOpen: () => false })
+    expect(
+      (electron.BrowserWindow.mock.calls[0]?.[0] as { webPreferences: { devTools?: boolean } })
+        .webPreferences.devTools,
+    ).toBe(false)
+    electron.BrowserWindow.mockClear()
+    electron.app.isPackaged = false
+    createMainWindow({ approvalOpen: () => false })
+    expect(
+      (electron.BrowserWindow.mock.calls[0]?.[0] as { webPreferences: Record<string, unknown> })
+        .webPreferences,
+    ).not.toHaveProperty('devTools')
+  })
+
   it('shows the native text context menu in the app window', () => {
     createMainWindow({ approvalOpen: () => false })
     expect(electron.webContents.on).toHaveBeenCalledWith('context-menu', expect.any(Function))
@@ -127,5 +168,13 @@ describe('createMainWindow', () => {
     const internal = { preventDefault: vi.fn() }
     handler(internal, 'http://localhost:5173/#chat')
     expect(internal.preventDefault).not.toHaveBeenCalled()
+  })
+})
+
+describe('windowWebPreferences', () => {
+  it('adds nothing to the secure set but devTools: false when packaged', () => {
+    const secure = secureWebPreferences('/p.js')
+    expect(windowWebPreferences('/p.js', false)).toEqual(secure)
+    expect(windowWebPreferences('/p.js', true)).toEqual({ ...secure, devTools: false })
   })
 })

@@ -526,3 +526,69 @@ it('keeps the open chat across connections, reading a bad or missing one as not 
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+describe('window state and notifications', () => {
+  const open = async (contents?: unknown) => {
+    const dir = await mkdtemp(join(tmpdir(), 'window-settings-'))
+    cleanup.push(dir)
+    const file = join(dir, 'settings.json')
+    if (contents !== undefined) await writeFile(file, JSON.stringify(contents))
+    return { file, store: await openSettingsStore(file) }
+  }
+  const cleanup: string[] = []
+  afterEach(async () => {
+    for (const dir of cleanup.splice(0)) await rm(dir, { recursive: true, force: true })
+  })
+  const saved = { x: 20, y: 30, width: 1100, height: 700, maximized: true }
+
+  it('a settings file from before these fields loads: no window, notifications on', async () => {
+    for (const legacy of [
+      { version: 3, model: 'claude-opus-5-5' },
+      { version: 2, model: 'claude-opus-5-5', provider: 'claude-subscription' },
+      { version: 1 },
+    ]) {
+      const { store } = await open(legacy)
+      expect(store.windowState).toBeUndefined()
+      expect(store.notifications).toBe(true)
+    }
+  })
+
+  it('keeps the window state across a reopen, beside every other setting', async () => {
+    const { file, store } = await open({ version: 3, model: 'claude-opus-5-5', theme: 'dark' })
+    await store.setWindowState(saved)
+    await store.setTheme('light')
+    const reopened = await openSettingsStore(file)
+    expect(reopened.windowState).toEqual(saved)
+    expect(reopened.theme).toBe('light')
+    expect(reopened.model).toBe('claude-opus-5-5')
+  })
+
+  it('does not save an unusable window state, and drops unknown keys', async () => {
+    const { file, store } = await open()
+    await store.setWindowState({ ...saved, width: Number.NaN })
+    expect(store.windowState).toBeUndefined()
+    await store.setWindowState({ ...saved, path: 'C:\\Users\\me' })
+    expect(
+      (JSON.parse(await readFile(file, 'utf8')) as { windowState: unknown }).windowState,
+    ).toEqual(saved)
+  })
+
+  it('treats a corrupt saved window as none, without losing other settings', async () => {
+    const { store } = await open({ version: 3, theme: 'dark', windowState: { x: 'left' } })
+    expect(store.windowState).toBeUndefined()
+    expect(store.theme).toBe('dark')
+  })
+
+  it('saves the notifications choice, and only a boolean', async () => {
+    const { file, store } = await open()
+    expect(await store.setNotifications(false)).toBe(false)
+    expect((await openSettingsStore(file)).notifications).toBe(false)
+    await expect(store.setNotifications('no' as unknown as boolean)).rejects.toThrow()
+    expect(store.notifications).toBe(false)
+  })
+
+  it('reads a non-boolean saved notifications value as on', async () => {
+    const { store } = await open({ version: 3, notifications: 'off' })
+    expect(store.notifications).toBe(true)
+  })
+})

@@ -8,6 +8,7 @@ import { registerConnectionsHandlers, type ConnectionsService } from './ipc-conn
 import { registerFilesHandlers, type FilesService } from './ipc-files'
 import { registerGitHandlers, type GitService } from './ipc-git'
 import { registerLayoutHandlers, type LayoutService } from './ipc-layout'
+import { registerNotificationsHandlers, type NotificationsService } from './ipc-notifications'
 import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 
 /** Registers a handler that has already passed the trusted-sender check. */
@@ -20,6 +21,7 @@ export interface FeatureServices {
   files: FilesService
   git: GitService
   layout: LayoutService
+  notifications: NotificationsService
   projects: ProjectsService
 }
 
@@ -30,5 +32,6 @@ export function registerFeatureHandlers(handle: IpcHandle, services: FeatureServ
   registerFilesHandlers(handle, services.files)
   registerGitHandlers(handle, services.git)
   registerLayoutHandlers(handle, services.layout)
+  registerNotificationsHandlers(handle, services.notifications)
   registerProjectsHandlers(handle, services.projects, services.connections)
 }
