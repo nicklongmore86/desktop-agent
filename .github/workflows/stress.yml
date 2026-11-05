@@ -1,0 +1,37 @@
+name: Stress (temporary)
+on:
+  push:
+    branches: ['stress/**']
+permissions:
+  contents: read
+env:
+  NODE_VERSION: 24.18.1
+jobs:
+  repeat:
+    name: Repeat Windows ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:helpers
+      - run: pnpm build
+      - shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - run: pnpm exec playwright test e2e/window-behaviour.spec.ts -g "an approval behind the window" --repeat-each=20
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repeat-${{ matrix.shard }}
+          path: test-results/e2e/**/*.md
+          if-no-files-found: ignore
+          retention-days: 3
