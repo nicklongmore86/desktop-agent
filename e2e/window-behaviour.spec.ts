@@ -981,6 +981,8 @@ test.describe('notifications and taskbar flash', () => {
         globalThis as unknown as { __lastNotification: { emit: (e: string) => void } }
       ).__lastNotification.emit('click')
     })
+    // Only reads the page, so the focus count just below still comes from the click alone.
+    await expect(page.getByRole('alertdialog', { name: /Approve/ })).toBeVisible()
     expect((await alerts(app)).focusCalls).toBe(1)
     const pending = await page.evaluate(
       () => (window as unknown as { __approvals: unknown[] }).__approvals.length,
