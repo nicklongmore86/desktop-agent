@@ -2050,6 +2050,75 @@ describe('search_files OCR, Stop and the reader', () => {
     ])
   })
 
+  it('spends the character limit in page order, when a later page is read first', async () => {
+    await put(path.join(sb.root, 'long.pdf'), doc(scan(SENTENCE), scan(SENTENCE)))
+    const finished: number[] = []
+    ocr.before = async (page) => {
+      if (page === 1) await new Promise((resolve) => setTimeout(resolve, 30))
+      finished.push(page)
+    }
+    h = harness({
+      limits: { maxSearchDocumentChars: SENTENCE.length },
+      ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }),
+    })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    // Page 2 was read first and would fill the limit; page 1 keeps its place ahead of it.
+    expect(finished).toEqual([2, 1])
+    const pages = (await ocrOf('long.pdf'))?.ocr ?? []
+    expect(pages.map((page) => page.state)).toEqual(['done', 'failed'])
+    expect(pages[0]?.text).toBe(SENTENCE)
+    expect(pages[1]?.failure).toBe('too-long')
+    expect(r.content).toContain(`long.pdf (page 1, OCR): ${SENTENCE}`)
+    expect(r.content).not.toContain('long.pdf (page 2, OCR)')
+  })
+
+  /** Two pages on two helpers: page 1 read until Stop, page 2 read, then Stop. */
+  const stopAfterPage2 = (controller: AbortController): void => {
+    ocr.before = async (page) => {
+      if (page === 1) {
+        await new Promise<void>((resolve) => {
+          controller.signal.addEventListener('abort', () => {
+            resolve()
+          })
+        })
+      } else {
+        setTimeout(() => {
+          controller.abort()
+        }, 20)
+      }
+    }
+  }
+
+  it('keeps a later page read before Stop, when it leaves an earlier one room', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(scan(), scan()))
+    const controller = new AbortController()
+    stopAfterPage2(controller)
+    h = harness({ ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }) })
+    const r = await search({ contentPattern: 'freezer' }, controller.signal)
+    expect(r).toEqual({ content: 'Cancelled.', isError: true })
+    const pages = (await ocrOf('scan.pdf'))?.ocr ?? []
+    expect(pages.map((page) => page.state)).toEqual(['pending', 'done'])
+    expect(pages[1]?.text).toBe(SENTENCE)
+  })
+
+  it('reads a later page again, in order, when keeping it could leave an earlier one short', async () => {
+    await put(path.join(sb.root, 'long.pdf'), doc(scan(SENTENCE), scan(SENTENCE)))
+    const controller = new AbortController()
+    stopAfterPage2(controller)
+    const limits = { maxSearchDocumentChars: SENTENCE.length + 10 }
+    h = harness({ limits, ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }) })
+    await search({ contentPattern: 'freezer' }, controller.signal)
+    // Page 2 was read, but page 1, stopped, may need the limit first: neither is kept.
+    expect((await ocrOf('long.pdf'))?.ocr.map((page) => page.state)).toEqual(['pending', 'pending'])
+    delete ocr.before
+    h = harness({ limits, ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }) })
+    await search({ contentPattern: 'freezer', context: 0 })
+    const pages = (await ocrOf('long.pdf'))?.ocr ?? []
+    expect(pages.map((page) => page.state)).toEqual(['done', 'done'])
+    expect(pages[0]?.text).toBe(SENTENCE)
+    expect(pages[1]?.text).toHaveLength(10)
+  })
+
   it('renders a page per background job, never two at once', async () => {
     await put(path.join(sb.root, 'a.pdf'), doc(scan(), scan()))
     await put(path.join(sb.root, 'b.pdf'), doc(scan()))

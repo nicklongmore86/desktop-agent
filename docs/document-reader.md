@@ -539,8 +539,14 @@ runs outside the reader. The pages of a document go through a bounded pipeline: 
 the next page while a helper reads the last (still one job at a time), at most two rendered pages
 are held in main, and up to two helpers (half the logical processors, one on a PC with fewer than
 four) read pages side by side, below normal priority (`BELOW_NORMAL_PRIORITY_CLASS`, set by main on
-its own child; the helper's Job Object sets no priority limit). Pages may finish out of order and
-are kept as each finishes. Each helper run gets what is left of the search's time, at most 60 s per
+its own child; the helper's Job Object sets no priority limit). Pages may finish out of order, but
+the document's character limit is spent in page order, exactly as reading them one after the
+other would: a later page is kept as it finishes only when, with 1 MiB (the helper's output cap,
+the most one page's text can be) set aside for each earlier page not yet settled, it still fits;
+otherwise it waits for them. So a later page can never leave an earlier one cut short or failed as
+`too-long`. Whether a reading is kept is decided as it finishes, so one that finished before Stop
+is still kept; one still waiting behind a page that Stop left pending is not, and is read again
+next time, in order (this only happens within about 1 MiB of the limit). Each helper run gets what is left of the search's time, at most 60 s per
 helper running at once (120 s with two, so sharing the processors does not trip it); the helper's
 own 60 s CPU limit is unchanged. While the PC runs on battery (Electron's `powerMonitor`), no new
 page is started: pages being read finish, and the rest stay pending, listed as `OCR paused on

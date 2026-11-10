@@ -5,6 +5,7 @@
 import {
   OCR_DEFAULT_TIMEOUT_MS,
   OCR_MAX_EDGE,
+  OCR_MAX_OUTPUT_BYTES,
   OcrError,
   type OcrImage,
   type OcrUnavailableReason,
@@ -55,6 +56,11 @@ const PROBE_GOOD_CHARS = 24
 const ANGLE_SLACK = 15
 /** Pages rendered and not yet read, in main at once: the one being read and the next. */
 const MAX_IMAGES = 2
+/**
+ * The most text one page's reading can hold: the helper's output cap, in bytes, which is
+ * never fewer than the UTF-16 characters of the lines it holds.
+ */
+const PAGE_TEXT_MOST = OCR_MAX_OUTPUT_BYTES
 /** OCR helpers a search runs at once, whatever the PC offers. */
 const MAX_HELPERS = 2
 /** Pixels differing from the page's commonest grey by more than this are ink. */
@@ -358,8 +364,9 @@ export interface OcrDocumentResult {
   kept: boolean
 }
 
+type PageRead = { kind: 'read'; text: string; low: boolean }
 type PageOutcome =
-  | { kind: 'read'; text: string; low: boolean }
+  | PageRead
   | { kind: 'failed'; code: string; lasting: boolean }
   | { kind: 'stop'; why: 'time' | 'cancelled' }
   | { kind: 'off'; reason: OcrUnavailableReason; message: string }
@@ -600,8 +607,11 @@ const charsOf = (text: CachedText): number =>
  *   reads the last, so a read_document waits behind one page's job at most, as before;
  * - at most two rendered pages are held at once, the one being read and the next;
  * - up to `ocr.helpers` helpers (two at most, at a low priority) read pages side by side.
- * Pages may finish out of order; each is kept as it finishes, saved every few seconds and
- * whenever it stops, so a page is read once and a later call picks up the rest. Stop,
+ * Pages may finish out of order, but the document's character limit is spent in page order,
+ * as one page after the other would spend it: a later page is kept ahead of an earlier one
+ * still being read only when that can't leave the earlier one short (PAGE_TEXT_MOST each),
+ * and waits for it otherwise. What is kept is saved every few seconds and whenever it stops,
+ * so a page is read once and a later call picks up the rest. Stop,
  * a removed grant, the deadline or OCR failing stops every helper at once; on battery, no
  * new page is started and the ones being read are finished.
  */
@@ -671,8 +681,19 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     dirty = true
     return true
   }
-  const record = (page: OcrPage, outcome: PageOutcome): void => {
-    // A read that ended after the grant went is not kept (put refuses it too), nor reported.
+  /** Keeps a page's reading: in page order, so the limit cuts what serial reading would. */
+  const commit = (page: OcrPage, outcome: PageRead): void => {
+    if (tooLong(page)) return
+    page.state = 'done'
+    page.text = outcome.text.slice(0, Math.max(0, job.maxChars - chars))
+    page.low = outcome.low
+    chars += page.text.length
+    dirty = true
+    run.failuresInARow = 0
+    run.pagesRead++
+  }
+  const record = (page: OcrPage, outcome: Exclude<PageOutcome, PageRead>): void => {
+    // An outcome that came after the grant went is not kept (put refuses it too), nor reported.
     if (ended.outcome === 'gone' || ended.outcome === 'cancelled') return
     if (!job.stillGranted()) {
       finish('gone')
@@ -710,17 +731,54 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
           finish('off')
         }
         return
-      case 'read':
-        if (tooLong(page)) return
-        page.state = 'done'
-        page.text = outcome.text.slice(0, Math.max(0, job.maxChars - chars))
-        page.low = outcome.low
-        chars += page.text.length
-        dirty = true
-        run.failuresInARow = 0
-        run.pagesRead++
-        return
     }
+  }
+
+  /**
+   * Pages started, in page order, until their share of the character limit is settled:
+   * being read, read and waiting for an earlier page, or a gap (an earlier page left
+   * pending by Stop, the deadline or OCR going off, which a later call reads first).
+   */
+  const slots: { page: OcrPage; state: 'reading' | 'read' | 'gap'; read?: PageRead }[] = []
+  /** Keeps every reading that can be kept now without taking what an earlier page may need. */
+  const settle = (): void => {
+    if (!job.stillGranted()) return
+    let ahead = 0
+    for (let i = 0; i < slots.length;) {
+      const slot = slots[i]
+      if (!slot) break
+      const read = slot.state === 'read' ? slot.read : undefined
+      if (
+        read &&
+        (ahead === 0 || chars + ahead * PAGE_TEXT_MOST + read.text.length <= job.maxChars)
+      ) {
+        commit(slot.page, read)
+        slots.splice(i, 1)
+        continue
+      }
+      ahead++
+      i++
+    }
+  }
+  /** A started page's outcome: kept in page order, or recorded at once if it takes no text. */
+  const resolve = (slot: (typeof slots)[number], outcome: PageOutcome): void => {
+    if (outcome.kind === 'read') {
+      // Whether it is kept is decided now, as it finishes, however long it then waits.
+      if (ended.outcome === 'gone' || ended.outcome === 'cancelled') slot.state = 'gap'
+      else if (!job.stillGranted()) {
+        finish('gone')
+        slot.state = 'gap'
+      } else {
+        slot.state = 'read'
+        slot.read = outcome
+      }
+    } else {
+      record(slot.page, outcome)
+      // A failed page takes no text, now or later; a stopped one may, on a later call.
+      if (outcome.kind === 'failed') slots.splice(slots.indexOf(slot), 1)
+      else slot.state = 'gap'
+    }
+    settle()
   }
 
   /** Pages being read by a helper, each holding its rendered image. */
@@ -734,22 +792,30 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     await room(MAX_IMAGES)
     if (!ready()) break
     if (tooLong(page)) continue
+    const slot: (typeof slots)[number] = { page, state: 'reading' }
+    slots.push(slot)
     const raster = await renderForOcr(pageJob, page)
     if ('kind' in raster) {
-      record(page, raster)
+      resolve(slot, raster)
       if (ended.outcome !== null) break
       await saveNow()
       continue
     }
     if (inkShare(raster.pixels) < BLANK_INK) {
-      record(page, { kind: 'read', text: '', low: false })
+      resolve(slot, { kind: 'read', text: '', low: false })
       await saveNow()
       continue
     }
     await room(helpers)
     // Rendered but not started: it stays pending for a later call.
-    if (!ready()) break
-    if (tooLong(page)) continue
+    if (!ready()) {
+      slot.state = 'gap'
+      break
+    }
+    if (tooLong(page)) {
+      slots.splice(slots.indexOf(slot), 1)
+      continue
+    }
     const image: OcrImage = {
       width: raster.width,
       height: raster.height,
@@ -759,7 +825,7 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     const task: Promise<void> = readImage(pageJob, image, orientation)
       .catch((): PageOutcome => ({ kind: 'failed', code: 'failed', lasting: false }))
       .then(async (outcome) => {
-        record(page, outcome)
+        resolve(slot, outcome)
         await saveNow()
       })
       .finally(() => {
@@ -768,6 +834,7 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     reading.add(task)
   }
   await Promise.all(reading)
+  // A reading still waiting here is behind a page left pending: it is read again, in order.
   if (ended.outcome === 'gone' || !job.stillGranted()) {
     return { outcome: 'gone', failedNow, kept: false }
   }
