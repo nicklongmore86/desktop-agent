@@ -84,6 +84,9 @@ export interface DocumentTextCacheOptions {
   /** All entries together; the least recently used go first. */
   maxTotalBytes?: number
   maxEntries?: number
+  /** Entries, and their bytes, one eviction may read to find those holding OCR work. */
+  maxEvictionProbes?: number
+  maxEvictionProbeBytes?: number
   /** Wall clock in ms, for least-recently-used order. */
   clock?: () => number
 }
@@ -110,6 +113,14 @@ export const CACHE_LIMITS = {
   maxEntryBytes: 8 * MiB,
   maxTotalBytes: 256 * MiB,
   maxEntries: 5000,
+  /**
+   * What one eviction may read to tell entries found on start apart. A save usually needs one
+   * or two entries gone; 32 entries and 32 MB let it look past a run of OCR entries at the old
+   * end without reading the whole cache (256 MB) when started over the limits. Each entry is
+   * read once: what it held is remembered.
+   */
+  maxEvictionProbes: 32,
+  maxEvictionProbeBytes: 32 * MiB,
   /** Segments and characters accepted when an entry is read back. */
   maxSegments: 200_000,
   maxChars: 4_000_000,
@@ -167,7 +178,15 @@ const OCR_WORK_MARKS = ['"state":"done"', '"state":"failed"'].map((mark) => Buff
 export class DocumentTextCache implements DocumentTextCacheLike {
   private readonly dir: string
   private readonly platform: NodeJS.Platform
-  private readonly limits: { maxEntryBytes: number; maxTotalBytes: number; maxEntries: number }
+  private readonly limits: {
+    maxEntryBytes: number
+    maxTotalBytes: number
+    maxEntries: number
+    maxEvictionProbes: number
+    maxEvictionProbeBytes: number
+  }
+  /** Entries read to see whether they hold OCR work, in all (tests, diagnostics). */
+  private probed = 0
   private readonly clock: () => number
   private readonly index = new Map<string, Indexed>()
   private total = 0
@@ -180,13 +199,15 @@ export class DocumentTextCache implements DocumentTextCacheLike {
       maxEntryBytes: options.maxEntryBytes ?? CACHE_LIMITS.maxEntryBytes,
       maxTotalBytes: options.maxTotalBytes ?? CACHE_LIMITS.maxTotalBytes,
       maxEntries: options.maxEntries ?? CACHE_LIMITS.maxEntries,
+      maxEvictionProbes: options.maxEvictionProbes ?? CACHE_LIMITS.maxEvictionProbes,
+      maxEvictionProbeBytes: options.maxEvictionProbeBytes ?? CACHE_LIMITS.maxEvictionProbeBytes,
     }
     this.clock = options.clock ?? Date.now
   }
 
   /** Bytes and entries held now (tests, diagnostics). */
-  usage(): { bytes: number; entries: number } {
-    return { bytes: this.total, entries: this.index.size }
+  usage(): { bytes: number; entries: number; probed: number } {
+    return { bytes: this.total, entries: this.index.size, probed: this.probed }
   }
 
   /**
@@ -354,15 +375,32 @@ export class DocumentTextCache implements DocumentTextCacheLike {
     const over = () =>
       this.total > this.limits.maxTotalBytes || this.index.size > this.limits.maxEntries
     if (!over()) return
-    for (const [file, held] of this.index) {
-      if (held.ocr === null && file !== keep) held.ocr = await this.holdsOcrWork(file)
-    }
-    const rank = (held: Indexed): number => (held.ocr ? 1 : 0)
     const oldest = [...this.index.entries()]
       .filter(([file]) => file !== keep)
-      .sort((a, b) => rank(a[1]) - rank(b[1]) || a[1].used - b[1].used)
-    for (const [file] of oldest) {
-      if (!over()) break
+      .sort((a, b) => a[1].used - b[1].used)
+    // In LRU order, an entry not known to hold OCR work goes; one that does waits. Entries not
+    // looked at yet (found on start) are looked at only as they come up, within a bound per
+    // pass: past it, they go in plain LRU order, as before this distinction existed.
+    let probes = 0
+    let probedBytes = 0
+    const withOcr: string[] = []
+    for (const [file, held] of oldest) {
+      if (!over()) return
+      if (
+        held.ocr === null &&
+        probes < this.limits.maxEvictionProbes &&
+        probedBytes + held.bytes <= this.limits.maxEvictionProbeBytes
+      ) {
+        probes++
+        probedBytes += held.bytes
+        this.probed++
+        held.ocr = await this.holdsOcrWork(file)
+      }
+      if (held.ocr === true) withOcr.push(file)
+      else await this.drop(file)
+    }
+    for (const file of withOcr) {
+      if (!over()) return
       await this.drop(file)
     }
     if (over()) await this.drop(keep)

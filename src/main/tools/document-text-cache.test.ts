@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GrantStore } from '../permissions/grants'
 import { makeSandbox, put, trySymlink, type Sandbox } from '../permissions/test-support'
 import {
@@ -225,6 +225,66 @@ describe('DocumentTextCache', () => {
     const small = open({ maxEntries: 2 })
     await small.load()
     expect([1n, 2n, 3n].map((ino) => small.has(key({ ino })))).toEqual([true, false, true])
+  })
+
+  /** Writes entries (oldest first, `ocr` saying which hold OCR work) and dates them in that order. */
+  async function onDisk(ocr: boolean[]): Promise<void> {
+    const writer = open()
+    for (const [i, has] of ocr.entries()) {
+      const ino = BigInt(i + 1)
+      await writer.put(key({ ino }), text('x'.repeat(200), has ? { ocr: [goodPage] } : {}), T)
+      const when = new Date(2000 + i, 0, 1)
+      await fs.utimes(path.join(dir, grantId(sb.root), entryName(key({ ino }))), when, when)
+    }
+  }
+  const heldOf = (cache: DocumentTextCache, n: number) =>
+    Array.from({ length: n }, (_, i) => cache.has(key({ ino: BigInt(i + 1) })))
+
+  it('started over the limits, reads at most its bound of entries, and evicts only what it must', async () => {
+    await onDisk(Array.from({ length: 40 }, () => false))
+    const opened = vi.spyOn(fs, 'open')
+    try {
+      const cache = open({ maxEntries: 5, maxEvictionProbes: 4 })
+      await cache.load()
+      // 35 had to go; only 4 were read to look for OCR work, not all 40.
+      expect(opened).toHaveBeenCalledTimes(4)
+      expect(cache.usage()).toMatchObject({ entries: 5, probed: 4 })
+      expect(heldOf(cache, 40)).toEqual([
+        ...Array<boolean>(35).fill(false),
+        ...Array<boolean>(5).fill(true),
+      ])
+    } finally {
+      opened.mockRestore()
+    }
+  })
+
+  it('stops reading once enough entries without OCR work have gone', async () => {
+    // Oldest first: two with OCR work, then three without; two must go.
+    await onDisk([true, true, false, false, false])
+    const cache = open({ maxEntries: 3, maxEvictionProbes: 10 })
+    await cache.load()
+    expect(heldOf(cache, 5)).toEqual([true, true, false, false, true])
+    // The two with OCR work, then the two that went: the newest was never read.
+    expect(cache.usage().probed).toBe(4)
+  })
+
+  it('past its bound, evicts the entries it has not read in plain LRU order', async () => {
+    await onDisk([true, true, true, false, false])
+    const cache = open({ maxEntries: 3, maxEvictionProbes: 2 })
+    await cache.load()
+    // 1 and 2 were read and kept; 3 and 4 could not be read and went, in LRU order.
+    expect(heldOf(cache, 5)).toEqual([true, true, false, false, true])
+    expect(cache.usage().probed).toBe(2)
+  })
+
+  it('holds the bytes it reads to its bound too', async () => {
+    await onDisk([true, true, true, false])
+    const one = open({ dir: path.join(sb.base, 'probe') })
+    await one.put(key(), text('x'.repeat(200), { ocr: [goodPage] }), T)
+    const cache = open({ maxEntries: 3, maxEvictionProbeBytes: one.usage().bytes })
+    await cache.load()
+    expect(cache.usage().probed).toBe(1)
+    expect(heldOf(cache, 4)).toEqual([true, false, true, true])
   })
 
   it('deletes a grant’s folder when it is forgotten, and leaves the others', async () => {
