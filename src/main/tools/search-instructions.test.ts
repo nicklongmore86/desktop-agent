@@ -5,6 +5,7 @@ import { OcrError } from '../documents/system-ocr'
 import type { DocumentReader } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
 import { DocumentTextCache } from './document-text-cache'
+import { ocrProgress } from './search-files'
 import { toolHarness, type ToolHarness } from './test-support'
 
 /**
@@ -43,6 +44,23 @@ describe('search guidance', () => {
     ['picking pages', 'Read the likely scanned pages with read_document, picking a few'],
     ['next step', 'offer that as the next step'],
     ['hit limits', 'A limit on the matches shown says nothing about which files were checked'],
+    [
+      'cursor needs the same terms',
+      'A cursor only works with exactly the same arguments and terms',
+    ],
+    ['changing terms', 'to change the terms, start a new search (OCR already done is kept)'],
+    ['long OCR', 'keep continuing with the cursor while each call'],
+    [
+      'stopping long OCR',
+      'clearly will not fit in this reply, stop and give the user what was found',
+    ],
+    ['unread list', 'the scanned PDFs still waiting for OCR as the result lists them'],
+    ['options', 'continue in another message (pages already read are kept), narrow the search'],
+    ['reading files', 'or read specific files with read_document'],
+    [
+      'no absence with OCR left',
+      'Never say something is absent while scanned pages are still unread',
+    ],
   ])('covers %s', (_topic, phrase) => {
     expect(DEFAULT_SYSTEM_PROMPT).toContain(phrase)
   })
@@ -171,6 +189,15 @@ describe('search guidance', () => {
     expect(result).toContain('not proof the words are absent')
     expect(DEFAULT_SYSTEM_PROMPT).toContain('not proof the words are absent')
     expect(result).toContain('ask the user before doing many')
+  })
+
+  it('quotes the words of the OCR progress line and the list of PDFs waiting for OCR', () => {
+    expect(ocrProgress(200, 180_000, 2400, false)).toMatch(/^OCR progress: .* estimate/i)
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('"OCR progress" line')
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('its estimate')
+    // The list's title (search-ocr.test.ts runs it) and its order, as the guidance names them.
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('waiting for OCR')
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('names with a searched word first')
   })
 
   it('tells the truth about flexible matching: spaces, hyphens and line breaks', async () => {

@@ -178,6 +178,55 @@ describe('DocumentTextCache', () => {
     expect(await filesUnder(dir)).toHaveLength(2)
   })
 
+  it('evicts entries without OCR results before those with, still within the limits', async () => {
+    let now = 1_000_000
+    const cache = open({ maxEntries: 3, clock: () => (now += 1000) })
+    const failedPage: OcrPage = { ...goodPage, state: 'failed', text: '', failure: 'timeout' }
+    const pendingPage: OcrPage = { ...goodPage, state: 'pending', text: '' }
+    // Oldest first: OCR read, OCR gave up, OCR not started, then plain text (whose words look
+    // like an OCR field but are only text).
+    await cache.put(key({ ino: 1n }), text('a', { ocr: [goodPage] }), T)
+    await cache.put(key({ ino: 2n }), text('b', { ocr: [failedPage] }), T)
+    await cache.put(key({ ino: 3n }), text('c', { ocr: [pendingPage] }), T)
+    await cache.put(key({ ino: 4n }), text('"state":"done"'), T)
+    const held = () => [1n, 2n, 3n, 4n, 5n].map((ino) => cache.has(key({ ino })))
+    // The least recently used without OCR work goes, not the older ones with it.
+    expect(held()).toEqual([true, true, false, true, false])
+    await cache.put(key({ ino: 5n }), text('e'), T)
+    expect(held()).toEqual([true, true, false, false, true])
+    // Then, with only OCR entries left to take, the least recently used of them goes.
+    await cache.put(key({ ino: 6n }), text('f', { ocr: [goodPage] }), T)
+    expect(cache.has(key({ ino: 5n }))).toBe(false)
+    await cache.put(key({ ino: 7n }), text('g', { ocr: [goodPage] }), T)
+    expect(cache.usage().entries).toBe(3)
+    expect([1n, 2n, 6n, 7n].map((ino) => cache.has(key({ ino })))).toEqual([
+      false,
+      true,
+      true,
+      true,
+    ])
+  })
+
+  it('on load, looks inside the entries it finds to keep those with OCR results', async () => {
+    let now = 1_000_000
+    const big = open({ clock: () => (now += 1000) })
+    await big.put(key({ ino: 1n }), text('x'.repeat(1000), { ocr: [goodPage] }), T)
+    await big.put(key({ ino: 2n }), text('x'.repeat(1000)), T)
+    await big.put(key({ ino: 3n }), text('x'.repeat(1000)), T)
+    // On disk, the OCR entry is the least recently used, then 2, then 3.
+    for (const [ino, year] of [
+      [1n, 2000],
+      [2n, 2001],
+      [3n, 2002],
+    ] as const) {
+      const when = new Date(year, 0, 1)
+      await fs.utimes(path.join(dir, grantId(sb.root), entryName(key({ ino }))), when, when)
+    }
+    const small = open({ maxEntries: 2 })
+    await small.load()
+    expect([1n, 2n, 3n].map((ino) => small.has(key({ ino })))).toEqual([true, false, true])
+  })
+
   it('deletes a grant’s folder when it is forgotten, and leaves the others', async () => {
     const other = path.join(sb.base, 'other')
     await fs.mkdir(other)

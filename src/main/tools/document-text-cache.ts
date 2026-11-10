@@ -143,7 +143,20 @@ interface Indexed {
   grant: string
   bytes: number
   used: number
+  /**
+   * Whether it holds OCR results (a page done or failed): slow to make again, so it is evicted
+   * after every entry without. Null until known: entries found on start are looked at only
+   * when something has to be evicted.
+   */
+  ocr: boolean | null
 }
+
+/** Whether a text holds OCR work: a page OCR read or gave up on. */
+export const hasOcrWork = (value: CachedText): boolean =>
+  value.ocr.some((page) => page.state !== 'pending')
+
+// In what put() writes, a quote inside a string is always escaped, so these only match a field.
+const OCR_WORK_MARKS = ['"state":"done"', '"state":"failed"'].map((mark) => Buffer.from(mark))
 
 /**
  * The cache of extracted document text. Entries are JSON files named by a hash of their
@@ -210,6 +223,7 @@ export class DocumentTextCache implements DocumentTextCacheLike {
       return null
     }
     held.used = this.clock()
+    held.ocr = hasOcrWork(value)
     const when = new Date(held.used)
     await fs.utimes(file, when, when).catch(() => undefined)
     return value
@@ -264,7 +278,7 @@ export class DocumentTextCache implements DocumentTextCacheLike {
     }
     const before = this.index.get(file)
     if (before) this.total -= before.bytes
-    this.index.set(file, { grant, bytes: data.length, used: this.clock() })
+    this.index.set(file, { grant, bytes: data.length, used: this.clock(), ocr: hasOcrWork(value) })
     this.total += data.length
     await this.evict(file)
     return this.index.has(file)
@@ -332,19 +346,36 @@ export class DocumentTextCache implements DocumentTextCacheLike {
     await fs.rm(file, { force: true }).catch(() => undefined)
   }
 
-  /** Removes the least recently used entries (never `keep` unless it alone is too much). */
+  /**
+   * Removes entries until within the limits: those without OCR results first, then those
+   * with, least recently used first in each (never `keep` unless it alone is too much).
+   */
   private async evict(keep: string): Promise<void> {
     const over = () =>
       this.total > this.limits.maxTotalBytes || this.index.size > this.limits.maxEntries
     if (!over()) return
+    for (const [file, held] of this.index) {
+      if (held.ocr === null && file !== keep) held.ocr = await this.holdsOcrWork(file)
+    }
+    const rank = (held: Indexed): number => (held.ocr ? 1 : 0)
     const oldest = [...this.index.entries()]
       .filter(([file]) => file !== keep)
-      .sort((a, b) => a[1].used - b[1].used)
+      .sort((a, b) => rank(a[1]) - rank(b[1]) || a[1].used - b[1].used)
     for (const [file] of oldest) {
       if (!over()) break
       await this.drop(file)
     }
     if (over()) await this.drop(keep)
+  }
+
+  /** Whether an entry on disk holds OCR results, without parsing it (an unreadable one: no). */
+  private async holdsOcrWork(file: string): Promise<boolean> {
+    try {
+      const raw = await this.readEntry(file)
+      return OCR_WORK_MARKS.some((mark) => raw.includes(mark))
+    } catch {
+      return false
+    }
   }
 
   private async scan(): Promise<void> {
@@ -378,7 +409,7 @@ export class DocumentTextCache implements DocumentTextCacheLike {
           await fs.rm(file, { recursive: true, force: true })
           continue
         }
-        this.index.set(file, { grant: name, bytes: info.size, used: info.mtimeMs })
+        this.index.set(file, { grant: name, bytes: info.size, used: info.mtimeMs, ocr: null })
         this.total += info.size
       }
     }
