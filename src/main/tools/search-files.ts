@@ -542,6 +542,7 @@ const OCR_OFF_LABEL: Record<OcrOff, string> = {
   unavailable: 'OCR unavailable',
   'no-language': 'no OCR language installed',
   failed: 'OCR failed',
+  'on-battery': 'OCR paused on battery power',
 }
 
 /** Bytes read from a file to see whether it is a PDF, for a sniff that reads nothing else. */

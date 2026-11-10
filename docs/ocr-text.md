@@ -76,7 +76,7 @@ The image comes from a file the agent was allowed to read, so it is untrusted. T
   - long edge 4096 px (under `OcrEngine.MaxImageDimension`, 10000);
   - input at most 16 + 4096 × 4096 × 4 bytes;
   - job memory 64 MiB + 16 bytes per pixel, capped at 256 MiB (the helper refuses anything outside 64 to 256 MiB);
-  - 60 s of CPU, and 60 s wall clock by default (the caller can set its own);
+  - 60 s of CPU, and 60 s wall clock by default (the caller can set its own: search allows 60 s per helper it runs at once);
   - output 1 MiB.
 - **What main sends.** `encodeOcrInput` checks the width, height, format and pixel count, then sends a copy of the pixels behind the header. Main sends nothing else: no path and no file.
 - **Verified before every use.** Before every probe and every recognition, the helper must be a regular file at exactly `resources\helpers\ocr-text.exe`, outside every granted folder, matching the SHA-256 compiled into the app (`verifyPinnedHelper`, the same check as [job-run.exe](job-run.md#integrity-and-fallback)). If the check fails, `probe()` reports `unavailable` with the reason, and `recognize()` rejects with `OcrError('unavailable')` without running anything. OCR has no fallback.

@@ -482,13 +482,29 @@ sideways text reads as scattered characters (`o | 0 | -c`), and upside-down text
 letters, about 40% of them in well-formed words (`90!JJ0 pelW00 peu6!s eseeld`). A page reads well
 with at least 40 letters and digits in well-formed words of three or more (lower case, Capitalised,
 ALL CAPS, numbers, codes like A501; characters in scripts OCR splits apart count one by one), making
-up at least 70% of what came back. A page that falls short is turned in main, on its raw pixels: 90
-and 270 degrees, both always, since one of them is upside down, and 180 if neither read well. The
-reading with the most well-formed characters is kept. A page that reads well costs one helper run,
-a sideways page three, and an upside-down page or a sparse drawing four; a page that never reads
-well is listed as `OCR found little text`. Text at other angles than the page's main one is not
-read. This judgment assumes the Latin-style case rules above, so a page in another script or with
-unusual capitalisation may cost the extra runs, but its best reading is still kept.
+up at least 70% of what came back. Pages are turned in main, on their raw pixels, in as few helper
+runs as will find the right way up (`search-ocr.ts`):
+
+1. A page is first read at the turn the document's last page that read well needed (as it is, for
+   the first), so a run of sideways sheets costs one run a page after the first.
+2. If that falls short and Windows reported a text angle within 15° of a quarter turn, that turn is
+   read next. (Windows usually reports only a small skew, which is ignored.)
+3. Then one probe: the other three turns, each a copy of the page shrunk to 0.6 of its size,
+   stacked in a column with white rows between them (no taller than the helper's 4096 px, so a big
+   sheet takes two runs), read in one run and each scored by the lines whose boxes fall inside it.
+4. The turn the probe found best is read at full size when its copy read well (24 characters in
+   well-formed words, at that size) or found more words than the page has so far. If the full-size
+   reading still falls short of a copy that read well, the probe misled, and the turns left are read
+   at full size as before probes: 90 and 270 both, since one of them is upside down, and 180 if
+   neither read well.
+   The full-size reading with the most well-formed characters is kept; a probe's text never is. A page
+   that reads well costs one helper run, a sideways or upside-down page three (one, after a page
+   that needed the same turn), and a sparse drawing two, or three when the probe finds it reads better
+   turned; a page that never reads well is listed as `OCR found little text`. The probe's smaller copy
+   can miss text too small to read at 0.6 of the size; that only matters on a page whose own reading
+   falls short, and only when the turn that would read it is not the best in the probe. Text at other angles than the page's main one is not
+   read. This judgment assumes the Latin-style case rules above, so a page in another script or with
+   unusual capitalisation may cost the extra runs, but its best reading is still kept.
 
 **Cache.** Format 2 replaced `scanned` and `blankPages` with `ocr`: per page, why it needs OCR,
 the long edge, its state (`pending`, `done` or `failed`), what was read, whether little was, and
@@ -504,8 +520,17 @@ stays until the file changes, even if another language is installed later.
 **Time, and what a call reports.** Plain text and text layers come first, and while any of that
 waits for a later call OCR gets no time. Then each PDF with scanned pages in path order: every
 page job is a background job, so a `read_document` waits behind one page at most, and the helper
-runs outside the reader. Each helper run gets what is left of the search's time, at most 60 s.
-Stop aborts the job's wait and kills the helper at once.
+runs outside the reader. The pages of a document go through a bounded pipeline: the reader renders
+the next page while a helper reads the last (still one job at a time), at most two rendered pages
+are held in main, and up to two helpers (half the logical processors, one on a PC with fewer than
+four) read pages side by side, below normal priority (`BELOW_NORMAL_PRIORITY_CLASS`, set by main on
+its own child; the helper's Job Object sets no priority limit). Pages may finish out of order and
+are kept as each finishes. Each helper run gets what is left of the search's time, at most 60 s per
+helper running at once (120 s with two, so sharing the processors does not trip it); the helper's
+own 60 s CPU limit is unchanged. While the PC runs on battery (Electron's `powerMonitor`), no new
+page is started: pages being read finish, and the rest stay pending, listed as `OCR paused on
+battery power` with a note to plug in and search again. Stop, a removed grant, the deadline or OCR
+failing kills every helper of the call at once.
 
 A file is reported whole, once. Until all of a PDF's scanned pages are read it is `held`: named
 in `Scanned PDFs waiting for OCR`, its text matches with it, not counted. Other files are not
@@ -652,7 +677,8 @@ part, 10,000 cells per call, a 20 x 30 preview per sheet, 200 sheets listed.
   `search-ocr-cloud.test.ts` (cloud-only files at the walk and at the handle),
   `src/main/documents/pdf-pages.test.ts` (layouts and rasters from real PDFium) and `reply.test.ts`.
   `search-ocr-real.test.ts` runs the real helper on Windows (an image-only PDF, a stamp, sideways
-  pages both ways and by `/Rotate`, the cache, Stop, a grant going mid-page, a timed run), and
+  pages both ways and by `/Rotate`, the cache, Stop, a grant going mid-page, a timed run, and a
+  16-page noisy RFI set of mixed orientation with sketches, timed with one helper and with two), and
   `e2e/read-document.spec.ts` the whole chain there: sandboxed worker, broker, main and helper.
 - Real Electron (Playwright, `e2e/document-worker.spec.ts`, after `pnpm build`): a PDF
   (text, rendered page, region), a rotated JPEG with EXIF, the 5 MB image cap, the

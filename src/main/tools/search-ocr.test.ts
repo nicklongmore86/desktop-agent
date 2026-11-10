@@ -14,6 +14,7 @@ import {
   type OcrErrorCode,
   type OcrImage,
   type OcrResult,
+  type RecognizeOptions,
   type RunOcr,
   type SystemOcr,
 } from '../documents/system-ocr'
@@ -36,7 +37,17 @@ import type { ToolDeps } from './deps'
 import { DocumentTextCache, type CachedText, type OcrPage } from './document-text-cache'
 import { ocrReason } from './search-documents'
 import { MAX_FILES_LISTED, SCANNED_TITLE } from './search-files'
-import { inkShare, readingScore, readsWell, turnGray } from './search-ocr'
+import {
+  inkShare,
+  OCR_ON_BATTERY,
+  probeColumn,
+  probeRuns,
+  readingScore,
+  readsWell,
+  shrinkGray,
+  turnFromAngle,
+  turnGray,
+} from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
 
 // These tests write and walk up to hundreds of real files, so most of their time is disk and
@@ -92,15 +103,94 @@ const parseDoc = (bytes: Uint8Array): PageSpec[] =>
   JSON.parse(Buffer.from(bytes).toString('utf8').split('\n')[1] ?? '[]') as PageSpec[]
 const scan = (...lines: string[]): PageSpec => ({ ocr: lines.length ? lines : [SENTENCE] })
 
-/** 4 by 8 grey pixels, all different, with ink: the first of them says how it was turned. */
-const inked = (): Uint8Array => new Uint8Array(32).map((_, i) => i * 8)
-const TURN_OF_FIRST_PIXEL: Record<number, number> = { 0: 0, 224: 90, 248: 180, 24: 270 }
+/**
+ * A scripted page's raster: 20 by 30 pixels of one grey, its code, which names the page it is
+ * of (so pages read side by side are told apart), with a black 8 by 8 mark in its top-left
+ * corner, which says how far an image of it was turned. Blank pages are white. White is never
+ * a code: the fake OCR finds the copies a probe stacks by the white rows between them.
+ */
+const RASTER_WIDTH = 20
+const RASTER_HEIGHT = 30
+const MARK = 8
+function marked(code: number): Uint8Array {
+  const pixels = new Uint8Array(RASTER_WIDTH * RASTER_HEIGHT).fill(code)
+  for (let y = 0; y < MARK; y++) pixels.fill(0, y * RASTER_WIDTH, y * RASTER_WIDTH + MARK)
+  return pixels
+}
+
+/** A copy of a page in an image the fake OCR was given: where it is, and how it was turned. */
+interface Tile {
+  code: number
+  turn: number
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/** The copies of pages in an image: runs of rows with anything not white, then their columns. */
+function tilesOf(image: OcrImage): Tile[] {
+  const { width, height, pixels } = image
+  const at = (x: number, y: number): number => pixels[y * width + x] ?? 255
+  const inked = (y: number): boolean => {
+    for (let x = 0; x < width; x++) if (at(x, y) !== 255) return true
+    return false
+  }
+  const tiles: Tile[] = []
+  for (let y = 0; y < height; y++) {
+    if (!inked(y)) continue
+    const top = y
+    while (y < height && inked(y)) y++
+    const rows = y - top
+    let right = 0
+    for (let ty = top; ty < top + rows; ty++) {
+      for (let x = 0; x < width; x++) if (at(x, ty) !== 255) right = Math.max(right, x + 1)
+    }
+    const counts = new Map<number, number>()
+    for (let ty = top; ty < top + rows; ty++) {
+      for (let x = 0; x < right; x++) counts.set(at(x, ty), (counts.get(at(x, ty)) ?? 0) + 1)
+    }
+    const code = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 255
+    const size = Math.max(1, Math.floor(Math.min(right, rows) / 5))
+    const corner = (x0: number, y0: number): number => {
+      let sum = 0
+      for (let dy = 0; dy < size; dy++)
+        for (let dx = 0; dx < size; dx++) sum += at(x0 + dx, y0 + dy)
+      return sum
+    }
+    const corners: [number, number][] = [
+      [0, corner(0, top)],
+      [90, corner(right - size, top)],
+      [180, corner(right - size, top + rows - size)],
+      [270, corner(0, top + rows - size)],
+    ]
+    const turn = corners.sort((a, b) => a[1] - b[1])[0]?.[0] ?? 0
+    tiles.push({ code, turn, left: 0, top, width: right, height: rows })
+  }
+  return tiles
+}
+
+/** An answer with each copy's lines inside it, as the real helper boxes them. */
+const answerTiles = (image: OcrImage, read: (tile: Tile) => string[]): OcrResult => ({
+  language: 'en-US',
+  angle: null,
+  width: image.width,
+  height: image.height,
+  lines: tilesOf(image).flatMap((tile) =>
+    read(tile).map((text) => ({
+      text,
+      box: { x: tile.left, y: tile.top, width: 1, height: 1 },
+    })),
+  ),
+  truncated: false,
+  stats: { ms: 1, peakBytes: 1 },
+})
 
 interface ScriptedReader extends DocumentReader {
   /** Every call: the file and what it asked for. */
   calls: (ExtractOptions & { background: boolean })[]
-  /** The page the last raster was of, which the fake OCR "reads". */
-  current: { name: string; spec: PageSpec; page: number } | null
+  /** The page each raster's code names, which the fake OCR "reads". */
+  rendered: Map<number, { name: string; spec: PageSpec; page: number }>
   /** Jobs in the reader at once: never above 1 for a search. */
   most: number
   beforeRaster?: (page: number, name: string) => void | Promise<void>
@@ -111,7 +201,7 @@ function scriptedReader(): ScriptedReader {
   let inFlight = 0
   const reader: ScriptedReader = {
     calls: [],
-    current: null,
+    rendered: new Map(),
     most: 0,
     async extract(bytes, options = {}, control: ExtractControl = {}) {
       reader.calls.push({ ...options, background: control.background === true })
@@ -130,17 +220,21 @@ function scriptedReader(): ScriptedReader {
         if (options.view === 'raster') {
           const page = options.select?.from ?? 1
           await reader.beforeRaster?.(page, name)
-          reader.current = { name, spec: specs[page - 1] ?? {}, page }
           const spec = specs[page - 1]
+          // Codes 64 to 254, round and round: far more than are ever held at once.
+          const code = 64 + (reader.rendered.size % 191)
+          reader.rendered.set(code, { name, spec: spec ?? {}, page })
           return {
             ...base,
             sections: [],
             rasters: [
               {
                 page,
-                width: 4,
-                height: 8,
-                pixels: spec?.blank ? new Uint8Array(32).fill(255) : inked(),
+                width: RASTER_WIDTH,
+                height: RASTER_HEIGHT,
+                pixels: spec?.blank
+                  ? new Uint8Array(RASTER_WIDTH * RASTER_HEIGHT).fill(255)
+                  : marked(code),
               },
             ],
             position: {
@@ -185,9 +279,18 @@ function scriptedReader(): ScriptedReader {
 }
 
 interface FakeOcr extends SystemOcr {
-  runs: { name: string; page: number; width: number; height: number; format: string }[]
+  runs: {
+    name: string
+    page: number
+    width: number
+    height: number
+    format: string
+    /** Copies of the page in the image: more than one in a probe. */
+    tiles: number
+  }[]
   probes: { refresh: boolean }[]
   signals: AbortSignal[]
+  options: RecognizeOptions[]
   before?: (page: number) => void | Promise<void>
 }
 
@@ -204,11 +307,10 @@ const answer = (image: OcrImage, lines: string[]): OcrResult => ({
   stats: { ms: 1, peakBytes: 1 },
 })
 
-/** Whether the image is turned as far as the page needs to read. */
-const readable = (image: OcrImage, spec: PageSpec): boolean =>
-  spec.turned === undefined || TURN_OF_FIRST_PIXEL[image.pixels[0] ?? -1] === spec.turned
+/** Whether a copy is turned as far as the page needs to read. */
+const readable = (tile: Tile, spec: PageSpec): boolean => tile.turn === (spec.turned ?? 0)
 
-/** A fake OCR that reads what the page the reader last rendered says it holds. */
+/** A fake OCR that reads what the pages in an image say they hold, each copy turned its way. */
 function fakeOcr(
   reader: ScriptedReader,
   availability: OcrAvailability = { available: true, languages: ['en-US'], userLanguage: 'en-US' },
@@ -217,24 +319,32 @@ function fakeOcr(
     runs: [],
     probes: [],
     signals: [],
+    options: [],
     probe(options) {
       ocr.probes.push({ refresh: options?.refresh === true })
       return Promise.resolve(availability)
     },
     async recognize(image, options = {}) {
-      const current = reader.current
-      if (!current) throw new Error('nothing was rendered')
+      const tiles = tilesOf(image)
+      const first = reader.rendered.get(tiles[0]?.code ?? -1)
+      if (!first) throw new Error('nothing was rendered')
       if (options.signal) ocr.signals.push(options.signal)
+      ocr.options.push(options)
       ocr.runs.push({
-        name: current.name,
-        page: current.page,
+        name: first.name,
+        page: first.page,
         width: image.width,
         height: image.height,
         format: image.format,
+        tiles: tiles.length,
       })
-      await ocr.before?.(current.page)
-      if (current.spec.fails) throw new OcrError(current.spec.fails, 'failed here')
-      return answer(image, readable(image, current.spec) ? (current.spec.ocr ?? []) : ['l', '|'])
+      await ocr.before?.(first.page)
+      if (options.signal?.aborted) throw new OcrError('cancelled', 'cancelled')
+      if (first.spec.fails) throw new OcrError(first.spec.fails, 'failed here')
+      return answerTiles(image, (tile) => {
+        const spec = reader.rendered.get(tile.code)?.spec ?? {}
+        return readable(tile, spec) ? (spec.ocr ?? []) : ['l', '|']
+      })
     },
     cancelAll: () => undefined,
   }
@@ -434,6 +544,69 @@ describe('helpers', () => {
     '60p Azel sdwn( I-IMOJq MO!nb',
   ]
   const SIDEWAYS = ['o', '0', '0', 'o', '-4', '0', 'oo', 'o', '00', '3', 'O', 'c', '><', '3']
+
+  it('shrinks a grey image by averaging what each pixel covers', () => {
+    const image: OcrImage = {
+      width: 4,
+      height: 2,
+      format: 'gray8',
+      pixels: new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]),
+    }
+    expect(shrinkGray(image, 1)).toBe(image)
+    const half = shrinkGray(image, 0.5)
+    expect(half).toMatchObject({ width: 2, height: 1, format: 'gray8' })
+    expect([...half.pixels]).toEqual([35, 55])
+    const even = shrinkGray(
+      { ...image, width: 5, height: 5, pixels: new Uint8Array(25).fill(9) },
+      0.6,
+    )
+    expect(even).toMatchObject({ width: 3, height: 3 })
+    expect([...even.pixels]).toEqual(new Array(9).fill(9))
+  })
+
+  it('stacks turned copies of a page, white between them, for one probe', () => {
+    const page: OcrImage = {
+      width: 2,
+      height: 3,
+      format: 'gray8',
+      pixels: new Uint8Array([1, 2, 3, 4, 5, 6]),
+    }
+    const { image, tiles } = probeColumn(page, [90, 270, 180])
+    expect(image).toMatchObject({ width: 3, height: 2 + 2 + 3 + 2 * 24, format: 'gray8' })
+    expect(tiles).toEqual([
+      { turn: 90, top: 0, height: 2 },
+      { turn: 270, top: 26, height: 2 },
+      { turn: 180, top: 52, height: 3 },
+    ])
+    const row = (y: number) => [...image.pixels.subarray(y * 3, y * 3 + 3)]
+    expect(row(0)).toEqual([5, 3, 1])
+    expect(row(2)).toEqual([255, 255, 255])
+    expect(row(26)).toEqual([2, 4, 6])
+    expect(row(52)).toEqual([6, 5, 255])
+  })
+
+  it('probes a page in one run, and a big sheet in two, never past the helper’s edge', () => {
+    expect(probeRuns({ width: 1700, height: 2200 }, [90, 270, 180])).toEqual([[90, 270, 180]])
+    expect(probeRuns({ width: 3300, height: 2333 }, [90, 270, 180])).toEqual([[90, 270], [180]])
+    expect(probeRuns({ width: 2333, height: 3300 }, [0, 90, 180])).toEqual([[0, 90], [180]])
+    expect(probeRuns({ width: 1700, height: 2200 }, [])).toEqual([])
+  })
+
+  it('takes a reported text angle for a quarter turn only when it is one', () => {
+    expect([null, 0, 0.5, -3, 12, 45, -40, Number.NaN].map(turnFromAngle)).toEqual(
+      new Array(8).fill(null),
+    )
+    expect([90, 88, -90, 180, -178, 270, -270, 360].map(turnFromAngle)).toEqual([
+      270,
+      270,
+      90,
+      180,
+      180,
+      90,
+      270,
+      null,
+    ])
+  })
 
   it('tells a page the right way up from the same page turned', () => {
     expect(readsWell(readingScore(UPRIGHT))).toBe(true)
@@ -814,7 +987,7 @@ describe('search_files OCR of a page past the object limit', () => {
   it('tries no more turns on it than on any other page', async () => {
     await put(path.join(sb.root, 'plan.pdf'), doc(capped('A-101 NORTH', 'KIT HEN')))
     await search({ contentPattern: 'kit hen', context: 0 })
-    expect(ocr.runs).toHaveLength(4)
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 3])
     expect((await ocrOf('plan.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: true })
   })
 
@@ -836,6 +1009,23 @@ describe('search_files OCR of a page past the object limit', () => {
 })
 
 describe('search_files OCR of sideways pages', () => {
+  /** A fake OCR that reads each copy in an image by how far it was turned. */
+  const byTurn = (read: (turn: number, tiles: number) => string[]): FakeOcr => ({
+    ...ocr,
+    recognize: (image) => {
+      const tiles = tilesOf(image)
+      ocr.runs.push({
+        name: '',
+        page: 1,
+        width: image.width,
+        height: image.height,
+        format: '',
+        tiles: tiles.length,
+      })
+      return Promise.resolve(answerTiles(image, (tile) => read(tile.turn, tiles.length)))
+    },
+  })
+
   it.each([90, 270, 180] as const)(
     'reads a page that only reads turned %i degrees',
     async (turned) => {
@@ -843,8 +1033,13 @@ describe('search_files OCR of sideways pages', () => {
       const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
       expect(r.content).toContain(`side.pdf (page 1, OCR): ${SENTENCE}`)
       expect(r.content).not.toContain('little text')
-      // As it is, then both sideways turns, and the upside-down one only if neither reads.
-      expect(ocr.runs.map((run) => run.width)).toEqual(turned === 180 ? [4, 8, 8, 4] : [4, 8, 8])
+      // As it is; then one probe of the other three turns, shrunk and stacked; then the
+      // turn that read, at full size.
+      expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 3, 1])
+      expect(ocr.runs[1]).toMatchObject({ width: 18, height: 12 + 12 + 18 + 2 * 24 })
+      expect(ocr.runs[2]).toMatchObject(
+        turned === 180 ? { width: 20, height: 30 } : { width: 30, height: 20 },
+      )
       expect((await ocrOf('side.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: false })
     },
   )
@@ -865,19 +1060,10 @@ describe('search_files OCR of sideways pages', () => {
       270: ['-c'],
       180: lines,
     }
-    h = harness({
-      ocr: {
-        ...ocr,
-        recognize: (image) => {
-          ocr.runs.push({ name: '', page: 1, width: image.width, height: image.height, format: '' })
-          const turn = TURN_OF_FIRST_PIXEL[image.pixels[0] ?? -1] ?? -1
-          return Promise.resolve(answer(image, readings[turn] ?? []))
-        },
-      },
-    })
+    h = harness({ ocr: byTurn((turn) => readings[turn] ?? []) })
     const r = await search({ contentPattern: 'invoice number 48213', context: 0 })
     expect(r.content).toContain('flipped.pdf (page 1, OCR): Invoice number 48213')
-    expect(ocr.runs).toHaveLength(4)
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 3, 1])
     expect((await ocrOf('flipped.pdf'))?.ocr[0]?.low).toBe(false)
   })
 
@@ -888,19 +1074,78 @@ describe('search_files OCR of sideways pages', () => {
     const truth = `${SENTENCE} ${SENTENCE}`
     await put(path.join(sb.root, 'side.pdf'), doc(scan(truth)))
     const readings: Record<number, string[]> = { 0: ['l', '|'], 90: [garbage], 270: [truth] }
+    h = harness({ ocr: byTurn((turn) => readings[turn] ?? []) })
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    expect(r.content).toContain(`side.pdf (page 1, OCR): ${truth}`)
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 3, 1])
+  })
+
+  it('reads every turn at full size when the probe misled it, as before probes', async () => {
+    const truth = `${SENTENCE} ${SENTENCE}`
+    await put(path.join(sb.root, 'side.pdf'), doc(scan(truth)))
+    // Shrunk, 90 looks best; at full size only 270 reads.
+    h = harness({
+      ocr: byTurn((turn, tiles) =>
+        tiles > 1 ? (turn === 90 ? [truth] : ['l']) : turn === 270 ? [truth] : ['l', '|'],
+      ),
+    })
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    expect(r.content).toContain(`side.pdf (page 1, OCR): ${truth}`)
+    // As it is, the probe, 90 at full size, then 270; 180 is left as 270 read well.
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 3, 1, 1])
+    expect(ocr.runs.at(-1)).toMatchObject({ width: 30, height: 20 })
+  })
+
+  it('tries the turn Windows’ reported text angle points to before probing', async () => {
+    await put(path.join(sb.root, 'side.pdf'), doc({ ...scan(), turned: 270 }))
     h = harness({
       ocr: {
         ...ocr,
-        recognize: (image) => {
-          ocr.runs.push({ name: '', page: 1, width: image.width, height: image.height, format: '' })
-          const turn = TURN_OF_FIRST_PIXEL[image.pixels[0] ?? -1] ?? -1
-          return Promise.resolve(answer(image, readings[turn] ?? []))
+        recognize: async (image, options) => {
+          const result = await ocr.recognize(image, options)
+          // Text turned a quarter clockwise, as it is: turning it back is 270.
+          return ocr.runs.length === 1 ? { ...result, angle: 88.5 } : result
         },
       },
     })
     const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
-    expect(r.content).toContain('side.pdf (page 1, OCR)')
-    expect(ocr.runs).toHaveLength(3)
+    expect(r.content).toContain(`side.pdf (page 1, OCR): ${SENTENCE}`)
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 1])
+  })
+
+  it('tries the turn an earlier page needed first, and still reads pages that differ', async () => {
+    await put(
+      path.join(sb.root, 'set.pdf'),
+      doc(
+        { ...scan(), turned: 90 },
+        { ...scan(), turned: 90 },
+        { ...scan(), turned: 90 },
+        scan(),
+        scan(),
+        { ...scan(), turned: 270 },
+      ),
+    )
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0, maxPerFile: 10 })
+    for (const page of [1, 2, 3, 4, 5, 6]) {
+      expect(r.content).toContain(`set.pdf (page ${String(page)}, OCR): ${SENTENCE}`)
+    }
+    // Page 1 finds 90; pages 2 and 3 read at 90 at once; page 4 is upright again, found by a
+    // probe, and page 5 reads as it is; page 6 needs its own probe.
+    expect(ocr.runs.map((run) => `${String(run.page)}:${String(run.tiles)}`)).toEqual([
+      '1:1',
+      '1:3',
+      '1:1',
+      '2:1',
+      '3:1',
+      '4:1',
+      '4:3',
+      '4:1',
+      '5:1',
+      '6:1',
+      '6:3',
+      '6:1',
+    ])
+    expect(auditExtra()).toMatchObject({ ocrPagesRead: 6, ocrHelperRuns: 12 })
   })
 
   it('turns nothing when a page reads well as it is', async () => {
@@ -909,15 +1154,27 @@ describe('search_files OCR of sideways pages', () => {
     expect(ocr.runs).toHaveLength(1)
   })
 
-  it('tries at most three turns on a page that never reads well, and says so', async () => {
+  it('probes the other turns once on a page that never reads well, and says so', async () => {
     await put(path.join(sb.root, 'plan.pdf'), doc(scan('A-101 NORTH', 'KIT HEN')))
     const r = await search({ contentPattern: 'kit hen', context: 0 })
-    expect(ocr.runs).toHaveLength(4)
+    // Nothing turned reads more than it does as it is: no full-size turn is needed.
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 3])
     expect(r.content).toContain('plan.pdf (page 1, OCR): KIT HEN')
     expect(r.content).toContain('  plan.pdf (OCR found little text on 1 of 1 scanned page)')
     expect(r.content).toContain('1 with little text found')
     expect(r.content).toContain('Every file was checked: 1 match in 1 file;')
     expect((await ocrOf('plan.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: true })
+  })
+
+  it('reads a sparse page at the turn a probe finds more words at', async () => {
+    await put(
+      path.join(sb.root, 'sketch.pdf'),
+      doc({ ...scan('SK-12 EMBED PLATE', 'SCALE 1:20'), turned: 90 }),
+    )
+    const r = await search({ contentPattern: 'embed plate', context: 0 })
+    expect(r.content).toContain('sketch.pdf (page 1, OCR): SK-12 EMBED PLATE')
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 3, 1])
+    expect((await ocrOf('sketch.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: true })
   })
 
   it('keeps a page’s reading when a turned copy fails', async () => {
@@ -1518,7 +1775,7 @@ describe('search_files OCR, Stop and the reader', () => {
       ...ocr,
       recognize: (image, options) => {
         if (ocr.runs.length === 0) {
-          ocr.runs.push({ name: '', page: 1, width: 1, height: 1, format: 'gray8' })
+          ocr.runs.push({ name: '', page: 1, width: 1, height: 1, format: 'gray8', tiles: 1 })
           return Promise.resolve(answer(image, [SENTENCE]))
         }
         return new Promise((_resolve, reject) => {
@@ -1563,6 +1820,112 @@ describe('search_files OCR, Stop and the reader', () => {
     expect(r).toEqual({ content: 'Cancelled.', isError: true })
     expect(Date.now() - started).toBeLessThan(3000)
     expect(ocr.runs).toEqual([])
+  })
+
+  it('renders the next page while the helper reads one, and holds two pages at most', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(scan(), scan(), scan(), scan()))
+    const heldWhileReading: number[] = []
+    ocr.before = async (page) => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      heldWhileReading.push(rasters().length - (page - 1))
+    }
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    expect(lines(r.content)[0]).toBe(`4 results in ${sb.root}`)
+    // While page N is read, page N + 1 is rendered and N + 2 is not; the last has no next.
+    expect(heldWhileReading).toEqual([2, 2, 2, 1])
+    expect(reader.most).toBe(1)
+  })
+
+  it('reads pages on two helpers at once, rendering one page at a time', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(...Array.from({ length: 8 }, () => scan())))
+    let reading = 0
+    let most = 0
+    let done = 0
+    let held = 0
+    ocr.before = async () => {
+      reading++
+      most = Math.max(most, reading)
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      held = Math.max(held, rasters().length - done)
+      reading--
+      done++
+    }
+    h = harness({ ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }) })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    expect(lines(r.content)[0]).toBe(`8 results in ${sb.root}`)
+    expect(most).toBe(2)
+    expect(reader.most).toBe(1)
+    // Rendered and not yet read: two pages at most.
+    expect(held).toBeLessThanOrEqual(2)
+    expect(rasters()).toHaveLength(8)
+    expect((await ocrOf('scan.pdf'))?.ocr.every((page) => page.state === 'done')).toBe(true)
+    expect(auditExtra()).toMatchObject({ ocrPagesRead: 8, ocrHelperRuns: 8 })
+    // Two helpers sharing the processors get twice the wall-clock time; all run low.
+    expect(ocr.options.map((options) => options.timeoutMs)).toEqual(new Array(8).fill(120_000))
+    expect(ocr.options.every((options) => options.background === true)).toBe(true)
+  })
+
+  it('kills every helper on Stop, keeping what was read', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(scan(), scan(), scan(), scan()))
+    const controller = new AbortController()
+    let killed = 0
+    let waiting = 0
+    const hanging: SystemOcr = {
+      ...ocr,
+      helpers: 2,
+      recognize: (_image, options) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            killed++
+            reject(new OcrError('cancelled', 'cancelled'))
+          })
+          if (++waiting === 2) controller.abort()
+        }),
+    }
+    h = harness({ ocr: hanging })
+    const started = Date.now()
+    const r = await search({ contentPattern: 'freezer' }, controller.signal)
+    expect(r).toEqual({ content: 'Cancelled.', isError: true })
+    expect(killed).toBe(2)
+    expect(Date.now() - started).toBeLessThan(3000)
+  })
+
+  it('starts no OCR on battery, saying so, and reads the pages once plugged in', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc({ text: 'freezer cover' }, scan(), scan()))
+    let battery = true
+    h = harness({ ocr: Object.assign(Object.create(ocr) as FakeOcr, { onBattery: () => battery }) })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    expect(ocr.runs).toEqual([])
+    expect(rasters()).toEqual([])
+    expect(r.content).toContain('scan.pdf (page 1): freezer cover')
+    expect(r.content).toContain(
+      '  scan.pdf (2 of 2 scanned pages not read: OCR paused on battery power)',
+    )
+    expect(r.content).toContain(OCR_ON_BATTERY)
+    expect((await ocrOf('scan.pdf'))?.ocr.map((page) => page.state)).toEqual(['pending', 'pending'])
+    battery = false
+    const again = await search({ contentPattern: 'freezer', context: 0 })
+    expect(lines(again.content)[0]).toBe(`3 results in ${sb.root}`)
+    expect(again.content).not.toContain('battery')
+  })
+
+  it('finishes the page being read when the PC goes on battery, and starts no other', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(scan(), scan(), scan()))
+    let battery = false
+    ocr.before = async () => {
+      battery = true
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    h = harness({ ocr: Object.assign(Object.create(ocr) as FakeOcr, { onBattery: () => battery }) })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    expect(ocr.runs).toHaveLength(1)
+    expect(lines(r.content)[0]).toBe(`1 result in ${sb.root}`)
+    expect(r.content).toContain('2 of 3 scanned pages not read: OCR paused on battery power')
+    expect((await ocrOf('scan.pdf'))?.ocr.map((page) => page.state)).toEqual([
+      'done',
+      'pending',
+      'pending',
+    ])
   })
 
   it('renders a page per background job, never two at once', async () => {

@@ -2,6 +2,7 @@
 // ocr-text.exe (native/ocr-text): no OCR engine or language data is bundled. See
 // docs/ocr-text.md. search_files calls recognize() for scanned PDF pages (tools/search-ocr.ts).
 import { spawn } from 'node:child_process'
+import { availableParallelism, constants as osConstants, setPriority } from 'node:os'
 import { installedResources, verifyPinnedHelper, type JobLauncher } from '../tools/job-launcher'
 
 /**
@@ -351,12 +352,32 @@ export type RunOcr = (
   file: string,
   args: string[],
   input: Uint8Array | null,
-  limits: { timeoutMs: number; maxOutputBytes: number; signal?: AbortSignal },
+  limits: {
+    timeoutMs: number
+    maxOutputBytes: number
+    signal?: AbortSignal
+    /** Below normal priority, so the user's own work comes first. */
+    lowPriority?: boolean
+  },
 ) => Promise<
   { exitCode: number | null; stdout: Uint8Array; report: string } | { failed: RunFailure }
 >
 
 const MAX_REPORT_BYTES = 4096
+
+/**
+ * Puts a helper this process just started below normal priority (BELOW_NORMAL_PRIORITY_CLASS
+ * on Windows): the parent's handle on its own child, nothing more. The helper's Job Object sets
+ * no priority limit, and lowering its token's integrity does not stop its parent. Best effort:
+ * a helper that already exited, or a system that refuses, runs at normal priority.
+ */
+function lowerPriority(pid: number): void {
+  try {
+    setPriority(pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+  } catch {
+    // Normal priority it is.
+  }
+}
 
 export const runOcrHelper: RunOcr = (file, args, input, limits) =>
   new Promise((resolve) => {
@@ -365,6 +386,7 @@ export const runOcrHelper: RunOcr = (file, args, input, limits) =>
       return
     }
     const child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    if (limits.lowPriority && child.pid !== undefined) lowerPriority(child.pid)
     const out: Buffer[] = []
     let outBytes = 0
     let err = ''
@@ -422,6 +444,8 @@ export interface RecognizeOptions {
   language?: string
   /** Output cap, 1 KiB to 1 MiB (the default); lines past it are dropped, `truncated` set. */
   maxOutputBytes?: number
+  /** Work the user is not waiting on (search): the helper runs below normal priority. */
+  background?: boolean
 }
 
 /** Windows' OCR, outside the app's processes. */
@@ -432,6 +456,10 @@ export interface SystemOcr {
   recognize(image: OcrImage, options?: RecognizeOptions): Promise<OcrResult>
   /** Kills every running recognition (they reject with 'cancelled'). */
   cancelAll(): void
+  /** How many background recognitions may run at once (1 when not said). */
+  readonly helpers?: number
+  /** Whether the PC runs on battery, when no new background recognition should start. */
+  onBattery?(): boolean
 }
 
 export interface SystemOcrOptions {
@@ -440,7 +468,14 @@ export interface SystemOcrOptions {
   findHelper: () => Promise<JobLauncher>
   run?: RunOcr
   probeTimeoutMs?: number
+  /** Background recognitions at once (default 1). */
+  helpers?: number
+  onBattery?: () => boolean
 }
+
+/** Background OCR helpers for a PC with this many logical processors: half of them, 1 or 2. */
+export const ocrHelpersFor = (cores: number): number =>
+  Math.max(1, Math.min(2, Math.floor(cores / 2)))
 
 /** The app's SystemOcr: ocr-text.exe on Windows, 'unsupported' everywhere else. */
 export function createSystemOcr(options: SystemOcrOptions): SystemOcr {
@@ -482,6 +517,9 @@ export function createSystemOcr(options: SystemOcrOptions): SystemOcr {
   }
 
   return {
+    helpers: Math.max(1, Math.floor(options.helpers ?? 1)),
+    onBattery: () => options.onBattery?.() === true,
+
     probe(probeOptions) {
       if (probeOptions?.refresh) probed = null
       probed ??= probeOnce().catch(() => unavailable('checking for it failed'))
@@ -521,7 +559,12 @@ export function createSystemOcr(options: SystemOcrOptions): SystemOcr {
         '--lang',
         language,
       ]
-      const result = await run(helper.path, args, input, { timeoutMs, maxOutputBytes, signal })
+      const result = await run(helper.path, args, input, {
+        timeoutMs,
+        maxOutputBytes,
+        signal,
+        ...(recognizeOptions.background ? { lowPriority: true } : {}),
+      })
       if ('failed' in result) {
         switch (result.failed) {
           case 'cancelled':
@@ -561,13 +604,19 @@ export function createSystemOcr(options: SystemOcrOptions): SystemOcr {
   }
 }
 
-/** The OCR the app uses: the installed, pinned ocr-text.exe, outside granted folders. */
+/**
+ * The OCR the app uses: the installed, pinned ocr-text.exe, outside granted folders. Search
+ * runs up to two at once (half the processors), and none starts while `onBattery`.
+ */
 export function defaultSystemOcr(
   platform: NodeJS.Platform,
   grantedRoots: () => readonly string[],
+  onBattery: () => boolean = () => false,
 ): SystemOcr {
   return createSystemOcr({
     platform,
+    helpers: ocrHelpersFor(availableParallelism()),
+    onBattery,
     findHelper: () =>
       verifyPinnedHelper(
         { resources: installedResources(), sha256: OCR_TEXT_SHA256, grantedRoots, platform },

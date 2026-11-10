@@ -7,6 +7,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  powerMonitor,
   safeStorage,
   session,
   shell,
@@ -74,8 +75,13 @@ void app.whenReady().then(async () => {
   let grantedRoots: () => readonly string[] = () => []
   const heic = defaultSystemHeifDecoder(process.platform, () => grantedRoots())
   // Text in scanned PDF pages for search_files, by Windows' OCR in ocr-text.exe, verified
-  // before every run and first started by a search that finds such pages.
-  const ocr = defaultSystemOcr(process.platform, () => grantedRoots())
+  // before every run and first started by a search that finds such pages. No new page is
+  // started while the PC runs on battery.
+  const ocr = defaultSystemOcr(
+    process.platform,
+    () => grantedRoots(),
+    () => powerMonitor.isOnBatteryPower(),
+  )
   const documents = new DocumentWorkerHost({
     ...documentWorkerPaths(__dirname),
     systemDecoder: heic,
