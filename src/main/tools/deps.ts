@@ -6,6 +6,7 @@ import type { PathGuard } from '../permissions/guard'
 import type { FindJobLauncher } from './job-launcher'
 import type { KillTree, ShellSpawner } from './run-shell'
 import { MAX_TREE_ENTRIES } from './walk'
+import { MAX_REPORTED_KEYS } from './search-cursor'
 import { TREE_KILL_SECONDS } from './shell-windows'
 
 export interface ToolLimits {
@@ -25,6 +26,11 @@ export interface ToolLimits {
    * far it got; calling again continues, documents already read coming from the cache.
    */
   searchTimeMs: number
+  /**
+   * The most PDFs one search_files cursor's reported set holds (PDFs reported out of path
+   * order); once full, scanned PDFs go in path order. Lowered in tests.
+   */
+  maxReportedKeys: number
   /** One pattern match over one file's lines (or a batch of names); a slower pattern ends the search. */
   searchPatternTimeMs: number
   /** Characters of matches (and their context) one search_files result holds; the rest is cut. */
@@ -61,6 +67,7 @@ export const DEFAULT_LIMITS: ToolLimits = {
   maxSearchDepth: 20,
   maxSearchEntries: 50_000,
   searchTimeMs: 3 * 60_000,
+  maxReportedKeys: MAX_REPORTED_KEYS,
   searchPatternTimeMs: 30_000,
   maxSearchOutputChars: 40_000,
   maxSearchDocumentChars: 2_000_000,

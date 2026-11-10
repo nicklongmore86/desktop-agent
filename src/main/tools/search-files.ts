@@ -19,7 +19,6 @@ import {
   decodeCursor,
   encodeCursor,
   MAX_CURSOR_LENGTH,
-  MAX_REPORTED_KEYS,
   orderKey,
   reportedSets,
   positionBefore,
@@ -720,6 +719,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
    * searched): a cursor that only reports such PDFs passes over them, wherever they are.
    */
   const reportedNow = new Set<string>()
+  /** The most keys a reported set may hold (see MAX_REPORTED_KEYS). */
+  const maxReportedKeys = deps.limits.maxReportedKeys
   const contextChars = contextLineChars(input.context)
   const showSnippets = input.output === 'content'
 
@@ -1349,7 +1350,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     docs.scanned = scannedDocs.length
     // Text comes first: while some of it waits for the next call, no time goes to OCR.
     const textWaits = !ocrOnly && (unchecked.key !== null || stopped() !== null)
-    scannedDocs.sort((a, b) => (textWaits ? 0 : a.rank - b.rank) || a.order - b.order)
+    // The reported set is full: no PDF can be passed over by more of it, so PDFs go in path
+    // order, the first that has to wait taking the ones after it along. The cursor then moves
+    // to that one, the keys before it leave the set, and every call moves on.
+    const setFull = carried.size >= maxReportedKeys
+    const pathOrder = textWaits || setFull
+    scannedDocs.sort((a, b) => (pathOrder ? 0 : a.rank - b.rank) || a.order - b.order)
     if (scannedDocs.some((doc) => doc.pending > 0) && !textWaits && holder) {
       await checkOcr()
       if (signal.aborted) {
@@ -1371,11 +1377,13 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         return
       }
       // A stopped search reports nothing more; in path order, nothing after a held PDF; and no
-      // reported set grows past its bound (the PDF waits for a call whose cursor moved on).
+      // reported set grows past its bound (the rest wait, and the next call, its set full if
+      // need be, goes in path order). In path order nothing reported joins the set: it all
+      // comes before the cursor.
       if (
         stopped() !== null ||
-        (textWaits && heldOne.yes) ||
-        carried.size + reportedNow.size >= MAX_REPORTED_KEYS
+        (pathOrder && heldOne.yes) ||
+        (!pathOrder && carried.size + reportedNow.size >= maxReportedKeys)
       ) {
         hold(doc)
         continue

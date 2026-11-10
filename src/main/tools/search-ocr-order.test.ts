@@ -133,8 +133,8 @@ const harness = (budgetMs: number, overrides: Partial<ToolDeps> = {}) =>
     documentCache: cache,
     ocr,
     now: () => clock.now,
-    limits: { searchTimeMs: budgetMs },
     ...overrides,
+    limits: { searchTimeMs: budgetMs, ...overrides.limits },
   })
 
 beforeEach(async () => {
@@ -179,12 +179,17 @@ const reportedFiles = (contents: string[]): string[] =>
  * Every call of a search, following its cursor until it gives none; each call starts a new
  * time budget of `budgetMs`.
  */
-async function follow(input: Record<string, unknown>, budgetMs: number, limit = 60) {
+async function follow(
+  input: Record<string, unknown>,
+  budgetMs: number,
+  limit = 60,
+  overrides: Partial<ToolDeps> = {},
+) {
   const contents: string[] = []
   let cursor: string | null = null
   do {
     clock.now = 0
-    h = harness(budgetMs)
+    h = harness(budgetMs, overrides)
     const r = await search({ ...input, ...(cursor ? { cursor } : {}) })
     expect(r.isError).toBeUndefined()
     contents.push(r.content)
@@ -341,6 +346,44 @@ describe('search_files OCR order', () => {
     expect(again.content).toContain(
       'Every file after the cursor was checked: 0 matches in 0 files.',
     )
+  })
+
+  it('moves on in path order once a cursor carries a full reported set, each file once', async () => {
+    // A set holds two PDFs here. The first call reads the named PDFs late in path order first:
+    // two are reported out of order, filling the set, and the rest wait behind a-00.pdf. A
+    // cursor carrying a full set must still move on, in path order, to the end.
+    const rels = [
+      ...Array.from({ length: 6 }, (_, i) => `a-0${String(i)}.pdf`),
+      'z-duct-1.pdf',
+      'z-duct-2.pdf',
+      'z-duct-3.pdf',
+    ]
+    const matching = ['a-02.pdf', 'z-duct-1.pdf', 'z-duct-2.pdf', 'z-duct-3.pdf']
+    for (const rel of rels) {
+      // Each file its own bytes, so none shares another's cached text.
+      const line = matching.includes(rel)
+        ? 'The supply duct runs along gridline four above the corridor ceiling'
+        : NOISE
+      await put(path.join(sb.root, rel), doc(scan(`${line} (${rel})`)))
+    }
+    const calls = await follow({ contentPattern: 'duct', context: 0, output: 'files' }, 300, 20, {
+      limits: { maxReportedKeys: 2 },
+    })
+    expect(reportedFiles([calls[0] ?? ''])).toEqual(['z-duct-1.pdf', 'z-duct-2.pdf'])
+    // Then path order: the set stays full until the cursor passes the keys it holds.
+    expect(ocrNames()).toEqual([
+      'z-duct-1.pdf',
+      'z-duct-2.pdf',
+      ...rels.slice(0, 6),
+      'z-duct-3.pdf',
+    ])
+    const reported = reportedFiles(calls)
+    expect(new Set(reported).size).toBe(reported.length)
+    expect([...reported].sort(byPath)).toEqual([...matching].sort(byPath))
+    const pages = ocr.runs.map((run) => `${run.name} ${String(run.page)}`)
+    expect(new Set(pages).size).toBe(pages.length)
+    expect(pages).toHaveLength(rels.length)
+    expect(calls.at(-1)).toContain('Every file after the cursor was checked')
   })
 
   it('keeps each file once when the list of a call fills past a held PDF', async () => {
