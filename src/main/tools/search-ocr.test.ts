@@ -45,6 +45,7 @@ import {
   readingScore,
   readsWell,
   shrinkGray,
+  textAxis,
   turnFromAngle,
   turnGray,
 } from './search-ocr'
@@ -84,6 +85,8 @@ interface PageSpec {
   ocr?: string[]
   /** Reads only when turned this far clockwise (a sideways scan). */
   turned?: 90 | 180 | 270
+  /** Rendered as a bigger page with lines of "words" running this way, as stored. */
+  lines?: 'rows' | 'columns'
   /** The helper fails on this page. */
   fails?: OcrErrorCode
   blank?: boolean
@@ -116,6 +119,40 @@ function marked(code: number): Uint8Array {
   const pixels = new Uint8Array(RASTER_WIDTH * RASTER_HEIGHT).fill(code)
   for (let y = 0; y < MARK; y++) pixels.fill(0, y * RASTER_WIDTH, y * RASTER_WIDTH + MARK)
   return pixels
+}
+
+/**
+ * A scripted page big enough for textAxis to see its lines: its code as the paper, lines of
+ * darker "words" running the way it says, and a black mark a fifth of its width in its
+ * top-left corner, which the fake OCR's turn finding sees as it does the small one.
+ */
+const LINED_WIDTH = 480
+const LINED_HEIGHT = 600
+function lined(
+  code: number,
+  run: 'rows' | 'columns',
+): { width: number; height: number; pixels: Uint8Array } {
+  const along = run === 'rows' ? LINED_WIDTH : LINED_HEIGHT
+  const across = run === 'rows' ? LINED_HEIGHT : LINED_WIDTH
+  const pixels = new Uint8Array(LINED_WIDTH * LINED_HEIGHT).fill(code)
+  const ink = (a: number, b: number): void => {
+    const [x, y] = run === 'rows' ? [a, b] : [b, a]
+    pixels[y * LINED_WIDTH + x] = code - 60
+  }
+  const mark = LINED_WIDTH / 5
+  for (let line = mark + 20; line + 12 < across - 20; line += 30) {
+    let at = 20 + ((line * 7) % 23)
+    while (at < along - 40) {
+      const word = 18 + ((at * 13 + line) % 41)
+      for (let a = at; a < at + word; a++) {
+        if ((a - at) % 9 === 8) continue
+        for (let b = line; b < line + 12; b++) ink(a, b)
+      }
+      at += word + 9
+    }
+  }
+  for (let y = 0; y < mark; y++) pixels.fill(0, y * LINED_WIDTH, y * LINED_WIDTH + mark)
+  return { width: LINED_WIDTH, height: LINED_HEIGHT, pixels }
 }
 
 /** A copy of a page in an image the fake OCR was given: where it is, and how it was turned. */
@@ -228,14 +265,16 @@ function scriptedReader(): ScriptedReader {
             ...base,
             sections: [],
             rasters: [
-              {
-                page,
-                width: RASTER_WIDTH,
-                height: RASTER_HEIGHT,
-                pixels: spec?.blank
-                  ? new Uint8Array(RASTER_WIDTH * RASTER_HEIGHT).fill(255)
-                  : marked(code),
-              },
+              spec?.lines
+                ? { page, ...lined(code, spec.lines) }
+                : {
+                    page,
+                    width: RASTER_WIDTH,
+                    height: RASTER_HEIGHT,
+                    pixels: spec?.blank
+                      ? new Uint8Array(RASTER_WIDTH * RASTER_HEIGHT).fill(255)
+                      : marked(code),
+                  },
             ],
             position: {
               unit: 'page',
@@ -606,6 +645,34 @@ describe('helpers', () => {
       270,
       null,
     ])
+  })
+
+  it('tells which way a page’s lines run from its pixels, or says it can’t', () => {
+    const page = (run: 'rows' | 'columns', speckle = 0): OcrImage => {
+      const { width, height, pixels } = lined(200, run)
+      // A scanner's speckle: lone dark pixels, here one in 500.
+      for (let i = 0; i < pixels.length && speckle > 0; i += speckle) pixels[i] = 40
+      return { width, height, format: 'gray8', pixels }
+    }
+    expect(textAxis(page('rows'))).toBe('rows')
+    expect(textAxis(page('columns'))).toBe('columns')
+    expect(textAxis(page('rows', 500))).toBe('rows')
+    expect(textAxis(turnGray(page('rows', 500), 90))).toBe('columns')
+    expect(textAxis(turnGray(page('columns'), 180))).toBe('columns')
+    // Blank paper, a grid of ruled lines both ways, and a page too small to tell.
+    const blank: OcrImage = {
+      width: 480,
+      height: 600,
+      format: 'gray8',
+      pixels: new Uint8Array(480 * 600).fill(230),
+    }
+    expect(textAxis(blank)).toBeNull()
+    const grid = new Uint8Array(480 * 600).fill(230)
+    for (let y = 0; y < 600; y++) {
+      for (let x = 0; x < 480; x++) if (y % 40 < 3 || x % 40 < 3) grid[y * 480 + x] = 20
+    }
+    expect(textAxis({ width: 480, height: 600, format: 'gray8', pixels: grid })).toBeNull()
+    expect(textAxis({ width: 20, height: 30, format: 'gray8', pixels: marked(100) })).toBeNull()
   })
 
   it('tells a page the right way up from the same page turned', () => {
@@ -1146,6 +1213,61 @@ describe('search_files OCR of sideways pages', () => {
       '6:1',
     ])
     expect(auditExtra()).toMatchObject({ ocrPagesRead: 6, ocrHelperRuns: 12 })
+  })
+
+  it('reads a page along the axis its lines run, then the other way up: no probe', async () => {
+    await put(
+      path.join(sb.root, 'set.pdf'),
+      doc(
+        { ...scan(), lines: 'rows' },
+        { ...scan(), lines: 'columns', turned: 270 },
+        { ...scan(), lines: 'columns', turned: 270 },
+        { ...scan(), lines: 'rows', turned: 180 },
+        { ...scan(), lines: 'rows' },
+        { ...scan(), lines: 'columns', turned: 90 },
+        { ...scan(), lines: 'columns', turned: 270 },
+      ),
+    )
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0, maxPerFile: 10 })
+    for (const page of [1, 2, 3, 4, 5, 6, 7]) {
+      expect(r.content).toContain(`set.pdf (page ${String(page)}, OCR): ${SENTENCE}`)
+    }
+    // Page 1 as it is. Page 2's lines run down it: a quarter turn, then three quarters,
+    // which page 3 then reads at once. Page 4 is the other way up from page 1; page 5 is as
+    // page 1 was, and found at its second turn. Pages 6 and 7 each differ from the last.
+    expect(ocr.runs.map((run) => `${String(run.page)}:${String(run.tiles)}`)).toEqual([
+      '1:1',
+      '2:1',
+      '2:1',
+      '3:1',
+      '4:1',
+      '4:1',
+      '5:1',
+      '5:1',
+      '6:1',
+      '6:1',
+      '7:1',
+      '7:1',
+    ])
+  })
+
+  it('reads a sparse page with its lines seen both ways up, and keeps the one that reads', async () => {
+    await put(
+      path.join(sb.root, 'sketch.pdf'),
+      doc({ ...scan('SK-12 EMBED PLATE', 'SCALE 1:20'), lines: 'columns', turned: 270 }),
+    )
+    const r = await search({ contentPattern: 'embed plate', context: 0 })
+    expect(r.content).toContain('sketch.pdf (page 1, OCR): SK-12 EMBED PLATE')
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 1])
+    expect((await ocrOf('sketch.pdf'))?.ocr[0]).toMatchObject({ state: 'done', low: true })
+  })
+
+  it('probes the other axis when neither way up along the seen one reads', async () => {
+    // Ruled lines can look like text running the wrong way: nothing reads along them.
+    await put(path.join(sb.root, 'side.pdf'), doc({ ...scan(), lines: 'rows', turned: 90 }))
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    expect(r.content).toContain(`side.pdf (page 1, OCR): ${SENTENCE}`)
+    expect(ocr.runs.map((run) => run.tiles)).toEqual([1, 1, 2, 1])
   })
 
   it('turns nothing when a page reads well as it is', async () => {

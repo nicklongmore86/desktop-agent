@@ -485,24 +485,39 @@ ALL CAPS, numbers, codes like A501; characters in scripts OCR splits apart count
 up at least 70% of what came back. Pages are turned in main, on their raw pixels, in as few helper
 runs as will find the right way up (`search-ocr.ts`):
 
-1. A page is first read at the turn the document's last page that read well needed (as it is, for
-   the first), so a run of sideways sheets costs one run a page after the first.
+0. Which way the page's lines run is looked for in its pixels first, at no helper run
+   (`textAxis`): the page is cut into squares about a tenth of its shorter side, each too small to
+   be much skewed; lines along the rows leave blank rows between them and seldom a blank column all
+   the way through, sideways lines the other way round. At least three squares must vote and three
+   quarters of them agree, so blank pages, drawings whose ruled lines run both ways and very sparse
+   pages give no answer. When it is told, the page is read at the turn the document's last good
+   page along that axis needed (as it is, or a quarter turn clockwise, for the first), then the
+   other way up if that falls short. One of the two is right, so a page costs one or two runs and no
+   probe; a sparse page that read some words (8 characters in well-formed words, and little else)
+   also stops there. Only when neither reads anything (ruled lines mistaken for text) does it go on
+   to the probe below, of the two turns on the other axis.
+1. Otherwise a page is first read at the turn the document's last page that read well needed (as
+   it is, for the first), so a run of sideways sheets costs one run a page after the first.
 2. If that falls short and Windows reported a text angle within 15° of a quarter turn, that turn is
-   read next. (Windows usually reports only a small skew, which is ignored.)
+   read next. (Windows usually reports only a small skew, which is ignored; on the RFI fixture it
+   reported 0, ±1.5° or nothing on every run.)
 3. Then one probe: the other three turns, each a copy of the page shrunk to 0.6 of its size,
    stacked in a column with white rows between them (no taller than the helper's 4096 px, so a big
    sheet takes two runs), read in one run and each scored by the lines whose boxes fall inside it.
+   Three copies at 0.6 are about as many pixels as the page, so a probe costs about one full run.
 4. The turn the probe found best is read at full size when its copy read well (24 characters in
    well-formed words, at that size) or found more words than the page has so far. If the full-size
-   reading still falls short of a copy that read well, the probe misled, and the turns left are read
-   at full size as before probes: 90 and 270 both, since one of them is upside down, and 180 if
-   neither read well.
+   reading still falls short of a copy that read well, and reads fewer words than that copy did,
+   the probe misled, and the turns left are read at full size as before probes: 90 and 270 both,
+   since one of them is upside down, and 180 if neither read well. (A sparse page reads at full size
+   at least what its copy did: that is not misleading, and costs nothing more.)
    The full-size reading with the most well-formed characters is kept; a probe's text never is. A page
-   that reads well costs one helper run, a sideways or upside-down page three (one, after a page
-   that needed the same turn), and a sparse drawing two, or three when the probe finds it reads better
-   turned; a page that never reads well is listed as `OCR found little text`. The probe's smaller copy
-   can miss text too small to read at 0.6 of the size; that only matters on a page whose own reading
-   falls short, and only when the turn that would read it is not the best in the probe. Text at other angles than the page's main one is not
+   that reads well costs one helper run; a sideways or upside-down page whose lines can be seen two
+   at most (one, after a page that needed the same turn), and three when they can't; a sparse
+   drawing two or three; a page that never reads well is listed as `OCR found little text`. The
+   probe's smaller copy can miss text too small to read at 0.6 of the size; that only matters on a
+   page whose lines can't be seen, whose own reading falls short, and only when the turn that would
+   read it is not the best in the probe. Text at other angles than the page's main one is not
    read. This judgment assumes the Latin-style case rules above, so a page in another script or with
    unusual capitalisation may cost the extra runs, but its best reading is still kept.
 

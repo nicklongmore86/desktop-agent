@@ -214,15 +214,90 @@ export function turnFromAngle(angle: number | null): Turn | null {
   return turn === 0 ? null : (turn as Turn)
 }
 
-/** The share of a grey image's pixels that differ clearly from its commonest grey. */
-export function inkShare(pixels: Uint8Array): number {
-  if (pixels.length === 0) return 0
+/** How many pixels have each grey, and the commonest grey: the paper. */
+function paperOf(pixels: Uint8Array): { counts: Uint32Array; paper: number } {
   const counts = new Uint32Array(256)
   for (const value of pixels) counts[value] = (counts[value] ?? 0) + 1
   let paper = 0
   for (let grey = 1; grey < 256; grey++) {
     if ((counts[grey] ?? 0) > (counts[paper] ?? 0)) paper = grey
   }
+  return { counts, paper }
+}
+
+/** Which way a page's lines run: along its rows (upright or upside down) or its columns. */
+export type Axis = 'rows' | 'columns'
+
+/** The page is cut into squares this many to its shorter side to tell which way lines run. */
+const AXIS_SQUARES = 10
+/** A square smaller than this many pixels holds too little of a line to tell. */
+const AXIS_SQUARE_MIN = 48
+/** A square with ink between these shares can say which way its lines run. */
+const AXIS_INK = [0.01, 0.4] as const
+/** A square votes when its blank rows and blank columns differ by this share of its side. */
+const AXIS_MARGIN = 0.1
+/** Squares that must vote, and the share of their votes one way, to tell. */
+const AXIS_VOTES = 3
+const AXIS_AGREE = 0.75
+
+/**
+ * Which way a page's lines of text run, from its pixels alone, without a helper run; null
+ * when it can't be told. Small squares of the page, each too small to be much skewed, are
+ * looked at in turn: lines along the rows leave blank rows between them, and seldom a blank
+ * column all the way through; lines along the columns, the other way round. A square with
+ * one stray pixel in a row still counts it blank (scanner speckle). Ruled lines in drawings
+ * vote too, both ways, which is why most of the votes must agree.
+ */
+export function textAxis(image: OcrImage): Axis | null {
+  const { width, height, pixels } = image
+  const side = Math.max(AXIS_SQUARE_MIN, Math.floor(Math.min(width, height) / AXIS_SQUARES))
+  if (width < side || height < side || pixels.length < width * height) return null
+  const { paper } = paperOf(pixels)
+  const isInk = new Uint8Array(256)
+  for (let grey = 0; grey < 256; grey++) isInk[grey] = Math.abs(grey - paper) > INK_CONTRAST ? 1 : 0
+  const inRow = new Uint32Array(side)
+  const inColumn = new Uint32Array(side)
+  let rows = 0
+  let columns = 0
+  for (let top = 0; top + side <= height; top += side) {
+    for (let left = 0; left + side <= width; left += side) {
+      inRow.fill(0)
+      inColumn.fill(0)
+      let ink = 0
+      for (let y = 0; y < side; y++) {
+        const at = (top + y) * width + left
+        for (let x = 0; x < side; x++) {
+          if (isInk[pixels[at + x] ?? 0] === 1) {
+            inRow[y] = (inRow[y] ?? 0) + 1
+            inColumn[x] = (inColumn[x] ?? 0) + 1
+            ink++
+          }
+        }
+      }
+      const share = ink / (side * side)
+      if (share < AXIS_INK[0] || share > AXIS_INK[1]) continue
+      let blankRows = 0
+      let blankColumns = 0
+      for (let i = 0; i < side; i++) {
+        if ((inRow[i] ?? 0) <= 1) blankRows++
+        if ((inColumn[i] ?? 0) <= 1) blankColumns++
+      }
+      const lean = (blankRows - blankColumns) / side
+      if (lean > AXIS_MARGIN) rows++
+      else if (lean < -AXIS_MARGIN) columns++
+    }
+  }
+  const votes = rows + columns
+  if (votes < AXIS_VOTES) return null
+  if (rows >= votes * AXIS_AGREE) return 'rows'
+  if (columns >= votes * AXIS_AGREE) return 'columns'
+  return null
+}
+
+/** The share of a grey image's pixels that differ clearly from its commonest grey. */
+export function inkShare(pixels: Uint8Array): number {
+  if (pixels.length === 0) return 0
+  const { counts, paper } = paperOf(pixels)
   let ink = 0
   for (let grey = 0; grey < 256; grey++) {
     if (Math.abs(grey - paper) > INK_CONTRAST) ink += counts[grey] ?? 0
@@ -361,10 +436,18 @@ interface Reading {
   angle: number | null
 }
 
-/** The turn a document's last page that read well needed: tried first on its next pages. */
+/**
+ * The turns a document's pages that read well needed, tried first on its next pages: the
+ * last one, and the last one along each axis, for a page whose lines are seen to run that way.
+ */
 interface Orientation {
   turn: Turn
+  rows: 0 | 180
+  columns: 90 | 270
 }
+
+/** A page read before any of its document's pages read well. */
+const NEW_ORIENTATION: Readonly<Orientation> = { turn: 0, rows: 0, columns: 90 }
 
 /** What one page's OCR runs with: the call's job, stopped also when this document's OCR ends. */
 interface PageJob extends OcrDocumentJob {
@@ -375,17 +458,27 @@ interface PageJob extends OcrDocumentJob {
 const probeReadsWell = ({ words, all }: { words: number; all: number }): boolean =>
   words >= PROBE_GOOD_CHARS && words >= all * GOOD_READING_SHARE
 
+/** A page with this few characters in well-formed words, and little else, is a sparse one. */
+const SPARSE_CHARS = 8
+const readsSparse = ({ words, all }: { words: number; all: number }): boolean =>
+  words >= SPARSE_CHARS && words >= all * GOOD_READING_SHARE
+
 /**
  * Reads a page image the right way up, at the least cost in helper runs:
- * 1. at the turn the document's last good page needed (as it is, for its first): most pages
- *    end here, in one run, a run of sideways sheets included;
+ * 0. which way its lines run is looked for in its pixels (textAxis), at no helper run. When
+ *    it can be told, the page is read at the turn the document's last good page along that
+ *    axis needed (as it is, or a quarter turn clockwise, for its first), then turned half
+ *    round; one of them is right, so a page ends here in one or two runs, a sparse one too
+ *    when it read some words. Only when neither read anything does it go on, as below.
+ * 1. when it can't be told, at the turn the document's last good page needed (as it is, for
+ *    its first): most pages end here, in one run, a run of sideways sheets included;
  * 2. if that gave little that looks like words, at the quarter turn Windows' reported text
  *    angle points to, when it points to one;
  * 3. then every other turn in one probe: copies shrunk to PROBE_SCALE, stacked in a column,
  *    read in one run (two for a big sheet), each copy scored by the lines inside it;
  * 4. then at full size at the turn the probe found best, when it read well there or found
  *    more words than the page has so far. If that full-size reading still falls short of a
- *    probe that read well, the probe misled: the turns left are read at full size, 90 and
+ *    probe that read well, and of what the probe read at that turn, the probe misled: the turns left are read at full size, 90 and
  *    270 both and 180 if neither reads well, as before probes.
  * The text kept is always a full-size reading, the one with the most well-formed words.
  */
@@ -431,7 +524,8 @@ async function readImage(
     return scores
   }
 
-  const first = orientation.turn
+  const axis = textAxis(image)
+  const first = axis === null ? orientation.turn : orientation[axis]
   const turnBy = (degrees: number): Turn => ((first + degrees) % 360) as Turn
   let best: Reading
   try {
@@ -443,9 +537,14 @@ async function readImage(
     if (reading.score.words > best.score.words) best = reading
   }
   try {
-    const suggested = readsWell(best.score) ? null : turnFromAngle(best.angle)
+    if (axis !== null && !readsWell(best.score)) {
+      // The other way up along the same axis: one of the two is right.
+      consider(await full(turnBy(180)))
+    }
+    const settled = readsWell(best.score) || (axis !== null && readsSparse(best.score))
+    const suggested = settled || axis !== null ? null : turnFromAngle(best.angle)
     if (suggested !== null) consider(await full(turnBy(suggested)))
-    if (!readsWell(best.score)) {
+    if (!settled && !readsWell(best.score)) {
       const others = [turnBy(90), turnBy(270), turnBy(180)]
       const scores = await probe(others.filter((turn) => !tried.has(turn)))
       const good = scores.filter((probed) => probeReadsWell(probed.score))
@@ -455,8 +554,14 @@ async function readImage(
         null,
       )
       if (pick) {
-        consider(await full(pick.turn))
-        if (!readsWell(best.score) && probeReadsWell(pick.score)) {
+        const atPick = await full(pick.turn)
+        consider(atPick)
+        // A sparse page reads at full size at least what its probe did: that is no misleading.
+        if (
+          !readsWell(best.score) &&
+          probeReadsWell(pick.score) &&
+          atPick.score.words < pick.score.words
+        ) {
           for (const turn of others) {
             if (tried.has(turn)) continue
             // 90 and 270 are always both read: one of them is upside down, which reads as
@@ -472,7 +577,11 @@ async function readImage(
     if (failure.kind !== 'failed') return failure
     // The page has its reading; a turned copy that fails adds nothing to it.
   }
-  if (readsWell(best.score)) orientation.turn = best.turn
+  if (readsWell(best.score)) {
+    orientation.turn = best.turn
+    if (best.turn === 0 || best.turn === 180) orientation.rows = best.turn
+    else orientation.columns = best.turn
+  }
   return {
     kind: 'read',
     text: best.lines.join('\n'),
@@ -507,7 +616,7 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     // after the other; the helper's own limit of 60 s of CPU per image is unchanged.
     helperTimeoutMs: OCR_DEFAULT_TIMEOUT_MS * helpers,
   }
-  const orientation: Orientation = { turn: 0 }
+  const orientation: Orientation = { ...NEW_ORIENTATION }
   const failedNow = new Set<number>()
   let kept = true
   let dirty = false

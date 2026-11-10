@@ -23,7 +23,7 @@ import type { DocumentReader, ExtractOptions } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
 import { DocumentTextCache } from './document-text-cache'
 import { verifyPinnedHelper } from './job-launcher'
-import { turnGray } from './search-ocr'
+import { textAxis, turnGray } from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
 
 const BUILD = path.resolve('build')
@@ -251,8 +251,10 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
         const r = await search({ contentPattern: 'invoice number 48213', context: 0 })
         log(`sideways ${String(degrees)}`, started, 1)
         expect(r.content).toContain(`${name} (page 1, OCR): Invoice number 48213`)
-        // As it is, one probe of the other turns, and the turn that reads at full size.
-        expect(runs).toHaveLength(3)
+        // Its lines are seen to run down it: a quarter turn, and the other quarter if that
+        // was the wrong one. No probe.
+        expect(runs.length).toBeGreaterThanOrEqual(1)
+        expect(runs.length).toBeLessThanOrEqual(2)
         await fs.rm(path.join(sb.root, name))
       }
     },
@@ -267,8 +269,8 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
       const r = await search({ contentPattern: 'invoice number 48213', context: 0 })
       log('upside down', started, 1)
       expect(r.content).toContain('flipped.pdf (page 1, OCR): Invoice number 48213')
-      // As it is, one probe of the other turns, and 180 at full size.
-      expect(runs).toHaveLength(3)
+      // Its lines are seen to run across it: as it is, then 180. No probe.
+      expect(runs).toHaveLength(2)
     },
     SLOW,
   )
@@ -290,7 +292,8 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
       log('sparse page', started, 1)
       expect(r.content).toContain('plan.pdf (page 1, OCR): NORTH ELEVATION')
       expect(r.content).toContain('OCR found little text on 1 of 1 scanned page')
-      // As it is and one probe; a turn at full size only if the probe read more there.
+      // Both ways up along the lines it shows; or, if they can't be told, as it is, one
+      // probe, and a turn at full size only if the probe read more there.
       expect(runs.length).toBeGreaterThanOrEqual(2)
       expect(runs.length).toBeLessThanOrEqual(3)
     },
@@ -458,10 +461,16 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
         } while (cursor && contents.length < 10)
         const label = `16-page RFI set, ${String(helpers)} helper${helpers === 1 ? '' : 's'}`
         log(label, started, set.length)
-        const small = runs.filter((run) => run.width * run.height < PAGE_WIDTH * PAGE_HEIGHT)
+        // A probe is any run not of a whole page, either way round.
+        const probes = runs.filter(
+          (run) =>
+            !(run.width === PAGE_WIDTH && run.height === PAGE_HEIGHT) &&
+            !(run.width === PAGE_HEIGHT && run.height === PAGE_WIDTH),
+        )
         console.log(
           `search-ocr ${label}: ${(runs.length / set.length).toFixed(2)} helper runs/page ` +
-            `(${String(small.length)} of them probes or otherwise smaller than a page); ` +
+            `(${String(probes.length)} of them probes); lines seen running ` +
+            `${JSON.stringify(set.map(([image, turn]) => textAxis(turn === 0 ? image : turnGray(image, turn))))}; ` +
             `angles ${JSON.stringify(runs.map((run) => run.angle))}`,
         )
         const found = (phrase: string): Set<number> =>
