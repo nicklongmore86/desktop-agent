@@ -672,6 +672,21 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     return false
   }
 
+  /**
+   * A page started, until its share of the character limit is settled and countStreak has
+   * counted it.
+   */
+  interface Slot {
+    page: OcrPage
+    state: 'reading' | 'read' | 'gap'
+    read?: PageRead
+    /**
+     * What the page does to the failures in a row, once known: a page kept resets them, one
+     * that failed in a way worth trying again adds one, a lasting failure or a page past the
+     * limit does neither.
+     */
+    streak?: 'reset' | 'failure' | 'none'
+  }
   let chars = charsOf(text)
   /** Past the document's character limit, a page is not read: marks it so. */
   const tooLong = (page: OcrPage): boolean => {
@@ -682,14 +697,18 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     return true
   }
   /** Keeps a page's reading: in page order, so the limit cuts what serial reading would. */
-  const commit = (page: OcrPage, outcome: PageRead): void => {
-    if (tooLong(page)) return
+  const commit = (slot: Slot, outcome: PageRead): void => {
+    const { page } = slot
+    if (tooLong(page)) {
+      slot.streak = 'none'
+      return
+    }
+    slot.streak = 'reset'
     page.state = 'done'
     page.text = outcome.text.slice(0, Math.max(0, job.maxChars - chars))
     page.low = outcome.low
     chars += page.text.length
     dirty = true
-    run.failuresInARow = 0
     run.pagesRead++
   }
   const record = (page: OcrPage, outcome: Exclude<PageOutcome, PageRead>): void => {
@@ -720,16 +739,7 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
         } else {
           failedNow.add(page.page)
         }
-        // One such failure is a page; three in a row, and OCR itself is what is wrong, however
-        // many pages are left. A page that fails for good only costs its own time, once.
-        if (
-          !outcome.lasting &&
-          ++run.failuresInARow >= MAX_FAILURES_IN_A_ROW &&
-          ended.outcome === null
-        ) {
-          run.off = 'failed'
-          finish('off')
-        }
+        // Counted towards failures in a row by countStreak, in page order.
         return
     }
   }
@@ -739,7 +749,31 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
    * being read, read and waiting for an earlier page, or a gap (an earlier page left
    * pending by Stop, the deadline or OCR going off, which a later call reads first).
    */
-  const slots: { page: OcrPage; state: 'reading' | 'read' | 'gap'; read?: PageRead }[] = []
+  const slots: Slot[] = []
+  /** Every page started, in page order, until countStreak has counted it. */
+  const unstreaked: Slot[] = []
+  /**
+   * Counts failures in a row in page order, over the pages whose outcome is known up to the
+   * first that is not, as reading one page after the other would count them. So a later page
+   * failing before an earlier one is read can't stop OCR that the earlier one would have
+   * kept going, and three failures in a row in page order stop it however they finished.
+   * One such failure is a page; three in a row, and OCR itself is what is wrong, however many
+   * pages are left. A page that fails for good only costs its own time, once.
+   */
+  const countStreak = (): void => {
+    for (let slot = unstreaked[0]; slot?.streak !== undefined; slot = unstreaked[0]) {
+      unstreaked.shift()
+      if (slot.streak === 'reset') run.failuresInARow = 0
+      else if (
+        slot.streak === 'failure' &&
+        ++run.failuresInARow >= MAX_FAILURES_IN_A_ROW &&
+        ended.outcome === null
+      ) {
+        run.off = 'failed'
+        finish('off')
+      }
+    }
+  }
   /** Keeps every reading that can be kept now without taking what an earlier page may need. */
   const settle = (): void => {
     if (!job.stillGranted()) return
@@ -752,7 +786,7 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
         read &&
         (ahead === 0 || chars + ahead * PAGE_TEXT_MOST + read.text.length <= job.maxChars)
       ) {
-        commit(slot.page, read)
+        commit(slot, read)
         slots.splice(i, 1)
         continue
       }
@@ -761,7 +795,7 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     }
   }
   /** A started page's outcome: kept in page order, or recorded at once if it takes no text. */
-  const resolve = (slot: (typeof slots)[number], outcome: PageOutcome): void => {
+  const resolve = (slot: Slot, outcome: PageOutcome): void => {
     if (outcome.kind === 'read') {
       // Whether it is kept is decided now, as it finishes, however long it then waits.
       if (ended.outcome === 'gone' || ended.outcome === 'cancelled') slot.state = 'gap'
@@ -775,10 +809,13 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     } else {
       record(slot.page, outcome)
       // A failed page takes no text, now or later; a stopped one may, on a later call.
-      if (outcome.kind === 'failed') slots.splice(slots.indexOf(slot), 1)
-      else slot.state = 'gap'
+      if (outcome.kind === 'failed') {
+        slots.splice(slots.indexOf(slot), 1)
+        slot.streak = outcome.lasting ? 'none' : 'failure'
+      } else slot.state = 'gap'
     }
     settle()
+    countStreak()
   }
 
   /** Pages being read by a helper, each holding its rendered image. */
@@ -792,8 +829,9 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     await room(MAX_IMAGES)
     if (!ready()) break
     if (tooLong(page)) continue
-    const slot: (typeof slots)[number] = { page, state: 'reading' }
+    const slot: Slot = { page, state: 'reading' }
     slots.push(slot)
+    unstreaked.push(slot)
     const raster = await renderForOcr(pageJob, page)
     if ('kind' in raster) {
       resolve(slot, raster)
@@ -814,6 +852,8 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     }
     if (tooLong(page)) {
       slots.splice(slots.indexOf(slot), 1)
+      slot.streak = 'none'
+      countStreak()
       continue
     }
     const image: OcrImage = {

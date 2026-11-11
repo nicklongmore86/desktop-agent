@@ -2072,6 +2072,63 @@ describe('search_files OCR, Stop and the reader', () => {
     expect(r.content).not.toContain('long.pdf (page 2, OCR)')
   })
 
+  /** Resolves once `done` says so, looking every few milliseconds. */
+  const until = async (done: () => boolean): Promise<void> => {
+    while (!done()) await new Promise((resolve) => setTimeout(resolve, 2))
+  }
+
+  it('counts failures in a row in page order: a slow page read between them keeps OCR going', async () => {
+    const failed = { fails: 'failed' } as const
+    await put(path.join(sb.root, 'scan.pdf'), doc(failed, scan(), failed, failed, scan()))
+    const started: number[] = []
+    const finished: number[] = []
+    ocr.before = async (page) => {
+      started.push(page)
+      // Page 2 is still being read when pages 1, 3 and 4 have failed, three in a row as
+      // they finish, but not in page order: page 2 comes between them.
+      if (page === 2) {
+        await until(() => [1, 3, 4].every((p) => started.includes(p)))
+        await new Promise((resolve) => setTimeout(resolve, 30))
+      }
+      finished.push(page)
+    }
+    h = harness({ ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }) })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    expect(finished.indexOf(2)).toBeGreaterThan(finished.indexOf(4))
+    // Read one after the other, page 2 resets the count: OCR goes on to page 5.
+    expect((await ocrOf('scan.pdf'))?.ocr.map((page) => page.state)).toEqual([
+      'pending',
+      'done',
+      'pending',
+      'pending',
+      'done',
+    ])
+    expect(r.content).toContain('  scan.pdf (OCR failed on 3 of 5 scanned pages)')
+    expect(r.content).not.toContain('not read')
+  })
+
+  it('still stops at three failures in a row in page order, when a later page is read first', async () => {
+    const failed = { fails: 'failed' } as const
+    await put(path.join(sb.root, 'a.pdf'), doc(failed, failed, failed, scan()))
+    await put(path.join(sb.root, 'b.pdf'), doc(scan(), scan()))
+    const started: number[] = []
+    ocr.before = async (page) => {
+      started.push(page)
+      // Page 1 fails last, after page 4 was read: in page order, pages 1 to 3 failed in a row.
+      if (page === 1 && started.length === 1) {
+        await until(() => started.includes(4))
+        await new Promise((resolve) => setTimeout(resolve, 30))
+      }
+    }
+    h = harness({ ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }) })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    const pages = (await ocrOf('a.pdf'))?.ocr ?? []
+    expect(pages.map((page) => page.state)).toEqual(['pending', 'pending', 'pending', 'done'])
+    // As read one after the other, OCR stopped there: b.pdf was not read.
+    expect(ocr.runs.some((run) => run.name === 'b.pdf')).toBe(false)
+    expect(r.content).toContain('  b.pdf (2 of 2 scanned pages not read: OCR failed)')
+  })
+
   /** Two pages on two helpers: page 1 read until Stop, page 2 read, then Stop. */
   const stopAfterPage2 = (controller: AbortController): void => {
     ocr.before = async (page) => {

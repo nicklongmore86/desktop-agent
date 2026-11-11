@@ -528,7 +528,10 @@ at afresh. The same key, grant-token checks, limits and read-back checks apply: 
 every 5 s and whenever OCR of a document stops, so a page is read once and a stopped document
 resumes where it was. Failures that will not change until the file does are kept (helper memory,
 size, bad output, its own 60 s limit, the reader's lasting refusals). A helper crash or the reader
-failing is not kept, and is tried again by the next search. Three in a row stop OCR for that call.
+failing is not kept, and is tried again by the next search. Three in a row stop OCR for that call,
+counted in page order as reading one page after the other would count them (a page kept resets the
+count, a lasting failure leaves it), so pages read side by side finishing out of order neither stop
+OCR where that would not nor keep it going where that would stop.
 The text is capped with the document's own, at 2 million characters. Text read with one language
 stays until the file changes, even if another language is installed later.
 
