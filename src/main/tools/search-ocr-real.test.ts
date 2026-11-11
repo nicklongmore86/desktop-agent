@@ -5,6 +5,7 @@
 import { init, type WrappedPdfiumModule } from '@embedpdf/pdfium'
 import { promises as fs, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { availableParallelism } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { extractDocument } from '../documents/extract'
@@ -13,6 +14,7 @@ import { KNOWN_LINES, renderPage, toGray } from '../documents/ocr-fixtures.test-
 import {
   createSystemOcr,
   OCR_TEXT_PATH,
+  ocrHelpersFor,
   type OcrImage,
   type OcrResult,
   type SystemOcr,
@@ -21,7 +23,7 @@ import type { DocumentReader, ExtractOptions } from '../documents/types'
 import { fakeContext, makeSandbox, put, type Sandbox } from '../permissions/test-support'
 import { DocumentTextCache } from './document-text-cache'
 import { verifyPinnedHelper } from './job-launcher'
-import { turnGray } from './search-ocr'
+import { textAxis, turnGray } from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
 
 const BUILD = path.resolve('build')
@@ -47,13 +49,46 @@ const pictures = new Map<string, OcrImage>()
 function picture(
   name = 'letter',
   lines: readonly string[] = [...KNOWN_LINES, ...KNOWN_LINES],
+  angle = 0,
 ): OcrImage {
   let found = pictures.get(name)
   if (!found) {
-    found = toGray(renderPage({ width: PAGE_WIDTH, height: PAGE_HEIGHT, lines, fontPx: 40 }))
+    found = toGray(renderPage({ width: PAGE_WIDTH, height: PAGE_HEIGHT, lines, fontPx: 40, angle }))
     pictures.set(name, found)
   }
   return found
+}
+
+/** An RFI cover sheet's text. */
+const RFI_LINES = [
+  'RFI 0147 response required by 14 November 2026',
+  'Contractor proposes an alternate anchor bolt detail',
+  'See structural drawing S-301 at grid line C between 4 and 5',
+  'Engineer of record to confirm the embedment depth',
+  'Attached sketch shows the revised base plate layout',
+  'Please reply before the concrete pour is scheduled',
+]
+/** A hand sketch's few labels. */
+const SKETCH_LINES = ['SK-12', 'EMBED PLATE', 'TYP. AT GRID C/4', 'SCALE 1:20']
+
+/**
+ * A scanner's copy: grey paper, ink not quite black, a little noise and speckle. Milder
+ * than ocr-fixtures' degrade(), so 16 pages of it still make a PDF of a realistic size.
+ */
+function scanned(page: OcrImage, seed = 5): OcrImage {
+  let state = seed >>> 0
+  const next = (): number => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0
+    return state / 4294967296
+  }
+  const pixels = new Uint8Array(page.pixels.length)
+  for (let i = 0; i < pixels.length; i++) {
+    const roll = next()
+    const value =
+      roll < 0.002 ? 40 : 40 + ((page.pixels[i] ?? 0) * 190) / 255 + Math.floor(next() * 4) * 2
+    pixels[i] = Math.min(255, Math.round(value))
+  }
+  return { ...page, pixels }
 }
 
 /** A PDF page that is nothing but a picture, sized for it at 200 dpi. */
@@ -69,12 +104,13 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
   let h: ToolHarness
   let cache: DocumentTextCache
   let grant: string | null
-  let runs: { width: number; height: number; ms: number }[]
+  let runs: { width: number; height: number; ms: number; angle: number | null }[]
   let rendersMs: number[]
   let duringRun: ((image: OcrImage) => void) | null
 
   const real = createSystemOcr({
     platform: 'win32',
+    helpers: ocrHelpersFor(availableParallelism()),
     findHelper: () =>
       verifyPinnedHelper(
         { resources: BUILD, sha256: pin(), grantedRoots: () => [], platform: 'win32' },
@@ -83,6 +119,7 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
   })
   /** The real helper, recording each run. */
   const recorded: SystemOcr = {
+    helpers: real.helpers ?? 1,
     probe: (options) => real.probe(options),
     cancelAll: () => {
       real.cancelAll()
@@ -90,7 +127,12 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
     recognize: async (image, options) => {
       duringRun?.(image)
       const result: OcrResult = await real.recognize(image, options)
-      runs.push({ width: image.width, height: image.height, ms: result.stats.ms })
+      runs.push({
+        width: image.width,
+        height: image.height,
+        ms: result.stats.ms,
+        angle: result.angle,
+      })
       return result
     },
   }
@@ -209,9 +251,10 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
         const r = await search({ contentPattern: 'invoice number 48213', context: 0 })
         log(`sideways ${String(degrees)}`, started, 1)
         expect(r.content).toContain(`${name} (page 1, OCR): Invoice number 48213`)
-        // As it is, and then at least the turn that reads, at most every turn.
-        expect(runs.length).toBeGreaterThanOrEqual(2)
-        expect(runs.length).toBeLessThanOrEqual(4)
+        // Its lines are seen to run down it: a quarter turn, and the other quarter if that
+        // was the wrong one. No probe.
+        expect(runs.length).toBeGreaterThanOrEqual(1)
+        expect(runs.length).toBeLessThanOrEqual(2)
         await fs.rm(path.join(sb.root, name))
       }
     },
@@ -226,7 +269,8 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
       const r = await search({ contentPattern: 'invoice number 48213', context: 0 })
       log('upside down', started, 1)
       expect(r.content).toContain('flipped.pdf (page 1, OCR): Invoice number 48213')
-      expect(runs).toHaveLength(4)
+      // Its lines are seen to run across it: as it is, then 180. No probe.
+      expect(runs).toHaveLength(2)
     },
     SLOW,
   )
@@ -248,7 +292,10 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
       log('sparse page', started, 1)
       expect(r.content).toContain('plan.pdf (page 1, OCR): NORTH ELEVATION')
       expect(r.content).toContain('OCR found little text on 1 of 1 scanned page')
-      expect(runs).toHaveLength(4)
+      // Both ways up along the lines it shows; or, if they can't be told, as it is, one
+      // probe, and a turn at full size only if the probe read more there.
+      expect(runs.length).toBeGreaterThanOrEqual(2)
+      expect(runs.length).toBeLessThanOrEqual(3)
     },
     SLOW,
   )
@@ -348,5 +395,108 @@ describe.runIf(process.platform === 'win32')('search_files with the real ocr-tex
       expect(r.content).toContain(`${String(count * 2)} results in`)
     },
     SLOW,
+  )
+
+  it(
+    'measures a realistic RFI scan: noisy pages, mixed orientation and a sparse sketch',
+    async () => {
+      // What a scanned RFI set looks like: 200 dpi letter pages on grey paper with scanner
+      // noise and speckle, slightly skewed, mostly the right way up; runs of landscape sheets
+      // stored sideways, one the other way, one upside down, and hand sketches with a few
+      // labels, one of them sideways.
+      const letter = scanned(picture())
+      const rfi = scanned(picture('rfi', RFI_LINES, 1.2), 11)
+      const sketch = scanned(picture('sketch', SKETCH_LINES), 23)
+      const set: [OcrImage, 0 | 90 | 180 | 270][] = [
+        [letter, 0],
+        [rfi, 0],
+        [rfi, 90],
+        [letter, 90],
+        [rfi, 90],
+        [letter, 90],
+        [sketch, 0],
+        [letter, 0],
+        [rfi, 270],
+        [letter, 0],
+        [sketch, 90],
+        [rfi, 180],
+        [letter, 0],
+        [rfi, 0],
+        [letter, 90],
+        [rfi, 0],
+      ]
+      const pdf = Buffer.from(
+        makePdf(set.map(([image, turn]) => scanPage(turn === 0 ? image : turnGray(image, turn)))),
+      )
+      const pagesOf = (image: OcrImage): number[] =>
+        set.flatMap(([page], index) => (page === image ? [index + 1] : []))
+      // One helper, then as many as this PC gets (two on a 4-core runner), each from scratch.
+      const most = ocrHelpersFor(availableParallelism())
+      for (const helpers of most > 1 ? [1, most] : [1]) {
+        const folder = path.join(sb.root, `helpers-${String(helpers)}`)
+        await put(path.join(folder, 'rfi-set.pdf'), pdf)
+        const tool = toolHarness(sb, {
+          documents: reader,
+          documentCache: cache,
+          ocr: { ...recorded, helpers },
+        }).tool('search_files')
+        runs = []
+        rendersMs = []
+        const started = performance.now()
+        const contents: string[] = []
+        let cursor: string | null = null
+        do {
+          const r = await tool.execute(
+            {
+              path: folder,
+              anyOf: ['embedment depth', 'invoice number 48213', 'embed plate'],
+              context: 0,
+              maxPerFile: 200,
+              ...(cursor ? { cursor } : {}),
+            },
+            fakeContext().ctx,
+          )
+          contents.push(r.content)
+          cursor = /cursor: "(sf1\.[\w-]+)"\.$/m.exec(r.content)?.[1] ?? null
+        } while (cursor && contents.length < 10)
+        const label = `16-page RFI set, ${String(helpers)} helper${helpers === 1 ? '' : 's'}`
+        log(label, started, set.length)
+        // A probe is any run not of a whole page, either way round.
+        const probes = runs.filter(
+          (run) =>
+            !(run.width === PAGE_WIDTH && run.height === PAGE_HEIGHT) &&
+            !(run.width === PAGE_HEIGHT && run.height === PAGE_WIDTH),
+        )
+        console.log(
+          `search-ocr ${label}: ${(runs.length / set.length).toFixed(2)} helper runs/page ` +
+            `(${String(probes.length)} of them probes); lines seen running ` +
+            `${JSON.stringify(set.map(([image, turn]) => textAxis(turn === 0 ? image : turnGray(image, turn))))}; ` +
+            `angles ${JSON.stringify(runs.map((run) => run.angle))}`,
+        )
+        const found = (phrase: string): Set<number> =>
+          new Set(
+            contents
+              .join('\n')
+              .split('\n')
+              .flatMap((line) => {
+                const at = new RegExp(
+                  `^rfi-set\\.pdf \\(page (\\d+), OCR\\): \\(matched "${phrase}"\\)`,
+                  'i',
+                ).exec(line)
+                return at ? [Number(at[1])] : []
+              }),
+          )
+        // Every page read its right way round, whichever way it was stored.
+        expect(found('embedment depth')).toEqual(new Set(pagesOf(rfi)))
+        expect(found('invoice number 48213')).toEqual(new Set(pagesOf(letter)))
+        expect(found('embed plate')).toEqual(new Set(pagesOf(sketch)))
+        // Against 1.6 to 2.0 measured on real RFI folders with turns tried at full size, and
+        // 2.31 on this set (main, one helper). Pages read side by side can't take the turn
+        // the page beside them is still finding: up to a run more where orientation changes
+        // (1.50 with one helper, 1.63 with two, measured on windows-latest).
+        expect(runs.length / set.length).toBeLessThan(helpers === 1 ? 1.6 : 1.8)
+      }
+    },
+    6 * SLOW,
   )
 })

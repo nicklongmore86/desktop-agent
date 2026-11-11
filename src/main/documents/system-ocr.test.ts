@@ -1,5 +1,5 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { constants, getPriority, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { JobLauncher } from '../tools/job-launcher'
@@ -9,6 +9,7 @@ import {
   OCR_MAX_OUTPUT_BYTES,
   OCR_NO_LANGUAGE,
   OCR_NOT_WINDOWS,
+  ocrHelpersFor,
   ocrMemoryLimit,
   parseOcrOutput,
   parseOcrReport,
@@ -380,6 +381,32 @@ describe('the system OCR', () => {
     expect(limits).toMatchObject({ timeoutMs: 5000, maxOutputBytes: 4096 })
   })
 
+  it('asks for low priority for background work only, and says how many may run at once', async () => {
+    const { ocr, run } = ocrWith()
+    await ocr.recognize(image(), { background: true })
+    await ocr.recognize(image())
+    expect(run.mock.calls[0]?.[3]).toMatchObject({ lowPriority: true })
+    expect(run.mock.calls[1]?.[3]).not.toHaveProperty('lowPriority')
+    expect(ocr.helpers).toBe(1)
+    expect(ocr.onBattery?.()).toBe(false)
+    let battery = true
+    const two = createSystemOcr({
+      platform: 'win32',
+      findHelper: found,
+      run,
+      helpers: 2,
+      onBattery: () => battery,
+    })
+    expect(two.helpers).toBe(2)
+    expect(two.onBattery?.()).toBe(true)
+    battery = false
+    expect(two.onBattery?.()).toBe(false)
+  })
+
+  it('runs half the processors’ worth of helpers, one or two', () => {
+    expect([1, 2, 3, 4, 5, 8, 16, 64].map(ocrHelpersFor)).toEqual([1, 1, 1, 2, 2, 2, 2, 2])
+  })
+
   it('refuses bad options and images without running anything', async () => {
     const { ocr, run } = ocrWith()
     await expect(ocr.recognize(image(), { language: 'en US' })).rejects.toMatchObject({
@@ -449,6 +476,13 @@ process.stdin.on('end', () => {
     process.stdout.write(Buffer.alloc(2 * 1024 * 1024, 0x20))
   } else if (mode === 'hang') {
     setInterval(() => {}, 1000)
+  } else if (mode === 'priority') {
+    const width = input.readUInt32LE(8), height = input.readUInt32LE(12)
+    const text = 'priority=' + require('node:os').getPriority()
+    process.stdout.write(JSON.stringify({ v: 1, lang: 'en-US', angle: null, width, height,
+      lines: [{ box: [0, 0, width, height], text }], truncated: false }))
+    process.stderr.write('ocr-text:1 ok lines=1 chars=' + text.length + ' width=' + width +
+      ' height=' + height + ' ms=5 peak=1000\\n')
   }
 })
 `
@@ -500,6 +534,16 @@ describe('runOcrHelper, with a real process', () => {
     await expect(two).rejects.toMatchObject({ code: 'cancelled' })
     // Later runs are not cancelled by the earlier cancelAll.
     await expect(ocrRunning('ok').recognize(image())).resolves.toBeTruthy()
+  })
+
+  it('runs a background recognition below normal priority, and others as they are', async () => {
+    const ocr = ocrRunning('priority')
+    const background = await ocr.recognize(image(), { background: true })
+    expect(background.lines[0]?.text).toBe(
+      `priority=${String(constants.priority.PRIORITY_BELOW_NORMAL)}`,
+    )
+    const foreground = await ocr.recognize(image())
+    expect(foreground.lines[0]?.text).toBe(`priority=${String(getPriority())}`)
   })
 
   it('reports a helper that cannot start', async () => {

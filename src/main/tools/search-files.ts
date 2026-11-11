@@ -351,7 +351,9 @@ export function searchFilesTool(deps: ResolvedDeps): ToolSpec<Input> {
       'how far it got and gives a cursor: call again with the same arguments and that cursor ' +
       'to continue where it stopped. Only a result saying "Every file was checked" (or "Every ' +
       'file after the cursor was checked") covers the whole search, and not the files it ' +
-      'reports as skipped or the scanned pages it reports as not fully read. For very large folders, narrow the search with a ' +
+      'reports as skipped or the scanned pages it reports as not fully read. While OCR has left ' +
+      'scanned pages unread, it says instead that the search "covered every file except" those ' +
+      'pages, and why. For very large folders, narrow the search with a ' +
       'subfolder path or namePattern. Do not run several search_files calls in parallel. ' +
       'Scanned PDF pages are read by OCR when this PC has it, on this PC, within the same time ' +
       '("(page 3, OCR)"). OCR text can contain errors, so no match in a scanned file is not ' +
@@ -545,6 +547,7 @@ const OCR_OFF_LABEL: Record<OcrOff, string> = {
   unavailable: 'OCR unavailable',
   'no-language': 'no OCR language installed',
   failed: 'OCR failed',
+  'on-battery': 'OCR paused on battery power',
 }
 
 /** Bytes read from a file to see whether it is a PDF, for a sniff that reads nothing else. */
@@ -1128,6 +1131,11 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     ocrNotRead: 0,
     ocrFailed: 0,
     ocrLow: 0,
+    /**
+     * Of ocrNotRead and ocrFailed, the pages by why OCR did not read them (a label of the
+     * scanned list), in the order first met: while any are left, the call is not called complete.
+     */
+    ocrUnread: new Map<string, number>(),
   }
   const ocrRun = newOcrRun()
   /**
@@ -1161,19 +1169,26 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   /** What the scanned list says of a document's pages, or null when OCR read them all well. */
   function ocrCoverage(text: CachedText, status: OcrStatus): string | null {
     const total = text.ocr.length
-    const notRead = text.ocr.filter(
-      (page) => isPending(page) && !status.failedNow.has(page.page),
-    ).length
-    const failed = text.ocr.filter((page) => page.state === 'failed').length + status.failedNow.size
+    const { notRead, failed, why } = ocrUnread(text, status)
     const low = text.ocr.filter((page) => page.state === 'done' && page.low).length
     const said: string[] = []
-    if (notRead > 0) {
-      const why = status.off ? OCR_OFF_LABEL[status.off] : 'not reached'
-      said.push(`${String(notRead)} of ${pages(total)} not read: ${why}`)
-    }
+    if (notRead > 0) said.push(`${String(notRead)} of ${pages(total)} not read: ${why}`)
     if (failed > 0) said.push(`OCR failed on ${String(failed)} of ${pages(total)}`)
     if (low > 0) said.push(`OCR found little text on ${String(low)} of ${pages(total)}`)
     return said.length > 0 ? said.join('; ') : null
+  }
+
+  /** A finished document's pages OCR did not read: left pending (and why), or failed. */
+  function ocrUnread(
+    text: CachedText,
+    status: OcrStatus,
+  ): { notRead: number; failed: number; why: string } {
+    return {
+      notRead: text.ocr.filter((page) => isPending(page) && !status.failedNow.has(page.page))
+        .length,
+      failed: text.ocr.filter((page) => page.state === 'failed').length + status.failedNow.size,
+      why: status.off ? OCR_OFF_LABEL[status.off] : 'not reached',
+    }
   }
 
   /** Counts a document and its matches: the end of the road for its text, OCR's included. */
@@ -1193,6 +1208,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       docs.ocrNotRead += count('pending') - status.failedNow.size
       docs.ocrFailed += count('failed') + status.failedNow.size
       docs.ocrLow += text.ocr.filter((page) => page.state === 'done' && page.low).length
+      const { notRead, failed, why } = ocrUnread(text, status)
+      const tally = (label: string, n: number): void => {
+        if (n > 0) docs.ocrUnread.set(label, (docs.ocrUnread.get(label) ?? 0) + n)
+      }
+      tally(why, notRead)
+      tally(OCR_OFF_LABEL.failed, failed)
       const hasText =
         text.segments.some((segment) => segment.text.trim()) ||
         text.ocr.some((page) => page.text.trim())
@@ -2005,15 +2026,26 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     const plural = (n: number, word: string): string =>
       `${String(n)} ${word}${n === 1 ? '' : word.endsWith('h') ? 'es' : 's'}`
     const found = `${plural(reportedMatches, 'match')} in ${plural(reportedFiles, 'file')}`
+    const skippedToo =
+      skippedTotal > 0 ? '; files that could not be searched are counted below' : ''
+    // Pages OCR did not read were not searched: however far the call got, it is not complete.
+    const unread = docs.ocrNotRead + docs.ocrFailed
+    const paused = docs.ocrUnread.get(OCR_OFF_LABEL['on-battery']) ?? 0
+    const why = [...docs.ocrUnread].map(([label, n]) => `${label}: ${String(n)}`).join('; ')
     notes.push(
-      complete
-        ? `Every file${after} was checked: ${found}` +
-            (skippedTotal > 0 ? '; files that could not be searched are counted below' : '') +
-            (docs.ocrNotRead + docs.ocrFailed + docs.ocrLow > 0
-              ? '; scanned pages OCR could not fully read are counted below'
+      complete && unread === 0
+        ? `Every file${after} was checked: ${found}${skippedToo}` +
+            (docs.ocrLow > 0 ? '; scanned pages OCR could not fully read are counted below' : '') +
+            '.'
+        : complete
+          ? `The search covered every file${after} except ${pages(unread)} OCR left unread ` +
+            `(${why}), listed below: ${found}${skippedToo}. Those pages were not searched, so ` +
+            'no match is not proof of absence' +
+            (paused > 0
+              ? `; plug this PC in and search again to read the ${pages(paused)} paused on battery power`
               : '') +
             '.'
-        : `Not every file${after} was checked: ${found} so far` +
+          : `Not every file${after} was checked: ${found} so far` +
             (next
               ? next.ocrOnly
                 ? ', not counting the PDFs still waiting for OCR.'

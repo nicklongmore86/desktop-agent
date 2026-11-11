@@ -39,13 +39,22 @@ const parseDoc = (bytes: Uint8Array): PageSpec[] =>
 const NOISE = 'Concrete pour schedule for the north stair core and its formwork sequence'
 const scan = (line = NOISE): PageSpec => ({ ocr: [line] })
 
+interface RenderedPage {
+  name: string
+  spec: PageSpec
+  page: number
+}
+
 interface ScriptedReader extends DocumentReader {
-  current: { name: string; spec: PageSpec; page: number } | null
+  current: RenderedPage | null
+  /** Each page rendered, by its pixels: helpers reading side by side each read their own. */
+  rendered: WeakMap<Uint8Array, RenderedPage>
 }
 
 function scriptedReader(): ScriptedReader {
   const reader: ScriptedReader = {
     current: null,
+    rendered: new WeakMap(),
     extract(bytes, options = {}) {
       const specs = parseDoc(bytes)
       const base = {
@@ -56,10 +65,12 @@ function scriptedReader(): ScriptedReader {
       if (options.view === 'raster') {
         const page = options.select?.from ?? 1
         reader.current = { name: options.name ?? '', spec: specs[page - 1] ?? {}, page }
+        const pixels = new Uint8Array(32).map((_, i) => i * 8)
+        reader.rendered.set(pixels, reader.current)
         return Promise.resolve({
           ...base,
           sections: [],
-          rasters: [{ page, width: 4, height: 8, pixels: new Uint8Array(32).map((_, i) => i * 8) }],
+          rasters: [{ page, width: 4, height: 8, pixels }],
           position: {
             unit: 'page',
             total: specs.length,
@@ -89,15 +100,16 @@ function scriptedReader(): ScriptedReader {
 
 interface FakeOcr extends SystemOcr {
   runs: { name: string; page: number }[]
+  helpers?: number
 }
 
-/** A fake OCR reading what the page last rendered holds; each run moves `clock` on by `ms`. */
+/** A fake OCR reading what the page it is given holds; each run moves `clock` on by `ms`. */
 function fakeOcr(reader: ScriptedReader, clock: { now: number }, ms: number): FakeOcr {
   const ocr: FakeOcr = {
     runs: [],
     probe: () => Promise.resolve({ available: true, languages: ['en-US'], userLanguage: 'en-US' }),
     recognize(image: OcrImage) {
-      const current = reader.current
+      const current = reader.rendered.get(image.pixels) ?? reader.current
       if (!current) throw new Error('nothing was rendered')
       ocr.runs.push({ name: current.name, page: current.page })
       clock.now += ms
@@ -262,57 +274,64 @@ describe('search_files OCR order', () => {
     expect(cursorOf(r.content)).toBeNull()
   })
 
-  it('reports each file exactly once over many calls, none left out, OCR in relevance order', async () => {
-    const files: { rel: string; data: Buffer; matches: boolean }[] = []
-    for (let i = 0; i < 12; i++) {
-      const n = String(i).padStart(2, '0')
-      const named = i % 4 === 3
-      const text = i % 5 === 1
-      const hit = i % 3 === 0
-      const rel = `${n < '06' ? 'early' : 'late'}/${n}${named ? '-duct' : ''}.pdf`
-      files.push({
-        rel,
-        data: doc(
-          ...(text ? [{ text: 'A duct in the text layer' }] : []),
-          scan(hit ? 'The supply duct runs along gridline four above the corridor ceiling' : NOISE),
-          scan(),
-        ),
-        matches: hit || text,
-      })
-    }
-    files.push({ rel: 'notes.txt', data: Buffer.from('duct notes\n'), matches: true })
-    files.push({ rel: 'late/zz.txt', data: Buffer.from('more duct notes\n'), matches: true })
-    for (const file of files) await put(path.join(sb.root, ...file.rel.split('/')), file.data)
+  // Two helpers read a PDF's pages side by side; PDFs still go one at a time, in the same order.
+  it.each([1, 2])(
+    'reports each file exactly once over many calls, none left out, OCR in relevance order (%i helpers)',
+    async (helpers) => {
+      ocr.helpers = helpers
+      const files: { rel: string; data: Buffer; matches: boolean }[] = []
+      for (let i = 0; i < 12; i++) {
+        const n = String(i).padStart(2, '0')
+        const named = i % 4 === 3
+        const text = i % 5 === 1
+        const hit = i % 3 === 0
+        const rel = `${n < '06' ? 'early' : 'late'}/${n}${named ? '-duct' : ''}.pdf`
+        files.push({
+          rel,
+          data: doc(
+            ...(text ? [{ text: 'A duct in the text layer' }] : []),
+            scan(
+              hit ? 'The supply duct runs along gridline four above the corridor ceiling' : NOISE,
+            ),
+            scan(),
+          ),
+          matches: hit || text,
+        })
+      }
+      files.push({ rel: 'notes.txt', data: Buffer.from('duct notes\n'), matches: true })
+      files.push({ rel: 'late/zz.txt', data: Buffer.from('more duct notes\n'), matches: true })
+      for (const file of files) await put(path.join(sb.root, ...file.rel.split('/')), file.data)
 
-    // Three pages a call: a PDF of two pages may not fit, and waits with its pages kept.
-    const calls = await follow({ contentPattern: 'duct', context: 0, output: 'files' }, 300)
-    expect(calls.length).toBeGreaterThan(5)
-    const reported = reportedFiles(calls)
-    // Exactly once each, and every file with a match.
-    expect(new Set(reported).size).toBe(reported.length)
-    expect([...reported].sort(byPath)).toEqual(
-      files
-        .filter((f) => f.matches)
-        .map((f) => f.rel)
-        .sort(byPath),
-    )
-    // No page read twice, every page read.
-    const pages = ocr.runs.map((run) => `${run.name} ${String(run.page)}`)
-    expect(new Set(pages).size).toBe(pages.length)
-    expect(pages).toHaveLength(24)
-    // Named first, then text layers that matched, then the rest in path order.
-    const order = ocrNames()
-    const rank = (name: string) =>
-      name.includes('duct') ? 0 : ['01.pdf', '06.pdf'].includes(name) ? 1 : 2
-    expect(order.map(rank)).toEqual([...order.map(rank)].sort((a, b) => a - b))
-    expect(order.slice(0, 3)).toEqual(['03-duct.pdf', '07-duct.pdf', '11-duct.pdf'])
-    // Only the last call says every file was checked.
-    expect(calls.at(-1)).toContain('Every file after the cursor was checked')
-    for (const call of calls.slice(0, -1)) {
-      expect(call).not.toContain('Every file')
-      expect(call).toContain('Not every file')
-    }
-  })
+      // Three pages a call: a PDF of two pages may not fit, and waits with its pages kept.
+      const calls = await follow({ contentPattern: 'duct', context: 0, output: 'files' }, 300)
+      expect(calls.length).toBeGreaterThan(5)
+      const reported = reportedFiles(calls)
+      // Exactly once each, and every file with a match.
+      expect(new Set(reported).size).toBe(reported.length)
+      expect([...reported].sort(byPath)).toEqual(
+        files
+          .filter((f) => f.matches)
+          .map((f) => f.rel)
+          .sort(byPath),
+      )
+      // No page read twice, every page read.
+      const pages = ocr.runs.map((run) => `${run.name} ${String(run.page)}`)
+      expect(new Set(pages).size).toBe(pages.length)
+      expect(pages).toHaveLength(24)
+      // Named first, then text layers that matched, then the rest in path order.
+      const order = ocrNames()
+      const rank = (name: string) =>
+        name.includes('duct') ? 0 : ['01.pdf', '06.pdf'].includes(name) ? 1 : 2
+      expect(order.map(rank)).toEqual([...order.map(rank)].sort((a, b) => a - b))
+      expect(order.slice(0, 3)).toEqual(['03-duct.pdf', '07-duct.pdf', '11-duct.pdf'])
+      // Only the last call says every file was checked.
+      expect(calls.at(-1)).toContain('Every file after the cursor was checked')
+      for (const call of calls.slice(0, -1)) {
+        expect(call).not.toContain('Every file')
+        expect(call).toContain('Not every file')
+      }
+    },
+  )
 
   it('reports the likely PDF past a held one at once, and not again after it', async () => {
     // a-big.pdf comes first in path order, and is held; z-duct.pdf after it is read and

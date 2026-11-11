@@ -130,6 +130,7 @@ describe('search guidance', () => {
     expect(description).toContain('Pages not reached or not OCR-able are reported')
     expect(description).toContain('"(page 3, OCR)"')
     expect(description).toContain('the scanned pages it reports as not fully read')
+    expect(description).toContain('"covered every file except"')
 
     // A scanned page, read through the real tool with a fake reader and helper.
     await put(path.join(sb.root, 'read.pdf'), Buffer.from('%PDF-1.7\nread'))
@@ -181,7 +182,11 @@ describe('search guidance', () => {
     })
     const result = await search({ contentPattern: 'walk-in freezer', context: 0 })
     expect(result).toContain('read.pdf (page 1, OCR): Walk-in freezer')
-    expect(result).toContain('Every file was checked')
+    // failed.pdf's page was not searched: the result says so instead of "Every file was checked",
+    // in the words the guidance names.
+    expect(result).not.toContain('Every file')
+    expect(result).toContain('covered every file except 1 scanned page OCR left unread')
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('"covered every file except"')
     // What the guidance says to leave out is said in the same words by the tool.
     expect(result).toContain('pages OCR could not fully read')
     expect(DEFAULT_SYSTEM_PROMPT).toContain('scanned pages OCR could not fully read')
