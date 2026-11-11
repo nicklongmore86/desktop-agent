@@ -96,6 +96,8 @@ export const DEFAULT_MAX_PER_FILE = 5
 export const MAX_FILES_LISTED = 200
 /** Scanned PDFs (and PDFs with scanned pages) a content search names in their own list. */
 export const MAX_SCANNED_LISTED = 50
+/** PDFs still waiting for OCR a call names: those whose name has a query term first. */
+export const MAX_HELD_LISTED = 20
 
 /**
  * The lines around every match read from a file, plain text or document, and every file
@@ -627,6 +629,28 @@ interface ReadDocumentResult {
   kept: boolean
 }
 
+/**
+ * How OCR went this call and, at that rate, roughly what the scanned pages left would take:
+ * counts only. `more`: files not reached may hold more scanned pages.
+ */
+export function ocrProgress(read: number, ms: number, left: number, more: boolean): string {
+  const seconds = (n: number): string =>
+    n < 10_000 ? `${(n / 1000).toFixed(1)} s` : `${String(Math.round(n / 1000))} s`
+  const plus = more ? ' (files not reached yet may have more)' : ''
+  if (read === 0 || ms <= 0) {
+    return `OCR progress: no scanned pages read by OCR in this call; ${pages(left)} left${plus}.`
+  }
+  const rate = (read * 1000) / ms
+  const calls = Math.ceil(left / read)
+  const minutes = Math.max(1, Math.round(left / rate / 60))
+  return (
+    `OCR progress: ${pages(read)} read by OCR in this call, in ${seconds(ms)} ` +
+    `(${rate < 1 ? rate.toFixed(2) : rate < 10 ? rate.toFixed(1) : String(Math.round(rate))} pages/s); ${pages(left)} left` +
+    `${plus}. Estimate at this call's rate: about ${String(calls)} more ` +
+    `call${calls === 1 ? '' : 's'}, ${String(minutes)} minute${minutes === 1 ? '' : 's'} of OCR.`
+  )
+}
+
 const pages = (n: number): string => `${String(n)} scanned page${n === 1 ? '' : 's'}`
 const isPending = (page: OcrPage): boolean => page.state === 'pending'
 
@@ -658,8 +682,11 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     input.cursor === undefined ? null : decodeCursor(input.cursor, binding)
   if (input.cursor !== undefined && from === null) {
     throw new ToolInputError(
-      '"cursor" was not given by this same search: pass the cursor from the last call with ' +
-        'exactly the same other arguments, or leave it out to search from the start.',
+      '"cursor" was not given by this same search: a cursor only continues the search that ' +
+        'gave it, with exactly the same path, contentPattern, anyOf terms (same words, same ' +
+        'order) and other arguments. To continue, call again with those. To search for ' +
+        'different terms, start a new search without the cursor: scanned pages already read ' +
+        'by OCR are kept, so they are not read again.',
     )
   }
 
@@ -710,7 +737,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     from?.reported === undefined ? new Set() : reportedSets.get(from.reported)
   if (carriedSet === null) {
     throw new ToolInputError(
-      '"cursor" has expired: what it continues is no longer kept. Search again without a cursor.',
+      '"cursor" has expired: what it continues is no longer kept. Start a new search without ' +
+        'the cursor: scanned pages already read by OCR are kept, so they are not read again.',
     )
   }
   const carried = carriedSet
@@ -1106,7 +1134,11 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
    * PDFs with scanned pages this call did not finish, named on their own: until a call has read
    * all of a file's pages, it reports none of that file. So its matches come together, once.
    */
-  const held = new SortedCapped<ScannedFile>(MAX_SCANNED_LISTED)
+  const held = new SortedCapped<ScannedFile>(MAX_HELD_LISTED)
+  /** Of those, the ones whose name has a query term: they are listed first. */
+  const heldNamed = new SortedCapped<ScannedFile>(MAX_HELD_LISTED)
+  /** Time this call spent in OCR, in ms: with ocrRun.pagesRead, the rate it read at. */
+  let ocrMs = 0
   /**
    * The first PDF with scanned pages held for a later call, in path order. When the text of
    * every file was searched, the next call starts there and reports only such PDFs (those not
@@ -1478,10 +1510,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     const key = orderKey(doc.entry.rel)
     if (deferred.key === null || key < deferred.key) deferred.key = key
     if (doc.pending === 0) return
-    held.add({
+    const item = {
       key,
       line: `  ${safeRel(doc.entry.rel)} (${pages(doc.pending)} not read yet)`,
-    })
+    }
+    held.add(item)
+    if (named(doc.entry)) heldNamed.add(item)
   }
 
   /**
@@ -1515,6 +1549,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     doc.text = current
     const key = file.key
     const token = file.token
+    const started = deps.now()
     const result = await ocrDocument({
       reader,
       ocr: systemOcr,
@@ -1533,6 +1568,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         deps.guard.blockedReason(entry.path) === null &&
         (await cache.put(key, value, token)),
       run: ocrRun,
+    }).finally(() => {
+      ocrMs += Math.max(0, deps.now() - started)
     })
     for (const page of result.failedNow) failedNow.add(page)
     switch (result.outcome) {
@@ -1774,9 +1811,15 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     skippedLines.push(`  …and ${String(unlisted)} more not listed.`)
   }
   // PDFs still waiting for OCR, whatever the cursor: they stay to be reported.
+  // Those whose name has a query term first, as likelier places to look.
+  const heldRanked = [
+    ...heldNamed.items,
+    ...held.items.filter((item) => !heldNamed.items.includes(item)),
+  ].slice(0, MAX_HELD_LISTED)
   const heldLines = namedLines(
-    'Scanned PDFs waiting for OCR (not counted yet; all their matches come with the cursor below):',
-    held.items.map((item) => item.line),
+    'Scanned PDFs waiting for OCR (not counted yet; all their matches come with the cursor ' +
+      `below)${heldNamed.total > 0 ? ', names with a searched word first' : ''}:`,
+    heldRanked.map((item) => item.line),
     Math.floor(scannedRoom / 2),
   )
   const heldMore = held.total - Math.max(0, heldLines.length - 1)
@@ -2038,6 +2081,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         `(${pages(docs.heldPages)} left for OCR): ${why}. Continue with the cursor below: ` +
         'pages already read are kept, and each file is reported once.',
     )
+    notes.push(ocrProgress(ocrRun.pagesRead, ocrMs, docs.heldPages, docs.notReached > 0))
   }
   if (docs.ocrPages > 0) {
     const said = [

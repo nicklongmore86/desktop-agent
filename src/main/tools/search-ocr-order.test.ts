@@ -348,6 +348,31 @@ describe('search_files OCR order', () => {
     )
   })
 
+  it('counts OCR progress and lists the waiting PDF the same when reporting out of path order', async () => {
+    // z-duct.pdf is read and reported before a-big.pdf, which comes first in path order: the
+    // progress line counts every page read this call, and the pages left are a-big.pdf's.
+    await put(path.join(sb.root, 'a-big.pdf'), doc(...Array.from({ length: 6 }, () => scan())))
+    await put(
+      path.join(sb.root, 'z-duct.pdf'),
+      doc(scan('The supply duct above the janitor closet runs north to the shaft')),
+    )
+    h = harness(300)
+    const r = await search({ contentPattern: 'duct', context: 0 })
+    expect(reportedFiles([r.content])).toEqual(['z-duct.pdf'])
+    expect(r.content).toContain(
+      'OCR progress: 3 scanned pages read by OCR in this call, in 0.3 s (10 pages/s); ' +
+        "4 scanned pages left. Estimate at this call's rate: about 2 more calls, 1 minute of OCR.",
+    )
+    const all = lines(r.content)
+    const title = all.findIndex((line) => line.startsWith('Scanned PDFs waiting for OCR'))
+    expect(all[title + 1]).toBe('  a-big.pdf (4 scanned pages not read yet)')
+    // The list is file text, between the markers; the progress line is after them.
+    const end = all.findIndex((line) => line.startsWith('[End of matches'))
+    expect(title).toBeGreaterThan(-1)
+    expect(title).toBeLessThan(end)
+    expect(all.findIndex((line) => line.startsWith('OCR progress'))).toBeGreaterThan(end)
+  })
+
   it('moves on in path order once a cursor carries a full reported set, each file once', async () => {
     // A set holds two PDFs here. The first call reads the named PDFs late in path order first:
     // two are reported out of order, filling the set, and the rest wait behind a-00.pdf. A
@@ -471,6 +496,8 @@ describe('search_files cursors past PDFs reported out of order', () => {
       const r = await search({ contentPattern: 'duct', context: 0, cursor })
       expect(r.isError).toBe(true)
       expect(r.content).toContain('"cursor" has expired')
+      expect(r.content).toContain('Start a new search without the cursor')
+      expect(r.content).toContain('already read by OCR are kept')
       expect(ocr.runs.filter((run) => run.name === 'a-big.pdf')).toHaveLength(2)
     } finally {
       get.mockRestore()
