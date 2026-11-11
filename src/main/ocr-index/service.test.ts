@@ -539,6 +539,267 @@ describe('background indexing of scanned pages', () => {
   })
 })
 
+describe('starting while another start, a control or a grant change is under way', () => {
+  /**
+   * Holds start()'s OCR probe until `release` (a job's own probe, which refreshes, goes
+   * through). What it answers is what `ocr.available` says once released.
+   */
+  const holdProbes = () => {
+    const real = ocr.probe.bind(ocr)
+    const held: ReturnType<typeof gate>[] = []
+    let released = false
+    ocr.probe = async (options) => {
+      if (!options?.refresh && !released) {
+        const waiting = gate()
+        held.push(waiting)
+        await waiting.wait
+      }
+      return real(options)
+    }
+    return {
+      held,
+      release: () => {
+        released = true
+        for (const waiting of held.splice(0)) waiting.open()
+      },
+    }
+  }
+
+  /** Two starts at once: waits until each has either settled or reached the probe. */
+  const both = async (
+    index: OcrIndexService,
+    probes: ReturnType<typeof holdProbes>,
+    a: string,
+    b: string,
+  ) => {
+    let settled = 0
+    const starts = [index.start(folder(a)), index.start(folder(b))].map((start) =>
+      start.finally(() => {
+        settled++
+      }),
+    )
+    await until(() => probes.held.length + settled === 2)
+    probes.release()
+    return Promise.all(starts)
+  }
+
+  /** A job for `rel` that stopped because OCR could not run when it began. */
+  const stoppedJob = async (index: OcrIndexService, rel: string): Promise<string> => {
+    const real = ocr.probe.bind(ocr)
+    ocr.probe = (options) =>
+      options?.refresh
+        ? Promise.resolve({
+            available: false,
+            reason: 'unsupported',
+            message: 'No OCR now.',
+            languages: [],
+          })
+        : real(options)
+    expect(await index.start(folder(rel))).toEqual({ ok: true })
+    await until(() => index.list().some((job) => job.rel === rel && job.state === 'stopped'))
+    ocr.probe = real
+    const job = index.list().find((j) => j.rel === rel)
+    if (!job) throw new Error('no job')
+    return job.id
+  }
+
+  beforeEach(async () => {
+    await fs.mkdir(path.join(sb.root, 'a/b'), { recursive: true })
+    // Jobs stay active (waiting for mains power), so they count as indexing their folder.
+    ocr.battery = true
+  })
+
+  it('accepts exactly one of two starts for the same folder at once', async () => {
+    const index = service()
+    const results = await both(index, holdProbes(), 'a', 'a')
+    expect(results.filter((result) => result.ok)).toHaveLength(1)
+    expect(results.find((result) => !result.ok)).toEqual({
+      ok: false,
+      reason: OCR_INDEX_REFUSAL.same,
+    })
+    expect(index.list()).toHaveLength(1)
+    expect(events()).toHaveLength(1)
+  })
+
+  it('accepts exactly one of two starts for nested folders at once', async () => {
+    const index = service()
+    const results = await both(index, holdProbes(), 'a', 'a/b')
+    expect(results.filter((result) => result.ok)).toHaveLength(1)
+    expect([OCR_INDEX_REFUSAL.inside, OCR_INDEX_REFUSAL.holds]).toContain(
+      results.find((result) => !result.ok)?.reason,
+    )
+    expect(index.list()).toHaveLength(1)
+  })
+
+  it('holds the folder while OCR is probed, and lets it go when the probe fails', async () => {
+    const index = service()
+    ocr.available = false
+    const probes = holdProbes()
+    const first = index.start(folder('a'))
+    await until(() => probes.held.length === 1)
+    expect(await index.start(folder('a/b'))).toEqual({
+      ok: false,
+      reason: OCR_INDEX_REFUSAL.inside,
+    })
+    probes.release()
+    expect(await first).toEqual({ ok: false, reason: 'Reading scanned pages needs Windows.' })
+    expect(index.list()).toEqual([])
+    ocr.available = true
+    expect(await index.start(folder('a/b'))).toEqual({ ok: true })
+  })
+
+  it('lets the folder go when the probe throws', async () => {
+    const index = service()
+    const real = ocr.probe.bind(ocr)
+    ocr.probe = () => Promise.reject(new Error('the probe crashed'))
+    await expect(index.start(folder('a'))).rejects.toThrow('the probe crashed')
+    ocr.probe = real
+    expect(await index.start(folder('a'))).toEqual({ ok: true })
+  })
+
+  it('refuses to resume a stopped job for a folder a start is probing for', async () => {
+    const index = service()
+    const old = await stoppedJob(index, 'a')
+    const probes = holdProbes()
+    const start = index.start(folder('a'))
+    await until(() => probes.held.length === 1)
+    expect(await index.resume(old)).toEqual({ ok: false, reason: OCR_INDEX_REFUSAL.same })
+    expect(index.list().map((job) => job.state)).toEqual(['stopped'])
+    probes.release()
+    expect(await start).toEqual({ ok: true })
+    // The stopped job made way for the new one; nothing else runs.
+    expect(index.list()).toHaveLength(1)
+    expect(only(index).id).not.toBe(old)
+    await until(() => stateOf(index) === 'battery')
+  })
+
+  it('lets a stopped job be dismissed or cancelled while a start probes for its folder', async () => {
+    const index = service()
+    const old = await stoppedJob(index, 'a')
+    const probes = holdProbes()
+    const start = index.start(folder('a'))
+    await until(() => probes.held.length === 1)
+    expect(await index.pause(old)).toEqual({ ok: true })
+    expect(await index.dismiss(old)).toEqual({ ok: true })
+    expect(await index.cancel(old)).toEqual({ ok: false, reason: OCR_INDEX_REFUSAL.unknown })
+    probes.release()
+    expect(await start).toEqual({ ok: true })
+    expect(index.list()).toHaveLength(1)
+  })
+
+  it('refuses to resume a stopped job around or inside a folder being indexed', async () => {
+    const index = service()
+    const outer = await stoppedJob(index, 'a')
+    expect(await index.start(folder('a/b'))).toEqual({ ok: true })
+    expect(await index.resume(outer)).toEqual({ ok: false, reason: OCR_INDEX_REFUSAL.holds })
+    expect(index.list().find((job) => job.id === outer)?.state).toBe('stopped')
+  })
+
+  it('starts no job when the folder’s grant is removed while OCR is probed', async () => {
+    const index = service()
+    const probes = holdProbes()
+    const start = index.start(folder('a'))
+    await until(() => probes.held.length === 1)
+    roots = []
+    token = null
+    await cache.forgetGrant(sb.root)
+    await index.forgetGrant(sb.root)
+    probes.release()
+    expect(await start).toEqual({ ok: false, reason: OCR_INDEX_REFUSAL.ungranted })
+    expect(index.list()).toEqual([])
+    expect(events()).toEqual([])
+  })
+
+  it('starts no job when a grant around the folder is removed while OCR is probed', async () => {
+    const nested = path.join(sb.root, 'a')
+    roots = [sb.root, nested]
+    const index = service()
+    const probes = holdProbes()
+    // Named under the outer grant, inside the inner one.
+    const start = index.start(folder('a/b'))
+    await until(() => probes.held.length === 1)
+    roots = [sb.root]
+    await index.forgetGrant(nested)
+    probes.release()
+    expect(await start).toEqual({ ok: false, reason: OCR_INDEX_REFUSAL.ungranted })
+    expect(index.list()).toEqual([])
+  })
+
+  it('starts no job when the app closes while OCR is probed', async () => {
+    const index = service()
+    const probes = holdProbes()
+    const start = index.start(folder('a'))
+    await until(() => probes.held.length === 1)
+    await index.dispose()
+    probes.release()
+    expect(await start).toEqual({ ok: false, reason: OCR_INDEX_REFUSAL.closing })
+    expect(index.list()).toEqual([])
+    expect(events()).toEqual([])
+  })
+
+  it('pauses, then cancels, a job while its start is still saving it', async () => {
+    ocr.battery = false
+    await put(path.join(sb.root, 'a/s.pdf'), scans(2, 'Saving'))
+    // The first saves are refused for a moment: the start is still saving when it is paused.
+    refuse.next = 2
+    const index = service()
+    const start = index.start(folder('a'))
+    await until(() => index.list().length === 1)
+    const { id } = only(index)
+    expect(await index.pause(id)).toEqual({ ok: true })
+    expect(await start).toEqual({ ok: true })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(stateOf(index)).toBe('paused')
+    expect(ocr.reads).toEqual([])
+    expect(await index.cancel(id)).toEqual({ ok: true })
+    expect(index.list()).toEqual([])
+  })
+
+  it('takes up no saved job for a folder a start is probing for', async () => {
+    await fs.writeFile(
+      stateFile(),
+      JSON.stringify({
+        version: 1,
+        jobs: [{ id: '0123456789abcdef', root: sb.root, rel: 'a', paused: false }],
+      }),
+    )
+    const index = service()
+    const probes = holdProbes()
+    const start = index.start(folder('a'))
+    await until(() => probes.held.length === 1)
+    await index.load()
+    expect(index.list()).toEqual([])
+    probes.release()
+    expect(await start).toEqual({ ok: true })
+    expect(index.list()).toHaveLength(1)
+    expect(only(index).id).not.toBe('0123456789abcdef')
+  })
+
+  it('takes up no saved job whose grant is removed while it is being taken up', async () => {
+    await fs.writeFile(
+      stateFile(),
+      JSON.stringify({
+        version: 1,
+        jobs: [{ id: '0123456789abcdef', root: sb.root, rel: 'a', paused: false }],
+      }),
+    )
+    const lstat = fs.lstat.bind(fs)
+    // The grant goes while the saved folder is being looked at.
+    const spy = vi.spyOn(fs, 'lstat').mockImplementation(async (...args) => {
+      roots = []
+      return lstat(...args)
+    })
+    const index = service()
+    try {
+      await index.load()
+    } finally {
+      spy.mockRestore()
+    }
+    expect(index.list()).toEqual([])
+    expect(events()).toEqual([])
+  })
+})
+
 describe('search_files and background indexing', () => {
   const searchWith = (index: OcrIndexService | null, input: Record<string, unknown>) =>
     toolHarness(sb, {

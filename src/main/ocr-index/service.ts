@@ -61,6 +61,8 @@ export const OCR_INDEX_REFUSAL = {
   unknown: 'That indexing job no longer exists.',
   notDone: 'Only finished or stopped indexing can be dismissed.',
   notPaused: 'That indexing is not paused.',
+  ungranted: 'That folder is no longer granted.',
+  closing: 'The app is closing.',
 } as const
 
 /** Tries at saving the jobs when Windows briefly refuses to replace the file. */
@@ -157,6 +159,17 @@ interface Job {
   started: number
 }
 
+/**
+ * A start between its overlap check and its job being added (it awaits the OCR probe there):
+ * counted as indexing its folder, so no other start, resume or saved job overlaps it meanwhile.
+ * `revoked` is set when its grant is removed in that time, so no job is started for it.
+ */
+interface Reservation {
+  root: string
+  folder: string
+  revoked: boolean
+}
+
 type Halt = 'paused' | 'cancelled' | 'gone'
 /** What a job shows while it works. */
 type Working = 'checking' | 'reading'
@@ -202,6 +215,7 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
   const onBattery = deps.onBattery ?? (() => ocr.onBattery?.() === true)
   const platform = guard.platform
   const jobs: Job[] = []
+  const starting = new Set<Reservation>()
   let loop: Promise<void> | null = null
   let disposed = false
   let emitTimer: ReturnType<typeof setTimeout> | null = null
@@ -793,9 +807,18 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
     await persist()
   }
 
-  const overlap = (folder: string): OcrIndexResult | null => {
-    for (const job of jobs) {
-      if (!ACTIVE.has(job.state)) continue
+  /** Whether removing the grant of `root` ends a job (or start) of this folder. */
+  const endedBy = (item: { root: string; folder: string }, root: string): boolean =>
+    samePath(item.root, root, platform) || isInside(item.folder, root, platform)
+
+  /**
+   * Why indexing `folder` is refused while another job (active, or being started) is indexing
+   * it, a folder around it or a folder inside it. `except`: the job asking (resume).
+   * Synchronous, so a caller that adds its job or reservation in the same turn cannot be raced.
+   */
+  const overlap = (folder: string, except?: Job): OcrIndexResult | null => {
+    const busy = [...jobs.filter((job) => job !== except && ACTIVE.has(job.state)), ...starting]
+    for (const job of busy) {
       if (samePath(job.folder, folder, platform))
         return { ok: false, reason: OCR_INDEX_REFUSAL.same }
       if (isInside(folder, job.folder, platform)) {
@@ -824,12 +847,27 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
       if (!where.ok) return { ok: false, reason: where.reason }
       if (!where.exists) return { ok: false, reason: OCR_INDEX_REFUSAL.gone }
       if (!(await isFolder(where.path))) return { ok: false, reason: OCR_INDEX_REFUSAL.notFolder }
+      // Checked and reserved in one turn, held across the probe, and turned into the job in
+      // one turn: two starts (or a start and a resume) for overlapping folders never both pass.
       const clash = overlap(where.path)
       if (clash) return clash
-      const availability = await ocr.probe()
+      const reservation: Reservation = { root: where.root, folder: where.path, revoked: false }
+      starting.add(reservation)
+      let availability: Awaited<ReturnType<SystemOcr['probe']>>
+      try {
+        availability = await ocr.probe()
+      } finally {
+        starting.delete(reservation)
+      }
+      if (disposed) return { ok: false, reason: OCR_INDEX_REFUSAL.closing }
+      if (reservation.revoked || !isGranted(where.root)) {
+        return { ok: false, reason: OCR_INDEX_REFUSAL.ungranted }
+      }
       if (!availability.available) return { ok: false, reason: availability.message }
       // A finished or stopped job for the same folder makes way for the new one.
-      for (const old of jobs.filter((job) => samePath(job.folder, where.path, platform))) {
+      for (const old of jobs.filter(
+        (job) => !ACTIVE.has(job.state) && samePath(job.folder, where.path, platform),
+      )) {
         jobs.splice(jobs.indexOf(old), 1)
       }
       const job = newJob(
@@ -868,6 +906,9 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
         job.paused = false
         return Promise.resolve({ ok: true })
       }
+      // A stopped job is not counted as indexing its folder, so another may have started since.
+      const clash = overlap(job.folder, job)
+      if (clash) return Promise.resolve(clash)
       job.paused = false
       job.abort = new AbortController()
       // A stopped job checks its folder again: OCR may work now, or files may have changed.
@@ -917,7 +958,9 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
         if (find(saved.id) || !isGranted(saved.root)) continue
         const where = await resolveLocation(guard, { rootId: rootId(saved.root), rel: saved.rel })
         if (!where.ok || !where.exists || !(await isFolder(where.path))) continue
-        if (overlap(where.path)) continue
+        // Checked again after the awaits, in the turn the job is added: the grant may have
+        // gone, or the user started a job here, in the meantime.
+        if (find(saved.id) || !isGranted(saved.root) || overlap(where.path)) continue
         const job = newJob(saved.id, where.root, saved.rel, where.path, saved.paused)
         jobs.push(job)
         if (!saved.paused) record(job, 'start', { resumed: true, afterRestart: true })
@@ -929,9 +972,10 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
 
     /** The grant of `root` was removed: its jobs end (the cache has deleted what they read). */
     async forgetGrant(root: string): Promise<void> {
-      for (const job of jobs.filter(
-        (j) => samePath(j.root, root, platform) || isInside(j.folder, root, platform),
-      )) {
+      for (const reservation of starting) {
+        if (endedBy(reservation, root)) reservation.revoked = true
+      }
+      for (const job of jobs.filter((j) => endedBy(j, root))) {
         await forget(job, 'grant-removed')
       }
     },

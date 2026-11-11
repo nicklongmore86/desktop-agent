@@ -12,7 +12,7 @@ Main process: `src/main/ocr-index/service.ts`. Priority between searches and ind
 2. **Finds the scanned pages.** For each PDF, the text the cache already holds, or else its text read through the reader and kept in the cache (exactly as `search_files` reads and keeps it). The pages that need OCR are those a search would read (`ocrReason`).
 3. **Reads them.** Each PDF with pages left goes through `ocrDocument`, the same pipeline a search uses (#86): the sandboxed reader renders one page per background job, the pinned `ocr-text.exe` reads it at below-normal priority (two helpers at most, verified before every run), pages are kept in page order and saved every few seconds, and three failures in a row stop it. The bytes are read again through a checked handle; if the file changed since it was checked, its text is read again first.
 
-One job runs at a time; the others wait as `queued`. A folder inside, or around, one already being indexed is refused.
+One job runs at a time; the others wait as `queued`. A folder inside, or around, one already being indexed is refused, also while that one's start is still checking that OCR can run (the folder is reserved from the check until the job is added, and let go if OCR cannot run), and so is resuming a stopped job around or inside one being indexed. A start whose folder's grant is removed, or whose app is closing, while it checks OCR starts nothing.
 
 ## Searches come first
 
@@ -49,7 +49,7 @@ One `ocr_index` entry when a job starts (or resumes, also after a restart), stop
 
 ## Tests
 
-- `src/main/ocr-index/service.test.ts`: a scripted reader and a fake OCR. Every page read exactly once and kept, priority against a search (nothing new starts, the pages being read are kept, `quiet` waits for them), pause/resume/cancel, battery before and during, restart (running and paused), saved jobs for folders no longer granted, grant removal, online-only files never opened, failing pages, OCR unavailable, overlapping folders, one job at a time, and what `search_files` says (and that it reads no page indexing read or is reading).
+- `src/main/ocr-index/service.test.ts`: a scripted reader and a fake OCR. Every page read exactly once and kept, priority against a search (nothing new starts, the pages being read are kept, `quiet` waits for them), pause/resume/cancel, battery before and during, restart (running and paused), saved jobs for folders no longer granted, grant removal, online-only files never opened, failing pages, OCR unavailable, overlapping folders (also two starts at once, a resume, a saved job or a grant removal while a start checks OCR), one job at a time, and what `search_files` says (and that it reads no page indexing read or is reading).
 - `src/main/ocr-index/service-real.test.ts` (Windows): the real helper and the real PDF code on a small folder; a search then finds the text with no more helper runs.
 - `src/renderer/src/OcrIndex.test.tsx`: the menu item, the panel, the controls, refusals and what is announced.
 - `e2e/ocr-index.spec.ts`: the same in real Electron, pointer and keyboard, with an approval dialog keeping the focus while progress comes in; screenshots `ocr-index-*` in `e2e-artifacts/ui/`.
