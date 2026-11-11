@@ -553,8 +553,12 @@ next time, in order (this only happens within about 1 MiB of the limit). Each he
 helper running at once (120 s with two, so sharing the processors does not trip it); the helper's
 own 60 s CPU limit is unchanged. While the PC runs on battery (Electron's `powerMonitor`), no new
 page is started: pages being read finish, and the rest stay pending, listed as `OCR paused on
-battery power` with a note to plug in and search again. Stop, a removed grant, the deadline or OCR
-failing kills every helper of the call at once.
+battery power` with a note to plug in and search again. Like the other reasons OCR is off, such a
+PDF is reported with those pages named as not read, not held for the cursor: on battery a held PDF
+would never finish, and its text-layer matches would be withheld. A new search once plugged in
+reads only the pages left, from the cache. Stop, a removed grant, the deadline or OCR failing kills
+every helper of the call at once. The `OCR progress` line counts the pages kept this call over the
+call's own time in OCR, so pages read side by side raise its rate rather than its time.
 
 A file is reported whole, once. Until all of a PDF's scanned pages are read it is `held`: named
 in `Scanned PDFs waiting for OCR`, its text matches with it, not counted. Other files are not

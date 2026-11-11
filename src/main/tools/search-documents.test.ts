@@ -795,7 +795,13 @@ describe('search_files over a large folder in one call', () => {
     }
     const partial = after('Documents only partly searched (too long):')
     expect(partial).toHaveLength(11)
-    expect(partial[0]).toBe('  docs/r0000.pdf (stopped at page 2 of 3)')
+    // Those with scanned pages are finished likeliest first: the three whose text matched.
+    expect(partial.slice(0, 4)).toEqual([
+      '  docs/r0007.pdf (stopped at page 2 of 3)',
+      '  docs/r0107.pdf (stopped at page 2 of 3)',
+      '  docs/r0207.pdf (stopped at page 2 of 3)',
+      '  docs/r0000.pdf (stopped at page 2 of 3)',
+    ])
     expect(partial.at(-1)).toBe('  …and 290 more.')
     // Scanned pages have their own, longer list.
     const blank = after(SCANNED_TITLE)

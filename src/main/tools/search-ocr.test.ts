@@ -36,7 +36,7 @@ import {
 import type { ToolDeps } from './deps'
 import { DocumentTextCache, type CachedText, type OcrPage } from './document-text-cache'
 import { ocrReason } from './search-documents'
-import { MAX_FILES_LISTED, SCANNED_TITLE } from './search-files'
+import { MAX_FILES_LISTED, MAX_HELD_LISTED, SCANNED_TITLE } from './search-files'
 import {
   inkShare,
   OCR_ON_BATTERY,
@@ -1580,6 +1580,78 @@ describe('search_files OCR within its time, and continuing', () => {
     expect(auditExtra()).toMatchObject({ ocrPagesRead: 3, ocrPagesNotRead: 3 })
   })
 
+  it('says how fast OCR went this call and estimates what is left, counts only', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(...Array.from({ length: 10 }, () => scan())))
+    const clock = slowOcr(500)
+    h = harness({ now: () => clock.now, limits: { searchTimeMs: 2000 } })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    // 4 pages in 2 s: 2 pages/s, so the 6 left take 2 more calls and about 3 s (1 minute at least).
+    expect(r.content).toContain(
+      'OCR progress: 4 scanned pages read by OCR in this call, in 2.0 s (2.0 pages/s); ' +
+        "6 scanned pages left. Estimate at this call's rate: about 2 more calls, 1 minute of OCR.",
+    )
+    // Outside the file text: no name or text of a file in it.
+    const end = r.content.indexOf('[End of matches')
+    expect(r.content.indexOf('OCR progress')).toBeGreaterThan(end)
+  })
+
+  it('measures two helpers by the wall clock: pages read side by side count at their own rate', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(...Array.from({ length: 12 }, () => scan())))
+    // Pages read side by side take 500 ms together, not 500 ms each.
+    const clock = { now: 0 }
+    ocr.before = async () => {
+      const started = clock.now
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      clock.now = Math.max(clock.now, started + 500)
+    }
+    h = harness({
+      now: () => clock.now,
+      limits: { searchTimeMs: 2000 },
+      ocr: Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 }),
+    })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    // Only pages kept count; a page still being read at the deadline is stopped and stays pending.
+    const done = (await ocrOf('scan.pdf'))?.ocr.filter((page) => page.state === 'done').length ?? 0
+    // More than one helper could read in 2 s (4 pages), each kept page once.
+    expect(done).toBeGreaterThan(4)
+    expect(auditExtra()).toMatchObject({ ocrPagesRead: done, ocrPagesNotRead: 12 - done })
+    // The time is the call's own, not the helpers' added up: the rate is the pages over 2 s.
+    const rate = done / 2
+    expect(r.content).toContain(
+      `OCR progress: ${String(done)} scanned pages read by OCR in this call, in 2.0 s ` +
+        `(${rate.toFixed(1)} pages/s); ${String(12 - done)} scanned pages left. ` +
+        `Estimate at this call's rate: about ${String(Math.ceil((12 - done) / done))} more call, ` +
+        '1 minute of OCR.',
+    )
+  })
+
+  it('lists the PDFs waiting for OCR with names that have a searched word first, capped', async () => {
+    for (let i = 0; i < MAX_HELD_LISTED + 5; i++) {
+      await put(path.join(sb.root, `a-${String(i).padStart(2, '0')}.pdf`), doc(scan(), scan()))
+    }
+    await put(path.join(sb.root, 'z-freezer-rfi.pdf'), doc(scan(), scan()))
+    await put(path.join(sb.root, 'zz-walk-in.pdf'), doc(scan(), scan()))
+    const clock = slowOcr(100)
+    h = harness({ now: () => clock.now, limits: { searchTimeMs: 100 } })
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    const all = lines(r.content)
+    const title = all.findIndex((line) => line.startsWith('Scanned PDFs waiting for OCR'))
+    expect(all[title]).toContain('names with a searched word first')
+    const listed = all.slice(title + 1, title + 1 + MAX_HELD_LISTED)
+    // Names with a searched word are read by OCR first: z-freezer-rfi.pdf's OCR began, and its
+    // one page left keeps it at the top of the list.
+    expect(listed.slice(0, 2)).toEqual([
+      '  z-freezer-rfi.pdf (1 scanned page not read yet)',
+      '  zz-walk-in.pdf (2 scanned pages not read yet)',
+    ])
+    // The rest in path order after them, not yet begun.
+    expect(listed[2]).toBe('  a-00.pdf (2 scanned pages not read yet)')
+    // 27 waiting, 20 named.
+    expect(all[title + 1 + MAX_HELD_LISTED]).toBe('  …and 7 more.')
+    // Inside the file text markers, like every other list of names.
+    expect(title).toBeLessThan(all.findIndex((line) => line.startsWith('[End of matches')))
+  })
+
   it('continues where it stopped, reading no page twice and each file reported once', async () => {
     const pagesOf = (n: number, words: string) =>
       Array.from({ length: n }, () =>
@@ -1842,6 +1914,10 @@ describe('search_files OCR within its time, and continuing', () => {
     const r = await search({ contentPattern: 'other', cursor: cursorOf(first.content) })
     expect(r.isError).toBe(true)
     expect(r.content).toContain('was not given by this same search')
+    // The agent is told why, and how to change terms without losing the OCR already done.
+    expect(r.content).toContain('anyOf terms (same words, same order)')
+    expect(r.content).toContain('start a new search without the cursor')
+    expect(r.content).toContain('scanned pages already read by OCR are kept')
   })
 
   it('takes the page’s render job out of the queue at the deadline, and says it ran out', async () => {
@@ -2048,6 +2124,90 @@ describe('search_files OCR, Stop and the reader', () => {
       'pending',
       'pending',
     ])
+  })
+
+  it('pauses on battery mid-continuation: kept pages stay, the rest pending, each file once', async () => {
+    const pagesOf = (n: number) =>
+      Array.from({ length: n }, () => scan('walk-in freezer with long enough words to read well'))
+    await put(path.join(sb.root, 'a-scan.pdf'), doc(...pagesOf(3)))
+    await put(path.join(sb.root, 'b-freezer.pdf'), doc(...pagesOf(4)))
+    await put(path.join(sb.root, 'c-notes.txt'), 'Notes about the walk-in freezer\n')
+    let battery = false
+    const clock = { now: 0 }
+    ocr.before = () => {
+      clock.now += 100
+      if (ocr.runs.length === 4) battery = true
+    }
+    h = harness({
+      now: () => clock.now,
+      limits: { searchTimeMs: 300 },
+      ocr: Object.assign(Object.create(ocr) as FakeOcr, { onBattery: () => battery }),
+    })
+    const input = { contentPattern: 'walk-in freezer', context: 0, maxResults: 1000 }
+    // Out of time first: the named PDF's OCR began first, and both wait for the cursor.
+    const first = await search(input)
+    expect(reportedFiles([first.content])).toEqual(['c-notes.txt'])
+    expect(first.content).toContain('  b-freezer.pdf (1 scanned page not read yet)')
+    expect(first.content).toContain('  a-scan.pdf (3 scanned pages not read yet)')
+    expect(first.content).toContain('OCR progress: 3 scanned pages read by OCR in this call')
+    expect(first.content).not.toContain('battery')
+    // On battery during the next call's first page: it is finished and kept, no other starts.
+    const second = await search({ ...input, cursor: cursorOf(first.content) })
+    expect(ocr.runs.map((run) => `${run.name} ${String(run.page)}`)).toEqual(
+      [1, 2, 3, 4].map((n) => `b-freezer.pdf ${String(n)}`),
+    )
+    expect(reportedFiles([second.content])).toEqual(['b-freezer.pdf'])
+    // a-scan.pdf is listed as not read, never as searched: nothing says it has no match.
+    expect(second.content).toContain(
+      '  a-scan.pdf (3 of 3 scanned pages not read: OCR paused on battery power)',
+    )
+    expect(second.content).toContain('scanned pages OCR could not fully read are counted below')
+    expect(second.content).toContain(
+      'Of 7 scanned pages in the files reported: 4 read by OCR, 3 not read.',
+    )
+    expect(second.content).toContain(OCR_ON_BATTERY)
+    // Nothing is waiting for this cursor, so no progress line promises a rate for it.
+    expect(second.content).not.toContain('OCR progress')
+    expect(cursorOf(second.content)).toBeNull()
+    expect((await ocrOf('a-scan.pdf'))?.ocr.map((page) => page.state)).toEqual([
+      'pending',
+      'pending',
+      'pending',
+    ])
+    // Plugged in, a new search reads only the pages left.
+    battery = false
+    ocr.runs.length = 0
+    h = harness({ ocr: Object.assign(Object.create(ocr) as FakeOcr, { onBattery: () => battery }) })
+    const again = await search(input)
+    expect(ocr.runs.map((run) => `${run.name} ${String(run.page)}`)).toEqual(
+      [1, 2, 3].map((n) => `a-scan.pdf ${String(n)}`),
+    )
+    expect(lines(again.content)[0]).toBe(`8 results in ${sb.root}`)
+    expect(again.content).toContain('Every file was checked')
+  })
+
+  it('keeps pages two helpers read when the cache must evict: OCR outlasts plain text', async () => {
+    const small = new DocumentTextCache({
+      dir: path.join(sb.userData, 'small-cache'),
+      grants: { list: () => [sb.root], token: () => 'grant' },
+      maxEntries: 2,
+    })
+    await put(path.join(sb.root, 'a-scan.pdf'), doc(scan(), scan(), scan(), scan()))
+    const helpers = Object.assign(Object.create(ocr) as FakeOcr, { helpers: 2 })
+    h = harness({ documentCache: small, ocr: helpers })
+    await search({ contentPattern: 'freezer', context: 0 })
+    expect(ocr.runs).toHaveLength(4)
+    // Text-only PDFs used since push the cache over its two entries.
+    for (const name of ['b.pdf', 'c.pdf', 'd.pdf']) {
+      await put(path.join(sb.root, name), doc({ text: `${name} about the walk-in freezer` }))
+    }
+    await search({ contentPattern: 'freezer', context: 0 })
+    expect(small.usage().entries).toBe(2)
+    // The scan, least recently used of all, is what is still cached: no page is read again.
+    ocr.runs.length = 0
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    expect(ocr.runs).toEqual([])
+    expect(lines(r.content)[0]).toBe(`7 results in ${sb.root}`)
   })
 
   it('spends the character limit in page order, when a later page is read first', async () => {
