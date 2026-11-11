@@ -890,9 +890,13 @@ describe('search_files OCR availability', () => {
       expect(r.content).toContain(`  scan.pdf (2 of 2 scanned pages not read: ${label})`)
       expect(r.content).toContain(`  mixed.pdf (1 of 1 scanned page not read: ${label})`)
       expect(r.content).toContain(message)
-      // Every file was checked, and what could not be read is said right there.
-      expect(r.content).toContain('Every file was checked: 1 match in 1 file;')
-      expect(r.content).toContain('scanned pages OCR could not fully read are counted below')
+      // Not complete while pages are unread: what could not be read, and why, is said instead.
+      expect(r.content).not.toContain('Every file')
+      expect(r.content).toContain(
+        `The search covered every file except 3 scanned pages OCR left unread (${label}: 3), ` +
+          'listed below: 1 match in 1 file; files that could not be searched are counted below. ' +
+          'Those pages were not searched, so no match is not proof of absence.',
+      )
       expect(r.content).toContain('1 files skipped: 1 no text layer (scanned)')
       expect(r.content).toContain('read_document shows pages to the AI as images')
       expect(r.content).toContain('ask the user before doing many')
@@ -1335,7 +1339,11 @@ describe('search_files OCR failures', () => {
       const r = await search({ contentPattern: 'freezer', context: 0 })
       expect(r.content).toContain('  bad.pdf (OCR failed on 1 of 2 scanned pages)')
       expect(r.content).toContain('bad.pdf (page 2, OCR)')
-      expect(r.content).toContain('Every file was checked: 1 match in 1 file;')
+      // A page that failed for good was not searched either: the search is not complete.
+      expect(r.content).not.toContain('Every file')
+      expect(r.content).toContain(
+        'The search covered every file except 1 scanned page OCR left unread (OCR failed: 1)',
+      )
       ocr.runs.length = 0
       const again = await search({ contentPattern: 'freezer', context: 0 })
       expect(ocr.runs).toEqual([])
@@ -1387,6 +1395,11 @@ describe('search_files OCR failures', () => {
     )
     expect(r.content).toContain('  b.pdf (2 of 2 scanned pages not read: OCR failed)')
     expect(cursorOf(r.content)).toBeNull()
+    // No file is left to visit, but no scanned page was searched: not complete.
+    expect(r.content).not.toContain('Every file')
+    expect(r.content).toContain(
+      'The search covered every file except 7 scanned pages OCR left unread (OCR failed: 7)',
+    )
   })
 
   it('reports a page the reader could not render, kept when it will not change', async () => {
@@ -1526,6 +1539,8 @@ describe('search_files OCR and the cache', () => {
     // Page 2 went over the entry limit, so what is left would be read again each call for ever:
     // it is reported as not reached, and the search moves on.
     expect(r.content).toContain('not read: not reached')
+    expect(r.content).not.toContain('Every file')
+    expect(r.content).toContain('OCR left unread (not reached: 1)')
     expect(cursorOf(r.content)).toBeNull()
     expect(small.usage().bytes).toBeLessThanOrEqual(600)
   })
@@ -2100,6 +2115,13 @@ describe('search_files OCR, Stop and the reader', () => {
       '  scan.pdf (2 of 2 scanned pages not read: OCR paused on battery power)',
     )
     expect(r.content).toContain(OCR_ON_BATTERY)
+    expect(r.content).not.toContain('Every file')
+    expect(r.content).toContain(
+      'The search covered every file except 2 scanned pages OCR left unread ' +
+        '(OCR paused on battery power: 2), listed below: 1 match in 1 file. Those pages were ' +
+        'not searched, so no match is not proof of absence; plug this PC in and search again to ' +
+        'read the 2 scanned pages paused on battery power.',
+    )
     expect((await ocrOf('scan.pdf'))?.ocr.map((page) => page.state)).toEqual(['pending', 'pending'])
     battery = false
     const again = await search({ contentPattern: 'freezer', context: 0 })
@@ -2161,7 +2183,15 @@ describe('search_files OCR, Stop and the reader', () => {
     expect(second.content).toContain(
       '  a-scan.pdf (3 of 3 scanned pages not read: OCR paused on battery power)',
     )
-    expect(second.content).toContain('scanned pages OCR could not fully read are counted below')
+    // Nothing else is left after the cursor, yet it is not called complete: 3 pages are unread.
+    expect(second.content).not.toContain('Every file')
+    expect(second.content).toContain(
+      'The search covered every file after the cursor except 3 scanned pages OCR left unread ' +
+        '(OCR paused on battery power: 3)',
+    )
+    expect(second.content).toContain(
+      'plug this PC in and search again to read the 3 scanned pages paused on battery power.',
+    )
     expect(second.content).toContain(
       'Of 7 scanned pages in the files reported: 4 read by OCR, 3 not read.',
     )

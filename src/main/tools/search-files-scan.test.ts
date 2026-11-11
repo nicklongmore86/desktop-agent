@@ -321,7 +321,11 @@ describe('search_files cursor', () => {
       }
       cursor = cursorOf(r.content)
       if (cursor === null) {
-        expect(r.content).toContain('Every file')
+        // Its last scanned page OCR could not read (no helper here) keeps it from being complete.
+        expect(r.content).not.toContain('Every file')
+        expect(r.content).toMatch(
+          /The search covered every file after the cursor except 1 scanned page OCR left unread \(OCR unavailable: 1\)/,
+        )
         break
       }
       expect(r.content).toContain('Not every file')

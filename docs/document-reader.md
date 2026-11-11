@@ -568,8 +568,13 @@ held one on, in path order. A later PDF with scanned pages is held too, even if 
 its pages, so that the cursor alone says what is left. A call stopped earlier than that (the
 time ran out in the text, the entry limit, a full files list) falls back to a plain cursor at the
 first held PDF, so the files after it are reported again from the cache rather than twice.
-`Every file was checked` needs a cursor-free call: no page waiting, or each one explicitly listed
-as not readable, with the counts in `Of N scanned pages in the files reported`.
+`Every file was checked` needs a cursor-free call with every scanned page in what it reported read
+by OCR. A call with nothing left to visit but scanned pages OCR left unread (pending for a reason
+like `OCR paused on battery power` or `no OCR language installed`, not reached, or failed) says
+instead `The search covered every file except N scanned pages OCR left unread (reason: n; …)`, that
+those pages were not searched, and, for pages paused on battery, to plug in and search again. The
+pages are listed with their reasons, counted in `Of N scanned pages in the files reported`, and the
+agent's guidance treats that wording as an incomplete search.
 
 **What the result says.** OCR matches read `path (page 3, OCR): text`, inside the markers, cleaned
 and neutralised like any other text; the flexible matcher joins wrapped lines within a page's OCR

@@ -348,7 +348,12 @@ test.describe('read_document over the sandboxed worker', () => {
       expect.stringMatching(/^spec\.docx \(character \d+\): Refrigeration: provide one/),
     ])
     expect(first.content).toContain('Files with matches (5):\n  RFI-014.pdf (1 match)')
-    expect(first.content).toContain('Every file was checked: 5 matches in 5 files;')
+    // The drawn page OCR could not read keeps the search from being called complete.
+    expect(first.content).not.toContain('Every file')
+    expect(first.content).toContain(
+      'The search covered every file except 1 scanned page OCR left unread (OCR unavailable: 1), ' +
+        'listed below: 5 matches in 5 files; files that could not be searched are counted below.',
+    )
     expect(first.content).toContain('Searched 4 of 6 documents.')
     // This harness has no OCR: the drawn page is reported as not read, and why.
     expect(first.content).toContain('  scan.pdf (1 of 1 scanned page not read: OCR unavailable)')
