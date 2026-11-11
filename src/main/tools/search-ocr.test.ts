@@ -35,7 +35,7 @@ import {
 import type { ToolDeps } from './deps'
 import { DocumentTextCache, type CachedText, type OcrPage } from './document-text-cache'
 import { ocrReason } from './search-documents'
-import { MAX_FILES_LISTED, SCANNED_TITLE } from './search-files'
+import { MAX_FILES_LISTED, MAX_HELD_LISTED, SCANNED_TITLE } from './search-files'
 import { inkShare, readingScore, readsWell, turnGray } from './search-ocr'
 import { toolHarness, type ToolHarness } from './test-support'
 
@@ -1201,6 +1201,46 @@ describe('search_files OCR within its time, and continuing', () => {
     expect(auditExtra()).toMatchObject({ ocrPagesRead: 3, ocrPagesNotRead: 3 })
   })
 
+  it('says how fast OCR went this call and estimates what is left, counts only', async () => {
+    await put(path.join(sb.root, 'scan.pdf'), doc(...Array.from({ length: 10 }, () => scan())))
+    const clock = slowOcr(500)
+    h = harness({ now: () => clock.now, limits: { searchTimeMs: 2000 } })
+    const r = await search({ contentPattern: 'freezer', context: 0 })
+    // 4 pages in 2 s: 2 pages/s, so the 6 left take 2 more calls and about 3 s (1 minute at least).
+    expect(r.content).toContain(
+      'OCR progress: 4 scanned pages read by OCR in this call, in 2.0 s (2.0 pages/s); ' +
+        "6 scanned pages left. Estimate at this call's rate: about 2 more calls, 1 minute of OCR.",
+    )
+    // Outside the file text: no name or text of a file in it.
+    const end = r.content.indexOf('[End of matches')
+    expect(r.content.indexOf('OCR progress')).toBeGreaterThan(end)
+  })
+
+  it('lists the PDFs waiting for OCR with names that have a searched word first, capped', async () => {
+    for (let i = 0; i < MAX_HELD_LISTED + 5; i++) {
+      await put(path.join(sb.root, `a-${String(i).padStart(2, '0')}.pdf`), doc(scan(), scan()))
+    }
+    await put(path.join(sb.root, 'z-freezer-rfi.pdf'), doc(scan(), scan()))
+    await put(path.join(sb.root, 'zz-walk-in.pdf'), doc(scan(), scan()))
+    const clock = slowOcr(100)
+    h = harness({ now: () => clock.now, limits: { searchTimeMs: 100 } })
+    const r = await search({ contentPattern: 'walk-in freezer', context: 0 })
+    const all = lines(r.content)
+    const title = all.findIndex((line) => line.startsWith('Scanned PDFs waiting for OCR'))
+    expect(all[title]).toContain('names with a searched word first')
+    const listed = all.slice(title + 1, title + 1 + MAX_HELD_LISTED)
+    expect(listed.slice(0, 2)).toEqual([
+      '  z-freezer-rfi.pdf (2 scanned pages not read yet)',
+      '  zz-walk-in.pdf (2 scanned pages not read yet)',
+    ])
+    // The first file's OCR began: its one page left keeps it in the list, in path order after.
+    expect(listed[2]).toBe('  a-00.pdf (1 scanned page not read yet)')
+    // 27 waiting, 20 named.
+    expect(all[title + 1 + MAX_HELD_LISTED]).toBe('  …and 7 more.')
+    // Inside the file text markers, like every other list of names.
+    expect(title).toBeLessThan(all.findIndex((line) => line.startsWith('[End of matches')))
+  })
+
   it('continues where it stopped, reading no page twice and each file reported once', async () => {
     const pagesOf = (n: number, words: string) =>
       Array.from({ length: n }, () =>
@@ -1463,6 +1503,10 @@ describe('search_files OCR within its time, and continuing', () => {
     const r = await search({ contentPattern: 'other', cursor: cursorOf(first.content) })
     expect(r.isError).toBe(true)
     expect(r.content).toContain('was not given by this same search')
+    // The agent is told why, and how to change terms without losing the OCR already done.
+    expect(r.content).toContain('anyOf terms (same words, same order)')
+    expect(r.content).toContain('start a new search without the cursor')
+    expect(r.content).toContain('scanned pages already read by OCR are kept')
   })
 
   it('takes the page’s render job out of the queue at the deadline, and says it ran out', async () => {
