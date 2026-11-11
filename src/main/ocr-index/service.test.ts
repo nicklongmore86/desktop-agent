@@ -188,8 +188,10 @@ describe('background indexing of scanned pages', () => {
     expect(complete?.paths).toEqual([path.join(sb.root, 'rfi')])
     expect(complete?.origin).toBe('user')
     expect(JSON.stringify(events())).not.toMatch(/Alpha|Bravo|a\.pdf|freezer/)
-    // A finished job is no longer kept for the next start.
-    expect(JSON.parse(await fs.readFile(stateFile(), 'utf8'))).toEqual({ version: 1, jobs: [] })
+    // A finished job is no longer kept for the next start (saved just after it finishes).
+    await expect
+      .poll(async () => JSON.parse(await fs.readFile(stateFile(), 'utf8')) as unknown)
+      .toEqual({ version: 1, jobs: [] })
   })
 
   it('makes way for a search: nothing new starts, the pages being read are kept once', async () => {
