@@ -4,6 +4,7 @@ import type { AuditSink } from '../permissions/audit'
 import type { DocumentTextCacheLike } from './document-text-cache'
 import type { PathGuard } from '../permissions/guard'
 import type { FindJobLauncher } from './job-launcher'
+import type { OcrIndexStatus, OcrPriority } from './ocr-priority'
 import type { KillTree, ShellSpawner } from './run-shell'
 import { MAX_TREE_ENTRIES } from './walk'
 import { MAX_REPORTED_KEYS } from './search-cursor'
@@ -115,6 +116,13 @@ export interface ToolDeps {
    * and the cache as well. Without one, those pages are reported as not read.
    */
   ocr?: SystemOcr
+  /**
+   * Shared with background indexing of scanned pages: a search reading documents claims it,
+   * and indexing makes way. Without one, nothing is indexing.
+   */
+  ocrPriority?: OcrPriority
+  /** How background indexing is going, for search_files to mention. */
+  ocrIndex?: OcrIndexStatus
   /** Monotonic clock in ms, for time caps and audit durations. */
   now?: () => number
   /**
@@ -136,5 +144,7 @@ export interface ResolvedDeps {
   documents: DocumentReader | null
   documentCache: DocumentTextCacheLike | null
   ocr: SystemOcr | null
+  ocrPriority: OcrPriority | null
+  ocrIndex: OcrIndexStatus | null
   now: () => number
 }

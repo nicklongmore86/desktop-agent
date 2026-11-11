@@ -371,3 +371,130 @@
   max-width: 36ch;
   margin: 0;
 }
+
+/* Background indexing of scanned documents, above the tree. */
+
+.ocr-index {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 40%;
+  overflow: auto;
+}
+
+.ocr-index-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ocr-job {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-1);
+  font-size: var(--font-size-sm);
+  min-width: 0;
+}
+
+.ocr-job-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ocr-job-name {
+  overflow: hidden;
+  color: var(--color-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ocr-job-state {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ocr-job-stopped .ocr-job-state {
+  color: var(--color-warning-text);
+}
+
+.ocr-job-finished .ocr-job-state {
+  color: var(--color-success-text);
+}
+
+.ocr-job-bar {
+  height: 6px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-0);
+}
+
+.ocr-job-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+}
+
+.ocr-job-paused .ocr-job-bar > span,
+.ocr-job-battery .ocr-job-bar > span,
+.ocr-job-stopped .ocr-job-bar > span {
+  background: var(--color-text-muted);
+}
+
+.ocr-job-progress,
+.ocr-job-message {
+  margin: 0;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.ocr-job-progress {
+  color: var(--color-text);
+}
+
+.ocr-job-problem {
+  color: var(--color-warning-text);
+}
+
+.ocr-job-notes {
+  margin: 0;
+  padding-inline-start: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ocr-job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.ocr-job-actions button {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+@media (forced-colors: active) {
+  /* The progress bar and its fill show without colour. */
+  .ocr-job,
+  .ocr-job-bar {
+    border-color: CanvasText;
+  }
+
+  .ocr-job-bar > span {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+}

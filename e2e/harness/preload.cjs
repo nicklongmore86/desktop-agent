@@ -10,6 +10,7 @@ const listeners = {
   menu: new Set(),
   files: new Set(),
   git: new Set(),
+  ocrIndex: new Set(),
 }
 const responses = []
 const subscribe = (set) => (listener) => {
@@ -108,6 +109,20 @@ let files = {
   'src/components': [f('src/components/FileTree.tsx')],
 }
 const filesCalls = { watch: [], reveal: [], copy: [], reference: [], search: [], open: [] }
+// Background indexing of scanned documents: stands in for main's jobs. A start adds a queued
+// job; e2e.setOcrIndex replaces them and pushes them, like main's progress pushes.
+let ocrJobs = []
+const ocrIndexCalls = { start: [], pause: [], resume: [], cancel: [], dismiss: [] }
+const pushOcrIndex = () => {
+  for (const listener of listeners.ocrIndex) listener(JSON.parse(JSON.stringify(ocrJobs)))
+}
+const ocrJob = (id, change) => {
+  if (!ocrJobs.some((job) => job.id === id))
+    return Promise.resolve({ ok: false, reason: 'That indexing job no longer exists.' })
+  ocrJobs = ocrJobs.map((job) => (job.id === id ? { ...job, ...change } : job))
+  pushOcrIndex()
+  return Promise.resolve({ ok: true })
+}
 // Text a reply may name as a file or folder, and what a click would do (like main's decision).
 const MENTIONS = {
   'C:\\Users\\me\\Projects\\notes.md': {
@@ -843,6 +858,59 @@ contextBridge.exposeInMainWorld('desktopApi', {
       return Promise.resolve(notifications)
     },
   },
+  ocrIndex: {
+    list: () => Promise.resolve(JSON.parse(JSON.stringify(ocrJobs))),
+    start: (location) => {
+      ocrIndexCalls.start.push(location)
+      const path = location.rel ? `${ROOT}\\${location.rel.replace(/\//g, '\\')}` : ROOT
+      ocrJobs = [
+        ...ocrJobs,
+        {
+          id: String(ocrJobs.length + 1).padStart(16, '0'),
+          rootId: location.rootId,
+          rel: location.rel,
+          name: path.split('\\').pop(),
+          path,
+          state: 'checking',
+          filesChecked: 0,
+          filesTotal: 0,
+          pagesDone: 0,
+          pagesTotal: 0,
+          pagesFailed: 0,
+          minutesLeft: null,
+          cloudOnly: 0,
+          skipped: 0,
+          message: 'Finding scanned pages. Runs at low priority and pauses on battery power.',
+        },
+      ]
+      pushOcrIndex()
+      return Promise.resolve({ ok: true })
+    },
+    pause: (id) => {
+      ocrIndexCalls.pause.push(id)
+      return ocrJob(id, { state: 'paused', message: 'Paused. Pages read so far are kept.' })
+    },
+    resume: (id) => {
+      ocrIndexCalls.resume.push(id)
+      return ocrJob(id, {
+        state: 'reading',
+        message: 'Reading scanned pages at low priority. Searches come first.',
+      })
+    },
+    cancel: (id) => {
+      ocrIndexCalls.cancel.push(id)
+      ocrJobs = ocrJobs.filter((job) => job.id !== id)
+      pushOcrIndex()
+      return Promise.resolve({ ok: true })
+    },
+    dismiss: (id) => {
+      ocrIndexCalls.dismiss.push(id)
+      ocrJobs = ocrJobs.filter((job) => job.id !== id)
+      pushOcrIndex()
+      return Promise.resolve({ ok: true })
+    },
+    onChanged: subscribe(listeners.ocrIndex),
+  },
   theme: {
     get: () => Promise.resolve(theme),
     set: (next) => {
@@ -1156,6 +1224,12 @@ contextBridge.exposeInMainWorld('e2e', {
     for (const listener of listeners.files) listener({ rootId: ROOT_ID, rel })
   },
   filesCalls: () => JSON.parse(JSON.stringify(filesCalls)),
+  // Main's indexing jobs, pushed as main pushes progress; and what the renderer asked.
+  setOcrIndex: (jobs) => {
+    ocrJobs = jobs
+    pushOcrIndex()
+  },
+  ocrIndexCalls: () => JSON.parse(JSON.stringify(ocrIndexCalls)),
   // The Git tab's answers: 'missing' (no git), 'empty' (a repository with no commits),
   // 'notRepo', or the default repository; then main's change push for it.
   setGit: (state) => {

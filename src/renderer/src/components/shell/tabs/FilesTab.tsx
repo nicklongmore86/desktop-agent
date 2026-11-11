@@ -2,6 +2,8 @@ import type { GrantsState } from '../../../../../shared/ipc'
 import type { OpenSettings } from '../../../open-settings'
 import { useExternalFileDrop } from '../../files/external-drop'
 import { FileTree } from '../../files/FileTree'
+import { OcrIndexJobs } from '../../files/OcrIndexJobs'
+import { useOcrIndex } from '../../files/use-ocr-index'
 import { useFileTree } from '../../files/use-file-tree'
 import { useGrantActions } from '../../settings/use-grant-actions'
 
@@ -22,6 +24,7 @@ export function FilesTab({
   const { message, busy, add, remove } = useGrantActions(onGrants)
   const tree = useFileTree(grants)
   const externalDrop = useExternalFileDrop()
+  const indexing = useOcrIndex()
   const granted = (grants?.roots.length ?? 0) > 0
   return (
     <section
@@ -64,6 +67,7 @@ export function FilesTab({
           {message}
         </p>
       )}
+      {granted && <OcrIndexJobs controls={indexing} />}
       {granted ? (
         <FileTree
           rows={tree.rows}
@@ -73,6 +77,14 @@ export function FilesTab({
           onRemoveRoot={(root) => {
             void remove(root)
           }}
+          onIndexFolder={(location) => {
+            void indexing.start(location)
+          }}
+          indexBlock={(location) =>
+            indexing.coveringJob(location)
+              ? 'Already being indexed: see Scanned documents above the tree.'
+              : null
+          }
         />
       ) : (
         <div className="files-empty">

@@ -2,7 +2,7 @@
 
 `resources\helpers\ocr-text.exe` (source: `native/ocr-text/ocr-text.cpp`) recognises the text in one image with Windows' built-in OCR, `Windows.Media.Ocr`. The app bundles no OCR engine and no language data. The recognizer and its languages are part of Windows: each language's "Optical character recognition" feature, under Settings › Time & language › Language & region.
 
-The main-process side is `src/main/documents/system-ocr.ts`. `search_files` calls `recognize()` for scanned PDF pages (see [document-reader.md](document-reader.md#ocr-of-scanned-pages)), and `probe()` once per search that finds such pages. Photos are not read by OCR. The app creates the launcher at start without running anything and, on quit, cancels anything it has running.
+The main-process side is `src/main/documents/system-ocr.ts`. `search_files` calls `recognize()` for scanned PDF pages (see [document-reader.md](document-reader.md#ocr-of-scanned-pages)), and `probe()` once per search that finds such pages. Background indexing of a folder the user picks does the same, at a lower priority than searches (see [ocr-index.md](ocr-index.md)). Photos are not read by OCR. The app creates the launcher at start without running anything and, on quit, cancels anything it has running.
 
 The design was measured in the spike, draft PR #72. Windows OCR works under heif-decode.exe's full lockdown with nothing relaxed. It reads about 2 to 4 pages a second, has a character error rate under 0.5% on clean and scanned-looking text pages, needs roughly 20 MiB + 12 bytes per pixel, and cannot read pages rotated by 90°.
 

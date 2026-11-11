@@ -11,6 +11,7 @@ import { filesApi } from './files'
 import { gitApi } from './git'
 import { layoutApi } from './layout'
 import { notificationsApi } from './notifications'
+import { ocrIndexApi } from './ocr-index'
 import { projectsApi } from './projects'
 
 export type Invoke = <T>(channel: string, ...args: unknown[]) => Promise<T>
@@ -29,5 +30,6 @@ export const featureApis = (invoke: Invoke, subscribe: Subscribe): FeatureApis =
   ...gitApi(invoke, subscribe),
   ...layoutApi(invoke),
   ...notificationsApi(invoke),
+  ...ocrIndexApi(invoke, subscribe),
   ...projectsApi(invoke),
 })

@@ -11,6 +11,7 @@ import { filesChannels, type FilesApi } from './ipc-files'
 import { gitChannels, type GitApi } from './ipc-git'
 import { layoutChannels, type LayoutApi } from './ipc-layout'
 import { notificationsChannels, type NotificationsApi } from './ipc-notifications'
+import { ocrIndexChannels, type OcrIndexApi } from './ipc-ocr-index'
 import { projectsChannels, type ProjectsApi } from './ipc-projects'
 
 /** What each feature adds to window.desktopApi. */
@@ -21,6 +22,7 @@ export type FeatureApis = AttachmentsApi &
   GitApi &
   LayoutApi &
   NotificationsApi &
+  OcrIndexApi &
   ProjectsApi
 
 /** Every renderer -> main channel the feature modules register (the handler test enumerates it). */
@@ -32,5 +34,6 @@ export const FEATURE_CHANNELS: readonly string[] = [
   ...Object.values(gitChannels),
   ...Object.values(layoutChannels),
   ...Object.values(notificationsChannels),
+  ...Object.values(ocrIndexChannels),
   ...Object.values(projectsChannels),
 ]
