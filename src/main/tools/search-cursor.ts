@@ -21,13 +21,18 @@ const KEY = randomBytes(32)
 /**
  * Where the next call starts: after `key`, or at it when `inclusive`. `ocrOnly` says that
  * every other file was reported by earlier calls, so the next call reports only PDFs with
- * scanned pages, from there on.
+ * scanned pages, from there on. `reported` (only with `ocrOnly`) names a set in
+ * `reportedSets`: the PDFs from `key` on that earlier calls already reported, out of path
+ * order, which the next call passes over.
  */
 export interface CursorPosition {
   key: string
   inclusive: boolean
   ocrOnly?: boolean
+  reported?: string
 }
+
+const REPORTED_ID = /^[0-9a-f]{32}$/u
 
 /**
  * The order key of a relative path ("a/b"): its segments joined by U+0000, so plain string
@@ -59,6 +64,7 @@ export function encodeCursor(position: CursorPosition, binding: Buffer): string 
         k: position.key,
         i: position.inclusive,
         ...(position.ocrOnly ? { o: true } : {}),
+        ...(position.ocrOnly && position.reported !== undefined ? { r: position.reported } : {}),
       }),
       'utf8',
     ),
@@ -94,11 +100,97 @@ export function decodeCursor(token: string, binding: Buffer): CursorPosition | n
     return null
   }
   if (typeof value !== 'object' || value === null) return null
-  const { k, i, o } = value as Record<string, unknown>
+  const { k, i, o, r } = value as Record<string, unknown>
   if (typeof k !== 'string' || typeof i !== 'boolean') return null
   if (o !== undefined && o !== true) return null
-  return { key: k, inclusive: i, ...(o ? { ocrOnly: true } : {}) }
+  if (r !== undefined && (o !== true || typeof r !== 'string' || !REPORTED_ID.test(r))) return null
+  return {
+    key: k,
+    inclusive: i,
+    ...(o ? { ocrOnly: true } : {}),
+    ...(typeof r === 'string' ? { reported: r } : {}),
+  }
 }
+
+/** The most PDFs one cursor's reported set holds: well past what one call can visit. */
+export const MAX_REPORTED_KEYS = 100_000
+/** The most reported sets kept at once; the least recently used goes first. */
+export const MAX_REPORTED_SETS = 32
+/** The most keys kept across every set; the least recently used sets go first. */
+export const MAX_REPORTED_TOTAL = 200_000
+/** How long a set is kept after it was last made or used. */
+export const REPORTED_TTL_MS = 2 * 60 * 60_000
+
+/**
+ * The PDFs with scanned pages a search reported out of path order, past its cursor's key, kept
+ * in the main process under a random id the (encrypted, authenticated) cursor carries. Each
+ * cursor gets its own set, never changed after, so a cursor used twice continues the same way.
+ * Kept for a while and within bounds: a cursor whose set is gone is refused, never followed
+ * without it (that would report its files again).
+ */
+export class ReportedSets {
+  private readonly sets = new Map<string, { keys: ReadonlySet<string>; used: number }>()
+  private total = 0
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly limits = {
+      keys: MAX_REPORTED_KEYS,
+      sets: MAX_REPORTED_SETS,
+      total: MAX_REPORTED_TOTAL,
+      ttlMs: REPORTED_TTL_MS,
+    },
+  ) {}
+
+  /** Keeps a set; its id, or null when it is too big to keep. */
+  put(keys: Iterable<string>): string | null {
+    const set = new Set(keys)
+    if (set.size > this.limits.keys || set.size > this.limits.total) return null
+    this.expire()
+    while (
+      this.sets.size > 0 &&
+      (this.sets.size >= this.limits.sets || this.total + set.size > this.limits.total)
+    ) {
+      const oldest = this.sets.keys().next().value as string
+      this.remove(oldest)
+    }
+    const id = randomBytes(16).toString('hex')
+    this.sets.set(id, { keys: set, used: this.now() })
+    this.total += set.size
+    return id
+  }
+
+  /** The set under `id`, or null when it is gone (expired, pushed out, or from another run). */
+  get(id: string): ReadonlySet<string> | null {
+    this.expire()
+    const entry = this.sets.get(id)
+    if (!entry) return null
+    // Most recently used last, so the oldest is first in the map.
+    this.sets.delete(id)
+    entry.used = this.now()
+    this.sets.set(id, entry)
+    return entry.keys
+  }
+
+  get size(): number {
+    return this.sets.size
+  }
+
+  private expire(): void {
+    const cutoff = this.now() - this.limits.ttlMs
+    for (const [id, entry] of this.sets) if (entry.used < cutoff) this.remove(id)
+  }
+
+  private remove(id: string): void {
+    const entry = this.sets.get(id)
+    if (!entry) return
+    this.total -= entry.keys.size
+    this.sets.delete(id)
+  }
+}
+
+/** The process's reported sets: like the cursor key, they do not outlive the app. */
+export const reportedSets = new ReportedSets()
 
 /**
  * Items kept sorted by key, at most `max` of them: the first `max` in key order of all that
@@ -137,11 +229,18 @@ export class SortedCapped<T extends { key: string }> {
     }
   }
 
-  /** Drops the kept items a call continuing from `position` would look at; returns how many. */
-  cutAt(position: CursorPosition): number {
+  /**
+   * Drops the kept items a call continuing from `position` would look at, except those `keep`
+   * says stay (the next call passes over them); returns how many were dropped.
+   */
+  cutAt(position: CursorPosition, keep?: (key: string) => boolean): number {
     const at = this.items.findIndex((item) => afterCursor(item.key, position))
     if (at < 0) return 0
-    return this.items.splice(at).length
+    if (!keep) return this.items.splice(at).length
+    const tail = this.items.splice(at)
+    const kept = tail.filter((item) => keep(item.key))
+    this.items.push(...kept)
+    return tail.length - kept.length
   }
 }
 

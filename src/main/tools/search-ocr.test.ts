@@ -1229,12 +1229,14 @@ describe('search_files OCR within its time, and continuing', () => {
     const title = all.findIndex((line) => line.startsWith('Scanned PDFs waiting for OCR'))
     expect(all[title]).toContain('names with a searched word first')
     const listed = all.slice(title + 1, title + 1 + MAX_HELD_LISTED)
+    // Names with a searched word are read by OCR first: z-freezer-rfi.pdf's OCR began, and its
+    // one page left keeps it at the top of the list.
     expect(listed.slice(0, 2)).toEqual([
-      '  z-freezer-rfi.pdf (2 scanned pages not read yet)',
+      '  z-freezer-rfi.pdf (1 scanned page not read yet)',
       '  zz-walk-in.pdf (2 scanned pages not read yet)',
     ])
-    // The first file's OCR began: its one page left keeps it in the list, in path order after.
-    expect(listed[2]).toBe('  a-00.pdf (1 scanned page not read yet)')
+    // The rest in path order after them, not yet begun.
+    expect(listed[2]).toBe('  a-00.pdf (2 scanned pages not read yet)')
     // 27 waiting, 20 named.
     expect(all[title + 1 + MAX_HELD_LISTED]).toBe('  …and 7 more.')
     // Inside the file text markers, like every other list of names.

@@ -20,6 +20,7 @@ import {
   encodeCursor,
   MAX_CURSOR_LENGTH,
   orderKey,
+  reportedSets,
   positionBefore,
   SortedCapped,
   type CursorPosition,
@@ -606,6 +607,11 @@ interface ScannedDocument {
   key: DocumentFileKey | null
   cached: boolean
   order: number
+  /**
+   * How likely it is to be what the search is after, best first: 0 when its path has a term
+   * of the query, 1 when its text (as read so far) matched, 2 otherwise. OCR goes in that order.
+   */
+  rank: number
   /** Pages that were pending when it was set aside. */
   pending: number
 }
@@ -726,6 +732,23 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   const systemOcr = reader && cache ? deps.ocr : null
   /** Every other file was reported by earlier calls: only PDFs with scanned pages are left. */
   const ocrOnly = from?.ocrOnly === true
+  /** PDFs from the cursor on that earlier calls reported out of path order: passed over. */
+  const carriedSet: ReadonlySet<string> | null =
+    from?.reported === undefined ? new Set() : reportedSets.get(from.reported)
+  if (carriedSet === null) {
+    throw new ToolInputError(
+      '"cursor" has expired: what it continues is no longer kept. Start a new search without ' +
+        'the cursor: scanned pages already read by OCR are kept, so they are not read again.',
+    )
+  }
+  const carried = carriedSet
+  /**
+   * PDFs with scanned pages this call reported in full (their matches, or why they could not be
+   * searched): a cursor that only reports such PDFs passes over them, wherever they are.
+   */
+  const reportedNow = new Set<string>()
+  /** The most keys a reported set may hold (see MAX_REPORTED_KEYS). */
+  const maxReportedKeys = deps.limits.maxReportedKeys
   const contextChars = contextLineChars(input.context)
   const showSnippets = input.output === 'content'
 
@@ -988,7 +1011,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   /** Searches one plain text file, setting documents aside; false when the search must stop. */
   async function searchFile(entry: WalkEntry): Promise<boolean> {
     if (ocrOnly) {
-      if (await mayHoldScans(entry)) documents.push(entry)
+      if (!carried.has(orderKey(entry.rel)) && (await mayHoldScans(entry))) documents.push(entry)
       return true
     }
     if (entry.nlink > 1) {
@@ -1117,8 +1140,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   /** Time this call spent in OCR, in ms: with ocrRun.pagesRead, the rate it read at. */
   let ocrMs = 0
   /**
-   * Set when the text of every file was searched and PDFs with scanned pages are left, from
-   * this one on: the next call reports only those, so nothing else is reported twice.
+   * The first PDF with scanned pages held for a later call, in path order. When the text of
+   * every file was searched, the next call starts there and reports only such PDFs (those not
+   * reported already), so nothing else is reported twice.
    */
   const deferred: { key: string | null } = { key: null }
   const notReached = (entry: WalkEntry): void => {
@@ -1158,7 +1182,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     text: CachedText,
     cached: boolean,
     status: OcrStatus = { off: null, failedNow: new Set() },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const coverage = ocrCoverage(text, status)
     if (text.ocr.length > 0) {
       const count = (state: OcrPage['state']): number =>
@@ -1175,7 +1199,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       // Nothing to search in it at all, as far as anything could read it.
       if (!hasText && unread === text.ocr.length) {
         skip(entry, 'scanned', coverage ?? '')
-        return
+        return true
       }
     }
     docs.searched++
@@ -1195,9 +1219,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     )
     if (hits === null) {
       if (stopped() === 'time') notChecked(entry)
-      return
+      return false
     }
-    if (hits.length === 0) return
+    if (hits.length === 0) return true
     const name = safeRel(entry.rel)
     addMatches(
       entry,
@@ -1213,6 +1237,19 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       },
       (i) => lines[i]?.segment ?? -1,
     )
+    return true
+  }
+
+  /** A PDF's rank (see ScannedDocument): its path names a query term, or its text matched. */
+  async function rankOf(entry: WalkEntry, text: CachedText): Promise<number> {
+    if (named(entry)) return 0
+    const lines = documentLines(text, MAX_MATCH_LINE)
+    const hits = await matchLines(
+      lines.map((line) => line.text),
+      1,
+      (i) => !lines[i]?.cell && lines[i]?.segment === lines[i - 1]?.segment,
+    )
+    return hits !== null && hits.length > 0 ? 1 : 2
   }
 
   /**
@@ -1316,6 +1353,7 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
             key,
             cached,
             order,
+            rank: await rankOf(entry, text),
             pending: text.ocr.filter(isPending).length,
           })
           continue
@@ -1329,10 +1367,12 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   }
 
   /**
-   * After all the text: each PDF with scanned pages in path order, its pending pages read with
-   * the time left. A PDF is reported only when none of its pages is left waiting, and the first
-   * that has to wait takes the ones after it along, read or not, so a later call can tell what
-   * it has to report by where it starts.
+   * After all the text: each PDF with scanned pages, its pending pages read with the time left,
+   * the likeliest first (see ScannedDocument's rank), and each reported once none of its pages is
+   * left waiting. The ones that have to wait are held for a later call, which knows to pass over
+   * those reported here by the set its cursor names. While text is still to come the cursor is a
+   * plain path order: then PDFs go in path order, and the first that has to wait takes the ones
+   * after it along.
    */
   async function searchScannedPages(
     scannedDocs: ScannedDocument[],
@@ -1340,9 +1380,14 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   ): Promise<void> {
     if (scannedDocs.length === 0) return
     docs.scanned = scannedDocs.length
-    scannedDocs.sort((a, b) => a.order - b.order)
     // Text comes first: while some of it waits for the next call, no time goes to OCR.
     const textWaits = !ocrOnly && (unchecked.key !== null || stopped() !== null)
+    // The reported set is full: no PDF can be passed over by more of it, so PDFs go in path
+    // order, the first that has to wait taking the ones after it along. The cursor then moves
+    // to that one, the keys before it leave the set, and every call moves on.
+    const setFull = carried.size >= maxReportedKeys
+    const pathOrder = textWaits || setFull
+    scannedDocs.sort((a, b) => (pathOrder ? 0 : a.rank - b.rank) || a.order - b.order)
     if (scannedDocs.some((doc) => doc.pending > 0) && !textWaits && holder) {
       await checkOcr()
       if (signal.aborted) {
@@ -1350,28 +1395,48 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         return
       }
     }
-    for (const [at, doc] of scannedDocs.entries()) {
+    /** Set once OCR ran out of time: no PDF after that gets any. */
+    let ocrTimedOut = false
+    // An object so TypeScript does not narrow it across the helper that sets it.
+    const heldOne = { yes: false }
+    const hold = (doc: ScannedDocument): void => {
+      heldOne.yes = true
+      holdDocument(doc)
+    }
+    for (const doc of scannedDocs) {
       if (signal.aborted) {
         state.stop = 'cancelled'
         return
       }
-      if (stopped() !== null) {
-        holdFrom(scannedDocs, at)
-        break
+      // A stopped search reports nothing more; in path order, nothing after a held PDF; and no
+      // reported set grows past its bound (the rest wait, and the next call, its set full if
+      // need be, goes in path order). In path order nothing reported joins the set: it all
+      // comes before the cursor.
+      if (
+        stopped() !== null ||
+        (pathOrder && heldOne.yes) ||
+        (!pathOrder && carried.size + reportedNow.size >= maxReportedKeys)
+      ) {
+        hold(doc)
+        continue
       }
+      const key = orderKey(doc.entry.rel)
       let text = doc.text ?? (doc.key ? await cache?.get(doc.key) : null) ?? null
       if (!text) {
         // Gone from the cache since (the least recently used go first): read it again.
         const read = await readDocument(doc.entry, doc.root)
         if (read === 'not-reached') {
-          holdFrom(scannedDocs, at)
-          break
+          hold(doc)
+          continue
         }
-        if (read === 'skipped') continue
+        if (read === 'skipped') {
+          reportedNow.add(key)
+          continue
+        }
         text = read.text
         doc.key = read.key
         if (text.ocr.length === 0) {
-          if (!ocrOnly) await finishDocument(doc.entry, text, false)
+          if (ocrOnly || (await finishDocument(doc.entry, text, false))) reportedNow.add(key)
           continue
         }
       }
@@ -1380,13 +1445,20 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       if (!systemOcr && text.ocr.some(isPending)) off = 'unavailable'
       if (text.ocr.some(isPending) && off === null) {
         if (!holder) docs.locked = true
-        if (!holder || textWaits) {
+        if (!holder || textWaits || ocrTimedOut || timeLeft() === 0) {
           doc.pending = text.ocr.filter(isPending).length
-          holdFrom(scannedDocs, at)
-          break
+          if (ocrTimedOut || timeLeft() === 0) {
+            docs.heldTime = true
+            docs.timedOut = true
+          }
+          hold(doc)
+          continue
         }
         const outcome = await readScannedPages(doc, text, failedNow)
-        if (outcome === 'skipped') continue
+        if (outcome === 'skipped') {
+          reportedNow.add(key)
+          continue
+        }
         if (outcome === 'cancelled') {
           state.stop = 'cancelled'
           return
@@ -1395,14 +1467,17 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
           doc.pending = doc.text?.ocr.filter(isPending).length ?? doc.pending
           docs.heldTime = true
           docs.timedOut = true
-          holdFrom(scannedDocs, at)
-          break
+          ocrTimedOut = true
+          hold(doc)
+          continue
         }
         text = doc.text ?? text
         // Past where the pages could be kept, or left by the call's OCR going off: not reached.
         off = ocrRun.off
       }
-      await finishDocument(doc.entry, text, doc.cached, { off, failedNow })
+      if (await finishDocument(doc.entry, text, doc.cached, { off, failedNow })) {
+        reportedNow.add(key)
+      }
     }
   }
 
@@ -1425,24 +1500,22 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     }
   }
 
-  /** Leaves this PDF and the ones after it to a later call, all their matches with them. */
-  function holdFrom(scannedDocs: ScannedDocument[], at: number): void {
-    const first = scannedDocs[at]
-    if (!first) return
-    for (const doc of scannedDocs.slice(at)) {
-      docs.held++
-      docs.heldPages += doc.pending
-      if (doc.pending === 0) continue
-      const item = {
-        key: orderKey(doc.entry.rel),
-        line: `  ${safeRel(doc.entry.rel)} (${pages(doc.pending)} not read yet)`,
-      }
-      held.add(item)
-      if (named(doc.entry)) heldNamed.add(item)
+  /**
+   * Leaves this PDF to a later call, all its matches with it: the next call starts at the first
+   * PDF held (or file not checked), whichever comes first in path order.
+   */
+  function holdDocument(doc: ScannedDocument): void {
+    docs.held++
+    docs.heldPages += doc.pending
+    const key = orderKey(doc.entry.rel)
+    if (deferred.key === null || key < deferred.key) deferred.key = key
+    if (doc.pending === 0) return
+    const item = {
+      key,
+      line: `  ${safeRel(doc.entry.rel)} (${pages(doc.pending)} not read yet)`,
     }
-    // With text still to come, or nothing but these left, the cursor is a plain path order.
-    if (ocrOnly || unchecked.key !== null || stopped() !== null) notChecked(first.entry)
-    else deferred.key = orderKey(first.entry.rel)
+    held.add(item)
+    if (named(doc.entry)) heldNamed.add(item)
   }
 
   /**
@@ -1674,20 +1747,28 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
   // anything this call found from there on is left for that call to report, so no file is
   // reported twice. A slow or failing pattern would only stop again: no cursor then.
   // PDFs with scanned pages left behind while every other file is done (`deferred`): the next
-  // call reports only those, so what this call found after the first of them stays reported.
+  // call reports only those, so what this call found after the first of them stays reported,
+  // and the PDFs it reported from there on (`reportedNow`, OCR'd likeliest first, not in path
+  // order) are named in a set the cursor carries, which the next call passes over.
   const continuable = state.stop === null || state.stop === 'time' || state.stop === 'entries'
   const complete = state.stop === null && unchecked.key === null && deferred.key === null
   const cursorFlag = ocrOnly ? { ocrOnly: true } : {}
-  let next: CursorPosition | null = !continuable
-    ? null
-    : unchecked.key !== null
-      ? { key: unchecked.key, inclusive: true, ...cursorFlag }
-      : deferred.key !== null
-        ? { key: deferred.key, inclusive: true, ocrOnly: true }
-        : null
+  const startKey =
+    unchecked.key === null
+      ? deferred.key
+      : deferred.key === null || unchecked.key < deferred.key
+        ? unchecked.key
+        : deferred.key
+  const onlyHeldLeft = ocrOnly || (unchecked.key === null && state.stop === null)
+  let next: CursorPosition | null =
+    !continuable || startKey === null
+      ? null
+      : { key: startKey, inclusive: true, ...(onlyHeldLeft ? { ocrOnly: true } : {}) }
   const keepsLaterFiles = next?.ocrOnly === true && !ocrOnly
-  let cutAway = next && !keepsLaterFiles ? files.cutAt(next) : 0
-  let scannedCut = next && !keepsLaterFiles ? scanned.cutAt(next) : 0
+  /** Reported by this call and passed over by the next: kept in the lists past its cursor. */
+  const passedOver = (key: string): boolean => next?.ocrOnly === true && reportedNow.has(key)
+  let cutAway = next && !keepsLaterFiles ? files.cutAt(next, passedOver) : 0
+  let scannedCut = next && !keepsLaterFiles ? scanned.cutAt(next, passedOver) : 0
 
   // The marked region (see `budget`): the matches, then the files with matches, then scanned
   // PDFs, documents only partly searched and the skipped files named.
@@ -1788,9 +1869,24 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     const after: CursorPosition = { key: shownUpTo, inclusive: false, ...cursorFlag }
     if (next === null || positionBefore(after, next)) next = after
     scannedCut += scanned.cutAt(after)
+    // What was not shown past the list's end is reported by a later call.
+    for (const key of reportedNow) if (afterCursor(key, after)) reportedNow.delete(key)
   }
   // Never behind where this call started, so a search always moves on.
   if (next && from && positionBefore(next, from)) next = from
+  // The PDFs from the cursor on that are reported already, earlier or now: a set of its own.
+  if (next?.ocrOnly) {
+    const position = next
+    const done = [...carried, ...reportedNow].filter((key) => afterCursor(key, position))
+    const { reported: _, ...plain } = position
+    next = plain
+    if (done.length > 0) {
+      const id = reportedSets.put(done)
+      // Too many to keep (searchScannedPages stays within the bound, so never in practice).
+      if (id === null) throw new ToolFailure('search_files could not keep its progress.')
+      next = { ...plain, reported: id }
+    }
+  }
   // The counts the call reports: of every file it checked when it checked them all, or else
   // of the files up to its cursor (what the next call does not count again).
   const exact = complete || next === null
