@@ -80,12 +80,18 @@ export function FileTree({
   refresh,
   unwatched,
   onRemoveRoot,
+  onIndexFolder,
+  indexBlock,
 }: {
   rows: TreeRow[]
   setOpen: (key: string, open: boolean) => void
   refresh: (key: string) => void
   unwatched: ReadonlySet<string>
   onRemoveRoot: (path: string) => void
+  /** Starts background indexing of a folder's scanned documents; no menu item without it. */
+  onIndexFolder?: (location: FileLocation) => void
+  /** Why a folder cannot be indexed now (one around it already is), or null. */
+  indexBlock?: (location: FileLocation) => string | null
 }): React.JSX.Element {
   const api = useApi()
   const notify = useToast()
@@ -205,6 +211,15 @@ export function FileTree({
         },
       },
     ]
+    const folder = row.type === 'root' || (row.entry.kind === 'dir' && !lock)
+    if (folder && onIndexFolder)
+      items.push({
+        label: 'Index scanned documents',
+        disabled: indexBlock?.(location) ?? null,
+        onSelect: () => {
+          onIndexFolder(location)
+        },
+      })
     if (isOpenable(row) && row.expanded)
       items.push({
         label: 'Refresh',

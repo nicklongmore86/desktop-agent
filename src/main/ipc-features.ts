@@ -9,6 +9,7 @@ import { registerFilesHandlers, type FilesService } from './ipc-files'
 import { registerGitHandlers, type GitService } from './ipc-git'
 import { registerLayoutHandlers, type LayoutService } from './ipc-layout'
 import { registerNotificationsHandlers, type NotificationsService } from './ipc-notifications'
+import { registerOcrIndexHandlers, type OcrIndexIpcService } from './ipc-ocr-index'
 import { registerProjectsHandlers, type ProjectsService } from './ipc-projects'
 
 /** Registers a handler that has already passed the trusted-sender check. */
@@ -22,6 +23,7 @@ export interface FeatureServices {
   git: GitService
   layout: LayoutService
   notifications: NotificationsService
+  ocrIndex: OcrIndexIpcService
   projects: ProjectsService
 }
 
@@ -33,5 +35,6 @@ export function registerFeatureHandlers(handle: IpcHandle, services: FeatureServ
   registerGitHandlers(handle, services.git)
   registerLayoutHandlers(handle, services.layout)
   registerNotificationsHandlers(handle, services.notifications)
+  registerOcrIndexHandlers(handle, services.ocrIndex)
   registerProjectsHandlers(handle, services.projects, services.connections)
 }

@@ -36,6 +36,7 @@ import {
   SEARCHABLE_EXTENSIONS,
   searchableKind,
 } from './search-documents'
+import type { OcrIndexNote, SearchClaim } from './ocr-priority'
 import { newOcrRun, ocrDocument, type OcrOff } from './search-ocr'
 import { decodeText, formatBytes, splitLines } from './text'
 import { walk, type WalkEntry } from './walk'
@@ -655,6 +656,47 @@ export function ocrProgress(read: number, ms: number, left: number, more: boolea
 }
 
 const pages = (n: number): string => `${String(n)} scanned page${n === 1 ? '' : 's'}`
+
+/** Scanned pages left unread by a search past which it suggests indexing them in the background. */
+export const SUGGEST_INDEXING_PAGES = 50
+
+/** What a search says when the folder's scanned pages are being indexed in the background. */
+export function indexingNote(note: OcrIndexNote): string {
+  const folder = safeLine(note.folder)
+  const left =
+    note.minutesLeft === null
+      ? ''
+      : `, about ${String(note.minutesLeft)} minute${note.minutesLeft === 1 ? '' : 's'} left`
+  const progress =
+    note.state === 'checking' || note.state === 'queued'
+      ? `checking documents, ${String(note.filesChecked)} of ${String(note.filesTotal)} files so far`
+      : `${String(note.pagesDone)} of ${pages(note.pagesTotal)} read${left}`
+  const state: Record<OcrIndexNote['state'], string> = {
+    queued: 'are waiting to be indexed in the background (after another folder)',
+    checking: 'are being indexed in the background',
+    reading: 'are being indexed in the background',
+    waiting: 'are being indexed in the background (it made way for this search)',
+    paused: 'were being indexed in the background, and the user paused it',
+    battery: 'are being indexed in the background, paused until this PC is plugged in',
+  }
+  return (
+    `Scanned pages in ${folder} ${state[note.state]}: ${progress}. This search used only the ` +
+    'pages read so far, so for scanned documents no match is not proof of absence. Answer from ' +
+    'what was found, tell the user indexing is still under way, and offer to search again ' +
+    'once it has finished.'
+  )
+}
+
+/** What a search says when many scanned pages are left and nothing is indexing them. */
+export function suggestIndexing(left: number): string {
+  return (
+    `${pages(left)} in this folder are still unread by OCR. The user can have them read in the ` +
+    'background: in the Files panel, right-click the folder and choose “Index scanned ' +
+    'documents” (it runs at low priority and pauses on battery power). Suggest that to the ' +
+    'user if they want every scanned page searched; you cannot start it yourself.'
+  )
+}
+
 const isPending = (page: OcrPage): boolean => page.state === 'pending'
 
 async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Promise<RunResult> {
@@ -750,6 +792,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
    * searched): a cursor that only reports such PDFs passes over them, wherever they are.
    */
   const reportedNow = new Set<string>()
+  /** Held while this search reads documents: background indexing makes way. */
+  let searchClaim: SearchClaim | null = null
   /** The most keys a reported set may hold (see MAX_REPORTED_KEYS). */
   const maxReportedKeys = deps.limits.maxReportedKeys
   const contextChars = contextLineChars(input.context)
@@ -1294,6 +1338,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
 
     const holder = !readingDocuments.has(reader)
     if (holder) readingDocuments.add(reader)
+    // Background indexing makes way while this search reads documents.
+    if (holder) searchClaim = deps.ocrPriority?.claim() ?? null
     const scannedDocs: ScannedDocument[] = []
     try {
       for (const { entry, root, order } of ranked) {
@@ -1384,6 +1430,8 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
       if (stopped() !== 'cancelled') await searchScannedPages(scannedDocs, holder)
     } finally {
       if (holder) readingDocuments.delete(reader)
+      searchClaim?.release()
+      searchClaim = null
     }
   }
 
@@ -1570,6 +1618,19 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     doc.text = current
     const key = file.key
     const token = file.token
+    // Pages background indexing is reading finish first and are kept, so none is read twice:
+    // what it kept is read back from the cache below, when the cache holds this document.
+    if (searchClaim && deps.ocrPriority) {
+      await searchClaim.quiet(timeLeft(), signal)
+      if (signal.aborted) return 'cancelled'
+      if (key !== null) {
+        const fresher = await cache?.get(key)
+        if (fresher && fresher.ocr.length === current.ocr.length) {
+          current = fresher
+          doc.text = current
+        }
+      }
+    }
     const started = deps.now()
     const result = await ocrDocument({
       reader,
@@ -1603,7 +1664,9 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
         // What was read after the folder's grant went is neither kept nor shown.
         skip(entry, 'unreadable')
         return 'skipped'
+      // Searches never pause (only background indexing does): treated as running out of time.
       case 'time':
+      case 'paused':
         // Nothing would carry over to a later call: say what is unread rather than promise it.
         if (result.kept) return 'held'
         docs.timedOut = true
@@ -2126,6 +2189,21 @@ async function runSearch(input: Input, call: ToolCall, deps: ResolvedDeps): Prom
     notes.push(docs.ocrDone > 0 ? OCR_CAUTION : OCR_READ_DOCUMENT)
   }
   if (ocrRun.off !== null && ocrRun.offMessage !== null) notes.push(ocrRun.offMessage)
+  if (reader && input.contentPattern !== undefined) {
+    const indexing = deps.ocrIndex?.statusFor(dir) ?? null
+    // Pages this search left unread for want of time or mains power, not because OCR cannot run.
+    const left =
+      docs.heldPages +
+      (docs.ocrUnread.get('not reached') ?? 0) +
+      (docs.ocrUnread.get(OCR_OFF_LABEL['on-battery']) ?? 0)
+    const ocrCanRun =
+      systemOcr !== null &&
+      ocrRun.off !== 'unsupported' &&
+      ocrRun.off !== 'unavailable' &&
+      ocrRun.off !== 'no-language'
+    if (indexing) notes.push(indexingNote(indexing))
+    else if (ocrCanRun && left >= SUGGEST_INDEXING_PAGES) notes.push(suggestIndexing(left))
+  }
   if (skippedTotal > 0) {
     const counts = (Object.keys(SKIP_LABEL) as SkipReason[])
       .filter((reason) => skips[reason] > 0)

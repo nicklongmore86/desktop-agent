@@ -346,6 +346,12 @@ export interface OcrDocumentJob {
   signal: AbortSignal
   /** Whether the file's folder is still granted as it was when its bytes were read. */
   stillGranted: () => boolean
+  /**
+   * Background indexing only: true while it must make way (a search wants the reader and
+   * helpers, or the user paused it). No new page starts; the pages being read finish and are
+   * kept, so none is read twice.
+   */
+  pauseWhen?: () => boolean
   /** Saves the text in the cache; false when it was not kept. */
   keep: (text: CachedText) => Promise<boolean>
   run: OcrRun
@@ -355,9 +361,10 @@ export interface OcrDocumentResult {
   /**
    * 'finished': no page is waiting. 'time': out of time, 'cancelled': stopped; pending pages
    * are for later. 'gone': the folder's grant went, and nothing more was kept. 'off': the call
-   * stopped trying (`run.off` says why).
+   * stopped trying (`run.off` says why). 'paused': `pauseWhen` said so; the pages being read
+   * were finished and kept, and the pending ones are for later.
    */
-  outcome: 'finished' | 'time' | 'cancelled' | 'gone' | 'off'
+  outcome: 'finished' | 'time' | 'cancelled' | 'gone' | 'off' | 'paused'
   /** Pages that failed in a way worth trying again: reported as failed, kept as pending. */
   failedNow: Set<number>
   /** Whether the last save worked: if not, the pages read since do not outlive this call. */
@@ -664,6 +671,7 @@ export async function ocrDocument(job: OcrDocumentJob): Promise<OcrDocumentResul
     if (job.signal.aborted) finish('cancelled')
     else if (!job.stillGranted()) finish('gone')
     else if (job.timeLeft() <= 0) finish('time')
+    else if (job.pauseWhen?.() === true) finish('paused', true)
     else if (job.ocr.onBattery?.() === true) {
       run.off = 'on-battery'
       run.offMessage = OCR_ON_BATTERY

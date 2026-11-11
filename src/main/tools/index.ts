@@ -43,6 +43,8 @@ export function createTools(deps: ToolDeps): AgentTool[] {
     documents: deps.documents ?? null,
     documentCache: deps.documentCache ?? null,
     ocr: deps.ocr ?? null,
+    ocrPriority: deps.ocrPriority ?? null,
+    ocrIndex: deps.ocrIndex ?? null,
     now: deps.now ?? (() => performance.now()),
   }
   const wrap = {

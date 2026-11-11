@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import type { ApprovalPrompt, AuditStatus, ChatEvent, ProviderLoginState } from '../shared/ipc'
 import type { FilesChanged } from '../shared/ipc-files'
 import type { GitChanged } from '../shared/ipc-git'
+import type { OcrIndexJob } from '../shared/ipc-ocr-index'
 import { createAttachmentsService } from './attachments/service'
 import type { SystemOcr } from './documents/system-ocr'
 import type { DocumentReader } from './documents/types'
@@ -34,6 +35,9 @@ import { openProjectsStore } from './storage/projects-store'
 import { openSettingsStore } from './storage/settings-store'
 import { createTools } from './tools'
 import { DocumentTextCache } from './tools/document-text-cache'
+import { OcrPriority } from './tools/ocr-priority'
+import type { OcrIndexIpcService } from './ipc-ocr-index'
+import { createOcrIndexService } from './ocr-index/service'
 
 /** Attachment files younger than this are never removed by the startup cleanup. */
 const ATTACHMENT_SWEEP_AGE_MS = 24 * 60 * 60 * 1000
@@ -70,8 +74,23 @@ export interface AppServiceDeps {
   documents?: DocumentReader
   /** Whether HEIC photos can be decoded (the document reader's system decoder). */
   heicSupport?: () => Promise<HeicSupport>
-  /** Reads scanned PDF pages for search_files. */
+  /** Reads scanned PDF pages for search_files and background indexing. */
   ocr?: SystemOcr
+  /** Background indexing of scanned pages changed (state or progress). */
+  onOcrIndexChanged?: (jobs: OcrIndexJob[]) => void
+}
+
+/** Indexing needs the reader and OCR: without them, every start says so. */
+const NO_OCR_INDEX: OcrIndexIpcService & { load(): Promise<void>; dispose(): Promise<void> } = {
+  list: () => [],
+  start: () =>
+    Promise.resolve({ ok: false, reason: 'Reading scanned pages is unavailable in this session.' }),
+  pause: () => Promise.resolve({ ok: false, reason: 'That indexing job no longer exists.' }),
+  resume: () => Promise.resolve({ ok: false, reason: 'That indexing job no longer exists.' }),
+  cancel: () => Promise.resolve({ ok: false, reason: 'That indexing job no longer exists.' }),
+  dismiss: () => Promise.resolve({ ok: false, reason: 'That indexing job no longer exists.' }),
+  load: () => Promise.resolve(),
+  dispose: () => Promise.resolve(),
 }
 
 /** Builds the key store, grants, guard, audit log, tools, settings, connections and chat session. */
@@ -113,6 +132,23 @@ export async function createAppServices(deps: AppServiceDeps) {
       reportAudit()
     },
   })
+  // Background indexing of scanned pages, started by the user from the Files panel. Searches
+  // come first (the priority), and a removed grant ends its jobs (the cache deletes their pages).
+  const ocrPriority = new OcrPriority()
+  const indexing =
+    deps.documents && deps.ocr
+      ? createOcrIndexService({
+          guard,
+          reader: deps.documents,
+          ocr: deps.ocr,
+          cache: documentCache,
+          priority: ocrPriority,
+          audit,
+          stateFile: join(userData, 'ocr-index.json'),
+          emit: (jobs) => deps.onOcrIndexChanged?.(jobs),
+        })
+      : null
+  if (indexing) grants.onRemove((root) => indexing.forgetGrant(root))
   const tools = createTools({
     guard,
     audit,
@@ -120,6 +156,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     onAuditFailure: reportAudit,
     ...(deps.documents ? { documents: deps.documents, documentCache } : {}),
     ...(deps.ocr ? { ocr: deps.ocr } : {}),
+    ...(indexing ? { ocrPriority, ocrIndex: indexing } : {}),
   })
 
   const files = createFilesService({
@@ -454,5 +491,7 @@ export async function createAppServices(deps: AppServiceDeps) {
     projects,
     files,
     git,
+    /** Started (load) once the window can show it; disposed on quit. */
+    ocrIndex: indexing ?? NO_OCR_INDEX,
   }
 }

@@ -48,6 +48,7 @@ import type {
   GitStatusResult,
 } from '../../../shared/ipc-git'
 import { DEFAULT_LAYOUT, type LayoutPrefs } from '../../../shared/ipc-layout'
+import type { OcrIndexJob, OcrIndexResult } from '../../../shared/ipc-ocr-index'
 import type {
   ChatRef,
   Project,
@@ -172,6 +173,10 @@ export interface FakeApiOptions {
   layout?: LayoutPrefs
   /** Settings > Notifications; default on. */
   notifications?: boolean
+  /** Background indexing jobs main has; none by default. */
+  ocrIndex?: OcrIndexJob[]
+  /** What starting indexing answers (it then adds a queued job); ok by default. */
+  ocrIndexStart?: OcrIndexResult
   files?: Record<string, FileEntry[]>
   /** Text main would accept as a file or folder in a reply, with what a click does. */
   mentions?: Record<string, Extract<MentionResolution, { ok: true }>>
@@ -202,6 +207,19 @@ export function fakeApi(options: FakeApiOptions = {}) {
   const loginListeners = new Set<(state: ProviderLoginState) => void>()
   const filesListeners = new Set<(change: FilesChanged) => void>()
   const gitListeners = new Set<(change: GitChanged) => void>()
+  const ocrIndexListeners = new Set<(jobs: OcrIndexJob[]) => void>()
+  let ocrJobs: OcrIndexJob[] = options.ocrIndex ?? []
+  const pushOcrIndex = (next: OcrIndexJob[] = ocrJobs): void => {
+    ocrJobs = next
+    for (const listener of ocrIndexListeners) listener(structuredClone(ocrJobs))
+  }
+  /** Changes a job like main would, pushing the new list. */
+  const changeJob = (id: string, change: Partial<OcrIndexJob>): Promise<OcrIndexResult> => {
+    if (!ocrJobs.some((job) => job.id === id))
+      return Promise.resolve({ ok: false, reason: 'That indexing job no longer exists.' })
+    pushOcrIndex(ocrJobs.map((job) => (job.id === id ? { ...job, ...change } : job)))
+    return Promise.resolve({ ok: true })
+  }
   const files = options.files ?? FAKE_FILES
   const keys: Record<ConnectionId, ApiKeyStatus> = {
     'anthropic-api': options.key ?? { saved: true, error: null },
@@ -641,6 +659,50 @@ export function fakeApi(options: FakeApiOptions = {}) {
         return Promise.resolve(notifications)
       }),
     },
+    ocrIndex: {
+      list: vi.fn(() => Promise.resolve(structuredClone(ocrJobs))),
+      start: vi.fn((location: FileLocation): Promise<OcrIndexResult> => {
+        const answer = options.ocrIndexStart ?? { ok: true }
+        const root = rootOf(location.rootId)
+        if (answer.ok && root !== undefined) {
+          const path = location.rel ? `${root}\\${location.rel.replace(/\//g, '\\')}` : root
+          pushOcrIndex([
+            ...ocrJobs,
+            {
+              id: String(ocrJobs.length + 1).padStart(16, '0'),
+              ...location,
+              name: path.split('\\').pop() ?? path,
+              path,
+              state: 'queued',
+              filesChecked: 0,
+              filesTotal: 0,
+              pagesDone: 0,
+              pagesTotal: 0,
+              pagesFailed: 0,
+              minutesLeft: null,
+              cloudOnly: 0,
+              skipped: 0,
+              message: 'Waiting for another folder’s indexing to finish.',
+            },
+          ])
+        }
+        return Promise.resolve(answer)
+      }),
+      pause: vi.fn((id: string) => changeJob(id, { state: 'paused', message: 'Paused.' })),
+      resume: vi.fn((id: string) => changeJob(id, { state: 'queued', message: null })),
+      cancel: vi.fn((id: string) => {
+        const had = ocrJobs.some((job) => job.id === id)
+        pushOcrIndex(ocrJobs.filter((job) => job.id !== id))
+        return Promise.resolve<OcrIndexResult>(
+          had ? { ok: true } : { ok: false, reason: 'That indexing job no longer exists.' },
+        )
+      }),
+      dismiss: vi.fn((id: string) => {
+        pushOcrIndex(ocrJobs.filter((job) => job.id !== id))
+        return Promise.resolve<OcrIndexResult>({ ok: true })
+      }),
+      onChanged: vi.fn(subscribe(ocrIndexListeners)),
+    },
     theme: {
       get: vi.fn(() => Promise.resolve(theme)),
       set: vi.fn((next: ThemePreference) => {
@@ -788,6 +850,8 @@ export function fakeApi(options: FakeApiOptions = {}) {
     pushGitChanged: (change: GitChanged) => {
       for (const listener of gitListeners) listener(change)
     },
+    /** Main's push of the indexing jobs (state or progress). */
+    pushOcrIndex,
     pushLoginState: (state: ProviderLoginState) => {
       for (const listener of loginListeners) listener(state)
     },

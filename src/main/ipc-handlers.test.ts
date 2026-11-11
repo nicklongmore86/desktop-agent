@@ -14,6 +14,7 @@ import { filesChannels, filesPushChannels } from '../shared/ipc-files'
 import { gitChannels } from '../shared/ipc-git'
 import { DEFAULT_LAYOUT, layoutChannels, type LayoutPrefs } from '../shared/ipc-layout'
 import { notificationsChannels } from '../shared/ipc-notifications'
+import { ocrIndexChannels } from '../shared/ipc-ocr-index'
 import { projectsChannels, type ProjectsState } from '../shared/ipc-projects'
 import type { RunOptions } from './agent'
 import { cancelOnPageEnd } from './chat/lifecycle'
@@ -228,6 +229,14 @@ function fakeServices(overrides: Partial<IpcServices> = {}) {
       get: vi.fn(() => true),
       set: vi.fn((enabled: boolean) => Promise.resolve(enabled)),
     },
+    ocrIndex: {
+      list: vi.fn(() => []),
+      start: vi.fn(() => Promise.resolve({ ok: true as const })),
+      pause: vi.fn(() => Promise.resolve({ ok: true as const })),
+      resume: vi.fn(() => Promise.resolve({ ok: true as const })),
+      cancel: vi.fn(() => Promise.resolve({ ok: true as const })),
+      dismiss: vi.fn(() => Promise.resolve({ ok: true as const })),
+    },
     projects: fakeProjects(),
     revealAudit: vi.fn(),
     audit: () => ({ healthy: true, path: '/data/audit.jsonl' }),
@@ -317,6 +326,53 @@ describe('registerIpcHandlers', () => {
           'Invalid layout.',
         )
       expect(services.layout.set).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('ocrIndex', () => {
+    const JOB = '0123456789abcdef'
+
+    it('lists the jobs', async () => {
+      const { invoke, services } = setup()
+      expect(await invoke(ocrIndexChannels.ocrIndexList, appFrame)).toEqual([])
+      expect(services.ocrIndex.list).toHaveBeenCalledOnce()
+    })
+
+    it('starts a folder named as the Files tree names it, and nothing else', async () => {
+      const { invoke, services } = setup()
+      const folder = { rootId: ROOT_ID, rel: 'RFIs/2026' }
+      expect(await invoke(ocrIndexChannels.ocrIndexStart, appFrame, folder)).toEqual({ ok: true })
+      expect(services.ocrIndex.start).toHaveBeenCalledWith(folder)
+      for (const bad of [
+        undefined,
+        null,
+        'C:\\Users\\me\\RFIs',
+        { rootId: ROOT_ID },
+        { rootId: 'C:\\RFIs', rel: '' },
+        { rootId: ROOT_ID, rel: 'x'.repeat(5000) },
+        { rootId: ROOT_ID, rel: '', path: 'C:\\' },
+      ])
+        await expect(invoke(ocrIndexChannels.ocrIndexStart, appFrame, bad)).rejects.toThrow(
+          'Unknown folder.',
+        )
+      expect(services.ocrIndex.start).toHaveBeenCalledOnce()
+    })
+
+    it('pauses, resumes, cancels and dismisses a job by its id only', async () => {
+      const { invoke, services } = setup()
+      const calls = [
+        [ocrIndexChannels.ocrIndexPause, services.ocrIndex.pause],
+        [ocrIndexChannels.ocrIndexResume, services.ocrIndex.resume],
+        [ocrIndexChannels.ocrIndexCancel, services.ocrIndex.cancel],
+        [ocrIndexChannels.ocrIndexDismiss, services.ocrIndex.dismiss],
+      ] as const
+      for (const [channel, method] of calls) {
+        expect(await invoke(channel, appFrame, JOB)).toEqual({ ok: true })
+        expect(method).toHaveBeenCalledWith(JOB)
+        for (const bad of [undefined, 7, 'ABCDEF0123456789', '0123', `${JOB}0`, { id: JOB }])
+          await expect(invoke(channel, appFrame, bad)).rejects.toThrow('Unknown indexing job.')
+        expect(method).toHaveBeenCalledOnce()
+      }
     })
   })
 

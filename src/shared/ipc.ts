@@ -3,6 +3,7 @@ import type { ConnectionId } from './ipc-connections'
 import type { FeatureApis } from './ipc-features'
 import { filesPushChannels, type FilesChanged } from './ipc-files'
 import { gitPushChannels, type GitChanged } from './ipc-git'
+import { ocrIndexPushChannels, type OcrIndexJob } from './ipc-ocr-index'
 
 /** IPC channel names shared by the main process and the preload script. */
 export const IpcChannels = {
@@ -464,6 +465,7 @@ export interface PushPayloads {
   [IpcChannels.menuCommand]: MenuCommand
   [filesPushChannels.filesChanged]: FilesChanged
   [gitPushChannels.gitChanged]: GitChanged
+  [ocrIndexPushChannels.ocrIndexChanged]: OcrIndexJob[]
 }
 export type PushChannel = keyof PushPayloads
 

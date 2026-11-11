@@ -15,6 +15,7 @@ import {
 import { IpcChannels, type PushChannel, type PushPayloads } from '../shared/ipc'
 import { filesPushChannels } from '../shared/ipc-files'
 import { gitPushChannels } from '../shared/ipc-git'
+import { ocrIndexPushChannels } from '../shared/ipc-ocr-index'
 import { nativeImageScaler } from './attachments/native-image'
 import { cancelOnPageEnd } from './chat/lifecycle'
 import { defaultSystemHeifDecoder } from './documents/system-heif'
@@ -112,6 +113,9 @@ void app.whenReady().then(async () => {
     onGitChanged: (change) => {
       push(gitPushChannels.gitChanged, change)
     },
+    onOcrIndexChanged: (jobs) => {
+      push(ocrIndexPushChannels.ocrIndexChanged, jobs)
+    },
     emit: (event) => {
       push(IpcChannels.chatEvent, event)
     },
@@ -140,6 +144,11 @@ void app.whenReady().then(async () => {
   })
   const { chat } = services
   grantedRoots = () => services.grants.list()
+  // Indexing the user started before quitting goes on (paused jobs stay paused).
+  void services.ocrIndex.load()
+  app.on('will-quit', () => {
+    void services.ocrIndex.dispose()
+  })
   // What quitting always stopped; the window behaviour calls it once the user has confirmed.
   const stopWork = (): Promise<void> => {
     services.files.close()
@@ -205,6 +214,7 @@ void app.whenReady().then(async () => {
       get: () => services.settings.notifications,
       set: (enabled) => services.settings.setNotifications(enabled),
     },
+    ocrIndex: services.ocrIndex,
     projects: services.projects,
     provider: services.provider,
     chat,
