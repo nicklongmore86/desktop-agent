@@ -63,6 +63,9 @@ export const OCR_INDEX_REFUSAL = {
   notPaused: 'That indexing is not paused.',
 } as const
 
+/** Tries at saving the jobs when Windows briefly refuses to replace the file. */
+const STATE_WRITE_ATTEMPTS = 6
+
 /** Folders never descended into, as search_files skips them. */
 const SKIPPED_DIRS = new Set(['.git', 'node_modules'])
 
@@ -256,6 +259,24 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
 
   // --- Kept between runs, and recorded ------------------------------------------------------
 
+  /**
+   * Writes the state file. On Windows, replacing a file another process has open (antivirus,
+   * a backup, an indexer) fails for a moment with EPERM, EBUSY or EACCES: tried again a few times.
+   */
+  const writeState = async (value: unknown): Promise<void> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await writeJsonFile(deps.stateFile, value)
+        return
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        const passing = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+        if (!passing || attempt >= STATE_WRITE_ATTEMPTS) throw error
+        await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
+      }
+    }
+  }
+
   const persist = (): Promise<void> => {
     const value = {
       version: 1 as const,
@@ -264,7 +285,7 @@ export function createOcrIndexService(deps: OcrIndexDeps) {
         .map((job) => ({ id: job.id, root: job.root, rel: job.rel, paused: job.paused })),
     }
     saving = saving
-      .then(() => writeJsonFile(deps.stateFile, value))
+      .then(() => writeState(value))
       .catch((error: unknown) => {
         console.error('ocr index: could not save its jobs', error)
       })

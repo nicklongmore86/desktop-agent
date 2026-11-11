@@ -55,6 +55,23 @@ vi.mock('../tools/safe-fs', async (original) => {
   }
 })
 
+/** Saves of the state file to refuse first, as Windows does while another process has it open. */
+const refuse = vi.hoisted(() => ({ next: 0, code: 'EPERM' }))
+
+vi.mock('../storage/json-file', async (original) => {
+  const actual = await original<typeof import('../storage/json-file')>()
+  return {
+    ...actual,
+    writeJsonFile: async (...args: Parameters<typeof actual.writeJsonFile>) => {
+      if (refuse.next > 0) {
+        refuse.next--
+        throw Object.assign(new Error('operation not permitted, rename'), { code: refuse.code })
+      }
+      return actual.writeJsonFile(...args)
+    },
+  }
+})
+
 vi.setConfig({ testTimeout: 30_000 })
 
 let sb: Sandbox
@@ -105,6 +122,7 @@ beforeEach(async () => {
   services = []
   cloud.paths.clear()
   cloud.reads = []
+  refuse.next = 0
 })
 
 afterEach(async () => {
@@ -190,7 +208,9 @@ describe('background indexing of scanned pages', () => {
     expect(JSON.stringify(events())).not.toMatch(/Alpha|Bravo|a\.pdf|freezer/)
     // A finished job is no longer kept for the next start (saved just after it finishes).
     await expect
-      .poll(async () => JSON.parse(await fs.readFile(stateFile(), 'utf8')) as unknown)
+      .poll(async () => JSON.parse(await fs.readFile(stateFile(), 'utf8')) as unknown, {
+        interval: 100,
+      })
       .toEqual({ version: 1, jobs: [] })
   })
 
@@ -378,6 +398,19 @@ describe('background indexing of scanned pages', () => {
     expect(stateOf(second)).toBe('paused')
     await new Promise((resolve) => setTimeout(resolve, 40))
     expect(ocr.reads).toEqual([])
+  })
+
+  it('saves its jobs when Windows refuses to replace the file for a moment', async () => {
+    await fs.mkdir(path.join(sb.root, 'w'))
+    ocr.battery = true
+    refuse.next = 3
+    refuse.code = 'EPERM'
+    const index = service()
+    expect(await index.start(folder('w'))).toEqual({ ok: true })
+    expect(refuse.next).toBe(0)
+    expect(JSON.parse(await fs.readFile(stateFile(), 'utf8'))).toMatchObject({
+      jobs: [{ rel: 'w', paused: false }],
+    })
   })
 
   it('drops saved jobs for folders no longer granted, and anything malformed', async () => {
